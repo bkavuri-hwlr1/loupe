@@ -1,0 +1,53 @@
+class Magnifio < Formula
+  include Language::Python::Virtualenv
+
+  desc "Terminal coding agent with coordinated sessions"
+  homepage "https://github.com/MagnifioSearchEngine/homebrew-tap"
+  version "@VERSION@"
+
+  depends_on "git"
+  depends_on macos: :sequoia
+  depends_on "python@3.14"
+
+  on_macos do
+    on_arm do
+      url "@ROOT_URL@/magnifio-@VERSION@-macos-arm64.tar.gz"
+      sha256 "@ARM64_SHA256@"
+    end
+    on_intel do
+      url "@ROOT_URL@/magnifio-@VERSION@-macos-x86_64.tar.gz"
+      sha256 "@X86_64_SHA256@"
+    end
+  end
+
+  # The prebuilt Python extensions already use relocatable @rpath IDs. Their
+  # Mach-O headers do not reserve space for Homebrew's longer absolute IDs.
+  preserve_rpath
+
+  def install
+    # The archive contains the exact, hash-verified runtime wheels from uv.lock.
+    # Never resolve or download dependencies during installation.
+    ENV["PIP_NO_INDEX"] = "1"
+    venv = virtualenv_create(libexec, "python3.14", system_site_packages: false)
+    venv.pip_install Dir[buildpath/"wheels/*.whl"], build_isolation: false
+    %w[magnifio magnifiod llm-coord llm-coordd].each do |command|
+      bin.install_symlink libexec/"bin"/command
+    end
+    pkgshare.install "manifest.json", "smoke_test.py"
+  end
+
+  def caveats
+    <<~EOS
+      Start Magnifio with: magnifio
+      Connect an account with /login inside the app.
+
+      Before upgrading or uninstalling, finish active tasks, exit Magnifio,
+      and stop each profile's daemon: magnifio --profile NAME daemon stop
+      Your next task starts the updated daemon. User data is preserved.
+    EOS
+  end
+
+  test do
+    system libexec/"bin/python", pkgshare/"smoke_test.py", bin, version.to_s
+  end
+end

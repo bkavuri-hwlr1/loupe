@@ -1,0 +1,45 @@
+"""Stable errors shared by the CLI, daemon, and coordination authority."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
+
+
+class ErrorCode(StrEnum):
+    CONFIG_INVALID = "CONFIG_INVALID"
+    DAEMON_UNAVAILABLE = "DAEMON_UNAVAILABLE"
+    PROTOCOL_MISMATCH = "PROTOCOL_MISMATCH"
+    REPOSITORY_NOT_FOUND = "REPOSITORY_NOT_FOUND"
+    REPOSITORY_UNSAFE = "REPOSITORY_UNSAFE"
+    SESSION_AUTH_REQUIRED = "SESSION_AUTH_REQUIRED"
+    SESSION_NOT_ACTIVE = "SESSION_NOT_ACTIVE"
+    PATH_BASE_MISMATCH = "PATH_BASE_MISMATCH"
+    CHECKOUT_RECOVERY_REQUIRED = "CHECKOUT_RECOVERY_REQUIRED"
+    CONTEXT_TOO_LARGE = "CONTEXT_TOO_LARGE"
+    CLAIM_QUEUED = "CLAIM_QUEUED"
+    CLAIM_STALE = "CLAIM_STALE"
+    SCOPE_VIOLATION = "SCOPE_VIOLATION"
+    TASK_NOT_MUTABLE = "TASK_NOT_MUTABLE"
+    WORKTREE_DIRTY = "WORKTREE_DIRTY"
+    TARGET_MOVED = "TARGET_MOVED"
+    INTEGRATION_CONFLICT = "INTEGRATION_CONFLICT"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    PROVIDER_AMBIGUOUS = "PROVIDER_AMBIGUOUS"
+    INDEX_UNAVAILABLE = "INDEX_UNAVAILABLE"
+    APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+    INTERNAL_RECOVERABLE = "INTERNAL_RECOVERABLE"
+
+
+@dataclass(slots=True)
+class LlmCoordError(Exception):
+    code: ErrorCode
+    message: str
+    details: dict[str, Any] | None = None
+
+    def __str__(self) -> str:
+        return self.message
+
+
+__all__ = ["ErrorCode", "LlmCoordError"]

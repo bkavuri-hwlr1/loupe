@@ -1,0 +1,220 @@
+name: Publish tested Homebrew release
+
+on:
+  push:
+    branches: ["release/v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-release
+  cancel-in-progress: false
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  HOMEBREW_NO_ANALYTICS: "1"
+  TAP: magnifiosearchengine/tap
+  FORMULA: magnifiosearchengine/tap/magnifio
+
+jobs:
+  assets:
+    if: github.event.deleted != true
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate candidate
+        id: version
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          tag=$(cat release-assets/tag)
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]
+          test "$BRANCH" = "release/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          cd release-assets
+          sha256sum --check SHA256SUMS-arm64 SHA256SUMS-x86_64
+      - name: Publish candidate downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            mkdir "$RUNNER_TEMP/existing"
+            gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/existing" --pattern 'magnifio-*.tar.gz'
+            for archive in release-assets/magnifio-*.tar.gz; do
+              cmp "$archive" "$RUNNER_TEMP/existing/$(basename "$archive")"
+            done
+          else
+            gh release create "$RELEASE_TAG" release-assets/*.tar.gz release-assets/SHA256SUMS-* \
+              --target main --prerelease --latest=false --title "Magnifio $RELEASE_TAG" \
+              --notes "Homebrew packages are being verified. The tap will update after both Mac architectures pass installation tests."
+          fi
+
+  bottle:
+    needs: assets
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install and test the candidate formula
+        env:
+          RELEASE_TAG: ${{ needs.assets.outputs.tag }}
+        run: |
+          brew tap "$TAP"
+          previous=""
+          if test -f "$(brew --repo "$TAP")/Formula/magnifio.rb"; then
+            brew install "$FORMULA"
+            previous=$(magnifio --version)
+            "$(brew --prefix "$FORMULA")/libexec/bin/python" \
+              "$(brew --prefix "$FORMULA")/share/magnifio/smoke_test.py" \
+              "$(brew --prefix "$FORMULA")/bin" "$previous" "$RUNNER_TEMP/retained-profile"
+          fi
+          cp Formula/magnifio.rb "$(brew --repo "$TAP")/Formula/magnifio.rb"
+          brew style "$FORMULA"
+          if test -n "$previous" && test "$previous" != "${RELEASE_TAG#v}"; then
+            brew upgrade --build-bottle "$FORMULA"
+          else
+            if test -n "$previous"; then brew uninstall "$FORMULA"; fi
+            brew install --build-bottle "$FORMULA"
+          fi
+          brew test "$FORMULA"
+          "$(brew --prefix "$FORMULA")/libexec/bin/python" \
+            "$(brew --prefix "$FORMULA")/share/magnifio/smoke_test.py" \
+            "$(brew --prefix "$FORMULA")/bin" "${RELEASE_TAG#v}" "$RUNNER_TEMP/retained-profile"
+      - name: Build and reinstall the bottle
+        env:
+          RELEASE_TAG: ${{ needs.assets.outputs.tag }}
+        run: |
+          mkdir bottles
+          cd bottles
+          brew bottle --json --no-rebuild \
+            --root-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG" "$FORMULA"
+          # Install through the tap, just as users do. Homebrew 7 rejects
+          # arbitrary local bottle paths; a checksummed bottle URL is supported.
+          brew bottle --merge --write --no-commit ./*.json
+          python3 - <<'PY'
+          import json, os, pathlib, shutil, subprocess
+          from urllib.parse import unquote
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "bottle-install"
+          root.mkdir()
+          for path in pathlib.Path.cwd().glob("*.json"):
+              for item in json.loads(path.read_text()).values():
+                  for bottle in item["bottle"]["tags"].values():
+                      shutil.copyfile(bottle["local_filename"], root / unquote(bottle["filename"]))
+          tap = pathlib.Path(subprocess.check_output(["brew", "--repo", os.environ["TAP"]], text=True).strip())
+          formula = tap / "Formula/magnifio.rb"
+          original = f'root_url "https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{os.environ["RELEASE_TAG"]}"'
+          content = formula.read_text()
+          assert content.count(original) == 1
+          formula.write_text(content.replace(original, f'root_url "{root.as_uri()}"'))
+          PY
+          brew uninstall "$FORMULA"
+          brew install --force-bottle "$FORMULA"
+          brew test "$FORMULA"
+          "$(brew --prefix "$FORMULA")/libexec/bin/python" \
+            "$(brew --prefix "$FORMULA")/share/magnifio/smoke_test.py" \
+            "$(brew --prefix "$FORMULA")/bin" "${RELEASE_TAG#v}" "$RUNNER_TEMP/retained-profile"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bottles-${{ matrix.runner }}
+          path: bottles/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [assets, bottle]
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          path: tap-main
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: bottles-*
+          merge-multiple: true
+          path: bottles
+      - name: Merge bottle checksums into the tested formula
+        run: |
+          brew tap "$TAP"
+          cp candidate/Formula/magnifio.rb "$(brew --repo "$TAP")/Formula/magnifio.rb"
+          # Merging JSON does not implicitly trust a fully qualified formula,
+          # unlike `brew install`. Trust only this formula on Homebrew 7+.
+          if brew command trust >/dev/null 2>&1; then
+            brew trust --formula "$FORMULA"
+          fi
+          brew bottle --merge --write --no-commit bottles/*.json
+          mkdir -p tap-main/Formula
+          cp "$(brew --repo "$TAP")/Formula/magnifio.rb" tap-main/Formula/magnifio.rb
+          cp candidate/README.md tap-main/README.md
+          brew style "$FORMULA"
+      - name: Upload immutable bottles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.assets.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          from urllib.parse import unquote
+          for path in pathlib.Path("bottles").glob("*.json"):
+              for item in json.loads(path.read_text()).values():
+                  for bottle in item["bottle"]["tags"].values():
+                      source = path.parent / bottle["local_filename"]
+                      destination = path.parent / unquote(bottle["filename"])
+                      source.rename(destination)
+                      # Existing identical assets make retries safe. Never replace
+                      # a released asset under the same URL with different bytes.
+                      result = subprocess.run(["gh", "release", "upload", os.environ["RELEASE_TAG"], str(destination),
+                                               "--repo", os.environ["GITHUB_REPOSITORY"]])
+                      if result.returncode:
+                          import tempfile
+                          with tempfile.TemporaryDirectory() as directory:
+                              subprocess.run(["gh", "release", "download", os.environ["RELEASE_TAG"],
+                                              "--repo", os.environ["GITHUB_REPOSITORY"], "--pattern", destination.name,
+                                              "--dir", directory], check=True)
+                              assert destination.read_bytes() == (pathlib.Path(directory) / destination.name).read_bytes()
+          PY
+      - name: Publish the tested formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.assets.outputs.tag }}
+        working-directory: tap-main
+        run: |
+          git config user.name "Magnifio releases"
+          git config user.email "releases@users.noreply.github.com"
+          git add Formula/magnifio.rb README.md
+          if ! git diff --cached --quiet; then
+            git commit -m "Release Magnifio $RELEASE_TAG"
+            git push origin HEAD:main
+          fi
+          prerelease=false
+          if [[ "$RELEASE_TAG" =~ (a|b|rc)[0-9]+$ ]]; then prerelease=true; fi
+          cat > "$RUNNER_TEMP/release-notes.md" <<'MARKDOWN'
+          Install: `brew install magnifiosearchengine/tap/magnifio`, then run
+          `magnifio` and `/login`. Requires macOS 15 or newer. Includes Python
+          dependencies and both provider SDKs. Apple Silicon and Intel bottles
+          passed installation and daemon smoke tests.
+          MARKDOWN
+          gh release edit "$RELEASE_TAG" --prerelease="$prerelease" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+          git push origin --delete "release/$RELEASE_TAG"

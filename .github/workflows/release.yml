@@ -1,0 +1,80 @@
+name: Release Magnifio for macOS
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.14"
+      - run: uv sync --locked --all-groups --all-extras
+      - name: Build and test the public package
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: uv run --locked python scripts/macos_release.py build --tag "$RELEASE_TAG" --output dist/macos
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-${{ matrix.architecture }}
+          path: dist/macos/
+          if-no-files-found: error
+          retention-days: 7
+
+  handoff:
+    needs: [checks, package]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: macos-*
+          merge-multiple: true
+          path: dist/macos
+      - name: Configure the tap-only deploy key
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          test -n "$TAP_DEPLOY_KEY" || { echo "Missing HOMEBREW_TAP_DEPLOY_KEY; see docs/macos-releases.md"; exit 1; }
+          install -d -m 700 "$RUNNER_TEMP/tap-ssh"
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$RUNNER_TEMP/tap-ssh/key"
+          chmod 600 "$RUNNER_TEMP/tap-ssh/key"
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$RUNNER_TEMP/tap-ssh/known_hosts"
+          echo "GIT_SSH_COMMAND=ssh -i $RUNNER_TEMP/tap-ssh/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/tap-ssh/known_hosts" >> "$GITHUB_ENV"
+      - name: Submit only the public release inputs
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          git clone --depth 1 git@github.com:MagnifioSearchEngine/homebrew-tap.git "$RUNNER_TEMP/tap"
+          python3 scripts/macos_release.py prepare --tag "$RELEASE_TAG" --assets dist/macos --tap "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          git switch -c "release/$RELEASE_TAG"
+          git config user.name "Magnifio releases"
+          git config user.email "releases@users.noreply.github.com"
+          git add Formula/magnifio.rb README.md release-assets .github/workflows/publish.yml
+          git commit -m "Package Magnifio $RELEASE_TAG"
+          git push origin "HEAD:refs/heads/release/$RELEASE_TAG"
+      - name: Remove temporary credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/tap-ssh"

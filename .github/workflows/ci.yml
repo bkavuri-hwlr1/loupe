@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    # Release tags run this same matrix through release.yml's workflow_call.
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        python: ["3.12", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked --all-groups --all-extras
+      - run: uv run pytest --cov=llm_cli
+      - run: uv run ruff check .
+      - run: uv run mypy
+      - run: uv build --no-sources
