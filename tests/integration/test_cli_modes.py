@@ -361,6 +361,9 @@ def test_mode_cannot_change_while_a_detached_task_is_running(
     cluster.submit_mode(process, "busy", content="finished in auto\n", pause=True)
     cluster.ready("busy")
     task = cluster.task("busy")
+    # Provider readiness does not mean the CLI received the submission reply.
+    # Wait for rendered task output so SIGINT exercises detachment from follow.
+    _wait(lambda: "Getting ready" in (cluster.root / "busy.log").read_text())
     process.send_signal(signal.SIGINT)
     _wait(lambda: "Detached;" in (cluster.root / "busy.log").read_text())
     cluster.send(process, "/mode plan")
