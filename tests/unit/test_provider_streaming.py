@@ -251,7 +251,9 @@ class Script:
 
 def test_sync_harness_records_complete_responses_tool_data_and_summary(
     tmp_path: Path,
+    git_run: Callable[..., str],
 ) -> None:
+    git_run(tmp_path, "init", "-q")
     (tmp_path / "a.py").write_text("original file\n")
     events: list[tuple[str, dict[str, object]]] = []
     provider = Script(

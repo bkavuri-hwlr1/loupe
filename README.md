@@ -63,6 +63,9 @@ advertised effort controls do not get an invented effort menu.
 Effort choices are also checked against what the connection accepts, including
 cached lists. If a saved setting is no longer supported, use `/effort` to choose
 another level. Provider failures show one error with a suggested next step.
+Codex subscription requests retry connection failures up to twice before a
+response begins. Timeouts, service rejections, and interrupted response streams
+are not retried automatically.
 
 You can switch accounts with `/provider`, enter a model ID directly with
 `/model MODEL_ID`, inspect accounts with `/accounts`, or remove a saved login
@@ -130,7 +133,7 @@ conflicting mode/publication flags are refused.
 | Shift+Tab | Cycle plan → normal → auto without submitting or clearing the draft |
 | Up, Down / Ctrl+R | Navigate / search input history |
 | `/` then type | Search command names and descriptions |
-| Up, Down / Tab or Enter / Esc in the command menu | Browse without changing your query / choose a command / dismiss the menu |
+| Up, Down / Tab / Enter / Esc in the command menu | Browse without changing your query / fill in a command / run the selected command / dismiss the menu |
 | Page Up, Page Down in the command menu | Browse six commands at a time |
 | `/login [PROVIDER]` | Connect an account now or skip until later |
 | `/provider`, `/accounts`, `/logout [PROVIDER]` | Choose an AI, inspect accounts, or remove a saved login |
@@ -151,9 +154,9 @@ conflicting mode/publication flags are refused.
 | Ctrl+C twice within 2 seconds | Exit the CLI; preserve the session if a task is active |
 
 The input editor supports multiline paste. Prompt history is in memory for the
-current visit. Choosing a command from the search menu inserts it into the
-prompt; add any arguments, then press Enter to run it. `/clear` clears the
-display without resetting model context.
+current visit. Enter runs the selected command from the search menu immediately.
+To add arguments first, press Tab to fill in the command, type the arguments,
+then press Enter. `/clear` clears the display without resetting model context.
 When essential information is missing, the model can pause and ask a question
 in the same editor. Enter a free-text answer or the number of a suggested
 choice; the task continues with your answer. Models are instructed to inspect
@@ -439,8 +442,10 @@ Without a usable adapter or credential, the run fails with
 the lifecycle: `--fixture-write PATH=CONTENT` runs the deterministic fixture
 driver, and `--claim-only` acquires or queues a claim without starting the harness.
 
-On the background path, the agent may read anywhere in its worktree but may
-only write inside the claimed scopes. A write outside them returns a
+On the background path, the agent may read eligible source anywhere in its
+worktree but may only write inside the claimed scopes. Both reads and file
+mutations honor the [source exclusions](SECURITY.md#secrets-and-privacy).
+A write outside the claimed scopes returns a
 correctable tool error and never reaches the filesystem. Because a driver that
 writes around the tool surface is still possible, publication independently
 revalidates the real Git object graph, so

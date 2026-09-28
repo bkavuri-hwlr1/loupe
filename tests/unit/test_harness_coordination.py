@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -156,7 +156,9 @@ def test_context_overflow_does_not_send_or_ack_and_resume_refreshes_original_res
 
 def test_context_and_multibyte_tool_output_share_the_existing_byte_budget(
     tmp_path: Path,
+    git_run: Callable[..., str],
 ) -> None:
+    git_run(tmp_path, "init", "-q")
     (tmp_path / "large.txt").write_text("é" * 512, encoding="utf-8")
     limits = ExecutionLimits(max_tool_output_bytes=512)
     provider = Script([_turn(("read", "read_file", {"path": "large.txt"})), _finish()])

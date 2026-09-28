@@ -7,7 +7,7 @@ import copy
 import hashlib
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -466,3 +466,78 @@ def test_subscription_transport_failure_retains_only_safe_category(
         CodexProvider(paths=paths).session(system="test", tools=[]).send_user("test")
     assert caught.value.details == {"provider_error": category}
     assert "private" not in str(caught.value)
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+def test_subscription_connection_retries_are_bounded_and_preserve_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovers: bool
+) -> None:
+    paths = AppPaths(
+        "test",
+        tmp_path / "config",
+        tmp_path / "data",
+        tmp_path / "state",
+        tmp_path / "run",
+    )
+    _store(paths)
+    requests = []
+
+    def handle(request: Any) -> Any:
+        requests.append(json.loads(request.content))
+        if len(requests) < 3 or not recovers:
+            raise httpx.ReadError("access-private request-private", request=request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_codex_events(_response([_message()])),
+        )
+
+    _install_transport(monkeypatch, handle)
+    session = CodexProvider(paths=paths).session(system="test", tools=[])
+    if recovers:
+        assert session.send_user("test").text == "done"
+    else:
+        with pytest.raises(LlmCoordError) as caught:
+            session.send_user("test")
+        assert caught.value.details == {"provider_error": "connection"}
+        assert "private" not in str(caught.value)
+        assert session.snapshot() == {"input": [{"role": "user", "content": "test"}]}
+    assert len(requests) == 3
+    assert requests[0] == requests[1] == requests[2]
+
+
+def test_subscription_does_not_retry_a_stream_that_has_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = AppPaths(
+        "test",
+        tmp_path / "config",
+        tmp_path / "data",
+        tmp_path / "state",
+        tmp_path / "run",
+    )
+    _store(paths)
+    requests = []
+
+    class InterruptedStream(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            yield _codex_events(
+                _response([_call("write", "write_file", {"path": "a.md"})]),
+                "truncated",
+            )
+            raise httpx.ReadError("stream interrupted")
+
+    def handle(request: Any) -> Any:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=InterruptedStream(),
+        )
+
+    _install_transport(monkeypatch, handle)
+    session = CodexProvider(paths=paths).session(system="test", tools=[])
+    with pytest.raises(httpx.ReadError):
+        session.send_user("edit")
+    assert len(requests) == 1
+    assert session.snapshot() == {"input": [{"role": "user", "content": "edit"}]}

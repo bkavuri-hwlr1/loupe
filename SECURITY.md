@@ -105,6 +105,25 @@ Redaction is defense in depth, not permission to ingest secrets. Logs should use
 stable identifiers and bounded metadata instead of prompts, source contents,
 environment dumps, URLs with credentials, or raw subprocess output.
 
+Model source tools apply repository ignore rules and the user's configured
+`core.excludesFile` to tracked and untracked paths. User exclusions are evaluated
+independently so repository negations cannot override them. Common credential
+files, private-key files, and credential directories are excluded from both
+discovery and explicit reads. The same exclusions apply to model file mutations,
+including both source and destination paths of a rename. Recognized private-key
+and provider-token formats are screened before source observations or tool
+results are retained or sent to the model. This conservative pattern screening
+is not a complete secret scanner.
+Saved direct-file reads recheck current exclusions, but older aggregate search
+and diff results lack reliable per-file provenance. Changing exclusions does not
+erase already stored conversation content; start a new conversation when
+tightening privacy rules. Finalization screens known secret formats but does not
+have worktree context to recheck changed path exclusions.
+
+Regular-expression searches run in an isolated Python child process with a
+five-second deadline and cancellation. Git exclusion checks share that deadline;
+regex matching runs after releasing the shared publication lock.
+
 ## Git and subprocess safety
 
 Trusted Git operations must:
@@ -118,6 +137,15 @@ Trusted Git operations must:
   dirty state, and target movement;
 - avoid following application-managed paths through symlinks;
 - retain a recoverable publication or integration record before mutation.
+
+Trusted Git operations use an allowlisted environment without provider tokens,
+disable external diff/text-conversion helpers, and refuse active
+repository-configured clean, smudge, or process filters. Repositories requiring
+these filters (including Git LFS filters) are currently unsupported for operations
+that inspect or populate worktree content. The daemon must be installed in its
+Python environment (including an editable install); startup ignores repository
+imports, `PYTHONPATH`, and user-site packages and runs from the private runtime
+directory.
 
 General shell execution starts with a restrictive approval policy. Model output
 cannot approve a command, widen a scope, choose a cleanup root, expose credentials,
@@ -143,6 +171,12 @@ Authoritative SQLite backups use the SQLite backup API after a bounded checkpoin
 Copying only the main database file while a WAL exists is not a valid backup.
 Restore validates manifests, checksums, schemas, and permissions and preserves a
 recoverable copy of current authority before replacement.
+
+Shared publication preserves filesystem access permissions separately from Git
+executable modes, including through rename, recovery, and undo. New files and
+directories default to owner-only access, subject to the process umask. Older
+journals without permission metadata preserve live permissions or create
+privately; they do not restore broad default access.
 
 Repository-derived lexical, vector, and graph projections should be rebuilt
 rather than trusted across incompatible versions. User-authored memory is

@@ -108,6 +108,7 @@ def atomic_replace_regular_file(
     content: bytes,
     mode: str,
     publication_id: str,
+    permissions: int | None = None,
 ) -> None:
     """Write one fully prepared regular file then atomically install it.
 
@@ -119,6 +120,10 @@ def atomic_replace_regular_file(
 
     if mode not in {REGULAR_MODE, EXECUTABLE_MODE}:
         raise WorkspaceBrokerError("candidate has an unsupported regular-file mode")
+    if permissions is not None and (
+        type(permissions) is not int or not 0 <= permissions <= 0o777
+    ):
+        raise WorkspaceBrokerError("candidate filesystem permissions are invalid")
     target = workspace_target(checkout_root, relative_path)
     if target.exists() and target.is_dir():
         raise WorkspaceBrokerError(
@@ -146,7 +151,12 @@ def atomic_replace_regular_file(
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(temporary, flags, 0o600)
+        # A brand-new file has no prior access policy to preserve. Keep it
+        # private, and let open apply the daemon's umask without changing the
+        # process-wide umask in this multithreaded service.
+        descriptor = os.open(
+            temporary, flags, 0o700 if mode == EXECUTABLE_MODE else 0o600
+        )
     except FileExistsError:
         raise WorkspaceBrokerError(
             "a prior publication with this ID still needs recovery"
@@ -155,14 +165,55 @@ def atomic_replace_regular_file(
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
             handle.flush()
+            workspace_target(checkout_root, relative_path)
+            try:
+                current = target.lstat()
+            except FileNotFoundError:
+                current = None
+            access = permissions
+            if current is not None:
+                if not stat.S_ISREG(current.st_mode):
+                    raise WorkspaceBrokerError(
+                        "publication target is not a regular file"
+                    )
+                live_access = stat.S_IMODE(current.st_mode) & 0o777
+                access = live_access if access is None else access & live_access
+            if access is not None:
+                # Only the Git executable bit may be deliberately changed.
+                # Preserve tighter access set by the user since observation.
+                access = (
+                    access | stat.S_IXUSR
+                    if mode == EXECUTABLE_MODE
+                    else access & ~stat.S_IXUSR
+                )
+                os.fchmod(handle.fileno(), access)
             os.fsync(handle.fileno())
-        os.chmod(temporary, 0o755 if mode == EXECUTABLE_MODE else 0o644)
-        _fsync_directory(stage_root)
-        # The caller has just revalidated the old identity. Recheck safe parent
-        # components at this final boundary so a normal editor cannot redirect
-        # us through an accidentally introduced directory link.
-        workspace_target(checkout_root, relative_path)
-        os.replace(temporary, target)
+            _fsync_directory(stage_root)
+            # Refuse a replacement/chmod observed during final preparation.
+            # Shared writers hold a common lock; external editors do not.
+            workspace_target(checkout_root, relative_path)
+            try:
+                latest = target.lstat()
+            except FileNotFoundError:
+                latest = None
+            fields = (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+            if (current is None) != (latest is None) or (
+                current is not None
+                and latest is not None
+                and any(
+                    getattr(current, field) != getattr(latest, field)
+                    for field in fields
+                )
+            ):
+                raise WorkspaceBrokerError("publication target changed during staging")
+            os.replace(temporary, target)
         _fsync_directory(target.parent)
     except BaseException:
         with suppress(FileNotFoundError):

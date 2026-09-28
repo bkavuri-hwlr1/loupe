@@ -164,7 +164,7 @@ def editing(
                     result.result(timeout=3)
 
 
-def test_slash_opens_menu_and_arrows_enter_choose_before_submitting(
+def test_slash_opens_menu_and_arrows_enter_submits_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with editing(monkeypatch) as editor:
@@ -180,8 +180,6 @@ def test_slash_opens_menu_and_arrows_enter_choose_before_submitting(
         editor.send("\x1b[A")
         wait_until(lambda: editor.composer._picker_index == 1)
         editor.expect_draft("/", menu=True)
-        editor.send("\r")
-        editor.expect_draft("/provider", menu=False)
         editor.send("\r")
         editor.submitted("/provider")
 
@@ -269,14 +267,18 @@ def test_alt_enter_preserves_multiline_editing_with_a_menu_open(
         editor.submitted("/\nliteral /cd /tmp")
 
 
-def test_fast_search_and_enter_selects_without_submitting(
+@pytest.mark.parametrize(
+    ("query", "command"),
+    [("/codex", "/login"), ("/stat", "/status"), ("/eff", "/effort")],
+)
+def test_fast_search_and_enter_submits_selection(
     monkeypatch: pytest.MonkeyPatch,
+    query: str,
+    command: str,
 ) -> None:
     with editing(monkeypatch) as editor:
-        editor.send("/codex\r")
-        editor.expect_draft("/login", menu=False)
-        editor.send("\r")
-        editor.submitted("/login")
+        editor.send(query + "\r")
+        editor.submitted(command)
 
 
 def test_fully_typed_command_keeps_picker_open_and_runs_with_one_enter(
@@ -300,9 +302,32 @@ def test_exact_command_can_still_choose_another_result(
         editor.send("\x1b[B")
         wait_until(lambda: editor.composer._picker_index == 1)
         editor.send("\r")
-        editor.expect_draft("/models", menu=False)
-        editor.send("\r")
         editor.submitted("/models")
+
+
+def test_partial_command_footer_explains_enter_runs_and_tab_chooses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with editing(monkeypatch) as editor:
+        editor.send("/stat")
+        editor.expect_draft("/stat", menu=True)
+        assert "Tab choose · Enter run" in editor.composer._toolbar()
+        monkeypatch.setattr(
+            editor.session.output, "get_size", lambda: Size(rows=24, columns=30)
+        )
+        assert "Enter run" in editor.composer._toolbar()
+
+
+def test_enter_after_escape_submits_the_unselected_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with editing(monkeypatch) as editor:
+        editor.send("/stat")
+        editor.expect_draft("/stat", menu=True)
+        editor.send("\x1b")
+        editor.expect_draft("/stat", menu=False)
+        editor.send("\r")
+        editor.submitted("/stat")
 
 
 def test_question_answers_bypass_slash_search(
@@ -316,7 +341,9 @@ def test_question_answers_bypass_slash_search(
         assert editor.composer.prompts == []
 
 
-@pytest.mark.parametrize("text", ["/status", "/cd /tmp", "Describe /login"])
+@pytest.mark.parametrize(
+    "text", ["/status", "/cd /tmp", "/does-not-exist", "Describe /login"]
+)
 def test_complete_commands_arguments_and_prose_submit_normally(
     monkeypatch: pytest.MonkeyPatch, text: str
 ) -> None:
