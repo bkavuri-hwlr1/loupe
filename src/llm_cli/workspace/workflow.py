@@ -35,6 +35,7 @@ def encode_files(files: tuple[BatchFile, ...]) -> str:
                 "path": f.relative_path,
                 "base": _identity_json(f.base),
                 "mode": f.mode,
+                "permissions": f.permissions,
                 "content": base64.b64encode(f.content).decode()
                 if f.content is not None
                 else None,
@@ -60,6 +61,7 @@ def decode_files(value: str) -> tuple[BatchFile, ...]:
             base64.b64decode(item["original"], validate=True)
             if item["original"] is not None
             else None,
+            item.get("permissions"),
         )
         for item in json.loads(value)
     )
@@ -466,6 +468,7 @@ class TaskWorkflow:
                         f.original if not f.base.absent else None,
                         f.base.mode,
                         f.content if f.mode != DIRECTORY_MODE else None,
+                        f.base.permissions,
                     )
                 )
             files = tuple(inverses)

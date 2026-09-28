@@ -24,6 +24,12 @@ from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
 
+from llm_cli.agent.bounded_search import (
+    SearchBudget,
+    SearchError,
+    SearchSnapshot,
+    find_matches,
+)
 from llm_cli.agent.limits import (
     DEFAULT_LIMITS,
     MAX_ANSWER_CHARACTERS,
@@ -31,6 +37,7 @@ from llm_cli.agent.limits import (
     ExecutionLimits,
 )
 from llm_cli.agent.modes import validate_agent_mode
+from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
 from llm_cli.coordination.scopes import (
     ScopeValidationError,
     normalize_changed_path,
@@ -273,10 +280,16 @@ class ToolBroker:
         directory = self._directory(raw)
         entries: list[str] = []
         children, capped = _bounded_children(directory, self.limits.max_scanned_files)
+        excluded = excluded_paths(
+            self.worktree,
+            [child.relative_to(self.worktree).as_posix() for child in children],
+        )
         for child in children:
             if child.name in _SKIPPED_DIRECTORIES:
                 continue
             relative = child.relative_to(self.worktree).as_posix()
+            if relative in excluded or child.is_symlink():
+                continue
             entries.append(f"{relative}/" if child.is_dir() else relative)
         return _listing_response(
             entries,
@@ -318,6 +331,7 @@ class ToolBroker:
                 text = target.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             return _error(f"{relative} is not UTF-8 text")
+        ensure_safe_content(text)
         self.usage.files_read += 1
         result = _read_response(text, arguments, self.limits)
         returned_bytes = result.metadata.get("bytes_returned", 0)
@@ -336,52 +350,63 @@ class ToolBroker:
         return result
 
     def _search_text(self, arguments: Mapping[str, object]) -> ToolOutcome:
-        offset, limit = _page_options(arguments, self.limits)
-        pattern = _string(arguments, "pattern")
+        budget = SearchBudget(self.check_cancelled)
         try:
-            expression = re.compile(pattern)
-        except re.error as exc:
-            return _error(f"that is not a valid regular expression: {exc}")
+            snapshot = self._search_snapshot(arguments, budget)
+            return _search_response(snapshot, arguments, self.limits, budget)
+        except SearchError as exc:
+            return _error(str(exc))
+
+    def _search_snapshot(
+        self, arguments: Mapping[str, object], budget: SearchBudget
+    ) -> SearchSnapshot:
+        _page_options(arguments, self.limits)
+        pattern = _string(arguments, "pattern")
         raw = _string(arguments, "path", default=".")
         target = (
             self.worktree
             if raw.strip() in {"", ".", "./", "*"}
-            else self._safe_path(normalize_scope(raw).rstrip("/"))
+            else self._safe_path(
+                normalize_scope(raw).rstrip("/"), remaining=budget.remaining
+            )
         )
         entries = (
             [(str(target.parent), [], [target.name])]
             if target.is_file()
-            else os.walk(self._directory(raw))
+            else os.walk(self._directory(raw, remaining=budget.remaining))
         )
-        matches: list[str] = []
+        files: list[tuple[str, str]] = []
         scanned = 0
         scanned_bytes = 0
-        seen = 0
         fingerprint = hashlib.sha256((pattern + "\0" + raw).encode("utf-8"))
 
-        def finish(
-            *, more: bool = False, stop_reason: str | None = None
-        ) -> ToolOutcome:
-            return _page_response(
-                matches[:limit],
-                offset=offset,
-                more=more or len(matches) > limit,
-                explicit="offset" in arguments or "limit" in arguments,
-                empty="(no matches at this offset)" if offset else "(no matches)",
-                limits=self.limits,
-                stop_reason=stop_reason,
-                snapshot=fingerprint.hexdigest(),
-                expected_snapshot=arguments.get("snapshot"),
-            )
+        def finish(*, stop_reason: str | None = None) -> SearchSnapshot:
+            return SearchSnapshot(files, fingerprint.hexdigest(), stop_reason)
 
         # os.walk rather than rglob: pruning subdirectories in place stops the
         # walk from descending into .git at all, and streaming avoids building
         # a list of every path in the repository before the limit applies.
         for directory, subdirectories, names in entries:
+            budget.remaining()
+            parent = Path(directory).relative_to(self.worktree)
+            candidates = [
+                (parent / name).as_posix()
+                for name in [*subdirectories, *names]
+                if name not in _SKIPPED_DIRECTORIES
+            ]
+            excluded = excluded_paths(
+                self.worktree, candidates, remaining=budget.remaining
+            )
             subdirectories[:] = sorted(
-                name for name in subdirectories if name not in _SKIPPED_DIRECTORIES
+                name
+                for name in subdirectories
+                if name not in _SKIPPED_DIRECTORIES
+                and (parent / name).as_posix() not in excluded
             )
             for name in sorted(names):
+                budget.remaining()
+                if (parent / name).as_posix() in excluded:
+                    continue
                 if scanned >= self.limits.max_scanned_files:
                     return finish(stop_reason="scanned_file_limit; narrow path")
                 candidate = Path(directory) / name
@@ -400,6 +425,7 @@ class ToolBroker:
                     if scanned_bytes > self.limits.max_read_bytes:
                         return finish(stop_reason="read_size_limit; narrow path")
                     content = raw_content.decode("utf-8")
+                    ensure_safe_content(content)
                 except (UnicodeDecodeError, OSError):
                     continue
                 relative = candidate.relative_to(self.worktree).as_posix()
@@ -408,20 +434,29 @@ class ToolBroker:
                         [relative, hashlib.sha256(raw_content).hexdigest()]
                     ).encode("utf-8")
                 )
-                for number, line in enumerate(content.splitlines(), start=1):
-                    if expression.search(line):
-                        if seen >= offset and len(matches) <= limit:
-                            matches.append(_search_match(relative, number, line))
-                        seen += 1
+                files.append((relative, content))
         return finish()
 
     def _read_diff(self, arguments: Mapping[str, object]) -> ToolOutcome:
         del arguments
         changed = collect_changed_paths(self.worktree)
+        excluded = excluded_paths(self.worktree, list(changed))
+        changed = tuple(path for path in changed if path not in excluded)
         if not changed:
             return _ok("(no changes yet)", self.limits)
-        result = run_git(self.worktree, ["diff", "--no-color", "HEAD"], check=False)
+        result = run_git(
+            self.worktree,
+            [
+                "diff",
+                "--no-color",
+                "HEAD",
+                "--",
+                *(f":(literal){path}" for path in changed),
+            ],
+            check=False,
+        )
         tracked = result.stdout if isinstance(result.stdout, str) else ""
+        ensure_safe_content(tracked)
         listing = "\n".join(f"  {path}" for path in changed)
         return _ok(f"Changed paths:\n{listing}\n\n{tracked}".strip(), self.limits)
 
@@ -441,6 +476,7 @@ class ToolBroker:
         encoded = content.encode("utf-8")
         if len(encoded) > self.limits.max_write_bytes:
             return _error("that content exceeds the per-write size limit")
+        ensure_safe_content(content)
         target = self._write_target(relative, must_exist=False)
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -461,6 +497,7 @@ class ToolBroker:
             current = target.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             return _error(f"{relative} is not UTF-8 text")
+        ensure_safe_content(current)
         occurrences = current.count(old_text)
         if occurrences == 0:
             return _error(f"old_text does not appear in {relative}")
@@ -469,7 +506,9 @@ class ToolBroker:
                 f"old_text appears {occurrences} times in {relative}; "
                 "include enough surrounding context to make it unique"
             )
-        target.write_text(current.replace(old_text, new_text, 1), encoding="utf-8")
+        replacement = current.replace(old_text, new_text, 1)
+        ensure_safe_content(replacement)
+        target.write_text(replacement, encoding="utf-8")
         self.usage.writes += 1
         return _ok(f"edited {relative}", self.limits)
 
@@ -495,7 +534,7 @@ class ToolBroker:
         if denied:
             return denied
         target = self._write_target(path, must_exist=True)
-        target.read_text(encoding="utf-8")
+        ensure_safe_content(target.read_text(encoding="utf-8"))
         target.unlink()
         self.usage.writes += 1
         return _ok(f"deleted {path}", self.limits)
@@ -513,7 +552,7 @@ class ToolBroker:
         target = self._write_target(destination, must_exist=False)
         if target.exists():
             return _error("rename destination must be absent")
-        origin.read_text(encoding="utf-8")
+        ensure_safe_content(origin.read_text(encoding="utf-8"))
         target.parent.mkdir(parents=True, exist_ok=True)
         origin.rename(target)
         self.usage.writes += 1
@@ -651,7 +690,9 @@ class ToolBroker:
             )
         return None
 
-    def _directory(self, raw: str) -> Path:
+    def _directory(
+        self, raw: str, *, remaining: Callable[[], float] | None = None
+    ) -> Path:
         # A model naturally writes "." for the root; the scope grammar has no
         # dot components, so it is translated before validation rather than
         # loosening what a scope may contain.
@@ -661,7 +702,7 @@ class ToolBroker:
         if scope == "*":
             return self.worktree
         relative = scope.rstrip("/")
-        target = self._safe_path(relative)
+        target = self._safe_path(relative, remaining=remaining)
         if not target.is_dir():
             raise LlmCoordError(
                 ErrorCode.REPOSITORY_UNSAFE,
@@ -710,12 +751,14 @@ class ToolBroker:
             raise LlmCoordError(
                 ErrorCode.REPOSITORY_UNSAFE, f"{relative} is not an editable file"
             )
-        # Defense in depth: the component walk above already makes an escape
-        # unreachable, so a failure here means one of these two is wrong.
-        self._assert_within_worktree(relative, target)
+        # Mutations must honor the same source exclusions as reads: renaming
+        # a private file to an ordinary name must not make its bytes readable.
+        self._safe_path(relative)
         return target
 
-    def _safe_path(self, relative: str) -> Path:
+    def _safe_path(
+        self, relative: str, *, remaining: Callable[[], float] | None = None
+    ) -> Path:
         """Resolve a worktree-relative path for reading.
 
         ``normalize_changed_path`` has already rejected traversal and absolute
@@ -727,6 +770,17 @@ class ToolBroker:
 
         candidate = (self.worktree / relative).absolute()
         self._assert_within_worktree(relative, candidate)
+        resolved_relative = (
+            candidate.resolve(strict=False)
+            .relative_to(self.worktree.resolve(strict=False))
+            .as_posix()
+        )
+        if excluded_paths(
+            self.worktree, [relative, resolved_relative], remaining=remaining
+        ):
+            raise LlmCoordError(
+                ErrorCode.REPOSITORY_UNSAFE, "excluded files are not model source"
+            )
         return candidate
 
     def _assert_within_worktree(self, relative: str, candidate: Path) -> None:
@@ -870,6 +924,33 @@ def _page_options(
         limits.max_search_results,
     )
     return offset, limit
+
+
+def _search_response(
+    snapshot: SearchSnapshot,
+    arguments: Mapping[str, object],
+    limits: ExecutionLimits,
+    budget: SearchBudget,
+) -> ToolOutcome:
+    offset, limit = _page_options(arguments, limits)
+    matches = find_matches(
+        _string(arguments, "pattern"),
+        snapshot.files,
+        offset=offset,
+        limit=limit,
+        budget=budget,
+    )
+    return _page_response(
+        [_search_match(*match) for match in matches[:limit]],
+        offset=offset,
+        more=len(matches) > limit,
+        explicit="offset" in arguments or "limit" in arguments,
+        empty="(no matches at this offset)" if offset else "(no matches)",
+        limits=limits,
+        stop_reason=snapshot.stop_reason,
+        snapshot=snapshot.fingerprint,
+        expected_snapshot=arguments.get("snapshot"),
+    )
 
 
 def _search_match(relative: str, number: int, line: str) -> str:

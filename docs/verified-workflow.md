@@ -114,6 +114,9 @@ or unresolved recovery journals. Check-generated source changes are discarded;
 a check that modifies source is not valid verification. Streamed output and
 exit status are replayable through `task watch`; output is capped at 10 MiB per
 check, with explicit truncation, and model results remain bounded at 64 KiB.
+If a check prints a recognized private-key or token format, that line and the
+remaining output are withheld before storage or model delivery, and the check
+is marked as an error. See the [privacy limits](../SECURITY.md#secrets-and-privacy).
 
 ## Undo and recovery
 

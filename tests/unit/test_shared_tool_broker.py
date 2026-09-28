@@ -91,7 +91,7 @@ def test_search_is_not_a_full_file_read_authorizing_replacement(checkout: Path) 
         "write_file", {"path": "docs/guide.md", "content": "unread replacement"}
     ).is_error
     assert broker.usage_snapshot()["shared_workspace_state"] == {
-        "version": 2,
+        "version": 3,
         "files": [],
     }
 
