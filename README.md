@@ -130,7 +130,7 @@ conflicting mode/publication flags are refused.
 | Shift+Tab | Cycle plan → normal → auto without submitting or clearing the draft |
 | Up, Down / Ctrl+R | Navigate / search input history |
 | `/` then type | Search command names and descriptions |
-| Up, Down / Tab or Enter / Esc in the command menu | Browse without changing your query / choose a command / dismiss the menu |
+| Up, Down / Tab / Enter / Esc in the command menu | Browse without changing your query / fill in a command / run the selected command / dismiss the menu |
 | Page Up, Page Down in the command menu | Browse six commands at a time |
 | `/login [PROVIDER]` | Connect an account now or skip until later |
 | `/provider`, `/accounts`, `/logout [PROVIDER]` | Choose an AI, inspect accounts, or remove a saved login |
