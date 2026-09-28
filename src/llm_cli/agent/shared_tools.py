@@ -13,12 +13,14 @@ import binascii
 import difflib
 import hashlib
 import json
-import re
 from _thread import RLock
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from llm_cli.agent.bounded_search import SearchBudget, SearchError, SearchSnapshot
+from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
 from llm_cli.agent.tools import (
     ToolBroker,
     ToolOutcome,
@@ -28,10 +30,9 @@ from llm_cli.agent.tools import (
     _listing_response,
     _ok,
     _page_options,
-    _page_response,
     _read_range,
     _read_response,
-    _search_match,
+    _search_response,
     _string,
 )
 from llm_cli.coordination.scopes import (
@@ -40,7 +41,6 @@ from llm_cli.coordination.scopes import (
     uncovered_paths,
 )
 from llm_cli.errors import LlmCoordError
-from llm_cli.git.environment import run_git
 from llm_cli.workspace.batches import BatchFile, candidate_target
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
@@ -84,6 +84,7 @@ class SharedToolBroker(ToolBroker):
     _contents: dict[str, bytes | None] = field(default_factory=dict, init=False)
 
     _modes: dict[str, str] = field(default_factory=dict, init=False)
+    _permissions: dict[str, int] = field(default_factory=dict, init=False)
 
     def invoke(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
         # An operator can take minutes to answer. This tool has no shared
@@ -91,7 +92,7 @@ class SharedToolBroker(ToolBroker):
         if name in {"ask_user", "run_check", "finish_task"}:
             return ToolBroker.invoke(self, name, arguments)
         before = self.usage.calls
-        with self.publication_lock:
+        with nullcontext() if name == "search_text" else self.publication_lock:
             snapshot = (
                 self.usage_snapshot()
                 if name
@@ -105,7 +106,7 @@ class SharedToolBroker(ToolBroker):
                 else None
             )
             try:
-                if self.guard is not None:
+                if self.guard is not None and name != "search_text":
                     self.guard()
                 result = ToolBroker.invoke(self, name, arguments)
                 if result.is_error and snapshot is not None:
@@ -137,6 +138,7 @@ class SharedToolBroker(ToolBroker):
                         relative, self._observations[relative].base.mode or REGULAR_MODE
                     ),
                     original=self._observations[relative].content,
+                    permissions=self._permissions.get(relative),
                 )
                 for relative, content in sorted(self._contents.items())
             )
@@ -145,7 +147,7 @@ class SharedToolBroker(ToolBroker):
         with self.publication_lock:
             saved = ToolBroker.usage_snapshot(self)
             saved["shared_workspace_state"] = {
-                "version": 2,
+                "version": 3,
                 "files": [
                     {
                         "path": relative,
@@ -154,11 +156,13 @@ class SharedToolBroker(ToolBroker):
                             "mode": observation.base.mode,
                             "digest": observation.base.digest,
                             "size": observation.base.size,
+                            "permissions": observation.base.permissions,
                         },
                         "read_content": _encode(observation.content),
                         "content": _encode(self._contents.get(relative)),
                         "pending": relative in self._contents,
                         "mode": self._modes.get(relative),
+                        "permissions": self._permissions.get(relative),
                     }
                     for relative, observation in sorted(self._observations.items())
                 ],
@@ -174,12 +178,14 @@ class SharedToolBroker(ToolBroker):
                 ToolBroker.restore_usage(self, saved)
                 self._observations = {}
                 self._contents = {}
+                self._modes = {}
+                self._permissions = {}
                 return
             if (
                 not isinstance(state, dict)
                 or set(state) != {"version", "files"}
                 or type(state["version"]) is not int
-                or state["version"] not in {1, 2}
+                or state["version"] not in {1, 2, 3}
                 or not isinstance(state["files"], list)
             ):
                 raise ValueError("saved shared workspace state is invalid")
@@ -189,6 +195,7 @@ class SharedToolBroker(ToolBroker):
             observations: dict[str, _Observation] = {}
             contents: dict[str, bytes | None] = {}
             modes: dict[str, str] = {}
+            permissions: dict[str, int] = {}
             for item in files:
                 if not isinstance(item, dict) or set(item) != (
                     {
@@ -197,7 +204,8 @@ class SharedToolBroker(ToolBroker):
                         "read_content",
                         "content",
                     }
-                    | ({"pending", "mode"} if state["version"] == 2 else set())
+                    | ({"pending", "mode"} if state["version"] >= 2 else set())
+                    | ({"permissions"} if state["version"] >= 3 else set())
                 ):
                     raise ValueError("saved shared workspace file is invalid")
                 relative = item["path"]
@@ -209,9 +217,16 @@ class SharedToolBroker(ToolBroker):
                     raise ValueError("saved shared workspace path is invalid")
                 self._target(relative)
                 original = _decode(item["read_content"])
+                ensure_safe_content(original or b"")
                 base = _restore_identity(item["base"], original)
                 observations[relative] = _Observation(base, original)
+                access = item.get("permissions")
+                if access is not None:
+                    if type(access) is not int or not 0 <= access <= 0o777:
+                        raise ValueError("saved filesystem permissions are invalid")
+                    permissions[relative] = access
                 content = _decode(item["content"])
+                ensure_safe_content(content or b"")
                 pending = item.get("pending", content is not None)
                 if not isinstance(pending, bool):
                     raise ValueError("invalid pending flag")
@@ -243,6 +258,7 @@ class SharedToolBroker(ToolBroker):
             self._observations = observations
             self._contents = contents
             self._modes = modes
+            self._permissions = permissions
 
     def _list_files(self, arguments: Mapping[str, object]) -> ToolOutcome:
         directory = self._directory(_string(arguments, "path", default="."))
@@ -323,11 +339,22 @@ class SharedToolBroker(ToolBroker):
         return result
 
     def _search_text(self, arguments: Mapping[str, object]) -> ToolOutcome:
-        offset, limit = _page_options(arguments, self.limits)
+        budget = SearchBudget(self.check_cancelled)
         try:
-            expression = re.compile(_string(arguments, "pattern"))
-        except re.error as exc:
-            return _error(f"that is not a valid regular expression: {exc}")
+            # Copy a bounded, coherent source view under the barrier. Regex
+            # matching must never block another session's reads/publication.
+            with budget.lock(self.publication_lock):
+                if self.guard is not None:
+                    self.guard()
+                snapshot = self._search_snapshot(arguments, budget)
+            return _search_response(snapshot, arguments, self.limits, budget)
+        except SearchError as exc:
+            return _error(str(exc))
+
+    def _search_snapshot(
+        self, arguments: Mapping[str, object], budget: SearchBudget
+    ) -> SearchSnapshot:
+        _page_options(arguments, self.limits)
         raw = _string(arguments, "path", default=".")
         relative = (
             None
@@ -338,7 +365,7 @@ class SharedToolBroker(ToolBroker):
             relative
             if relative is not None
             and (
-                self._target(relative).is_file()
+                self._target(relative, remaining=budget.remaining).is_file()
                 or (
                     relative in self._contents
                     and self._modes.get(relative) != DIRECTORY_MODE
@@ -346,34 +373,26 @@ class SharedToolBroker(ToolBroker):
             )
             else None
         )
-        directories = [] if single_file is not None else [self._directory(raw)]
-        matches: list[str] = []
+        directories = (
+            []
+            if single_file is not None
+            else [self._directory(raw, remaining=budget.remaining)]
+        )
+        files: list[tuple[str, str]] = []
         scanned = 0
         scanned_bytes = 0
-        seen = 0
         fingerprint = hashlib.sha256(
             (_string(arguments, "pattern") + "\0" + raw).encode("utf-8")
         )
 
-        def finish(
-            *, more: bool = False, stop_reason: str | None = None
-        ) -> ToolOutcome:
-            return _page_response(
-                matches[:limit],
-                offset=offset,
-                more=more or len(matches) > limit,
-                explicit="offset" in arguments or "limit" in arguments,
-                empty="(no matches at this offset)" if offset else "(no matches)",
-                limits=self.limits,
-                stop_reason=stop_reason,
-                snapshot=fingerprint.hexdigest(),
-                expected_snapshot=arguments.get("snapshot"),
-            )
+        def finish(*, stop_reason: str | None = None) -> SearchSnapshot:
+            return SearchSnapshot(files, fingerprint.hexdigest(), stop_reason)
 
         while directories or single_file is not None:
+            budget.remaining()
             directory = directories.pop() if single_file is None else None
             children, capped = (
-                self._visible_children(directory)
+                self._visible_children(directory, remaining=budget.remaining)
                 if directory is not None
                 else ([], False)
             )
@@ -404,6 +423,7 @@ class SharedToolBroker(ToolBroker):
                 relative_paths.add(single_file)
                 single_file = None
             for relative in sorted(relative_paths):
+                budget.remaining()
                 if relative in self._contents and (
                     self._contents[relative] is None
                     or self._modes.get(relative) == DIRECTORY_MODE
@@ -424,6 +444,7 @@ class SharedToolBroker(ToolBroker):
                     if scanned_bytes > self.limits.max_read_bytes:
                         return finish(stop_reason="read_size_limit; narrow path")
                     current = content.decode("utf-8")
+                    ensure_safe_content(current)
                     fingerprint.update(
                         json.dumps(
                             [relative, hashlib.sha256(content).hexdigest()]
@@ -431,11 +452,7 @@ class SharedToolBroker(ToolBroker):
                     )
                 except (WorkspaceBrokerError, IdentityError, UnicodeDecodeError):
                     continue
-                for number, line in enumerate(current.splitlines(), start=1):
-                    if expression.search(line):
-                        if seen >= offset and len(matches) <= limit:
-                            matches.append(_search_match(relative, number, line))
-                        seen += 1
+                files.append((relative, current))
             if capped:
                 return finish(stop_reason="scanned_file_limit; narrow path")
         return finish()
@@ -497,7 +514,10 @@ class SharedToolBroker(ToolBroker):
             return _ok("(no changes yet)", self.limits)
         diffs: list[str] = []
         for relative, content in sorted(self._contents.items()):
+            self._target(relative)
             observed = self._observations[relative]
+            ensure_safe_content(observed.content or b"")
+            ensure_safe_content(content or b"")
             diffs.extend(
                 difflib.unified_diff(
                     (observed.content or b"").decode("utf-8").splitlines(keepends=True),
@@ -604,6 +624,11 @@ class SharedToolBroker(ToolBroker):
             result = self._stage(destination, content, mode=mode)
             if result.is_error:
                 raise WorkspaceBrokerError(result.content)
+            access = self._permissions.get(
+                source, self._observations[source].base.permissions
+            )
+            if access is not None:
+                self._permissions[destination] = access
             self._stage(source, None)
             return _ok(f"staged rename {source} -> {destination}", self.limits)
         except Exception:
@@ -633,6 +658,7 @@ class SharedToolBroker(ToolBroker):
                     content.decode("utf-8")
                 except UnicodeDecodeError as exc:
                     raise WorkspaceBrokerError(f"{relative} is not UTF-8 text") from exc
+        ensure_safe_content(content or b"")
         size = len(content) if content is not None else 0
         if charge and self.usage.bytes_read + size > self.limits.max_read_bytes:
             raise WorkspaceBrokerError(
@@ -648,6 +674,7 @@ class SharedToolBroker(ToolBroker):
     def _remember(
         self, relative: str, identity: FileIdentity, content: bytes | None
     ) -> None:
+        ensure_safe_content(content or b"")
         if relative in self._contents:
             return
         proposed = {**self._observations, relative: _Observation(identity, content)}
@@ -659,6 +686,7 @@ class SharedToolBroker(ToolBroker):
     def _stage(
         self, relative: str, content: bytes | None, *, mode: str | None = None
     ) -> ToolOutcome:
+        ensure_safe_content(content or b"")
         if len(content or b"") > min(
             MAX_SHARED_TEXT_BYTES, self.limits.max_write_bytes
         ):
@@ -678,6 +706,7 @@ class SharedToolBroker(ToolBroker):
         self.usage.writes += 1
         if relative not in proposed:
             self._modes.pop(relative, None)
+            self._permissions.pop(relative, None)
             return _ok(
                 f"{relative} matches its observed base; no pending change", self.limits
             )
@@ -694,9 +723,16 @@ class SharedToolBroker(ToolBroker):
         )
         if identity.kind not in {ObjectKind.ABSENT, ObjectKind.REGULAR}:
             raise WorkspaceBrokerError(f"{relative} is not a regular source file")
+        ensure_safe_content(content or b"")
         return identity, content
 
-    def _target(self, relative: str, *, check_ignored: bool = True) -> Path:
+    def _target(
+        self,
+        relative: str,
+        *,
+        check_ignored: bool = True,
+        remaining: Callable[[], float] | None = None,
+    ) -> Path:
         target = candidate_target(self.worktree, relative)
         current = self.worktree
         for component in Path(relative).parts[:-1]:
@@ -705,15 +741,19 @@ class SharedToolBroker(ToolBroker):
                 raise WorkspaceBrokerError("tools cannot enter a nested repository")
         if target.is_symlink():
             raise WorkspaceBrokerError("tools cannot follow repository symlinks")
-        if check_ignored and relative in self._ignored_paths([relative]):
+        if check_ignored and relative in self._ignored_paths(
+            [relative], remaining=remaining
+        ):
             raise WorkspaceBrokerError("ignored runtime files are not shared source")
         return target
 
-    def _directory(self, raw: str) -> Path:
+    def _directory(
+        self, raw: str, *, remaining: Callable[[], float] | None = None
+    ) -> Path:
         if raw.strip() in {"", ".", "./", "*"}:
             return self.worktree
         relative = normalize_scope(raw).rstrip("/")
-        target = self._target(relative)
+        target = self._target(relative, remaining=remaining)
         if (not target.is_dir() and self._modes.get(relative) != DIRECTORY_MODE) or (
             target / ".git"
         ).exists():
@@ -723,7 +763,9 @@ class SharedToolBroker(ToolBroker):
             )
         return target
 
-    def _visible_children(self, directory: Path) -> tuple[list[Path], bool]:
+    def _visible_children(
+        self, directory: Path, *, remaining: Callable[[], float] | None = None
+    ) -> tuple[list[Path], bool]:
         raw_children, capped = (
             _bounded_children(directory, self.limits.max_scanned_files)
             if directory.exists()
@@ -745,7 +787,8 @@ class SharedToolBroker(ToolBroker):
             and self.worktree / path not in children
         )
         ignored = self._ignored_paths(
-            [child.relative_to(self.worktree).as_posix() for child in children]
+            [child.relative_to(self.worktree).as_posix() for child in children],
+            remaining=remaining,
         )
         return sorted(
             [
@@ -756,20 +799,10 @@ class SharedToolBroker(ToolBroker):
             key=lambda child: child.name,
         ), capped
 
-    def _ignored_paths(self, relative_paths: list[str]) -> set[str]:
-        ignored: set[str] = set()
-        for start in range(0, len(relative_paths), 200):
-            result = run_git(
-                self.worktree,
-                ["check-ignore", "-z", "--stdin"],
-                check=False,
-                input_data="\x00".join(relative_paths[start : start + 200]) + "\x00",
-            )
-            if result.returncode not in {0, 1}:
-                raise WorkspaceBrokerError("could not determine ignored source paths")
-            assert isinstance(result.stdout, str)
-            ignored.update(filter(None, result.stdout.split("\x00")))
-        return ignored
+    def _ignored_paths(
+        self, relative_paths: list[str], *, remaining: Callable[[], float] | None = None
+    ) -> set[str]:
+        return excluded_paths(self.worktree, relative_paths, remaining=remaining)
 
 
 def _check_retained_bounds(
@@ -807,7 +840,10 @@ def _decode(value: object) -> bytes | None:
 
 
 def _restore_identity(value: object, content: bytes | None) -> FileIdentity:
-    if not isinstance(value, dict) or set(value) != {"kind", "mode", "digest", "size"}:
+    if not isinstance(value, dict) or set(value) not in (
+        {"kind", "mode", "digest", "size"},
+        {"kind", "mode", "digest", "size", "permissions"},
+    ):
         raise ValueError("saved shared file identity is invalid")
     kind, mode, digest, size = (
         value["kind"],
@@ -817,6 +853,13 @@ def _restore_identity(value: object, content: bytes | None) -> FileIdentity:
     )
     if type(size) is not int or size < 0:
         raise ValueError("saved shared file identity has an invalid size")
+    permissions = value.get("permissions")
+    if permissions is not None and (
+        kind != str(ObjectKind.REGULAR)
+        or type(permissions) is not int
+        or not 0 <= permissions <= 0o777
+    ):
+        raise ValueError("saved filesystem permissions are invalid")
     if kind == str(ObjectKind.DIRECTORY_MARKER):
         from llm_cli.workspace.batches import directory_identity
 
@@ -841,7 +884,7 @@ def _restore_identity(value: object, content: bytes | None) -> FileIdentity:
         or digest != content_identity(ObjectKind.REGULAR, mode, content)
     ):
         raise ValueError("saved shared file identity does not match its read content")
-    return FileIdentity(ObjectKind.REGULAR, mode, digest, size)
+    return FileIdentity(ObjectKind.REGULAR, mode, digest, size, permissions)
 
 
 __all__ = ["SharedToolBroker"]

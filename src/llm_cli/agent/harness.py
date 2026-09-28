@@ -16,6 +16,7 @@ import json
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 
 from llm_cli.agent.driver import (
     CoordinationUpdate,
@@ -31,7 +32,14 @@ from llm_cli.agent.finalization import (
 )
 from llm_cli.agent.limits import DEFAULT_LIMITS, ExecutionLimits
 from llm_cli.agent.modes import validate_agent_mode
-from llm_cli.agent.tools import ToolBroker, ToolBudgetExhausted, tool_schemas
+from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
+from llm_cli.agent.tools import (
+    ToolBroker,
+    ToolBudgetExhausted,
+    ToolOutcome,
+    tool_schemas,
+)
+from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.providers.base import (
     ChatProvider,
@@ -202,6 +210,8 @@ class CodingAgentHarness:
             )
         )
         context_state = saved if saved is not None else prior_conversation
+        if context_state is not None:
+            _ensure_saved_reads_allowed(context_state, tools.worktree)
         coordination_sequence = (
             _coordination_sequence(context_state.get("coordination_sequence"))
             if context_state is not None
@@ -877,6 +887,14 @@ class CodingAgentHarness:
                 outcome = tools.invoke(call.name, call.arguments)
             except ToolBudgetExhausted as exc:
                 raise LlmCoordError(ErrorCode.PROVIDER_UNAVAILABLE, str(exc)) from exc
+            try:
+                ensure_safe_content(outcome.content)
+            except LlmCoordError:
+                outcome = ToolOutcome(
+                    "The tool output contained recognized secret material "
+                    "and was withheld.",
+                    is_error=True,
+                )
             results.append(
                 ToolCallResult(
                     call_id=call.call_id,
@@ -1292,6 +1310,7 @@ def _saved_checkpoint(
         raise ValueError("saved harness state has an unsupported version")
     if value.get("provider") != provider.name or value.get("model") != provider.model:
         raise ValueError("saved harness state belongs to another provider or model")
+    _screen_saved_source(value)
     return value
 
 
@@ -1311,7 +1330,87 @@ def _saved_conversation(
             "saved session conversation belongs to another provider or model"
         )
     _mapping(value.get("session"), "saved provider conversation")
+    _screen_saved_source(value)
     return value
+
+
+def _native_json(value: object) -> object:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            pass
+    return value
+
+
+def _screen_saved_source(value: object) -> list[Mapping[str, object]]:
+    """Check string leaves, including encoded Responses tool envelopes."""
+
+    pending = [value]
+    objects: list[Mapping[str, object]] = []
+    while pending:
+        current = pending.pop()
+        if isinstance(current, Mapping):
+            objects.append(current)
+            pending.extend(current.values())
+            kind = current.get("type")
+            field = (
+                "output"
+                if kind == "function_call_output"
+                else "arguments"
+                if kind == "function_call"
+                else None
+            )
+            if field is not None:
+                encoded = current.get(field)
+                decoded = _native_json(encoded)
+                if decoded is not encoded:
+                    pending.append(decoded)
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current)
+        elif isinstance(current, (str, bytes)):
+            ensure_safe_content(current)
+    return objects
+
+
+def _ensure_saved_reads_allowed(value: object, worktree: Path) -> None:
+    """Recheck paths linked to successful reads in supported native histories."""
+
+    reads: list[tuple[str, str]] = []
+    completed: set[str] = set()
+    for item in _screen_saved_source(value):
+        kind = item.get("type")
+        if item.get("name") == "read_file":
+            call_id = item.get("id" if kind == "tool_use" else "call_id")
+            arguments = _native_json(
+                item.get("input" if kind == "tool_use" else "arguments")
+            )
+            if isinstance(call_id, str) and isinstance(arguments, Mapping):
+                path = arguments.get("path")
+                if isinstance(path, str):
+                    reads.append((call_id, path))
+        if kind == "function_call_output":
+            call_id = item.get("call_id")
+            result = _native_json(item.get("output"))
+            failed = isinstance(result, Mapping) and result.get("is_error") is True
+        elif kind == "tool_result":
+            call_id = item.get("tool_use_id")
+            failed = item.get("is_error") is True
+        elif "content" in item and "call_id" in item:
+            call_id = item.get("call_id")
+            failed = item.get("is_error") is True
+        else:
+            continue
+        if isinstance(call_id, str) and not failed:
+            completed.add(call_id)
+    paths = sorted({
+        normalize_changed_path(path) for call_id, path in reads if call_id in completed
+    })
+    if paths and excluded_paths(worktree, paths):
+        raise LlmCoordError(
+            ErrorCode.REPOSITORY_UNSAFE,
+            "saved conversation contains excluded source; start a new conversation",
+        )
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:

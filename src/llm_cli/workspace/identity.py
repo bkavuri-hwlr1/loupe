@@ -18,7 +18,7 @@ import errno
 import hashlib
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -60,6 +60,9 @@ class FileIdentity:
     mode: str
     digest: str
     size: int = 0
+    # Access permissions accompany the snapshot for publication, but do not
+    # change Git/content identity or invalidate legacy observations.
+    permissions: int | None = field(default=None, compare=False)
 
     @property
     def absent(self) -> bool:
@@ -215,6 +218,7 @@ def _read_identified_path_once(
         mode=mode,
         digest=content_identity(ObjectKind.REGULAR, mode, content),
         size=len(content),
+        permissions=stat.S_IMODE(status.st_mode) & 0o777,
     )
     return identity, content
 

@@ -187,6 +187,10 @@ class DaemonClient:
             subprocess.Popen(
                 [
                     sys.executable,
+                    # Ignore the repository, PYTHONPATH, and user site packages
+                    # when resolving the installed (including editable) daemon.
+                    "-I",
+                    "-u",
                     "-m",
                     "llm_cli.daemon.main",
                     "--profile",
@@ -197,6 +201,7 @@ class DaemonClient:
                 stderr=log,
                 close_fds=True,
                 start_new_session=True,
+                cwd=self.paths.runtime_dir,
                 env=_daemon_environment(),
             )
         finally:
@@ -225,6 +230,21 @@ class DaemonClient:
 def _daemon_environment() -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
+    # The child runs outside the repository; retain the meaning of supported
+    # relative profile paths before changing its working directory.
+    for name in (
+        "LLM_COORD_CONFIG_HOME",
+        "LLM_COORD_DATA_HOME",
+        "LLM_COORD_STATE_HOME",
+        "LLM_COORD_RUNTIME_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "GIT_CONFIG_GLOBAL",
+    ):
+        if env.get(name):
+            env[name] = os.path.abspath(os.path.expanduser(env[name]))
     return env
 
 

@@ -17,6 +17,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from llm_cli.agent.source_policy import ensure_safe_content
 from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
@@ -596,8 +597,41 @@ class CheckRunner:
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)
         chunks: list[str] = []
+        partial_line: list[str] = []
+        withheld = False
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         clipped, stopped = False, None
+
+        def emit_safe(text: str) -> None:
+            for start in range(0, len(text), 4096):
+                chunk = text[start : start + 4096]
+                chunks.append(chunk)
+                self.emit("check.output", {"run_id": run_id, "text": chunk})
+
+        def screen_line() -> None:
+            nonlocal withheld
+            line = "".join(partial_line)
+            partial_line.clear()
+            try:
+                ensure_safe_content(line)
+            except LlmCoordError:
+                withheld = True
+                emit_safe(
+                    "[Remaining check output withheld: recognized secret material.]\n"
+                )
+            else:
+                emit_safe(line)
+
+        def collect(text: str) -> None:
+            # A key can span read() blocks. Emit only complete, screened lines;
+            # after a private-key header its following body is private too.
+            for part in text.splitlines(keepends=True):
+                if withheld:
+                    return
+                partial_line.append(part)
+                if part.endswith("\n"):
+                    screen_line()
+
         try:
             while selector.get_map():
                 if stopped is None and (
@@ -615,10 +649,18 @@ class CheckRunner:
                     remaining -= len(allowed)
                     text = decoder.decode(allowed)
                     if text:
-                        chunks.append(text)
-                        self.emit("check.output", {"run_id": run_id, "text": text})
-            chunks.append(decoder.decode(b"", final=True))
-            return process.wait(), "".join(chunks), clipped, stopped
+                        collect(text)
+            collect(decoder.decode(b"", final=True))
+            # A capped partial line may contain an incomplete secret signature.
+            # Drop it instead of emitting a prefix that escaped classification.
+            if partial_line and not clipped and not withheld:
+                screen_line()
+            return (
+                process.wait(),
+                "".join(chunks),
+                clipped or withheld,
+                stopped or ("error" if withheld else None),
+            )
         finally:
             selector.close()
             process.stdin.close()

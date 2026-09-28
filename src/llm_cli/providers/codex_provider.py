@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from time import sleep
 from types import SimpleNamespace
 from typing import Any
 
@@ -104,7 +105,7 @@ class _SubscriptionClient:
                     max_retries=0,
                     timeout=120,
                 ) as client,
-                client.responses.create(**arguments, stream=True) as stream,
+                _create_subscription_stream(client, arguments) as stream,
             ):
                 yield _SubscriptionStream(stream)
         except Exception as exc:
@@ -129,6 +130,27 @@ class _SubscriptionClient:
                 message,
                 details=details,
             ) from None
+
+
+def _create_subscription_stream(client: Any, arguments: dict[str, Any]) -> Any:
+    # A transport failure before response headers can be transient. Retry only
+    # opening the stream: once it starts, never replay deltas or tool requests.
+    # Keep SDK retries disabled so HTTP rejections and timeouts are not retried.
+    retries = 0
+    while True:
+        try:
+            return client.responses.create(**arguments, stream=True)
+        except Exception as exc:
+            failure = _provider_failure(exc, None)
+            if (
+                retries >= 2
+                or failure is None
+                or not failure.details
+                or failure.details.get("provider_error") != "connection"
+            ):
+                raise
+            sleep(0.5 * 2**retries)
+            retries += 1
 
 
 _SUBSCRIPTION_ERROR_MESSAGES = {
