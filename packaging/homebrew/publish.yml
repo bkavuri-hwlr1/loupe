@@ -17,7 +17,7 @@ env:
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
   HOMEBREW_NO_ANALYTICS: "1"
   TAP: magnifiosearchengine/tap
-  FORMULA: magnifiosearchengine/tap/magnifio
+  FORMULA: magnifiosearchengine/tap/loupe
 
 jobs:
   assets:
@@ -49,13 +49,13 @@ jobs:
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             mkdir "$RUNNER_TEMP/existing"
-            gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/existing" --pattern 'magnifio-*.tar.gz'
-            for archive in release-assets/magnifio-*.tar.gz; do
+            gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/existing" --pattern 'loupe-*.tar.gz'
+            for archive in release-assets/loupe-*.tar.gz; do
               cmp "$archive" "$RUNNER_TEMP/existing/$(basename "$archive")"
             done
           else
             gh release create "$RELEASE_TAG" release-assets/*.tar.gz release-assets/SHA256SUMS-* \
-              --target main --prerelease --latest=false --title "Magnifio $RELEASE_TAG" \
+              --target main --prerelease --latest=false --title "Loupe $RELEASE_TAG" \
               --notes "Homebrew packages are being verified. The tap will update after both Mac architectures pass installation tests."
           fi
 
@@ -76,14 +76,14 @@ jobs:
         run: |
           brew tap "$TAP"
           previous=""
-          if test -f "$(brew --repo "$TAP")/Formula/magnifio.rb"; then
+          if test -f "$(brew --repo "$TAP")/Formula/loupe.rb"; then
             brew install "$FORMULA"
-            previous=$(magnifio --version)
+            previous=$(loupe --version)
             "$(brew --prefix "$FORMULA")/libexec/bin/python" \
-              "$(brew --prefix "$FORMULA")/share/magnifio/smoke_test.py" \
+              "$(brew --prefix "$FORMULA")/share/loupe/smoke_test.py" \
               "$(brew --prefix "$FORMULA")/bin" "$previous" "$RUNNER_TEMP/retained-profile"
           fi
-          cp Formula/magnifio.rb "$(brew --repo "$TAP")/Formula/magnifio.rb"
+          cp Formula/loupe.rb "$(brew --repo "$TAP")/Formula/loupe.rb"
           brew style "$FORMULA"
           if test -n "$previous" && test "$previous" != "${RELEASE_TAG#v}"; then
             brew upgrade --build-bottle "$FORMULA"
@@ -93,7 +93,7 @@ jobs:
           fi
           brew test "$FORMULA"
           "$(brew --prefix "$FORMULA")/libexec/bin/python" \
-            "$(brew --prefix "$FORMULA")/share/magnifio/smoke_test.py" \
+            "$(brew --prefix "$FORMULA")/share/loupe/smoke_test.py" \
             "$(brew --prefix "$FORMULA")/bin" "${RELEASE_TAG#v}" "$RUNNER_TEMP/retained-profile"
       - name: Build and reinstall the bottle
         env:
@@ -116,7 +116,7 @@ jobs:
                   for bottle in item["bottle"]["tags"].values():
                       shutil.copyfile(bottle["local_filename"], root / unquote(bottle["filename"]))
           tap = pathlib.Path(subprocess.check_output(["brew", "--repo", os.environ["TAP"]], text=True).strip())
-          formula = tap / "Formula/magnifio.rb"
+          formula = tap / "Formula/loupe.rb"
           original = f'root_url "https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{os.environ["RELEASE_TAG"]}"'
           content = formula.read_text()
           assert content.count(original) == 1
@@ -126,7 +126,7 @@ jobs:
           brew install --force-bottle "$FORMULA"
           brew test "$FORMULA"
           "$(brew --prefix "$FORMULA")/libexec/bin/python" \
-            "$(brew --prefix "$FORMULA")/share/magnifio/smoke_test.py" \
+            "$(brew --prefix "$FORMULA")/share/loupe/smoke_test.py" \
             "$(brew --prefix "$FORMULA")/bin" "${RELEASE_TAG#v}" "$RUNNER_TEMP/retained-profile"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -157,7 +157,7 @@ jobs:
       - name: Merge bottle checksums into the tested formula
         run: |
           brew tap "$TAP"
-          cp candidate/Formula/magnifio.rb "$(brew --repo "$TAP")/Formula/magnifio.rb"
+          cp candidate/Formula/loupe.rb "$(brew --repo "$TAP")/Formula/loupe.rb"
           # Merging JSON does not implicitly trust a fully qualified formula,
           # unlike `brew install`. Trust only this formula on Homebrew 7+.
           if brew command trust >/dev/null 2>&1; then
@@ -165,7 +165,7 @@ jobs:
           fi
           brew bottle --merge --write --no-commit bottles/*.json
           mkdir -p tap-main/Formula
-          cp "$(brew --repo "$TAP")/Formula/magnifio.rb" tap-main/Formula/magnifio.rb
+          cp "$(brew --repo "$TAP")/Formula/loupe.rb" tap-main/Formula/loupe.rb
           cp candidate/README.md tap-main/README.md
           brew style "$FORMULA"
       - name: Upload immutable bottles
@@ -200,18 +200,18 @@ jobs:
           RELEASE_TAG: ${{ needs.assets.outputs.tag }}
         working-directory: tap-main
         run: |
-          git config user.name "Magnifio releases"
+          git config user.name "Loupe releases"
           git config user.email "releases@users.noreply.github.com"
-          git add Formula/magnifio.rb README.md
+          git add Formula/loupe.rb README.md
           if ! git diff --cached --quiet; then
-            git commit -m "Release Magnifio $RELEASE_TAG"
+            git commit -m "Release Loupe $RELEASE_TAG"
             git push origin HEAD:main
           fi
           prerelease=false
           if [[ "$RELEASE_TAG" =~ (a|b|rc)[0-9]+$ ]]; then prerelease=true; fi
           cat > "$RUNNER_TEMP/release-notes.md" <<'MARKDOWN'
-          Install: `brew install magnifiosearchengine/tap/magnifio`, then run
-          `magnifio` and `/login`. Requires macOS 15 or newer. Includes Python
+          Install: `brew install magnifiosearchengine/tap/loupe`, then run
+          `loupe` and `/login`. Requires macOS 15 or newer. Includes Python
           dependencies and both provider SDKs. Apple Silicon and Intel bottles
           passed installation and daemon smoke tests.
           MARKDOWN

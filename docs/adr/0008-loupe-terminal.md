@@ -1,4 +1,4 @@
-# ADR 0008: Magnifio terminal interface and local execution transcripts
+# ADR 0008: Loupe terminal interface and local execution transcripts
 
 Status: accepted
 
@@ -6,7 +6,7 @@ Status: accepted
 
 The coordination foundation can execute coding tasks, but lifecycle counts alone
 do not explain what the agent says, which tool it is running, or why it needs
-input. Magnifio needs a usable terminal conversation with visible progress and
+input. Loupe needs a usable terminal conversation with visible progress and
 replay while retaining the existing daemon, recovery, and workspace guarantees.
 
 Model text and tool output are untrusted content. Making them visible to a local
@@ -15,8 +15,8 @@ Likewise, a transcript of an old question must not answer a newer live question.
 
 ## Decision
 
-1. **Magnifio is the product name.** The primary commands are `magnifio` and
-   `magnifiod`. Keep `llm-coord` and `llm-coordd` as compatibility aliases. Keep
+1. **Loupe is the product name.** The primary commands are `loupe` and
+   `louped`. Keep `llm-coord` and `llm-coordd` as compatibility aliases. Keep
    the Python package, distribution identity, `LLM_COORD_*` environment variables,
    profile paths, database schemas, and protocol version compatible. Renaming the
    user interface must not orphan existing sessions, credentials, or work.
@@ -73,7 +73,7 @@ Likewise, a transcript of an old question must not answer a newer live question.
    consuming the live question. Identity omission remains supported for older
    clients. Record the answer event before waking a worker that may ask again.
 
-8. **Launch locally and connect when needed.** Bare `magnifio` opens the
+8. **Launch locally and connect when needed.** Bare `loupe` opens the
    conversation interface without requiring provider flags, a Git repository,
    or a running daemon. `/login` offers Codex subscription OAuth and
    Anthropic/OpenAI API keys, with a connect-later choice. The first task

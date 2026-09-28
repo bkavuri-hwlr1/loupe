@@ -1,7 +1,7 @@
 [project]
 name = "llm-coord"
 version = "0.1.0a0"
-description = "Magnifio: a terminal coding agent with cross-session coordination"
+description = "Loupe: a terminal coding agent with cross-session coordination"
 readme = "packaging/README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
@@ -10,8 +10,8 @@ dependencies = [
 ]
 
 [project.scripts]
-magnifio = "llm_cli.cli.app:main"
-magnifiod = "llm_cli.daemon.main:main"
+loupe = "llm_cli.cli.app:main"
+louped = "llm_cli.daemon.main:main"
 llm-coord = "llm_cli.cli.app:main"
 llm-coordd = "llm_cli.daemon.main:main"
 

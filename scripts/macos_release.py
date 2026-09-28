@@ -106,7 +106,7 @@ def build(tag: str, output: Path) -> None:
     if platform.system() != "Darwin" or architecture not in ARCHITECTURES:
         raise ValueError("Build each bundle on a native Apple Silicon or Intel Mac")
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="magnifio-build-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="loupe-build-") as temporary:
         work = Path(temporary)
         bundle = work / "bundle"
         wheels = bundle / "wheels"
@@ -219,7 +219,7 @@ def build(tag: str, output: Path) -> None:
                 cwd=work,
                 check=True,
             )
-        destination = output / f"magnifio-{version}-macos-{architecture}.tar.gz"
+        destination = output / f"loupe-{version}-macos-{architecture}.tar.gz"
         archive_bundle(bundle, destination)
         (output / f"SHA256SUMS-{architecture}").write_text(
             f"{sha256(destination)}  {destination.name}\n"
@@ -229,13 +229,13 @@ def build(tag: str, output: Path) -> None:
 
 def prepare(tag: str, assets: Path, tap: Path) -> None:
     version = release_version(tag)
-    template = (ROOT / "packaging/homebrew/magnifio.rb.in").read_text()
+    template = (ROOT / "packaging/homebrew/loupe.rb.in").read_text()
     values = {
         "VERSION": version,
         "ROOT_URL": f"https://github.com/{TAP}/releases/download/{tag}",
     }
     for architecture in ARCHITECTURES:
-        asset = assets / f"magnifio-{version}-macos-{architecture}.tar.gz"
+        asset = assets / f"loupe-{version}-macos-{architecture}.tar.gz"
         checksum = sha256(asset)
         expected = (assets / f"SHA256SUMS-{architecture}").read_text()
         if expected != f"{checksum}  {asset.name}\n":
@@ -253,11 +253,11 @@ def prepare(tag: str, assets: Path, tap: Path) -> None:
     if re.search(r"@[A-Z0-9_]+@", template):
         raise ValueError("Unfilled formula template")
     (tap / "Formula").mkdir(parents=True, exist_ok=True)
-    (tap / "Formula/magnifio.rb").write_text(template)
+    (tap / "Formula/loupe.rb").write_text(template)
     (tap / "release-assets").mkdir(parents=True, exist_ok=True)
     for architecture in ARCHITECTURES:
         for name in (
-            f"magnifio-{version}-macos-{architecture}.tar.gz",
+            f"loupe-{version}-macos-{architecture}.tar.gz",
             f"SHA256SUMS-{architecture}",
         ):
             shutil.copyfile(assets / name, tap / "release-assets" / name)

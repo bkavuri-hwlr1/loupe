@@ -235,7 +235,7 @@ def test_answer_interruption_keeps_question_pending(
     )
     assert client.calls == []
     assert "Question left pending" in output.getvalue()
-    assert "magnifio --profile test task watch task" in output.getvalue()
+    assert "loupe --profile test task watch task" in output.getvalue()
 
 
 def test_scope_command_is_exact_and_parses_quoted_paths_before_submission(
@@ -410,7 +410,7 @@ def test_uncertain_answer_delivery_detaches_with_reconnect_guidance(
         ),
         plain=True,
     )
-    command = "/attach task" if in_chat else "magnifio --profile test task watch task"
+    command = "/attach task" if in_chat else "loupe --profile test task watch task"
     assert command in output.getvalue()
 
 
@@ -477,6 +477,6 @@ def test_demo_runs_without_daemon_calls(
     app.main(["--plain", "demo"])
     output = capsys.readouterr().out
     assert "simulated" in output
-    assert "Hello from Magnifio!" in output
+    assert "Hello from Loupe!" in output
     assert client.calls == []
     assert client.attaches == []

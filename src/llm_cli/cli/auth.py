@@ -32,7 +32,7 @@ def _read_secret(prompt: str) -> str:
             raise LlmCoordError(
                 ErrorCode.PROVIDER_UNAVAILABLE,
                 "API-key login needs a terminal that can hide your input; "
-                "run Magnifio in an interactive terminal",
+                "run Loupe in an interactive terminal",
             ) from None
 
 

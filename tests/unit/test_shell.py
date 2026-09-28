@@ -158,7 +158,7 @@ def test_login_help_and_exit_lobby_needs_no_daemon_or_login(
     assert client.calls == []
     assert menu.calls == []
     assert "/login" in output(chat)
-    assert "Leaving Magnifio" in output(chat)
+    assert "Leaving Loupe" in output(chat)
     assert not client.paths.state_dir.exists()
 
 
@@ -181,7 +181,7 @@ def test_double_ctrl_c_exits_and_preserves_only_active_sessions(
     monkeypatch.setattr(chat.composer, "read", interrupt)
     assert chat.run() == 0
     assert "Ctrl+C again" in output(chat)
-    assert "Leaving Magnifio" in output(chat)
+    assert "Leaving Loupe" in output(chat)
     assert bool(calls(client, "session.close")) is not active
     assert not calls(client, "task.cancel")
     if active:
@@ -278,7 +278,7 @@ def test_repository_failures_preserve_lobby_without_registering_another_target(
     assert not calls(client, "task.run")
     assert failure.message in output(chat)
     assert "/cd PATH" in output(chat)
-    assert "Leaving Magnifio" in output(chat)
+    assert "Leaving Loupe" in output(chat)
 
 
 def test_cd_outside_git_keeps_login_and_help_available(

@@ -37,9 +37,9 @@ _RENDERED = object()
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="magnifio",
+        prog="loupe",
         description=(
-            "Magnifio — your coding agent in the terminal. "
+            "Loupe — your coding agent in the terminal. "
             "Run without a command to start a conversation."
         ),
     )
@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("init", help="initialize private local state and databases")
     commands.add_parser("doctor", help="run local safety and feature checks")
     commands.add_parser(
-        "demo", help="preview the Magnifio interface without a model or daemon"
+        "demo", help="preview the Loupe interface without a model or daemon"
     )
 
     auth = commands.add_parser("auth", help="manage saved AI accounts")
@@ -580,7 +580,7 @@ def _run_in_mode(arguments: argparse.Namespace, client: DaemonClient) -> object:
                 "That task ID already exists. Continue it with "
                 + shlex.join(
                     [
-                        "magnifio",
+                        "loupe",
                         "--profile",
                         client.paths.profile_id,
                         "task",
@@ -599,7 +599,7 @@ def _run_in_mode(arguments: argparse.Namespace, client: DaemonClient) -> object:
         agent_mode=arguments.agent_mode,
     )
     resume_args = [
-        "magnifio",
+        "loupe",
         "--profile",
         client.paths.profile_id,
         "chat",
@@ -834,10 +834,10 @@ def main(argv: list[str] | None = None) -> None:
             ui = TerminalUI(sys.stderr, plain=arguments.plain)
             ui.error(f"{exc.code.value}: {exc.message}")
             if exc.code is ErrorCode.REPOSITORY_NOT_FOUND:
-                ui.notice("Register this repository with: magnifio repo add .")
+                ui.notice("Register this repository with: loupe repo add .")
             if exc.code is ErrorCode.PROVIDER_UNAVAILABLE:
                 ui.notice(
-                    "Check provider credentials. For ChatGPT: magnifio auth login codex"
+                    "Check provider credentials. For ChatGPT: loupe auth login codex"
                 )
         raise SystemExit(EXIT_BY_ERROR.get(exc.code, 70)) from exc
     except ExitRequested:
