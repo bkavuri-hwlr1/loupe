@@ -1509,7 +1509,7 @@ network behavior, and health check.
 - A future isolated plugin host may move network plugins out of the daemon; the
   interface should not require in-process state.
 
-### 25.3 v4/Magnifio integration path
+### 25.3 v4/Loupe integration path
 
 Add only after local retrieval works:
 

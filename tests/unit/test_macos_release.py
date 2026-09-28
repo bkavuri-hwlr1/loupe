@@ -92,7 +92,7 @@ def test_prepare_requires_both_verified_architectures(tmp_path: Path) -> None:
         "version"
     ]
     for architecture in release.ARCHITECTURES:
-        asset = assets / f"magnifio-{version}-macos-{architecture}.tar.gz"
+        asset = assets / f"loupe-{version}-macos-{architecture}.tar.gz"
         manifest = json.dumps(
             {"version": version, "architecture": architecture}
         ).encode()
@@ -104,7 +104,7 @@ def test_prepare_requires_both_verified_architectures(tmp_path: Path) -> None:
             f"{release.sha256(asset)}  {asset.name}\n"
         )
     release.prepare(f"v{version}", assets, tap)
-    formula = (tap / "Formula/magnifio.rb").read_text()
+    formula = (tap / "Formula/loupe.rb").read_text()
     assert f'version "{version}"' in formula
     assert "@ARM64_SHA256@" not in formula
     assert "@X86_64_SHA256@" not in formula

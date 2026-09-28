@@ -50,7 +50,7 @@ def demo_events() -> list[dict[str, Any]]:
                     "patch": "--- a/src/hello.py\n+++ b/src/hello.py\n"
                     "@@ -1,2 +1,2 @@\n def greet():\n"
                     '-    return "Hello, world!"\n'
-                    '+    return "Hello from Magnifio!"'
+                    '+    return "Hello from Loupe!"'
                 },
             ),
             event(
@@ -63,7 +63,7 @@ def demo_events() -> list[dict[str, Any]]:
                 "model.finished",
                 tool_calls=2,
                 summary="Updated **src/hello.py** with the new greeting:\n\n"
-                '```python\ndef greet():\n    return "Hello from Magnifio!"\n```\n\n'
+                '```python\ndef greet():\n    return "Hello from Loupe!"\n```\n\n'
                 "This is a simulated tour. Your files have not changed.",
                 usage={"input_tokens": 1240, "output_tokens": 183},
             ),
@@ -84,14 +84,14 @@ def run_demo(*, stream: TextIO | None = None, plain: bool = False) -> None:
         session_id="preview",
     )
     ui.notice("Interface tour · simulated output · no model connection or file changes")
-    ui.user("Update the greeting to say Hello from Magnifio!")
+    ui.user("Update the greeting to say Hello from Loupe!")
     renderer = EventRenderer(output, plain=plain)
     for event in demo_events():
         renderer.render(event)
         if output.isatty():
             time.sleep(0.035)
     renderer.finish()
-    ui.notice("Start a conversation: magnifio chat --provider codex")
+    ui.notice("Start a conversation: loupe chat --provider codex")
 
 
 __all__ = ["demo_events", "run_demo"]

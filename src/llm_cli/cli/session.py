@@ -54,7 +54,7 @@ def run_session(
     output: TextIO | None = None,
     plain: bool = False,
 ) -> int:
-    """Open Magnifio immediately; connect accounts and the daemon on demand."""
+    """Open Loupe immediately; connect accounts and the daemon on demand."""
 
     from llm_cli.cli.shell import ChatShell
 
@@ -171,7 +171,7 @@ def open_or_resume_session(
         raise LlmCoordError(
             ErrorCode.PROTOCOL_MISMATCH,
             "the daemon did not apply your effort setting; after active tasks "
-            "finish, run 'magnifio daemon restart' and reopen Magnifio. "
+            "finish, run 'loupe daemon restart' and reopen Loupe. "
             f"The unused session can be resumed with --resume {session_id}",
         )
     bootstrap_sequence = _integer(opened, "bootstrap_sequence")
@@ -212,7 +212,7 @@ def _verify_session_mode(value: dict[str, Any], expected: str) -> None:
         raise LlmCoordError(
             ErrorCode.PROTOCOL_MISMATCH,
             "The daemon did not confirm the requested mode. After active tasks "
-            "finish, run 'magnifio daemon restart' and reopen Magnifio.",
+            "finish, run 'loupe daemon restart' and reopen Loupe.",
         )
 
 
@@ -518,7 +518,7 @@ def _answer(
     plain: bool = False,
 ) -> bool:
     ui = TerminalUI(stream, plain=plain)
-    ui.notice(f"Magnifio needs your input\n{question}")
+    ui.notice(f"Loupe needs your input\n{question}")
     ui.notice("Type your answer, /stop to cancel, or Ctrl+C to answer later.")
     reconnect = _reattach_command(client, task_id, composer)
     editor = composer or Composer(input_stream, stream, plain=plain)
@@ -561,7 +561,7 @@ def _reattach_command(
     if composer is not None:
         return f"/attach {task_id}"
     return shlex.join(
-        ["magnifio", "--profile", client.paths.profile_id, "task", "watch", task_id]
+        ["loupe", "--profile", client.paths.profile_id, "task", "watch", task_id]
     )
 
 

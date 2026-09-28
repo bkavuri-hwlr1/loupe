@@ -70,5 +70,5 @@ def test_disconnected_stream_preserves_delivered_output_and_reports_reconnect(
 
     # macOS Unix socket names are capped at 104 bytes; pytest's nested paths
     # can exceed that independently of the behavior under test.
-    with TemporaryDirectory(prefix="magnifio-stream-", dir="/tmp") as directory:
+    with TemporaryDirectory(prefix="loupe-stream-", dir="/tmp") as directory:
         asyncio.run(scenario(Path(directory)))

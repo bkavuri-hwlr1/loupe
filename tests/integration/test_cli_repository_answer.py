@@ -24,7 +24,7 @@ from llm_cli.providers.base import ModelTurn, ToolCallResult
 
 _PROMPT = "Give me a summary of what this repo is doing"
 _PARAGRAPHS = (
-    "Magnifio is a terminal coding agent for local Git repositories.",
+    "Loupe is a terminal coding agent for local Git repositories.",
     "It connects models to file tools and preserves conversations in a daemon.",
     "Multiple sessions prepare private edits against the same checkout.",
     "Checks and review control publication, while durable state supports recovery.",
@@ -32,7 +32,7 @@ _PARAGRAPHS = (
 _ANSWER = "\n\n".join(_PARAGRAPHS)
 _LONG_ANSWER = """# Repository guide
 
-Magnifio keeps the requested result readable while its operational details stay
+Loupe keeps the requested result readable while its operational details stay
 out of the conversation.
 
 ## Durable delivery
@@ -48,7 +48,7 @@ def answer_contract(request: str) -> str:
 The final Markdown paragraph remains visible exactly once after the terminal resize.
 """.format(body=" ".join(f"capability-{index:03d}" for index in range(600)))
 _FILES = {
-    "README.md": "# Magnifio\nRAW_README_TOOL_RESULT_MUST_STAY_HIDDEN\n",
+    "README.md": "# Loupe\nRAW_README_TOOL_RESULT_MUST_STAY_HIDDEN\n",
     "src/entry.py": "# RAW_SOURCE_TOOL_RESULT_MUST_STAY_HIDDEN\n",
 }
 

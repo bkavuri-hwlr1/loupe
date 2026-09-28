@@ -308,7 +308,7 @@ class Composer:
         # DaemonClient owns a synchronous event loop. A daemon worker keeps the
         # editor responsive and never delays exit for an unresponsive daemon.
         # An already dispatched request may still settle on the server.
-        threading.Thread(target=request, name="magnifio-mode", daemon=True).start()
+        threading.Thread(target=request, name="loupe-mode", daemon=True).start()
         await completed
 
     async def _cycle_mode(self, event: KeyPressEvent) -> None:

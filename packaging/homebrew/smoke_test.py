@@ -15,7 +15,7 @@ from pathlib import Path
 def main() -> None:
     binary_dir = Path(sys.argv[1]).resolve()
     version = sys.argv[2]
-    with tempfile.TemporaryDirectory(prefix="magnifio-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="loupe-") as temporary:
         # An optional retained profile lets release CI verify real brew upgrades
         # and bottle reinstalls against the same on-disk application state.
         root = Path(sys.argv[3] if len(sys.argv) > 3 else temporary).resolve()
@@ -34,12 +34,12 @@ def main() -> None:
             # macOS Unix sockets have a short path limit. /tmp avoids long
             # Homebrew test paths and /var/folders temporary directory names.
             LLM_COORD_RUNTIME_DIR=str(
-                Path(tempfile.mkdtemp(prefix="mf-", dir="/tmp")).resolve()
+                Path(tempfile.mkdtemp(prefix="lp-", dir="/tmp")).resolve()
             ),
             NO_COLOR="1",
         )
 
-        def run(*args: str, command: str = "magnifio", input: str = "") -> str:
+        def run(*args: str, command: str = "loupe", input: str = "") -> str:
             result = subprocess.run(
                 [str(binary_dir / command), *args],
                 cwd=root,
@@ -61,9 +61,9 @@ def main() -> None:
             return json.loads(run("--profile", "packaging", "--json", *args))
 
         try:
-            for command in ("magnifio", "magnifiod", "llm-coord", "llm-coordd"):
+            for command in ("loupe", "louped", "llm-coord", "llm-coordd"):
                 assert run("--version", command=command).strip() == version
-            assert "Magnifio" in run("--help")
+            assert "Loupe" in run("--help")
             assert json.loads(run("--json", "demo"))["simulated"] is True
             run("--plain", input="/exit\n")
             subprocess.run(
@@ -139,7 +139,7 @@ def main() -> None:
         finally:
             subprocess.run(
                 [
-                    str(binary_dir / "magnifio"),
+                    str(binary_dir / "loupe"),
                     "--profile",
                     "packaging",
                     "daemon",
@@ -157,7 +157,7 @@ def main() -> None:
                     break
                 time.sleep(0.05)
             shutil.rmtree(runtime)
-    print(f"Magnifio {version}: installed-package smoke test passed")
+    print(f"Loupe {version}: installed-package smoke test passed")
 
 
 if __name__ == "__main__":

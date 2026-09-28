@@ -1,4 +1,4 @@
-class Magnifio < Formula
+class Loupe < Formula
   include Language::Python::Virtualenv
 
   desc "Terminal coding agent with coordinated sessions"
@@ -11,11 +11,11 @@ class Magnifio < Formula
 
   on_macos do
     on_arm do
-      url "@ROOT_URL@/magnifio-@VERSION@-macos-arm64.tar.gz"
+      url "@ROOT_URL@/loupe-@VERSION@-macos-arm64.tar.gz"
       sha256 "@ARM64_SHA256@"
     end
     on_intel do
-      url "@ROOT_URL@/magnifio-@VERSION@-macos-x86_64.tar.gz"
+      url "@ROOT_URL@/loupe-@VERSION@-macos-x86_64.tar.gz"
       sha256 "@X86_64_SHA256@"
     end
   end
@@ -30,7 +30,7 @@ class Magnifio < Formula
     ENV["PIP_NO_INDEX"] = "1"
     venv = virtualenv_create(libexec, "python3.14", system_site_packages: false)
     venv.pip_install Dir[buildpath/"wheels/*.whl"], build_isolation: false
-    %w[magnifio magnifiod llm-coord llm-coordd].each do |command|
+    %w[loupe louped llm-coord llm-coordd].each do |command|
       bin.install_symlink libexec/"bin"/command
     end
     pkgshare.install "manifest.json", "smoke_test.py"
@@ -38,11 +38,11 @@ class Magnifio < Formula
 
   def caveats
     <<~EOS
-      Start Magnifio with: magnifio
+      Start Loupe with: loupe
       Connect an account with /login inside the app.
 
-      Before upgrading or uninstalling, finish active tasks, exit Magnifio,
-      and stop each profile's daemon: magnifio --profile NAME daemon stop
+      Before upgrading or uninstalling, finish active tasks, exit Loupe,
+      and stop each profile's daemon: loupe --profile NAME daemon stop
       Your next task starts the updated daemon. User data is preserved.
     EOS
   end

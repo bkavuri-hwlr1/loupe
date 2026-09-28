@@ -28,7 +28,7 @@ def test_finished_answer_is_replayed_once_after_restart_and_checkpoint_retry(
 ) -> None:
     async def scenario() -> None:
         repository = repository_factory(tmp_path, {"README.md": "Repository.\n"})
-        answer = "Magnifio coordinates coding-agent sessions. 🦊\n" * 1_000
+        answer = "Loupe coordinates coding-agent sessions. 🦊\n" * 1_000
         provider = ScriptedProvider(
             "answer-model",
             [

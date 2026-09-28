@@ -122,7 +122,7 @@ class _QuestionCluster(_Cluster):
             )
         )
         log = self.root / f"{log_name or label}.log"
-        _wait(lambda: "Magnifio needs your input" in log.read_text())
+        _wait(lambda: "Loupe needs your input" in log.read_text())
         return question
 
 

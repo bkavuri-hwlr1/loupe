@@ -43,13 +43,13 @@ def test_authoritative_completion_appends_missing_stream_suffix() -> None:
     renderer.render(_event("model.text.delta", text="The", block_id="a"))
     renderer.render(_event("model.said", text="The entire response."))
     assert "The entire response." in output.getvalue()
-    assert output.getvalue().count("Magnifio") == 1
+    assert output.getvalue().count("Loupe") == 1
 
 
 def test_completed_answer_hides_summary_and_read_only_bookkeeping() -> None:
     output = io.StringIO()
     renderer = EventRenderer(output)
-    answer = "Magnifio is a terminal coding agent with durable shared workspaces."
+    answer = "Loupe is a terminal coding agent with durable shared workspaces."
     renderer.render(
         _event(
             "model.finished",
@@ -112,7 +112,7 @@ def test_legacy_summary_is_identified_without_being_claimed_as_an_answer() -> No
     renderer.finish()
     assert "Task summary" in output.getvalue()
     assert "Inspected the repository." in output.getvalue()
-    assert "Magnifio" not in output.getvalue()
+    assert "Loupe" not in output.getvalue()
 
 
 def test_edit_completion_retains_verification_and_review_actions() -> None:
@@ -391,7 +391,7 @@ def test_interrupted_final_answer_chunk_is_labeled_incomplete() -> None:
     text = output.getvalue()
     assert "Partial response" in text
     assert "The answer stopped before the final chunk." in text
-    assert "\nMagnifio\n" not in text
+    assert "\nLoupe\n" not in text
 
 
 def test_interrupted_final_chunk_marks_already_streamed_text_incomplete() -> None:
@@ -670,7 +670,7 @@ def test_banner_has_brand_commands_and_whole_repository_scope() -> None:
     )
     ui.help()
     text = output.getvalue()
-    assert "Magnifio" in text
+    assert "Loupe" in text
     assert "whole repository" in text
     assert "/attach [TASK_ID]" in text
     assert "/history" in text

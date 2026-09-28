@@ -1,4 +1,4 @@
-name: Release Magnifio for macOS
+name: Release Loupe for macOS
 
 on:
   push:
@@ -70,10 +70,10 @@ jobs:
           python3 scripts/macos_release.py prepare --tag "$RELEASE_TAG" --assets dist/macos --tap "$RUNNER_TEMP/tap"
           cd "$RUNNER_TEMP/tap"
           git switch -c "release/$RELEASE_TAG"
-          git config user.name "Magnifio releases"
+          git config user.name "Loupe releases"
           git config user.email "releases@users.noreply.github.com"
-          git add Formula/magnifio.rb README.md release-assets .github/workflows/publish.yml
-          git commit -m "Package Magnifio $RELEASE_TAG"
+          git add Formula/loupe.rb README.md release-assets .github/workflows/publish.yml
+          git commit -m "Package Loupe $RELEASE_TAG"
           git push origin "HEAD:refs/heads/release/$RELEASE_TAG"
       - name: Remove temporary credentials
         if: always()

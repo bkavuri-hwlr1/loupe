@@ -1,4 +1,4 @@
-# Magnifio CLI harness: response and execution plan
+# Loupe CLI harness: response and execution plan
 
 Status: first response-and-delivery milestone implemented and locally validated;
 broader harness work remains.
@@ -52,7 +52,7 @@ gates.
 
 ## Product outcome
 
-Magnifio should deliver the result the user requested, show useful progress while
+Loupe should deliver the result the user requested, show useful progress while
 working, and describe execution outcomes accurately. A repository summary must
 explain the repository. “Reviewed the files and prepared a summary” is a work
 report, not that answer.
@@ -71,8 +71,8 @@ Illustrative response to “Give me a summary of what this repo is doing”:
 ```text
 ❯ Give me a summary of what this repo is doing
 
-Magnifio
-Magnifio is a terminal coding agent designed to let multiple sessions work
+Loupe
+Loupe is a terminal coding agent designed to let multiple sessions work
 in the same Git repository without silently overwriting each other's edits.
 
 • The CLI provides conversation, model selection, and plan/normal/auto modes.

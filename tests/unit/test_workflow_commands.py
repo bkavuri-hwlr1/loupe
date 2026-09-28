@@ -124,7 +124,7 @@ def test_live_stop_input_has_bounded_lifetime(monkeypatch: pytest.MonkeyPatch) -
             assert client.called.wait(2)
         assert client.calls == [("task.cancel", {"task_id": "running-task"})]
         assert not any(
-            t.name == "magnifio-active-controls" for t in threading.enumerate()
+            t.name == "loupe-active-controls" for t in threading.enumerate()
         )
     finally:
         os.close(write_fd)

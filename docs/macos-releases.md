@@ -1,6 +1,6 @@
 # macOS releases
 
-The public install command is `brew install magnifiosearchengine/tap/magnifio`.
+The public install command is `brew install magnifiosearchengine/tap/loupe`.
 Development remains in the private `MagnifioSearchEngine/loupe` repository.
 This public repository is a source snapshot with its own fresh Git history.
 The public `MagnifioSearchEngine/homebrew-tap` repository contains the formula,
@@ -74,13 +74,13 @@ uv run --locked python scripts/macos_release.py prepare \
   --tag v0.1.0a0 --assets dist/macos --tap /path/to/tap-checkout
 ```
 
-`brew test magnifiosearchengine/tap/magnifio` exercises version/help, all four
+`brew test magnifiosearchengine/tap/loupe` exercises version/help, all four
 entry points, the unconfigured conversation, provider imports, doctor, daemon
 start/restart/stop, and profile preservation. It uses temporary HOME/state paths,
 removes account environment variables, and runs outside the source checkout.
 
 Before a real upgrade, finish tasks and stop every profile's daemon. Upgrade
-with `brew update && brew upgrade magnifio`; the next task starts the new daemon.
+with `brew update && brew upgrade loupe`; the next task starts the new daemon.
 Uninstall retains profiles and credentials. The installed interpreter is the
 daemon interpreter, so removing an old Homebrew keg while its daemon is running
 is unsupported.

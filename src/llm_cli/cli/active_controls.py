@@ -76,7 +76,7 @@ def active_controls(
                     return
 
         thread = threading.Thread(
-            target=listen, name="magnifio-active-controls", daemon=True
+            target=listen, name="loupe-active-controls", daemon=True
         )
         try:
             thread.start()

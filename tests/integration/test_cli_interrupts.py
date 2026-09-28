@@ -79,7 +79,7 @@ def test_ctrl_c_twice_exits_real_cli_and_keeps_active_work(
             assert process.poll() is None
             os.write(master, b"\x03")
         assert process.wait(timeout=5) == 0, output.read_text()
-        assert "Leaving Magnifio" in output.read_text()
+        assert "Leaving Loupe" in output.read_text()
         assert "Traceback" not in output.read_text()
         if active:
             assert "--resume" in output.read_text()

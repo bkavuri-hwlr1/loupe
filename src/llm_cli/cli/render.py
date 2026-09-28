@@ -188,7 +188,7 @@ _PROVIDER_ERROR_HINTS: dict[str, tuple[str, str]] = {
         "Try again. Use /diff to inspect any retained edits before continuing.",
     ),
     "invalid_response": (
-        "Your provider returned a response Magnifio could not use.",
+        "Your provider returned a response Loupe could not use.",
         "Try again, or choose another model with /model.",
     ),
     "unsupported_model": (
@@ -200,8 +200,8 @@ _PROVIDER_ERROR_HINTS: dict[str, tuple[str, str]] = {
         "Run /effort to choose a supported level, then try again.",
     ),
     "unsupported_parameter": (
-        "The provider rejected Magnifio's request settings.",
-        "Try /model or /effort. If this persists, Magnifio may need an update.",
+        "The provider rejected Loupe's request settings.",
+        "Try /model or /effort. If this persists, Loupe may need an update.",
     ),
     "authentication": (
         "Your provider could not authenticate this request.",
@@ -213,7 +213,7 @@ _PROVIDER_ERROR_HINTS: dict[str, tuple[str, str]] = {
     ),
     "request_rejected": (
         "The provider rejected this request.",
-        "Try /model or /effort. If this persists, Magnifio may need an update.",
+        "Try /model or /effort. If this persists, Loupe may need an update.",
     ),
 }
 
@@ -654,7 +654,7 @@ class EventRenderer:
             self.ui.activity(None)
             question = question_text(event)
             if question:
-                self.ui.message_heading("Magnifio needs your input", style="warning")
+                self.ui.message_heading("Loupe needs your input", style="warning")
                 self.ui.body(question)
             return
         if kind == "model.finished":
@@ -664,9 +664,9 @@ class EventRenderer:
             if isinstance(answer, str) and answer.strip():
                 if safe_text(answer).strip() != self._last_assistant.strip():
                     heading = {
-                        "blocked": "Magnifio — blocked",
-                        "partial": "Magnifio — incomplete",
-                    }.get(str(payload.get("outcome")), "Magnifio")
+                        "blocked": "Loupe — blocked",
+                        "partial": "Loupe — incomplete",
+                    }.get(str(payload.get("outcome")), "Loupe")
                     self._complete_text(turn, "text", answer, heading=heading)
             elif (
                 isinstance(summary, str)
@@ -739,14 +739,14 @@ class EventRenderer:
             return
         self._end_block()
         self.ui.activity(None)
-        self.ui.message_heading("Magnifio", style="assistant")
+        self.ui.message_heading("Loupe", style="assistant")
         if not self.ui.plain:
             self.ui.activity("Writing response…")
         self._active = key
         self._markdown = MarkdownStream(self.ui)
 
     def _complete_text(
-        self, turn: str, channel: str, text: str, *, heading: str = "Magnifio"
+        self, turn: str, channel: str, text: str, *, heading: str = "Loupe"
     ) -> None:
         cleaned = safe_text(text)
         state = self._streams.pop((turn, channel), None)

@@ -1,4 +1,4 @@
-"""Magnifio's local shell; accounts and projects connect only when needed."""
+"""Loupe's local shell; accounts and projects connect only when needed."""
 
 from __future__ import annotations
 
@@ -393,7 +393,7 @@ class ChatShell:
             self.ui.notice("See you next time. Your account choice is saved.")
             return
         arguments = [
-            "magnifio",
+            "loupe",
             "--profile",
             self.client.paths.profile_id,
             "chat",
@@ -482,7 +482,7 @@ class ChatShell:
                         "Session kept because work is active or its state is uncertain."
                     )
                     self._resume_hint()
-            self.ui.notice("Leaving Magnifio.")
+            self.ui.notice("Leaving Loupe.")
         return 0
 
     def _command(self, instruction: str) -> bool:

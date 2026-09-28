@@ -1,4 +1,4 @@
-"""Scrollback-friendly Magnifio presentation and terminal-safe text.
+"""Scrollback-friendly Loupe presentation and terminal-safe text.
 
 Only our presentation layer generates terminal escapes. Provider text and tool
 output are treated as data, including when an escape spans streamed chunks.
@@ -164,7 +164,7 @@ class TerminalUI:
     ) -> None:
         if self.plain or self.console.width < 60:
             self.stream.write(
-                "\nMagnifio · your coding workspace\n"
+                "\nLoupe · your coding workspace\n"
                 f"  repository: {safe_text(repository)}\n"
                 f"  model: {safe_text(_model_label(provider, model))}\n"
                 f"  effort: {safe_text(effort or 'provider default')}\n"
@@ -191,7 +191,7 @@ class TerminalUI:
         self.console.print(
             Panel(
                 metadata,
-                title=Text("Magnifio", style="brand"),
+                title=Text("Loupe", style="brand"),
                 title_align="left",
                 subtitle=Text("your coding workspace", style="muted"),
                 subtitle_align="right",
@@ -218,7 +218,7 @@ class TerminalUI:
                 "/mode [plan|normal|auto]",
                 "Choose read-only planning, review, or auto edits",
             ),
-            ("/scope PATH...", "View or update the paths Magnifio may change"),
+            ("/scope PATH...", "View or update the paths Loupe may change"),
             ("/changes", "Show changes from other sessions"),
             ("/tasks", "List recent tasks"),
             ("/attach [TASK_ID]", "Follow a running or recent task"),
