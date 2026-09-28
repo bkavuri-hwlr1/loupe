@@ -421,6 +421,24 @@ def test_codex_reference_fallback_omits_unsupported_efforts(paths: AppPaths) -> 
     assert all("ultra" not in option.efforts for option in result.models)
 
 
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+def test_codex_gpt6_fallback_preserves_supported_saved_effort(
+    paths: AppPaths, model: str
+) -> None:
+    from llm_cli.providers.codex_provider import CodexProvider
+
+    # No account cache is available, as after credential rotation or offline use.
+    option = catalog.model_option("codex", model, paths=paths)
+    assert option.efforts == ("low", "medium", "high", "xhigh", "max")
+    listing = catalog.list_models(paths, "codex")
+    assert listing.source == "reference"
+    assert option in listing.models
+    provider = CodexProvider(paths=paths, model=model, effort="xhigh")
+    assert provider.model == model
+    with pytest.raises(ValueError, match="does not support effort 'ultra'"):
+        CodexProvider(paths=paths, model=model, effort="ultra")
+
+
 def test_known_snapshot_metadata_does_not_guess_unknown_suffixes() -> None:
     assert catalog.model_option("openai", "gpt-5.2-2025-12-11").efforts
     assert catalog.model_option("anthropic", "claude-opus-4-5-20251101").efforts
