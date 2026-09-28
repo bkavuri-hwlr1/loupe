@@ -7,13 +7,31 @@ owned by this supervisor, including when the direct child exits first.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import selectors
 import signal
 import subprocess
 import sys
 import time
+
+
+def _signal_group(child: subprocess.Popen[bytes], signum: int) -> None:
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            os.killpg(child.pid, signum)
+            return
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            if sys.platform != "darwin":
+                raise
+            # Darwin can return EPERM for a group containing only zombies.
+            # Reap our child and allow orphaned descendants to be reaped too.
+            child.poll()
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 def main() -> int:
@@ -30,13 +48,11 @@ def main() -> int:
                 break
     finally:
         selector.close()
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(child.pid, signal.SIGTERM)
+        _signal_group(child, signal.SIGTERM)
         deadline = time.monotonic() + 2
         while child.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(child.pid, signal.SIGKILL)
+        _signal_group(child, signal.SIGKILL)
         code = child.wait()
     return 125 if stopped else (code if code >= 0 else 128 - code)
 
