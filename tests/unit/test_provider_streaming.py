@@ -419,6 +419,40 @@ def test_streaming_tool_turn_prose_never_becomes_public_output(tmp_path: Path) -
     assert public_text.count("The repository contains source.") == 1
 
 
+def test_live_text_streams_as_throttled_preview_with_one_committed_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.agent import harness
+
+    clock = iter(range(1000))
+    monkeypatch.setattr(harness.time, "monotonic", lambda: next(clock) * 0.01)
+    events: list[tuple[str, dict[str, object]]] = []
+    answer = "word " * 200
+
+    class LiveScript(Script):
+        def set_event_callback(self, callback: Any) -> None:
+            self.callback = callback
+
+        def send_user(self, text: str) -> ModelTurn:
+            for word in answer.split(" ")[:-1]:
+                self.callback("model.text.delta", {"text": word + " ", "block_id": "a"})
+            return ModelTurn(text=answer)
+
+    broker = ToolBroker(
+        tmp_path, ("a.py",), on_event=lambda kind, data: events.append((kind, data))
+    )
+    result = CodingAgentHarness(LiveScript([])).run(
+        RunRequest("task", 1, "answer", ("a.py",), tmp_path, "base"), broker
+    )
+    previews = [data for kind, data in events if kind == "model.answer.preview"]
+    assert "".join(str(data["text"]) for data in previews) == answer
+    assert 1 < len(previews) < 200
+    assert len({data["turn_id"] for data in previews}) == 1
+    finished = [data for kind, data in events if kind == "model.finished"]
+    assert [data["answer"] for data in finished] == [result.answer]
+    assert not any(kind == "model.text.delta" for kind, _ in events)
+
+
 def test_completion_gate_rejection_never_prints_the_rejected_draft(
     tmp_path: Path,
 ) -> None:

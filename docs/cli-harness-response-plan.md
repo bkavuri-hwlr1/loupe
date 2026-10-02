@@ -190,6 +190,23 @@ Mutation-result drafts must not be printed irreversibly as final before settleme
 Finalization after settlement can stream immediately. Already complete drafts can
 render directly. Make this latency/correctness tradeoff explicit.
 
+**Decision (hybrid streaming).** The renderer decodes the `answer` argument of a
+`finish_task` call from its streamed arguments (`cli/partial_json.py`).
+
+- *No edits in the task:* the draft streams into the conversation as it is
+  written. The completion gate only applies when there are candidate edits, so a
+  read-only draft is rejected only for structural reasons (empty or oversized).
+  If that happens, a "revising this answer" notice follows the draft and the
+  accepted answer is labeled as revised.
+- *Edits in the task:* the draft appears only as a transient footer preview. It
+  enters the conversation once `model.finished` accepts it.
+- *Plain-text turns:* their role is unknown until the turn completes, so they are
+  published only as `model.answer.preview` events for that preview. Older clients
+  ignore this event type.
+
+`model.finished` remains the single committed answer and reconciles with
+whatever already streamed, so live output and replay agree.
+
 ## Implementation sequence
 
 ### 1. Answer and outcome semantics — first priority

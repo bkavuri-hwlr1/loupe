@@ -25,6 +25,7 @@ from llm_cli.agent.harness import CodingAgentHarness
 from llm_cli.agent.modes import resolve_agent_mode, validate_agent_mode
 from llm_cli.agent.registry import DriverRegistry
 from llm_cli.agent.tools import MAX_QUESTION_CHARACTERS, TaskCancelled
+from llm_cli.build import code_identity
 from llm_cli.config.models import Settings
 from llm_cli.coordination.coordinator import RepositoryCoordinator
 from llm_cli.coordination.models import (
@@ -1389,6 +1390,10 @@ class DaemonService:
         cursor = after
         idle_deadline = time.monotonic() + idle_timeout / 1_000
         while True:
+            # Observe settlement before reading. A worker writes its final
+            # events (including the answer) and then settles, so checking only
+            # after an empty read could end the stream just before those events.
+            settled = self._task_is_settled(task_id)
             events = await asyncio.to_thread(
                 functools.partial(
                     self.store.list_task_events,
@@ -1403,7 +1408,7 @@ class DaemonService:
             if events:
                 idle_deadline = time.monotonic() + idle_timeout / 1_000
                 continue
-            if self._task_is_settled(task_id):
+            if settled:
                 return
             if time.monotonic() >= idle_deadline or self.shutdown.is_set():
                 return
@@ -2067,12 +2072,15 @@ class DaemonService:
         )
 
     def _ping(self) -> dict[str, Any]:
+        identity = code_identity()
         payload: dict[str, Any] = {
             "ready": True,
             "version": __version__,
             "protocol_version": PROTOCOL_VERSION,
             "profile_id": self.paths.profile_id,
             "boot_id": self.boot_id,
+            "code_fingerprint": identity["fingerprint"],
+            "code_path": identity["path"],
         }
         if self.startup_recovery is not None and self.startup_recovery.outcomes:
             payload["startup_recovery"] = _recovery_payload(self.startup_recovery)

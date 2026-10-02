@@ -487,6 +487,28 @@ def test_interrupted_hidden_chunks_do_not_leak_when_renderer_finishes(
 
 
 @pytest.mark.parametrize("kind", ["model.tool_result", "tool.result", "tool.completed"])
+def test_completion_corrections_stay_in_activity_until_answer_arrives(
+    kind: str,
+) -> None:
+    output = io.StringIO()
+    renderer = EventRenderer(output)
+    renderer.render(
+        _event(
+            kind,
+            tool="finish_task",
+            is_error=True,
+            content="provide the complete user-facing answer in 'answer'",
+        )
+    )
+    renderer.render(_event("model.finished", answer="The detailed findings."))
+    renderer.finish()
+    text = output.getvalue()
+    assert "finish_task" not in text
+    assert "provide the complete user-facing answer" not in text
+    assert text.count("The detailed findings.") == 1
+
+
+@pytest.mark.parametrize("kind", ["model.tool_result", "tool.result", "tool.completed"])
 def test_tool_errors_keep_one_bounded_line_without_dumping_output(kind: str) -> None:
     output = io.StringIO()
     renderer = EventRenderer(output)

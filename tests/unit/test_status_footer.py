@@ -232,6 +232,61 @@ def test_activity_yields_its_row_to_partial_reply_in_three_row_terminal(
     assert terminal.transcript == "Partial reply"
 
 
+def test_answer_preview_shows_its_tail_and_never_reaches_the_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    terminal = Terminal(height=10)
+    footer = ["─" * terminal.width, _STATUS]
+    with _ui(terminal) as ui:
+        ui.delta("Earlier reply\n")
+        ui.activity("Thinking…")
+        draft = "First line.\nSecond line.\nThird line.\nFourth line."
+        ui.preview(draft)
+        assert terminal.transcript.splitlines() == [
+            "Earlier reply",
+            f"Writing the answer… ({len(draft)} characters)",
+            "  Second line.",
+            "  Third line.",
+            "  Fourth line.",
+            *footer,
+        ]
+        ui.preview(None)
+        assert terminal.transcript.splitlines() == [
+            "Earlier reply",
+            "Thinking…",
+            *footer,
+        ]
+        ui.preview("Unaccepted draft")
+    assert terminal.transcript == "Earlier reply"
+
+
+def test_answer_preview_shrinks_to_fit_a_small_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    terminal = Terminal(height=4)
+    with _ui(terminal) as ui:
+        ui.preview("one\ntwo\nthree")
+        assert terminal.transcript.splitlines() == [
+            "Writing the answer… (13 characters)",
+            "  three",
+            "─" * terminal.width,
+            _STATUS,
+        ]
+    assert terminal.transcript == ""
+
+
+def test_answer_preview_without_a_live_region_only_announces_progress() -> None:
+    output = io.StringIO()
+    ui = TaskStatusUI(output, status=lambda: _STATUS, plain=True)
+    with ui:
+        ui.preview("A provisional draft")
+        ui.preview("A provisional draft, longer")
+        ui.preview(None)
+    assert output.getvalue() == "Writing the answer…\n"
+
+
 def test_streamed_markdown_and_progress_share_live_footer_without_replays(
     terminal: Terminal, monkeypatch: pytest.MonkeyPatch
 ) -> None:

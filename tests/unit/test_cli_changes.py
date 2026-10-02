@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from llm_cli.build import code_identity
 from llm_cli.cli.render import checkout_event_text, render_event
 from llm_cli.cli.session import run_session
 from llm_cli.paths import AppPaths
@@ -107,6 +108,8 @@ class _EventClient:
     ) -> Any:
         del kwargs
         params = params or {}
+        if method == "system.ping":
+            return {"code_fingerprint": code_identity()["fingerprint"]}
         if method == "task.list":
             return []
         if method == "session.open":

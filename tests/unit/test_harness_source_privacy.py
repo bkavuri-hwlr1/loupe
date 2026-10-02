@@ -139,19 +139,26 @@ def test_secret_check_output_is_replaced_before_persistence_and_model(
 
 @pytest.mark.parametrize("native", ["openai", "anthropic", "checkpoint"])
 @pytest.mark.parametrize("outcome", ["success", "denied", "bad_path"])
+@pytest.mark.parametrize("excluded_path", ["ignored", "git_symlink"])
 def test_replay_rechecks_successful_read_paths_against_current_exclusions(
     tmp_path: Path,
     repository_factory: Callable[..., Path],
     native: str,
     outcome: str,
+    excluded_path: str,
 ) -> None:
     is_error = outcome != "success"
     root = repository_factory(tmp_path, {"source.txt": "ordinary source"})
     (root / ".gitignore").write_text("private.txt\n")
+    relative = "private.txt"
+    if excluded_path == "git_symlink":
+        (root / ".git/private-note").write_text("old private notes")
+        (root / "metadata-note").symlink_to(".git/private-note")
+        relative = "metadata-note"
     call: dict[str, object] = {
         "call_id": "r",
         "name": "read_file",
-        "arguments": {"path": "../outside" if outcome == "bad_path" else "private.txt"},
+        "arguments": {"path": "../outside" if outcome == "bad_path" else relative},
     }
     result: dict[str, object] = {
         "call_id": "r",
@@ -223,3 +230,45 @@ def test_replay_rechecks_successful_read_paths_against_current_exclusions(
         with pytest.raises(LlmCoordError, match="excluded source"):
             CodingAgentHarness(provider).run(request, ToolBroker(root, ("*",)))
         assert provider.sessions == 0
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+def test_replay_allows_ordinary_source_aliases_and_deleted_source(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    deleted: bool,
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "ordinary source"})
+    (root / "source-alias.txt").symlink_to("source.txt")
+    if deleted:
+        (root / "source.txt").unlink()
+    state = {
+        "version": 2,
+        "provider": "script",
+        "model": "script",
+        "session": {
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "r",
+                    "name": "read_file",
+                    "arguments": json.dumps({"path": "source-alias.txt"}),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "r",
+                    "output": json.dumps(
+                        {"content": "ordinary source", "is_error": False}
+                    ),
+                },
+            ]
+        },
+    }
+    provider = Script()
+
+    CodingAgentHarness(provider).run(
+        replace(_request(root), conversation_state=state),
+        ToolBroker(root, ("*",)),
+    )
+
+    assert provider.sessions == 1

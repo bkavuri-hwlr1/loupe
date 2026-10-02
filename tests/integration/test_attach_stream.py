@@ -259,6 +259,70 @@ def test_reconnecting_resumes_from_the_last_sequence(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_attach_delivers_final_events_written_while_the_task_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker writes its answer and settles during the stream's last read."""
+
+    async def scenario() -> None:
+        repository = _repository(tmp_path)
+        service = _service(tmp_path)
+        service.initialize()
+        try:
+            await service.handle(_request("repo.add", {"path": str(repository)}))
+            accepted = await service.handle(
+                _request(
+                    "task.run",
+                    {
+                        "title": "answer a question",
+                        "path": str(repository),
+                        "scopes": ["README.md"],
+                        "task_id": "task-settling",
+                        "claim_only": True,
+                    },
+                )
+            )
+            claim_id = accepted["claim"]["claim_id"]
+            existing = service.store.list_task_events(
+                "task-settling", after_sequence=0, limit=200
+            )
+            settled = False
+            read = service.store.list_task_events
+
+            def read_then_finish(*args: Any, **kwargs: Any) -> Any:
+                nonlocal settled
+                events = read(*args, **kwargs)
+                if not settled:
+                    # This read has already missed the answer written next.
+                    service.store.record_task_event(
+                        task_id="task-settling",
+                        claim_id=claim_id,
+                        event_type="model.finished",
+                        payload={"answer": "The final answer."},
+                    )
+                    settled = True
+                return events
+
+            monkeypatch.setattr(service.store, "list_task_events", read_then_finish)
+            monkeypatch.setattr(service, "_task_is_settled", lambda _: settled)
+            events = await asyncio.wait_for(
+                _drain(
+                    service._attach(
+                        "task-settling",
+                        after=existing[-1].sequence,
+                        idle_timeout=60_000,
+                    )
+                ),
+                timeout=5,
+            )
+            assert [event["event_type"] for event in events] == ["model.finished"]
+            assert events[0]["payload"]["answer"] == "The final answer."
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
+
+
 def test_task_event_pages_fit_frames_and_replay_every_transcript_chunk(
     tmp_path: Path,
 ) -> None:

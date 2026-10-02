@@ -60,9 +60,10 @@ You are writing the final response for a coding task after the trusted execution
 runner settled its files and checks. You have no tools and no repository
 authority in this turn. Use only the original conversation, the provisional
 draft, and the trusted settlement facts in the finalization request. Deliver the
-actual answer the user asked for. State publication and verification status only
-as those facts establish it. Do not expose hidden reasoning or describe this
-finalization mechanism."""
+actual answer the user asked for, keeping the draft's detail and structure
+rather than condensing it into a summary. State publication and verification
+status only as those facts establish it. Do not expose hidden reasoning or
+describe this finalization mechanism."""
 
 _SYSTEM_PROMPT = """\
 You are a coding agent working inside an isolated Git worktree that has been \
@@ -143,6 +144,19 @@ _AUTO_MODE_GUIDANCE = """\
 Mode: auto. Finish the requested work within the claimed scopes. Afterwards the
 daemon rechecks edited files and automatically publishes the whole eligible batch
 when required checks pass. Conflicts and failed checks retain the proposal."""
+
+_ANSWER_GUIDANCE = """\
+
+Answer depth:
+- Match the depth to the question. A broad question about a project, subsystem,
+or design ("what does this repo do", "how does X work") deserves a thorough,
+organized explanation rather than a summary: its purpose, the main components
+and their roles with file paths, how they fit together or how a request flows
+through them, and notable design decisions, limits, or unfinished work.
+- Use Markdown headings, lists, tables, and file references where they help the
+reader scan. Keep a narrow factual question short, and do not pad any answer.
+- Ground explanations in what you read. When asked how code works, read the
+relevant source, not only its documentation."""
 
 _INTERACTIVE_GUIDANCE = """\
 
@@ -231,6 +245,7 @@ class CodingAgentHarness:
                 if request.agent_mode == "normal"
                 else _AUTO_MODE_GUIDANCE
             )
+        system += "\n" + _ANSWER_GUIDANCE
         if "ask_user" in tool_names:
             system += "\n" + _INTERACTIVE_GUIDANCE
         session = (
@@ -1015,7 +1030,12 @@ def _emit_transcript(tools: ToolBroker, kind: str, payload: dict[str, object]) -
 
 
 class _LiveEvents:
-    """Coalesce activity while keeping provisional response text private."""
+    """Coalesce activity; provisional response text is only ever a preview.
+
+    Text deltas are buffered for interrupted-response recovery and published
+    as ``model.answer.preview`` events, which clients show transiently. The
+    durable ``model.finished`` event remains the single committed answer.
+    """
 
     def __init__(self, tools: ToolBroker) -> None:
         self.tools = tools
@@ -1044,7 +1064,9 @@ class _LiveEvents:
             return
         if kind == "model.text.delta":
             self.text_fragments.append((str(payload.get("block_id", "")), value))
-            return
+            # Text stays provisional until its turn completes. Publish it only
+            # as a transient preview; model.finished remains the answer.
+            kind = "model.answer.preview"
         if kind == "model.tool.delta":
             self.saw_tool_delta = True
         metadata = {key: item for key, item in payload.items() if key != field}
@@ -1403,10 +1425,29 @@ def _ensure_saved_reads_allowed(value: object, worktree: Path) -> None:
             continue
         if isinstance(call_id, str) and not failed:
             completed.add(call_id)
-    paths = sorted({
-        normalize_changed_path(path) for call_id, path in reads if call_id in completed
-    })
-    if paths and excluded_paths(worktree, paths):
+    paths = sorted(
+        {
+            normalize_changed_path(path)
+            for call_id, path in reads
+            if call_id in completed
+        }
+    )
+    # A prior read may have followed a source-looking symlink into metadata.
+    # Recheck its destination before native history can reach the provider,
+    # while still allowing ordinary source files that have since been deleted.
+    resolved_paths: list[str] = []
+    try:
+        root = worktree.resolve(strict=False)
+        for path in paths:
+            resolved_paths.append(
+                (worktree / path).resolve(strict=False).relative_to(root).as_posix()
+            )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise LlmCoordError(
+            ErrorCode.REPOSITORY_UNSAFE,
+            "saved conversation contains excluded source; start a new conversation",
+        ) from exc
+    if paths and excluded_paths(worktree, sorted(set(paths + resolved_paths))):
         raise LlmCoordError(
             ErrorCode.REPOSITORY_UNSAFE,
             "saved conversation contains excluded source; start a new conversation",

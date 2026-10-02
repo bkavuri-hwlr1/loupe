@@ -361,6 +361,34 @@ def test_codex_fixed_host_transport_filters_unsupported_subscription_capabilitie
     assert "unsupported" in (cached.notice or "")
 
 
+@pytest.mark.parametrize("change", ["account", "residency", "logout"])
+def test_codex_capability_cache_remains_account_scoped(
+    paths: AppPaths, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    store = CredentialStore(paths)
+    store.save(Credentials("first-token", None, time.time() + 3600, "first", "eu"))
+    option = catalog.ModelOption("gpt-future", "Future", efforts=("low", "high"))
+    monkeypatch.setattr(catalog, "_codex_models", lambda _: (option,))
+    assert catalog.list_models(paths, "codex").models == (option,)
+    assert catalog.model_option("codex", option.id, paths=paths) == option
+
+    if change == "logout":
+        store.logout()
+    else:
+        store.save(
+            Credentials(
+                "second-token",
+                None,
+                time.time() + 3600,
+                "second" if change == "account" else "first",
+                "us" if change == "residency" else "eu",
+            )
+        )
+
+    # An account switch must not inherit another account's advertised efforts.
+    assert catalog.model_option("codex", option.id, paths=paths).efforts == ()
+
+
 @pytest.mark.parametrize("provider", ["codex", "openai"])
 @pytest.mark.parametrize("age", [0, 600])
 def test_old_account_cache_cannot_restore_unsupported_efforts(

@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from llm_cli.agent.modes import AGENT_MODES, resolve_agent_mode, validate_agent_mode
+from llm_cli.build import code_identity
 from llm_cli.cli import session
 from llm_cli.cli.composer import Composer
 from llm_cli.cli.connect import ConnectionMenu, normalize_provider
 from llm_cli.cli.interrupts import EXIT_HINT, ExitRequested
 from llm_cli.cli.models import ModelMenu
 from llm_cli.cli.output import emit
-from llm_cli.cli.terminal import TerminalUI
+from llm_cli.cli.terminal import TerminalUI, safe_text
 from llm_cli.config.loader import load_settings
 from llm_cli.coordination.scopes import normalize_scopes
 from llm_cli.errors import ErrorCode, LlmCoordError
@@ -60,7 +61,13 @@ class ChatShell:
         plain: bool,
         publication_mode: str | None = None,
         agent_mode: str | None = None,
+        effort: str | None = None,
     ) -> None:
+        if effort is not None and resume_session_id:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "--effort applies to new conversations; use /effort after resuming.",
+            )
         self.agent_mode = resolve_agent_mode(agent_mode, publication_mode)
         self.client = client
         self.repository = repository
@@ -75,6 +82,9 @@ class ChatShell:
         self.credentials: session._SessionCredentials | None = None
         self.last_task: str | None = None
         self.keep_session = False
+        # The code this CLI loaded, compared once with the daemon's.
+        self._code = code_identity()
+        self._daemon_checked = False
         try:
             self.provider, self.model, self.effort = self._initial_selection(
                 provider, model
@@ -84,7 +94,20 @@ class ChatShell:
             self.ui.notice(
                 "Saved account settings need attention. Use /login to reconnect."
             )
+        if effort is not None and self.provider is None:
+            self.ui.notice(
+                "--effort needs a connected AI. Use /login, then /effort to choose."
+            )
+        elif effort is not None:
+            # An explicit level applies to this conversation; /effort saves one.
+            try:
+                self.effort = self._validated_effort(
+                    self._current_model_option(), effort
+                )
+            except ValueError as exc:
+                raise LlmCoordError(ErrorCode.CONFIG_INVALID, str(exc)) from exc
         if resume_session_id:
+            self._check_daemon_code()
             self.credentials = session.open_or_resume_session(
                 client,
                 repository=repository,
@@ -111,19 +134,28 @@ class ChatShell:
     def _initial_selection(
         self, provider: str | None, model: str | None
     ) -> tuple[str | None, str | None, str | None]:
-        if provider:
-            return provider, model, None
-        preference = load_preference(self.client.paths)
-        if preference.get("provider"):
+        try:
+            preference = load_preference(self.client.paths)
+        except (LlmCoordError, OSError):
+            if not provider:
+                raise
+            # An explicit provider does not depend on the saved selection.
+            preference = {}
+        saved_provider = preference.get("provider")
+        # Naming the saved provider again (for example with --provider) keeps its
+        # saved model and effort. Only a different provider or model resets them.
+        if saved_provider and (not provider or provider == saved_provider):
             saved_model = preference.get("model")
             saved_effort = preference.get("effort")
             return (
-                str(preference["provider"]),
+                str(saved_provider),
                 model or (saved_model if isinstance(saved_model, str) else None),
                 saved_effort
                 if isinstance(saved_effort, str) and model in {None, saved_model}
                 else None,
             )
+        if provider:
+            return provider, model, None
         settings = load_settings(
             self.client.paths.config_file, profile_id=self.client.paths.profile_id
         )
@@ -244,6 +276,7 @@ class ChatShell:
             )
         if self.credentials is not None:
             return True
+        self._check_daemon_code()
         try:
             self.client.call("repo.status", {"path": str(self.repository)})
         except LlmCoordError as exc:
@@ -267,6 +300,40 @@ class ChatShell:
         self.agent_mode = self.credentials.agent_mode
         session._set_intent(self.client, self.credentials, self.scopes)
         return True
+
+    def _check_daemon_code(self) -> None:
+        """Warn once when the background service runs different Loupe code.
+
+        A daemon keeps the code it started with, and every installation using
+        this profile shares it. Fixes in this CLI may not apply until restart.
+        Restarting is left to the user: it interrupts running tasks, including
+        those of other terminals.
+        """
+
+        if self._daemon_checked:
+            return
+        self._daemon_checked = True
+        try:
+            info = self.client.call("system.ping")
+        except LlmCoordError:
+            return  # The next request reports why the daemon is unavailable.
+        if not isinstance(info, dict):
+            return
+        fingerprint = info.get("code_fingerprint")
+        if fingerprint == self._code["fingerprint"]:
+            return
+        path = info.get("code_path")
+        if not isinstance(fingerprint, str):
+            problem = "is running an older version of Loupe"
+        elif isinstance(path, str) and path != self._code["path"]:
+            problem = f"is running Loupe from {safe_text(path)}, not this installation"
+        else:
+            problem = "is still running code from before your last update"
+        self.ui.notice(
+            f"The Loupe background service {problem}. After active tasks "
+            "finish, run 'loupe daemon restart' to use this version.",
+            style="warning",
+        )
 
     def _effective_model(self) -> str:
         if self.model:
@@ -361,6 +428,17 @@ class ChatShell:
         )
         self.ui.notice("Your selection is saved. Use /effort to adjust thinking.")
 
+    @staticmethod
+    def _validated_effort(option: ModelOption, value: str) -> str | None:
+        """Return the effort to request, or None for the provider's default."""
+
+        selected = value.lower()
+        effort = None if selected == "default" else selected
+        if effort is not None and effort not in option.efforts:
+            choices = ", ".join((*option.efforts, "default"))
+            raise ValueError(f"Effort levels for {option.id}: {choices}.")
+        return effort
+
     def _effort_command(self, args: list[str]) -> None:
         if len(args) > 1:
             raise ValueError("Usage: /effort [LEVEL | default]")
@@ -377,10 +455,7 @@ class ChatShell:
         )
         if selected is None:
             return
-        effort = None if selected == "default" else selected
-        if effort is not None and effort not in option.efforts:
-            choices = ", ".join((*option.efforts, "default"))
-            raise ValueError(f"Effort levels for {option.id}: {choices}.")
+        effort = self._validated_effort(option, selected)
         self._switch(self.provider, self.model, effort)
         self.ui.notice(
             f"Effort set to {effort or 'provider default'} for {option.id}. "

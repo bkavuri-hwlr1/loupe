@@ -283,6 +283,16 @@ class TerminalUI:
             self.notice(cleaned)
         self._last_activity = cleaned
 
+    def preview(self, text: str | None) -> None:
+        """Without a transient region, announce a draft answer but not its text.
+
+        A provisional answer may still be revised, so only a live status region
+        can show it without committing it to scrollback.
+        """
+
+        if text:
+            self.activity("Writing the answer…")
+
     def user(self, text: str) -> None:
         self.message_heading("You", style="bold")
         self.body(text)
@@ -331,6 +341,21 @@ class TerminalUI:
         else:
             self.console.print(Text(cleaned), overflow="fold", crop=False)
         self.stream.flush()
+
+    def markdown_leading_blank(self, text: str) -> bool:
+        """Whether ``body(text, markdown=True)`` starts with Rich's own blank line.
+
+        Rich opens lists and block quotes with a margin row, so a streamed
+        block can supply its own paragraph separation.
+        """
+
+        if self.plain:
+            return False
+        document = _AnswerMarkdown(safe_text(text), hyperlinks=False)
+        if any(token.type == "table_open" for token in document.parsed):
+            return False
+        lines = self.console.render_lines(document, pad=False)
+        return bool(lines) and not "".join(part.text for part in lines[0]).strip()
 
     def delta(self, text: str, *, style: str = "") -> None:
         """Write already-sanitized text verbatim, letting the terminal wrap it."""

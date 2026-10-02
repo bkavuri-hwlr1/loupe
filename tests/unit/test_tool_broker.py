@@ -228,14 +228,17 @@ def test_the_tool_call_budget_is_a_hard_stop(worktree: Path) -> None:
 def test_finishing_closes_the_tool_surface(worktree: Path) -> None:
     broker = _broker(worktree, "docs/")
 
-    finished = broker.invoke("finish_task", {"summary": "did the thing"})
+    finished = broker.invoke(
+        "finish_task",
+        {"answer": "The guide now covers setup.", "summary": "did the thing"},
+    )
     afterwards = broker.invoke("write_file", {"path": "docs/late.md", "content": "no"})
 
     assert not finished.is_error
     assert broker.usage.finished
     assert broker.usage.summary == "did the thing"
-    assert broker.usage.outcome == "partial"
-    assert not broker.usage.answer
+    assert broker.usage.outcome == "completed"
+    assert broker.usage.answer == "The guide now covers setup."
     assert afterwards.is_error
     assert not (worktree / "docs" / "late.md").exists()
 
@@ -259,6 +262,9 @@ def test_answer_is_preserved_separately_from_bounded_audit_summary(
 @pytest.mark.parametrize(
     "arguments",
     [
+        {"summary": "Prepared answer"},
+        {"summary": "Could not proceed", "outcome": "blocked"},
+        {"summary": "Partly done", "outcome": "partial"},
         {"answer": "", "summary": "Prepared answer"},
         {"answer": "  "},
         {"answer": "x" * (MAX_ANSWER_CHARACTERS + 1)},

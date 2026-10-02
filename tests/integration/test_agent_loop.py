@@ -366,21 +366,40 @@ def test_empty_turns_have_a_bounded_nudge_and_partial_outcome(worktree: Path) ->
     assert not result.answer
 
 
-def test_legacy_finish_report_is_partial_and_never_an_accepted_answer(
+@pytest.mark.parametrize("finish_with_tool", [False, True])
+def test_summary_only_finish_requests_the_missing_answer_before_completion(
     worktree: Path,
+    finish_with_tool: bool,
 ) -> None:
     snapshots: list[Mapping[str, object]] = []
-    provider = ScriptedProvider(
-        [_tools(_call("finish_task", summary="Prepared overview."))]
+    answer = (
+        "## Security finding\n\n"
+        "A symlink to Git metadata can expose private repository information.\n\n"
+        "Reject resolved metadata paths before opening them, and add a regression test."
     )
+    provider = ScriptedProvider(
+        [
+            _tools(_call("finish_task", summary="Prepared security review.")),
+            (
+                _tools(_call("finish_task", answer=answer, summary="Reviewed."))
+                if finish_with_tool
+                else ModelTurn(text=answer)
+            ),
+        ]
+    )
+    events: list[tuple[str, dict[str, object]]] = []
     result = CodingAgentHarness(provider).run(
         replace(_request(worktree), checkpoint=lambda saved: snapshots.append(saved)),
-        _broker(worktree, events=[]),
+        _broker(worktree, events=events),
     )
-    assert result.summary == "Prepared overview."
-    assert result.answer == ""
-    assert result.outcome == "partial"
-    assert snapshots[-1]["accepted_answer"] is None
+    assert provider.sent_results[0][0].is_error
+    assert "answer" in provider.sent_results[0][0].content
+    assert result.answer == answer
+    assert result.outcome == "completed"
+    accepted = snapshots[-1]["accepted_answer"]
+    assert isinstance(accepted, dict) and accepted["text"] == answer
+    finished = [payload for kind, payload in events if kind == "model.finished"]
+    assert len(finished) == 1 and finished[0]["answer"] == answer
 
 
 @pytest.mark.parametrize("reason", ["max_tokens", "pause_turn", "unknown"])

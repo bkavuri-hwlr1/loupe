@@ -19,7 +19,7 @@ from test_shared_agent_execution import _assert_completed, _request, _start
 from llm_cli.daemon.service import DaemonService
 from llm_cli.errors import LlmCoordError
 from llm_cli.paths import AppPaths
-from llm_cli.providers import codex_provider
+from llm_cli.providers import catalog, codex_auth, codex_provider
 from llm_cli.providers.base import ToolCallResult
 from llm_cli.providers.codex_auth import Credentials, CredentialStore
 from llm_cli.providers.codex_provider import CodexProvider
@@ -170,6 +170,64 @@ def test_subscription_sdk_request_is_pinned_and_checkpoint_has_no_credentials(
     with pytest.raises(LlmCoordError, match="no ChatGPT login"):
         provider.session(system="test", tools=[]).send_user("must not fall back")
     assert len(requests) == 2
+
+
+def test_discovered_effort_survives_token_refresh_between_prompts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = AppPaths.resolve("effort-refresh", environ={}, home=tmp_path)
+    store = CredentialStore(paths)
+    store.save(
+        Credentials(
+            "access-before-refresh",
+            "refresh-private",
+            time.time() + 30,
+            "account-private",
+            None,
+        )
+    )
+    # Model discovery must stay authoritative for models released after Loupe.
+    option = catalog.ModelOption(
+        "gpt-future-codex", "Future Codex", efforts=("low", "high")
+    )
+    monkeypatch.setattr(catalog, "_codex_models", lambda _: (option,))
+    assert catalog.list_models(paths, "codex").models == (option,)
+    monkeypatch.setattr(
+        codex_auth,
+        "_post",
+        lambda *args, **kwargs: {
+            "access_token": "access-after-refresh",
+            "refresh_token": "refresh-after-refresh",
+            "expires_in": 3600,
+        },
+    )
+    requests: list[dict[str, Any]] = []
+
+    def handle(request: Any) -> Any:
+        assert request.headers["authorization"] == "Bearer access-after-refresh"
+        body = json.loads(request.content)
+        assert body["model"] == option.id
+        assert body["reasoning"]["effort"] == "high"
+        requests.append(body)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_codex_events(_response([_message()])),
+        )
+
+    _install_transport(monkeypatch, handle)
+    first = CodexProvider(paths=paths, model=option.id, effort="high").session(
+        system="test", tools=[]
+    )
+    assert first.send_user("first prompt").text == "done"
+    # The daemon constructs the provider again for the next task. Rotation of
+    # credentials must not turn the same selected effort into an invalid choice.
+    second = CodexProvider(paths=paths, model=option.id, effort="high").session(
+        system="test", tools=[], state=first.snapshot()
+    )
+    assert second.send_user("second prompt").text == "done"
+    assert len(requests) == 2
+    assert catalog.model_option("codex", option.id, paths=paths) == option
 
 
 @pytest.mark.parametrize("status", [302, 401, 403, 429, 500])

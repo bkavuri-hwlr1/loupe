@@ -16,6 +16,9 @@ from rich.text import Text
 
 from llm_cli.cli.terminal import TerminalUI, safe_text
 
+# Rows of a provisional answer shown under its "Writing the answer…" line.
+_PREVIEW_ROWS = 3
+
 
 class TaskStatusUI(TerminalUI):
     """Keep metadata below active output without owning terminal input.
@@ -38,6 +41,7 @@ class TaskStatusUI(TerminalUI):
         self._live: Live | None = None
         self._pending = Text()
         self._activity_text: str | None = None
+        self._preview: str | None = None
         self._lock = threading.RLock()
 
     def __enter__(self) -> TaskStatusUI:
@@ -76,6 +80,7 @@ class TaskStatusUI(TerminalUI):
     def stop(self) -> None:
         with self._lock:
             self._activity_text = None
+            self._preview = None
             if self._live is None:
                 super().activity(None)
                 return
@@ -97,6 +102,19 @@ class TaskStatusUI(TerminalUI):
             self._activity_text = current
             if self._live is None:
                 super().activity(current)
+                return
+            self._update()
+
+    def preview(self, text: str | None) -> None:
+        """Show the tail of a provisional answer without committing it."""
+
+        current = safe_text(text) if text else None
+        with self._lock:
+            if current == self._preview:
+                return
+            self._preview = current
+            if self._live is None:
+                super().preview(current)
                 return
             self._update()
 
@@ -165,16 +183,37 @@ class TaskStatusUI(TerminalUI):
             rows.append(self._pending)
         # A live region taller than the screen leaks its first row into
         # scrollback on redraw. Reply text takes priority in a tiny viewport.
-        if self._activity_text and self.console.height >= 3 + bool(self._pending):
+        spare = self.console.height - 2 - bool(self._pending)
+        dim = Style(dim=True, bold=False, reverse=False, bgcolor="default")
+        if self._preview is not None and spare >= 1:
             rows.append(
                 Text(
-                    self._activity_text,
-                    style=Style(dim=True, bold=False, reverse=False, bgcolor="default"),
+                    f"Writing the answer… ({len(self._preview):,} characters)",
+                    style=dim,
                     no_wrap=True,
                     overflow="ellipsis",
                 )
             )
+            rows.extend(
+                Text("  " + row, style=dim, no_wrap=True, overflow="ellipsis")
+                for row in self._preview_rows(min(_PREVIEW_ROWS, spare - 1))
+            )
+        elif self._activity_text and spare >= 1:
+            rows.append(
+                Text(self._activity_text, style=dim, no_wrap=True, overflow="ellipsis")
+            )
         return Group(*rows, divider, footer)
+
+    def _preview_rows(self, count: int) -> list[str]:
+        """Return the last visual rows of the draft, where new text appears."""
+
+        if count <= 0 or not self._preview:
+            return []
+        width = max(1, self.console.width - 3)
+        rows: list[str] = []
+        for line in self._preview.rstrip("\n").split("\n")[-count:]:
+            rows.extend(chop_cells(line, width) or [""])
+        return rows[-count:]
 
     def _update(self) -> None:
         if self._live is not None:

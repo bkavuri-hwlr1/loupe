@@ -116,7 +116,7 @@ def test_plan_never_runs_checks_even_through_finish_gate(
     )
     assert "run_check" not in broker.tool_names()
     assert broker.invoke("run_check", {"name": "test"}).is_error
-    assert not broker.invoke("finish_task", {"summary": "Here is the plan"}).is_error
+    assert not broker.invoke("finish_task", {"answer": "Here is the plan"}).is_error
     assert calls == [] and broker.usage.finished
 
 
@@ -201,6 +201,9 @@ def test_mode_prompt_and_checkpoint_match_the_enforced_tool_surface(
     assert all(saved["agent_mode"] == mode for saved in checkpoints)
     assert "ask_user" in provider.offered_tools and "Clarification:" in provider.system
     assert "advisory" in provider.system and "scope" in provider.system
+    # Broad questions get a structured explanation rather than a terse summary.
+    assert "Answer depth:" in provider.system
+    assert "thorough,\norganized explanation" in provider.system
     if mode == "plan":
         assert "read-only" in provider.system and "validation" in provider.system
         assert "risks" in provider.system and "implementation steps" in provider.system

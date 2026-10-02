@@ -2,10 +2,14 @@
 
 Loupe is a coding agent that lives in your terminal. It shows concise progress
 such as “Reviewing project files” and “Running checks,” followed by readable
-assistant messages and results. Markdown and syntax-colored code appear as
-complete blocks arrive. Routine file reads, tool payloads, and reasoning text
-stay out of the conversation. Answers remain in your terminal scrollback, with
-labeled dividers between messages and a single “Done” after a task completes.
+assistant messages and results. Answers to questions appear while the model
+writes them, with Markdown and syntax-colored code shown as complete blocks
+arrive. When a task has edited files, its answer is previewed below the
+conversation until Loupe accepts it, so a draft rejected by required checks
+never enters your scrollback. Routine
+file reads, tool payloads, and reasoning text stay out of the conversation.
+Answers remain in your terminal scrollback, with labeled dividers between
+messages and a single “Done” after a task completes.
 
 ## Install on Mac
 
@@ -89,12 +93,18 @@ Open a new terminal after installing. For checkout-only development,
 previews the conversation display without a model connection.
 
 After upgrading a checkout that already has a daemon running, let its active
-tasks finish and run `loupe daemon restart` to load the new code. Subsequent
-in-app logins are loaded on each new task without restarting the daemon.
+tasks finish and run `loupe daemon restart` to load the new code. Loupe warns
+when the daemon is running different code: older code from before an update,
+or code from another installation that shares the same profile.
+`loupe daemon status` reports `matches_this_cli`. Subsequent in-app logins are
+loaded on each new task without restarting the daemon.
 Earlier events that stored only character counts cannot recover old text.
 
 Existing `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` environment settings are also
 recognized. Explicit provider/model flags remain available for scripts.
+Naming your saved provider with `--provider` keeps its saved model and effort.
+`--effort LEVEL` (or `default`) sets the effort for a new conversation
+without changing your saved choice; use `/effort` to save one.
 API keys use separate provider billing; a ChatGPT subscription connects through
 the Codex option. `loupe --help` lists all commands.
 
@@ -161,6 +171,9 @@ When essential information is missing, the model can pause and ask a question
 in the same editor. Enter a free-text answer or the number of a suggested
 choice; the task continues with your answer. Models are instructed to inspect
 available context first and make routine implementation decisions themselves.
+While a task runs, type `/stop` and press Enter to stop it, or press Ctrl+C to
+detach. Other commands and messages wait until the task finishes; Loupe says so
+rather than silently ignoring them.
 At a question, `/stop` cancels the task and retains pending edits. Ctrl+C leaves
 the question pending; `/attach TASK_ID` returns to it. Replaying an answered
 question does not ask it again. Questions wait up to ten minutes; after that,

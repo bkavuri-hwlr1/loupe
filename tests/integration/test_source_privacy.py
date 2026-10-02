@@ -13,6 +13,89 @@ from llm_cli.agent.tools import ToolBroker
 
 
 @pytest.mark.parametrize("broker_type", [ToolBroker, SharedToolBroker])
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("read_file", {"path": ".git/private-note"}),
+        ("search_text", {"path": ".git/private-note", "pattern": "dummy-private"}),
+        ("search_text", {"path": ".git", "pattern": "dummy-private"}),
+        ("list_files", {"path": ".git"}),
+        ("write_file", {"path": ".git/private-note", "content": "replacement"}),
+        (
+            "apply_patch",
+            {
+                "path": ".git/private-note",
+                "old_text": "dummy-private",
+                "new_text": "replacement",
+            },
+        ),
+        ("delete_file", {"path": ".git/private-note"}),
+        ("create_directory", {"path": ".git/new-directory"}),
+        (
+            "rename_file",
+            {"source": ".git/private-note", "destination": "source-note.txt"},
+        ),
+    ],
+)
+def test_explicit_git_administration_paths_are_not_source(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    broker_type: type[ToolBroker],
+    tool: str,
+    arguments: dict[str, object],
+) -> None:
+    repository = repository_factory(tmp_path, {"source.txt": "ordinary source\n"})
+    marker = "dummy-private-git-administration-content"
+    metadata = repository / ".git/private-note"
+    metadata.write_text(marker)
+    broker = broker_type(worktree=repository, scopes=("*",))
+
+    result = broker.invoke(tool, arguments)
+
+    assert result.is_error, result.content
+    assert marker not in result.content + json.dumps(broker.usage_snapshot())
+    assert metadata.read_text() == marker
+    assert not (repository / ".git/new-directory").exists()
+    assert not (repository / "source-note.txt").exists()
+
+
+@pytest.mark.parametrize("broker_type", [ToolBroker, SharedToolBroker])
+@pytest.mark.parametrize("directory_alias", [False, True])
+def test_git_administration_cannot_be_read_through_symlink_aliases(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    broker_type: type[ToolBroker],
+    directory_alias: bool,
+) -> None:
+    repository = repository_factory(tmp_path, {"source.txt": "ordinary source\n"})
+    marker = "dummy-private-git-administration-content"
+    (repository / ".git/private-note").write_text(marker)
+    if directory_alias:
+        (repository / "metadata").symlink_to(".git", target_is_directory=True)
+        relative = "metadata/private-note"
+    else:
+        (repository / "metadata-note").symlink_to(".git/private-note")
+        relative = "metadata-note"
+    broker = broker_type(worktree=repository, scopes=("*",))
+
+    read = broker.invoke("read_file", {"path": relative})
+    search = broker.invoke(
+        "search_text", {"path": relative, "pattern": "dummy-private"}
+    )
+
+    assert read.is_error, read.content
+    assert search.is_error, search.content
+    for result in (
+        read,
+        search,
+        broker.invoke("search_text", {"pattern": "dummy-private"}),
+        broker.invoke("list_files", {}),
+    ):
+        assert marker not in result.content
+    assert marker not in json.dumps(broker.usage_snapshot())
+
+
+@pytest.mark.parametrize("broker_type", [ToolBroker, SharedToolBroker])
 def test_user_global_exclusions_apply_to_read_search_and_snapshot(
     tmp_path: Path,
     repository_factory: Callable[..., Path],

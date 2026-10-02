@@ -15,6 +15,7 @@ from types import FrameType
 from typing import IO
 
 from llm_cli import PROTOCOL_VERSION, __version__
+from llm_cli.build import code_identity
 from llm_cli.config.loader import load_settings
 from llm_cli.daemon.service import DaemonService
 from llm_cli.errors import LlmCoordError
@@ -58,6 +59,8 @@ async def run_daemon(paths: AppPaths) -> int:
 
     shutdown = asyncio.Event()
     boot_id = new_id("boot")
+    # Snapshot the sources this daemon loaded; later edits must not change it.
+    identity = code_identity()
     settings = load_settings(paths.config_file, profile_id=paths.profile_id)
     service = DaemonService(paths, settings, shutdown, boot_id=boot_id)
     server = RpcServer(paths.socket, paths.profile_id, service.handle)
@@ -74,6 +77,7 @@ async def run_daemon(paths: AppPaths) -> int:
             loop.add_signal_handler(signal_name, request_shutdown)
 
     _write_pid_file(paths.pid_file, boot_id)
+    status = 0
     try:
         service.initialize()
         recovery = service.startup_recovery
@@ -96,6 +100,8 @@ async def run_daemon(paths: AppPaths) -> int:
             pid=os.getpid(),
             protocol_version=PROTOCOL_VERSION,
             version=__version__,
+            code_path=identity["path"],
+            code_fingerprint=identity["fingerprint"],
         )
         await server.serve(shutdown)
         return 0
@@ -106,14 +112,16 @@ async def run_daemon(paths: AppPaths) -> int:
             code=exc.code.value,
             detail=exc.message,
         )
-        return 70
+        status = 70
+        return status
     except Exception as exc:
         logger.write(
             "daemon.failed",
             exception_type=type(exc).__name__,
             detail=str(exc)[:500],
         )
-        return 70
+        status = 70
+        return status
     finally:
         if reconcile_task is not None:
             reconcile_task.cancel()
@@ -135,6 +143,14 @@ async def run_daemon(paths: AppPaths) -> int:
             )
         service.close()
         _safe_unlink(paths.pid_file)
+        if abandoned:
+            logger.write("daemon.stopped", boot_id=boot_id)
+            # An abandoned worker keeps running on its thread: it would keep
+            # writing task state after this daemon reported stopping, even
+            # beside a successor. Boot recovery resumes it from durable records,
+            # so end the process now. The kernel releases the singleton lock
+            # only once none of those threads can run.
+            os._exit(status)
         lock.close()
         logger.write("daemon.stopped", boot_id=boot_id)
 

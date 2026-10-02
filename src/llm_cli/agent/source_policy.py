@@ -32,7 +32,10 @@ _PRIVATE_NAMES = frozenset(
         "id_ed25519",
     }
 )
-_PRIVATE_DIRECTORIES = frozenset({".ssh", ".aws", ".azure", ".gnupg"})
+# Git metadata is never source, including when a source-looking symlink
+# resolves into it. Scope validation only sees the spelling supplied by the
+# model; these exclusions also apply to the resolved path.
+_PRIVATE_DIRECTORIES = frozenset({".git", ".ssh", ".aws", ".azure", ".gnupg"})
 _EXAMPLE_SUFFIXES = (".example", ".sample", ".template")
 _SECRET_PATTERNS = (
     re.compile(rb"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"),

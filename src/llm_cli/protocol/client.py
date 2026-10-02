@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import os
 import subprocess
 import sys
 import time
 from collections.abc import Coroutine, Iterator, Mapping
+from pathlib import Path
 from typing import Any
 
 from llm_cli.errors import ErrorCode, LlmCoordError
@@ -179,8 +181,28 @@ class DaemonClient:
             writer.close()
             await writer.wait_closed()
 
+    def wait_until_stopped(self, timeout_seconds: float) -> bool:
+        """Wait until no daemon process owns this profile's singleton lock.
+
+        A stopping daemon first drains running tasks. Starting a successor
+        before it exits is refused by the lock, so restart must wait here.
+        """
+
+        deadline = time.monotonic() + timeout_seconds
+        while _lock_held(self.paths.lock_file):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+        return True
+
     def _start_and_wait(self) -> None:
         self.paths.ensure()
+        if not self.wait_until_stopped(self.timeout_seconds):
+            raise LlmCoordError(
+                ErrorCode.DAEMON_UNAVAILABLE,
+                "the Loupe background service is still stopping; try again in "
+                f"a moment. If this persists, see {self.paths.log_file}",
+            )
         log = self.paths.log_file.open("ab", buffering=0)
         make_private_file(self.paths.log_file)
         try:
@@ -225,6 +247,29 @@ class DaemonClient:
                 except (TimeoutError, OSError):
                     pass
             time.sleep(0.05)
+        # Nothing was sent to a daemon, so the request outcome is not unknown.
+        raise LlmCoordError(
+            ErrorCode.DAEMON_UNAVAILABLE,
+            f"the Loupe background service did not start; see {self.paths.log_file}",
+        )
+
+
+def _lock_held(path: Path) -> bool:
+    """Report whether a live process holds the daemon singleton lock."""
+
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    else:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
 
 
 def _daemon_environment() -> dict[str, str]:

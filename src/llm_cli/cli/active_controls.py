@@ -17,6 +17,22 @@ from llm_cli.cli.interrupts import ExitRequested, InputInterrupted, InterruptSta
 from llm_cli.protocol.client import DaemonClient
 
 
+def _busy_message(typed: str) -> str:
+    """Explain why input typed during a running task was not acted on."""
+
+    if typed.startswith("/"):
+        command = typed.split()[0][:32]
+        return (
+            f"Loupe is still working, so {command} was not run. "
+            "Type /stop to stop this task, or press Ctrl+C to detach; "
+            "other commands are available when it finishes."
+        )
+    return (
+        "Loupe is still working, so your message was not sent. "
+        "Send it again when this task finishes, or type /stop to stop it."
+    )
+
+
 @contextlib.contextmanager
 def active_controls(
     client: DaemonClient,
@@ -36,6 +52,13 @@ def active_controls(
         selector = selectors.DefaultSelector()
         selector.register(keyboard.fileno(), selectors.EVENT_READ)
 
+        def say(message: str) -> None:
+            if notice is not None:
+                notice("\n" + message)
+            else:
+                output.write("\n" + message + "\n")
+                output.flush()
+
         def listen() -> None:
             nonlocal interruption
             line = ""
@@ -50,20 +73,20 @@ def active_controls(
                             interruption = InputInterrupted()
                         continue
                     if key.key == Keys.ControlM:
-                        if line.strip() == "/stop":
+                        typed = line.strip()
+                        if typed == "/stop":
                             try:
                                 client.call("task.cancel", {"task_id": task_id})
-                                message = "Stop requested; retaining pending edits."
+                                say("Stop requested; retaining pending edits.")
                             except Exception:
-                                message = (
+                                say(
                                     "Could not confirm stop; use task cancel "
                                     "with this task ID."
                                 )
-                            if notice is not None:
-                                notice("\n" + message)
-                            else:
-                                output.write("\n" + message + "\n")
-                                output.flush()
+                        elif typed:
+                            # Input is not echoed while a task owns the terminal.
+                            # Never discard a command or message without saying so.
+                            say(_busy_message(typed))
                         line = ""
                     elif key.key in {Keys.ControlH, Keys.Backspace}:
                         line = line[:-1]

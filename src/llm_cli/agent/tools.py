@@ -591,6 +591,12 @@ class ToolBroker:
         self.check_cancelled()
         if outcome not in _COMPLETION_OUTCOMES:
             return _error("outcome must be completed, blocked, or partial")
+        if not answer.strip():
+            return _error(
+                "provide the complete user-facing answer in 'answer' before "
+                "finishing; 'summary' is only an optional operational report. "
+                "Include the actual findings, explanation, or requested deliverable."
+            )
         if len(answer) > MAX_ANSWER_CHARACTERS:
             return _error(
                 f"answer exceeds the {MAX_ANSWER_CHARACTERS}-character limit; "
@@ -611,17 +617,11 @@ class ToolBroker:
         return _ok("task marked finished", self.limits)
 
     def _finish_task(self, arguments: Mapping[str, object]) -> ToolOutcome:
-        # Summary-only calls remain accepted for native histories/checkpoints
-        # created before answers and operational reports were separated.
+        # Saved completions are restored through restore_usage; new calls must
+        # supply an answer even when an older conversation used summary alone.
         answer = _string(arguments, "answer", default="")
         summary = _string(arguments, "summary", default="")
         outcome = _string(arguments, "outcome", default="completed")
-        if "answer" in arguments and not answer.strip():
-            return _error("answer must contain the requested deliverable")
-        if not answer.strip() and not summary.strip():
-            return _error("provide the requested answer before finishing")
-        if not answer.strip() and outcome == "completed":
-            outcome = "partial"
         return self.complete(answer=answer, summary=summary, outcome=outcome)
 
     def _ask_user(self, arguments: Mapping[str, object]) -> ToolOutcome:

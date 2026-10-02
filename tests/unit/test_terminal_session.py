@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from llm_cli.build import code_identity
 from llm_cli.cli import app, composer, session
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.paths import AppPaths
@@ -35,6 +36,8 @@ class Client:
     def call(
         self, method: str, params: dict[str, Any] | None = None, **kwargs: object
     ) -> object:
+        if method == "system.ping":
+            return {"code_fingerprint": code_identity()["fingerprint"]}
         self.calls.append((method, params or {}))
         if method == "task.question":
             return self.question

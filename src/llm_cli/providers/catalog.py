@@ -341,8 +341,12 @@ def _known(provider: str, model: str) -> ModelOption:
 
 def _fingerprint(paths: AppPaths, provider: str) -> str:
     if provider == "codex":
-        info = CredentialStore(paths).path.stat()
-        value = f"{info.st_ino}:{info.st_mtime_ns}:{info.st_size}"
+        # OAuth rotation replaces the credential file between prompts. Model
+        # capabilities belong to the account, so token/file metadata must not
+        # invalidate an effort level that model discovery just offered. Loading
+        # directly also keeps capability validation offline (no token refresh).
+        credentials = CredentialStore(paths)._load()
+        value = f"codex\0{credentials.account_id}\0{credentials.residency or ''}"
     else:
         value = load_api_key(paths, provider) or os.environ.get(
             "ANTHROPIC_AUTH_TOKEN", ""
