@@ -246,7 +246,7 @@ def test_command_picker_keeps_query_geometry_and_footer_stable(
         assert terminal.process.wait(timeout=5) == 0, terminal.text
 
 
-def test_command_picker_enter_chooses_before_executing(
+def test_command_picker_enter_executes_selection_once(
     mode_cluster: _ModeCluster,
 ) -> None:
     cluster = mode_cluster
@@ -257,9 +257,6 @@ def test_command_picker_enter_chooses_before_executing(
         terminal.write("/stat")
         _wait(lambda: "› /status" in terminal.visible)
         view.capture("Status search", "/stat")
-        terminal.write(b"\r")
-        _wait(lambda: _PROMPT + "/status\n" in terminal.visible)
-        view.capture("First Enter chooses", "/status", picker=False)
         output_start = len(terminal.text)
         terminal.write(b"\r")
         _wait(lambda: "Starts with your first message" in terminal.text[output_start:])
@@ -268,6 +265,7 @@ def test_command_picker_enter_chooses_before_executing(
                 _PROMPT.rstrip() in terminal.visible and "Enter send" in terminal.footer
             )
         )
+        assert terminal.text[output_start:].count("Starts with your first message") == 1
         assert cluster.rpc("task.list") == []
         terminal.write("/detach\r")
         assert terminal.process.wait(timeout=5) == 0, terminal.text

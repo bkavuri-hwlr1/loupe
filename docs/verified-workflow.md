@@ -1,6 +1,6 @@
 # Edit, verify, review, and undo
 
-Magnifio can run named checks against a private copy of the proposed source,
+Loupe can run named checks against a private copy of the proposed source,
 then publish successful work. A check never runs directly in the shared
 checkout. Configure checks once per profile and checkout; existing tasks keep
 the configuration with which they were launched.
@@ -10,9 +10,9 @@ the configuration with which they were launched.
 Create a TOML file and import it explicitly:
 
 ```console
-magnifio repo add /path/to/project
-magnifio checks configure --repo /path/to/project --file checks.toml
-magnifio checks list --repo /path/to/project
+loupe repo add /path/to/project
+loupe checks configure --repo /path/to/project --file checks.toml
+loupe checks list --repo /path/to/project
 ```
 
 For this repository, replace `/absolute/path/to/uv` with the executable printed
@@ -57,9 +57,9 @@ Use an empty configuration to disable checks for future tasks.
 ## Work with changes
 
 ```console
-magnifio chat --repo /path/to/project
-magnifio chat --repo /path/to/project --mode plan
-magnifio chat --repo /path/to/project --mode auto
+loupe chat --repo /path/to/project
+loupe chat --repo /path/to/project --mode plan
+loupe chat --repo /path/to/project --mode auto
 ```
 
 New chats default to normal mode, retaining edits for `/diff` and `/apply`.
@@ -85,11 +85,11 @@ until the daemon validates and journals publication.
 
 | Chat command | CLI equivalent | Purpose |
 | --- | --- | --- |
-| `/diff [TASK_ID]` | `magnifio task diff TASK_ID` | Inspect the task's changes and check status |
-| `/checks [TASK_ID]` | `magnifio task checks TASK_ID` | List check outcomes |
-| `/apply TASK_ID` | `magnifio task apply TASK_ID` | Apply a retained shared-session proposal |
-| `/undo TASK_ID` | `magnifio task undo TASK_ID` | Revert one published task |
-| `/stop [TASK_ID]` | `magnifio task cancel TASK_ID` | Stop work and retain private edits |
+| `/diff [TASK_ID]` | `loupe task diff TASK_ID` | Inspect the task's changes and check status |
+| `/checks [TASK_ID]` | `loupe task checks TASK_ID` | List check outcomes |
+| `/apply TASK_ID` | `loupe task apply TASK_ID` | Apply a retained shared-session proposal |
+| `/undo TASK_ID` | `loupe task undo TASK_ID` | Revert one published task |
+| `/stop [TASK_ID]` | `loupe task cancel TASK_ID` | Stop work and retain private edits |
 
 Omitting an optional task ID uses the last task in the conversation. In an
 interactive task stream, type `/stop` and Enter to stop; Ctrl+C still detaches.
@@ -99,14 +99,14 @@ start new tools or publish edits after cancellation.
 
 Normal mode, failed required checks, or incomplete verification retain changes
 for review and release their work claim. The user can continue with another
-prompt. Use `magnifio task discard TASK_ID` to discard a retained proposal.
+prompt. Use `loupe task discard TASK_ID` to discard a retained proposal.
 
 Check results are bound to the exact source baseline, copied runtime inputs, pending edits, and frozen
 configuration. A source or copied dependency change makes previous results stale. Retry the task to
 obtain fresh verification. To explicitly apply despite failed or missing checks:
 
 ```console
-magnifio task apply TASK_ID --allow-unverified
+loupe task apply TASK_ID --allow-unverified
 ```
 
 This override is recorded and cannot bypass scope checks, changed-file conflicts,
@@ -114,6 +114,9 @@ or unresolved recovery journals. Check-generated source changes are discarded;
 a check that modifies source is not valid verification. Streamed output and
 exit status are replayable through `task watch`; output is capped at 10 MiB per
 check, with explicit truncation, and model results remain bounded at 64 KiB.
+If a check prints a recognized private-key or token format, that line and the
+remaining output are withheld before storage or model delivery, and the check
+is marked as an error. See the [privacy limits](../SECURITY.md#secrets-and-privacy).
 
 ## Undo and recovery
 
@@ -129,7 +132,7 @@ journals remain pinned.
 
 Interrupted checks are uncertain, never successful by inference. Subprocess
 supervision stops check process groups if the daemon disappears. File operations,
-apply, and undo use the same publication journal and `magnifio task recover`
+apply, and undo use the same publication journal and `loupe task recover`
 mechanism as ordinary shared edits. A stop arriving after publication begins
 cannot interrupt its filesystem journal.
 

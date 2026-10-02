@@ -113,7 +113,8 @@ _REFERENCE: dict[str, tuple[ModelOption, ...]] = {
         ModelOption("gpt-4.1-mini", "GPT-4.1 mini", max_output_tokens=32_768),
         ModelOption("gpt-4o", "GPT-4o", max_output_tokens=16_384),
     ),
-    # Official Codex app 0.154.0 bundled metadata. Live capabilities supersede it.
+    # Official Codex app metadata; GPT-6 Sol/Luna levels verified 2026-09-27.
+    # Live capabilities supersede these offline reference choices.
     "codex": (
         ModelOption(
             "gpt-6-astra",
@@ -121,6 +122,8 @@ _REFERENCE: dict[str, tuple[ModelOption, ...]] = {
             efforts=(*_MAXIMUM, "ultra"),
             default_effort="medium",
         ),
+        ModelOption("gpt-6-sol", "GPT-6 Sol", efforts=(*_MAXIMUM, "ultra")),
+        ModelOption("gpt-6-luna", "GPT-6 Luna", efforts=_MAXIMUM),
         ModelOption(
             "gpt-5.6-sol",
             "GPT-5.6 Sol",
@@ -338,8 +341,12 @@ def _known(provider: str, model: str) -> ModelOption:
 
 def _fingerprint(paths: AppPaths, provider: str) -> str:
     if provider == "codex":
-        info = CredentialStore(paths).path.stat()
-        value = f"{info.st_ino}:{info.st_mtime_ns}:{info.st_size}"
+        # OAuth rotation replaces the credential file between prompts. Model
+        # capabilities belong to the account, so token/file metadata must not
+        # invalidate an effort level that model discovery just offered. Loading
+        # directly also keeps capability validation offline (no token refresh).
+        credentials = CredentialStore(paths)._load()
+        value = f"codex\0{credentials.account_id}\0{credentials.residency or ''}"
     else:
         value = load_api_key(paths, provider) or os.environ.get(
             "ANTHROPIC_AUTH_TOKEN", ""

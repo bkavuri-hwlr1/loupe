@@ -1,4 +1,4 @@
-"""Private local sign-ins and the remembered provider for one Magnifio profile.
+"""Private local sign-ins and the remembered provider for one Loupe profile.
 
 Only metadata crosses this module's UI boundary. Provider adapters read API keys
 locally when each task starts; keys never need to be sent through daemon RPC.

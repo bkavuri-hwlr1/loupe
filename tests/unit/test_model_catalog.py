@@ -361,6 +361,34 @@ def test_codex_fixed_host_transport_filters_unsupported_subscription_capabilitie
     assert "unsupported" in (cached.notice or "")
 
 
+@pytest.mark.parametrize("change", ["account", "residency", "logout"])
+def test_codex_capability_cache_remains_account_scoped(
+    paths: AppPaths, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    store = CredentialStore(paths)
+    store.save(Credentials("first-token", None, time.time() + 3600, "first", "eu"))
+    option = catalog.ModelOption("gpt-future", "Future", efforts=("low", "high"))
+    monkeypatch.setattr(catalog, "_codex_models", lambda _: (option,))
+    assert catalog.list_models(paths, "codex").models == (option,)
+    assert catalog.model_option("codex", option.id, paths=paths) == option
+
+    if change == "logout":
+        store.logout()
+    else:
+        store.save(
+            Credentials(
+                "second-token",
+                None,
+                time.time() + 3600,
+                "second" if change == "account" else "first",
+                "us" if change == "residency" else "eu",
+            )
+        )
+
+    # An account switch must not inherit another account's advertised efforts.
+    assert catalog.model_option("codex", option.id, paths=paths).efforts == ()
+
+
 @pytest.mark.parametrize("provider", ["codex", "openai"])
 @pytest.mark.parametrize("age", [0, 600])
 def test_old_account_cache_cannot_restore_unsupported_efforts(
@@ -419,6 +447,24 @@ def test_codex_reference_fallback_omits_unsupported_efforts(paths: AppPaths) -> 
     assert result.source == "reference"
     assert "unsupported" in (result.notice or "")
     assert all("ultra" not in option.efforts for option in result.models)
+
+
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+def test_codex_gpt6_fallback_preserves_supported_saved_effort(
+    paths: AppPaths, model: str
+) -> None:
+    from llm_cli.providers.codex_provider import CodexProvider
+
+    # No account cache is available, as after credential rotation or offline use.
+    option = catalog.model_option("codex", model, paths=paths)
+    assert option.efforts == ("low", "medium", "high", "xhigh", "max")
+    listing = catalog.list_models(paths, "codex")
+    assert listing.source == "reference"
+    assert option in listing.models
+    provider = CodexProvider(paths=paths, model=model, effort="xhigh")
+    assert provider.model == model
+    with pytest.raises(ValueError, match="does not support effort 'ultra'"):
+        CodexProvider(paths=paths, model=model, effort="ultra")
 
 
 def test_known_snapshot_metadata_does_not_guess_unknown_suffixes() -> None:

@@ -124,7 +124,61 @@ def test_live_stop_input_has_bounded_lifetime(monkeypatch: pytest.MonkeyPatch) -
             assert client.called.wait(2)
         assert client.calls == [("task.cancel", {"task_id": "running-task"})]
         assert not any(
-            t.name == "magnifio-active-controls" for t in threading.enumerate()
+            t.name == "loupe-active-controls" for t in threading.enumerate()
         )
+    finally:
+        os.close(write_fd)
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [
+        ("/effort high", "so /effort was not run"),
+        ("/model", "so /model was not run"),
+        ("what changed?", "your message was not sent"),
+    ],
+)
+def test_live_input_other_than_stop_is_explained_not_dropped(
+    monkeypatch: pytest.MonkeyPatch, typed: str, expected: str
+) -> None:
+    read_fd, write_fd = os.pipe()
+
+    class Keyboard:
+        def fileno(self) -> int:
+            return read_fd
+
+        def raw_mode(self) -> Any:
+            return contextlib.nullcontext()
+
+        def read_keys(self) -> list[KeyPress]:
+            data = os.read(read_fd, 100).decode()
+            return [KeyPress(Keys.ControlM if c == "\n" else c, c) for c in data]
+
+        def close(self) -> None:
+            os.close(read_fd)
+
+    class Terminal(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr(active_controls, "create_input", lambda **_: Keyboard())
+    client = Client()
+    notices: list[str] = []
+    noticed = threading.Event()
+
+    def notice(text: str) -> None:
+        notices.append(text)
+        noticed.set()
+
+    try:
+        with active_controls.active_controls(
+            client, "running-task", Terminal(), io.StringIO(), notice=notice
+        ):
+            os.write(write_fd, typed.encode() + b"\n")
+            assert noticed.wait(2)
+        assert client.calls == []
+        assert len(notices) == 1
+        assert expected in notices[0]
+        assert "/stop" in notices[0]
     finally:
         os.close(write_fd)

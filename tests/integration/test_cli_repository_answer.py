@@ -24,7 +24,7 @@ from llm_cli.providers.base import ModelTurn, ToolCallResult
 
 _PROMPT = "Give me a summary of what this repo is doing"
 _PARAGRAPHS = (
-    "Magnifio is a terminal coding agent for local Git repositories.",
+    "Loupe is a terminal coding agent for local Git repositories.",
     "It connects models to file tools and preserves conversations in a daemon.",
     "Multiple sessions prepare private edits against the same checkout.",
     "Checks and review control publication, while durable state supports recovery.",
@@ -32,7 +32,7 @@ _PARAGRAPHS = (
 _ANSWER = "\n\n".join(_PARAGRAPHS)
 _LONG_ANSWER = """# Repository guide
 
-Magnifio keeps the requested result readable while its operational details stay
+Loupe keeps the requested result readable while its operational details stay
 out of the conversation.
 
 ## Durable delivery
@@ -48,7 +48,7 @@ def answer_contract(request: str) -> str:
 The final Markdown paragraph remains visible exactly once after the terminal resize.
 """.format(body=" ".join(f"capability-{index:03d}" for index in range(600)))
 _FILES = {
-    "README.md": "# Magnifio\nRAW_README_TOOL_RESULT_MUST_STAY_HIDDEN\n",
+    "README.md": "# Loupe\nRAW_README_TOOL_RESULT_MUST_STAY_HIDDEN\n",
     "src/entry.py": "# RAW_SOURCE_TOOL_RESULT_MUST_STAY_HIDDEN\n",
 }
 
@@ -83,6 +83,11 @@ class _OverviewProvider:
         )
 
     def send_tool_results(self, results: Sequence[ToolCallResult]) -> ModelTurn:
+        if self.model == "summary-only" and self.calls == 2:
+            assert len(results) == 1 and results[0].is_error, results
+            assert "answer" in results[0].content
+            self.calls += 1
+            return ModelTurn(text=_ANSWER, stop_reason="end_turn")
         assert self.calls == 1
         assert len(results) == len(_FILES)
         assert all(not result.is_error for result in results), results
@@ -99,6 +104,14 @@ class _OverviewProvider:
             (signals / "resize-answer.ready").touch()
             _wait(lambda: (signals / "resize-answer.release").exists(), timeout=30)
             return ModelTurn(text=_LONG_ANSWER, stop_reason="end_turn")
+        if self.model == "summary-only":
+            return ModelTurn(
+                text="",
+                tool_calls=(
+                    _turn("finish_task", summary="Prepared a repository overview."),
+                ),
+                stop_reason="tool_use",
+            )
         return ModelTurn(text=_ANSWER, stop_reason="end_turn")
 
     def record_tool_results(self, results: Sequence[ToolCallResult]) -> None:
@@ -160,6 +173,8 @@ def _assert_answer_only(text: str, task: dict[str, Any]) -> None:
         "RAW_README_TOOL_RESULT",
         "RAW_SOURCE_TOOL_RESULT",
         "read_file",
+        "finish_task",
+        "provide the complete user-facing answer",
         "Not verified",
         "no file changes",
         "Elapsed",
@@ -228,15 +243,15 @@ def _resize_terminal(terminal: _Terminal, *, rows: int, columns: int) -> None:
 
 
 @pytest.mark.parametrize("columns", [40, 80, 120])
+@pytest.mark.parametrize("model", ["overview", "summary-only"])
 def test_repo_question_answers_once_in_terminal_and_durable_replay(
     overview_cluster: _OverviewCluster,
     git_run: Callable[..., str],
     columns: int,
+    model: str,
 ) -> None:
     cluster = overview_cluster
-    with contextlib.closing(
-        _Terminal(cluster, "overview", columns=columns)
-    ) as terminal:
+    with contextlib.closing(_Terminal(cluster, model, columns=columns)) as terminal:
         initial = len(terminal.text)
         terminal.write(_PROMPT + "\r")
 

@@ -25,6 +25,9 @@ class MarkdownStream:
         self._block: list[str] = []
         self._fence: str | None = None
         self._plain_line_open = False
+        # A paragraph boundary is printed before the next block, unless that
+        # block (a list or quote) begins with Rich's own blank line.
+        self._separator = False
 
     def feed(self, cleaned_text: str) -> None:
         cleaned = self._sanitizer.feed(cleaned_text)
@@ -52,6 +55,9 @@ class MarkdownStream:
             self._accept_line(partial)
         self._emit()
         self._fence = None
+        if self._separator:
+            self._separator = False
+            self.ui.notice("")
 
     def _accept_line(self, line: str) -> None:
         match = _FENCE.fullmatch(line.removesuffix("\n"))
@@ -79,11 +85,14 @@ class MarkdownStream:
         text = "".join(self._block)
         self._block.clear()
         if text.strip():
+            if self._separator:
+                self._separator = False
+                if not self.ui.markdown_leading_blank(text):
+                    self.ui.notice("")
             self.ui.body(text, markdown=True)
             # Rich discards trailing paragraph separators when rendering one
             # block at a time. Keep the separation between committed paragraphs.
-            if _PARAGRAPH_END.search(text):
-                self.ui.notice("")
+            self._separator = bool(_PARAGRAPH_END.search(text))
         else:
             self.ui.notice("")
 

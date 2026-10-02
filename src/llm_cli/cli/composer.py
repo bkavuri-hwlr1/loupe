@@ -169,7 +169,7 @@ class Composer:
             @bindings.add("enter")
             def submit(event: KeyPressEvent) -> None:
                 buffer = event.current_buffer
-                if not self._answer_mode:
+                if self._picker_visible():
                     # Handle fast typing followed by Enter before the automatic
                     # completion task has had a chance to display its results.
                     matches = self._command_matches()
@@ -178,8 +178,8 @@ class Composer:
                     )
                     if selected is not None and selected.text != buffer.text:
                         buffer.apply_completion(selected)
-                        self._picker_dismissed = buffer.text
-                        return
+                # Enter confirms and runs the selected command in one step.
+                # Tab remains available to complete it before adding arguments.
                 buffer.validate_and_handle()
 
             @bindings.add("tab", filter=picking)
@@ -308,7 +308,7 @@ class Composer:
         # DaemonClient owns a synchronous event loop. A daemon worker keeps the
         # editor responsive and never delays exit for an unresponsive daemon.
         # An already dispatched request may still settle on the server.
-        threading.Thread(target=request, name="magnifio-mode", daemon=True).start()
+        threading.Thread(target=request, name="loupe-mode", daemon=True).start()
         await completed
 
     async def _cycle_mode(self, event: KeyPressEvent) -> None:
@@ -426,21 +426,12 @@ class Composer:
             )
         if self._picker_visible():
             assert self._session is not None
-            matches = self._command_matches()
-            selected = (
-                matches[self._picker_index % len(matches)] if matches else None
-            )
-            run = (
-                selected is not None
-                and selected.text == self._session.default_buffer.text
-            )
-            action = "Tab choose · Enter run" if run else "Tab/Enter choose"
-            hint = f"↑↓ browse commands · {action} · Esc close"
+            hint = "↑↓ browse commands · Tab choose · Enter run · Esc close"
             width = self._session.output.get_size().columns
             if Text(" " + hint + " · Shift+Tab mode").cell_len <= width:
                 hint += " · Shift+Tab mode"
             elif Text(" " + hint).cell_len > width:
-                hint = "↑↓ browse · Enter run" if run else "↑↓ browse · Enter choose"
+                hint = "↑↓ browse · Enter run"
             label = Text(hint)
             label.truncate(max(0, width - 1), overflow="ellipsis")
             return status + label.plain

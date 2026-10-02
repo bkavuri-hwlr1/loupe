@@ -1,6 +1,6 @@
 # Implementation status
 
-Magnifio is a provider-neutral terminal coding agent whose independently
+Loupe is a provider-neutral terminal coding agent whose independently
 started local instances coordinate when they work on the same repository.
 The durable execution foundation now includes an interactive terminal UI;
 the remaining planned capabilities are listed below.
@@ -14,10 +14,10 @@ the remaining planned capabilities are listed below.
   deletion, and renames. Configuration is owner-local and frozen per attempt.
   See [the workflow guide](verified-workflow.md) for limits and commands.
 
-- A Python 3.12–3.14 package with `magnifio` and `magnifiod` entry points
+- A Python 3.12–3.14 package with `loupe` and `louped` entry points
   (`llm-coord` and `llm-coordd` remain compatible aliases),
   locked development dependencies, and macOS/Linux CI.
-- Bare `magnifio` opens a local conversation interface before authentication,
+- Bare `loupe` opens a local conversation interface before authentication,
   repository registration, or daemon startup. `/login` connects Codex through
   ChatGPT OAuth, or Anthropic/OpenAI through a hidden API-key prompt; connecting
   later remains available. Profile-local preferences remember the provider and
@@ -38,7 +38,7 @@ the remaining planned capabilities are listed below.
   removed, and piped/`--plain` output works without the terminal editor.
 - A Prompt Toolkit composer with multiline input/paste, history, a searchable
   slash-command menu that opens while typing and displays command descriptions,
-  session commands, safe task reattachment and an offline `magnifio demo` tour.
+  session commands, safe task reattachment and an offline `loupe demo` tour.
   Pending questions have stable identities so replay cannot answer an old
   question on behalf of a new one. Active-task and interrupted-launch sessions
   preserve their resume credentials on exit.

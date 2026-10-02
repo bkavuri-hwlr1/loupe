@@ -600,7 +600,10 @@ def test_supervisor_stops_descendants_when_owner_pipe_closes(tmp_path: Path) -> 
         assert marker.exists() and heartbeat.exists()
         assert proc.stdin is not None
         proc.stdin.close()
-        assert proc.wait(timeout=5) == 125
+        exit_code = proc.wait(timeout=5)
+        assert proc.stderr is not None
+        os.set_blocking(proc.stderr.fileno(), False)
+        assert exit_code == 125, proc.stderr.read(4096)
         stamp = heartbeat.read_text()
         time.sleep(0.2)
         assert heartbeat.read_text() == stamp

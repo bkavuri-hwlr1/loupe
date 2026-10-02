@@ -263,7 +263,7 @@ class ConnectionMenu:
         if not self.stdin.isatty():
             raise LlmCoordError(
                 ErrorCode.SESSION_AUTH_REQUIRED,
-                "API keys need a private terminal prompt. Run magnifio in a terminal "
+                "API keys need a private terminal prompt. Run loupe in a terminal "
                 "and use /login, or set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
             )
         try:

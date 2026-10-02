@@ -142,7 +142,7 @@ class ModelMenu:
             unchanged = (
                 f"Your current effort setting ({_line(current_effort)}) is unchanged."
                 if current_effort and current_effort != "default"
-                else "Magnifio will use the provider's default."
+                else "Loupe will use the provider's default."
             )
             self.ui.notice(
                 f"{_line(option.name)} has no listed effort settings. {unchanged}"

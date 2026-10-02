@@ -42,13 +42,29 @@ def test_partial_paragraph_waits_for_stable_boundary_and_finishes_once(
     stream.feed("A **bold")
     assert _output(ui) == ""
     stream.feed(" answer**.\n\nNext para")
-    assert _visible(ui) == "A bold answer.\n"
+    # The paragraph separator waits for the next block, which may supply its own.
+    assert _visible(ui) == "A bold answer."
     stream.feed("graph.")
     stream.finish()
     assert _visible(ui) == "A bold answer.\n\nNext paragraph."
     before = _output(ui)
     stream.finish()
     assert _output(ui) == before
+
+
+@pytest.mark.parametrize("chunk_size", [1, 7, 1000])
+def test_streamed_lists_and_quotes_keep_single_blank_line_separation(
+    ui: TerminalUI, chunk_size: int
+) -> None:
+    text = "## Findings\n\nIntro.\n\n- one\n- two\n\n> quoted\n\n1. First.\n\nEnd."
+    stream = MarkdownStream(ui)
+    for offset in range(0, len(text), chunk_size):
+        stream.feed(text[offset : offset + chunk_size])
+    stream.finish()
+    visible = _visible(ui)
+    assert "\n\n\n" not in visible
+    assert visible.index("Intro.") < visible.index("• one") < visible.index("quoted")
+    assert "Intro.\n\n • one" in visible
 
 
 @pytest.mark.parametrize("chunk_size", [1, 2, 7, 1000])

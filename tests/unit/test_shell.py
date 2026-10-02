@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from llm_cli.build import code_identity
 from llm_cli.cli import session, shell
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.paths import AppPaths
@@ -24,12 +25,19 @@ class Client:
         self.tasks: list[dict[str, Any]] = []
         self.sessions: dict[str, dict[str, Any]] = {}
         self.repository_error: LlmCoordError | None = None
+        identity = code_identity()
+        self.daemon_identity: dict[str, Any] = {
+            "code_fingerprint": identity["fingerprint"],
+            "code_path": identity["path"],
+        }
 
     def call(
         self, method: str, params: dict[str, Any] | None = None, **kwargs: Any
     ) -> Any:
         params = params or {}
         self.calls.append((method, params))
+        if method == "system.ping":
+            return self.daemon_identity
         if method == "repo.status":
             if self.repository_error:
                 raise self.repository_error
@@ -126,6 +134,7 @@ def start(
     *,
     provider: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
 ) -> shell.ChatShell:
     return shell.ChatShell(
         cast(DaemonClient, client),
@@ -133,6 +142,7 @@ def start(
         scopes=["*"],
         provider=provider,
         model=model,
+        effort=effort,
         resume_session_id=None,
         workspace_mode=None,
         stdin=io.StringIO(source),
@@ -158,7 +168,7 @@ def test_login_help_and_exit_lobby_needs_no_daemon_or_login(
     assert client.calls == []
     assert menu.calls == []
     assert "/login" in output(chat)
-    assert "Leaving Magnifio" in output(chat)
+    assert "Leaving Loupe" in output(chat)
     assert not client.paths.state_dir.exists()
 
 
@@ -181,7 +191,7 @@ def test_double_ctrl_c_exits_and_preserves_only_active_sessions(
     monkeypatch.setattr(chat.composer, "read", interrupt)
     assert chat.run() == 0
     assert "Ctrl+C again" in output(chat)
-    assert "Leaving Magnifio" in output(chat)
+    assert "Leaving Loupe" in output(chat)
     assert bool(calls(client, "session.close")) is not active
     assert not calls(client, "task.cancel")
     if active:
@@ -257,6 +267,101 @@ def test_first_prompt_uses_saved_selection_and_registers_only_when_needed(
 
 
 @pytest.mark.parametrize(
+    ("provider", "model", "expected"),
+    [
+        ("codex", None, ("codex", "saved-model", "xhigh")),
+        ("codex", "saved-model", ("codex", "saved-model", "xhigh")),
+        ("codex", "other-model", ("codex", "other-model", None)),
+        ("openai", None, ("openai", None, None)),
+    ],
+)
+def test_explicit_provider_keeps_saved_model_and_effort_only_when_they_match(
+    client: Client,
+    menu: Menu,
+    provider: str,
+    model: str | None,
+    expected: tuple[str, str | None, str | None],
+) -> None:
+    save_preference(client.paths, "codex", "saved-model", "xhigh")
+    menu.ready.add(provider)
+    chat = start(client, "Inspect the project\n/exit\n", provider=provider, model=model)
+    assert (chat.provider, chat.model, chat.effort) == expected
+    chat.run()
+    opened = calls(client, "session.open")
+    assert len(opened) == 1
+    assert opened[0].get("effort") == expected[2]
+
+
+@pytest.mark.parametrize(
+    ("daemon", "expected"),
+    [
+        ({"code_path": "/elsewhere/llm_cli"}, "running Loupe from /elsewhere/llm_cli"),
+        ({}, "still running code from before your last update"),
+        (None, "running an older version of Loupe"),
+    ],
+    ids=["other-installation", "stale-code", "older-daemon"],
+)
+def test_daemon_running_different_code_is_reported_once(
+    client: Client,
+    menu: Menu,
+    daemon: dict[str, str] | None,
+    expected: str,
+) -> None:
+    menu.ready.add("openai")
+    if daemon is None:
+        client.daemon_identity = {}
+    else:
+        client.daemon_identity = {
+            "code_fingerprint": "0" * 64,
+            "code_path": daemon.get("code_path", client.daemon_identity["code_path"]),
+        }
+    chat = start(client, "First\n/changes\nSecond\n/exit\n", provider="openai")
+    chat.run()
+    assert output(chat).count(expected) == 1
+    assert "loupe daemon restart" in output(chat)
+    assert len(calls(client, "system.ping")) == 1
+    assert len(calls(client, "task.run")) == 2
+
+
+def test_daemon_running_this_code_is_not_reported(client: Client, menu: Menu) -> None:
+    menu.ready.add("openai")
+    chat = start(client, "Inspect\n/exit\n", provider="openai")
+    chat.run()
+    assert "background service" not in output(chat)
+    assert len(calls(client, "system.ping")) == 1
+
+
+def test_unreachable_daemon_identity_does_not_block_the_prompt(
+    client: Client, menu: Menu, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    menu.ready.add("openai")
+    original = client.call
+
+    def call(method: str, params: dict[str, Any] | None = None, **kw: Any) -> Any:
+        if method == "system.ping":
+            raise LlmCoordError(ErrorCode.DAEMON_UNAVAILABLE, "not running")
+        return original(method, params, **kw)
+
+    monkeypatch.setattr(client, "call", call)
+    chat = start(client, "Inspect\n/exit\n", provider="openai")
+    chat.run()
+    assert "background service" not in output(chat)
+    assert len(calls(client, "task.run")) == 1
+
+
+def test_explicit_provider_ignores_a_broken_saved_preference(
+    client: Client, menu: Menu, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise LlmCoordError(ErrorCode.CONFIG_INVALID, "saved preference is malformed")
+
+    monkeypatch.setattr(shell, "load_preference", broken)
+    chat = start(client, provider="codex", model="chosen-model")
+    assert (chat.provider, chat.model, chat.effort) == ("codex", "chosen-model", None)
+    assert "need attention" not in output(chat)
+
+
+@pytest.mark.parametrize(
     "failure",
     [
         LlmCoordError(
@@ -278,7 +383,7 @@ def test_repository_failures_preserve_lobby_without_registering_another_target(
     assert not calls(client, "task.run")
     assert failure.message in output(chat)
     assert "/cd PATH" in output(chat)
-    assert "Leaving Magnifio" in output(chat)
+    assert "Leaving Loupe" in output(chat)
 
 
 def test_cd_outside_git_keeps_login_and_help_available(

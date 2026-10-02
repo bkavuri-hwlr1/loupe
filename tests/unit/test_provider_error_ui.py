@@ -67,7 +67,7 @@ def _event(kind: str, **payload: object) -> dict[str, Any]:
     [
         ("unsupported_effort", "/effort to choose a supported level"),
         ("unsupported_model", "/model --refresh"),
-        ("unsupported_parameter", "Magnifio may need an update"),
+        ("unsupported_parameter", "Loupe may need an update"),
         ("authentication", "/login to reconnect"),
         ("rate_limit", "Wait before retrying"),
         ("request_rejected", "Try /model or /effort"),

@@ -12,6 +12,7 @@ from typing import Any
 
 from llm_cli import __version__
 from llm_cli.agent.modes import AGENT_MODES, resolve_agent_mode
+from llm_cli.build import code_identity
 from llm_cli.cli.auth import auth_command
 from llm_cli.cli.exit_codes import EXIT_BY_ERROR
 from llm_cli.cli.interrupts import ExitRequested
@@ -25,6 +26,8 @@ from llm_cli.cli.session import (
     session_resume_secret,
 )
 from llm_cli.cli.terminal import TerminalUI
+from llm_cli.config.loader import load_settings
+from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.ids import new_id
 from llm_cli.paths import AppPaths
@@ -33,13 +36,23 @@ from llm_cli.protocol.client import DaemonClient
 # Commands that write their own output as it arrives have nothing left for the
 # emitter, and a plain None would be indistinguishable from a null result.
 _RENDERED = object()
+# Least to most reasoning. The selected model's own levels are checked later.
+_EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+_EFFORT_CHOICES = (
+    *(level for level in _EFFORT_ORDER if level in EFFORT_LEVELS),
+    "default",
+)
+_EFFORT_HELP = (
+    "reasoning effort for a new conversation, such as low, medium, high, or "
+    "xhigh; 'default' lets the provider choose (use /effort to save a choice)"
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="magnifio",
+        prog="loupe",
         description=(
-            "Magnifio — your coding agent in the terminal. "
+            "Loupe — your coding agent in the terminal. "
             "Run without a command to start a conversation."
         ),
     )
@@ -47,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", default="default")
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--mode", dest="agent_mode", choices=AGENT_MODES)
+    parser.add_argument(
+        "--effort", choices=_EFFORT_CHOICES, metavar="LEVEL", help=_EFFORT_HELP
+    )
     parser.add_argument(
         "--plain",
         action="store_true",
@@ -57,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("init", help="initialize private local state and databases")
     commands.add_parser("doctor", help="run local safety and feature checks")
     commands.add_parser(
-        "demo", help="preview the Magnifio interface without a model or daemon"
+        "demo", help="preview the Loupe interface without a model or daemon"
     )
 
     auth = commands.add_parser("auth", help="manage saved AI accounts")
@@ -160,6 +176,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     chat.add_argument(
         "--mode", dest="agent_mode", choices=AGENT_MODES, default=argparse.SUPPRESS
+    )
+    chat.add_argument(
+        "--effort",
+        choices=_EFFORT_CHOICES,
+        metavar="LEVEL",
+        default=argparse.SUPPRESS,
+        help=_EFFORT_HELP,
     )
     chat.add_argument(
         "--scope",
@@ -328,6 +351,8 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             ErrorCode.CONFIG_INVALID,
             "--mode is available for chat, run, or session open",
         )
+    if getattr(arguments, "effort", None) is not None and command != "chat":
+        raise LlmCoordError(ErrorCode.CONFIG_INVALID, "--effort is available for chat")
     if command == "demo":
         from llm_cli.cli.demo import demo_events, run_demo
 
@@ -344,9 +369,9 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
     if command == "daemon":
         action = arguments.daemon_command
         if action == "start":
-            return client.call("system.ping")
+            return _with_code_match(client.call("system.ping"))
         if action == "status":
-            return client.call("system.ping", autostart=False)
+            return _with_code_match(client.call("system.ping", autostart=False))
         if action == "stop":
             return client.call("system.shutdown", autostart=False)
         if action == "restart":
@@ -355,7 +380,18 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             except LlmCoordError as exc:
                 if exc.code is not ErrorCode.DAEMON_UNAVAILABLE:
                     raise
-            return client.call("system.ping")
+            # The old daemon first drains running tasks; a successor started
+            # before it exits is refused by the profile's singleton lock.
+            settings = load_settings(
+                client.paths.config_file, profile_id=client.paths.profile_id
+            )
+            if not client.wait_until_stopped(settings.shutdown_drain_ms / 1_000 + 15):
+                raise LlmCoordError(
+                    ErrorCode.DAEMON_UNAVAILABLE,
+                    "the previous Loupe background service has not exited yet; "
+                    f"run 'loupe daemon restart' again, or see {client.paths.log_file}",
+                )
+            return _with_code_match(client.call("system.ping"))
     if command == "db":
         return client.call(f"db.{arguments.db_command}")
     if command == "repo":
@@ -473,8 +509,14 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
         if arguments.checks_command == "configure":
             import tomllib
 
-            with Path(arguments.file).open("rb") as handle:
-                params["config"] = tomllib.load(handle)
+            try:
+                with Path(arguments.file).open("rb") as handle:
+                    params["config"] = tomllib.load(handle)
+            except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID,
+                    f"could not read checks configuration: {exc}",
+                ) from exc
         return client.call("checks." + arguments.checks_command, params)
     if command == "chat":
         run_session(
@@ -487,6 +529,7 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             workspace_mode=arguments.workspace,
             publication_mode=arguments.publish,
             agent_mode=arguments.agent_mode,
+            effort=arguments.effort,
             plain=arguments.plain,
         )
         return _RENDERED
@@ -580,7 +623,7 @@ def _run_in_mode(arguments: argparse.Namespace, client: DaemonClient) -> object:
                 "That task ID already exists. Continue it with "
                 + shlex.join(
                     [
-                        "magnifio",
+                        "loupe",
                         "--profile",
                         client.paths.profile_id,
                         "task",
@@ -599,7 +642,7 @@ def _run_in_mode(arguments: argparse.Namespace, client: DaemonClient) -> object:
         agent_mode=arguments.agent_mode,
     )
     resume_args = [
-        "magnifio",
+        "loupe",
         "--profile",
         client.paths.profile_id,
         "chat",
@@ -645,6 +688,18 @@ def _run_in_mode(arguments: argparse.Namespace, client: DaemonClient) -> object:
         # A lost response or detached viewer must leave a discoverable session.
         # Keep its native context for turning a plan into an implementation.
         TerminalUI(sys.stderr, plain=arguments.plain).notice("Resume with: " + resume)
+
+
+def _with_code_match(status: Any) -> Any:
+    """Say whether the daemon runs the same Loupe code as this command."""
+
+    if isinstance(status, dict):
+        status = {
+            **status,
+            "matches_this_cli": status.get("code_fingerprint")
+            == code_identity()["fingerprint"],
+        }
+    return status
 
 
 def _dispatch_session(arguments: argparse.Namespace, client: DaemonClient) -> Any:
@@ -803,7 +858,7 @@ def main(argv: list[str] | None = None) -> None:
         # Apply chat defaults while preserving global options.
         defaults = parser.parse_args(["chat"])
         for key, value in vars(defaults).items():
-            if key not in {"profile", "as_json", "plain", "agent_mode"}:
+            if key not in {"profile", "as_json", "plain", "agent_mode", "effort"}:
                 setattr(arguments, key, value)
     if arguments.command == "chat" and arguments.as_json:
         parser.error("chat is interactive; use run or task watch with --json")
@@ -834,10 +889,10 @@ def main(argv: list[str] | None = None) -> None:
             ui = TerminalUI(sys.stderr, plain=arguments.plain)
             ui.error(f"{exc.code.value}: {exc.message}")
             if exc.code is ErrorCode.REPOSITORY_NOT_FOUND:
-                ui.notice("Register this repository with: magnifio repo add .")
+                ui.notice("Register this repository with: loupe repo add .")
             if exc.code is ErrorCode.PROVIDER_UNAVAILABLE:
                 ui.notice(
-                    "Check provider credentials. For ChatGPT: magnifio auth login codex"
+                    "Check provider credentials. For ChatGPT: loupe auth login codex"
                 )
         raise SystemExit(EXIT_BY_ERROR.get(exc.code, 70)) from exc
     except ExitRequested:

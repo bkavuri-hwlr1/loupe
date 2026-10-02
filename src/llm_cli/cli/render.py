@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, TextIO
 
+from llm_cli.cli.partial_json import AnswerFieldDecoder
 from llm_cli.cli.streaming_markdown import MarkdownStream
 from llm_cli.cli.terminal import TerminalUI, TextSanitizer, safe_text
 
@@ -30,6 +31,11 @@ _TOOL_ACTIVITIES = {
     "finish_task": "Preparing the result…",
     "ask_user": "Waiting for your input…",
 }
+# A task that called any of these may still fail checks or publication, so its
+# answer draft is only previewed until the model.finished event accepts it.
+_WRITE_TOOLS = frozenset(
+    tool for tool, activity in _TOOL_ACTIVITIES.items() if activity == "Making changes…"
+)
 
 # These records remain in the durable/JSON stream. In the conversation they
 # are bookkeeping within a task, not separate accomplishments for the user.
@@ -87,6 +93,7 @@ _PUBLIC_EVENTS = frozenset(
         "model.reasoning",
         "model.reasoning.delta",
         "model.text.delta",
+        "model.answer.preview",
         "model.said",
         "model.partial",
         "model.finished",
@@ -156,6 +163,11 @@ _MARKERS: dict[str, str] = {
     "model.stalled": "!",
 }
 
+_STREAMED_OUTCOMES = {
+    "blocked": "Loupe marked this answer as blocked.",
+    "partial": "Loupe marked this answer as incomplete.",
+}
+
 _PROVIDER_FAILURE_EVENTS = frozenset(
     {"execution.failed", "execution.background_failed"}
 )
@@ -188,7 +200,7 @@ _PROVIDER_ERROR_HINTS: dict[str, tuple[str, str]] = {
         "Try again. Use /diff to inspect any retained edits before continuing.",
     ),
     "invalid_response": (
-        "Your provider returned a response Magnifio could not use.",
+        "Your provider returned a response Loupe could not use.",
         "Try again, or choose another model with /model.",
     ),
     "unsupported_model": (
@@ -200,8 +212,8 @@ _PROVIDER_ERROR_HINTS: dict[str, tuple[str, str]] = {
         "Run /effort to choose a supported level, then try again.",
     ),
     "unsupported_parameter": (
-        "The provider rejected Magnifio's request settings.",
-        "Try /model or /effort. If this persists, Magnifio may need an update.",
+        "The provider rejected Loupe's request settings.",
+        "Try /model or /effort. If this persists, Loupe may need an update.",
     ),
     "authentication": (
         "Your provider could not authenticate this request.",
@@ -213,7 +225,7 @@ _PROVIDER_ERROR_HINTS: dict[str, tuple[str, str]] = {
     ),
     "request_rejected": (
         "The provider rejected this request.",
-        "Try /model or /effort. If this persists, Magnifio may need an update.",
+        "Try /model or /effort. If this persists, Loupe may need an update.",
     ),
 }
 
@@ -270,6 +282,7 @@ def render_event(event: dict[str, Any]) -> str | None:
         "model.turn.started",
         "model.turn.completed",
         "model.tool.delta",
+        "model.answer.preview",
         "model.reasoning",
         "model.reasoning.delta",
         "model.tool_result",
@@ -456,6 +469,15 @@ class EventRenderer:
         self._pending_settlement_failure: tuple[str, str] | None = None
         self._pending_provider_failure: dict[str, Any] | None = None
         self._provider_failure_displayed = False
+        # Live answers: finish_task arguments stream before the answer is
+        # accepted. Read-only drafts are shown as they arrive; drafts from a
+        # task with edits, and text whose role is not yet known, are previews.
+        self._edited = False
+        self._answers: dict[str, AnswerFieldDecoder] = {}
+        self._streamed_calls: set[str] = set()
+        self._revising = False
+        self._preview_text = ""
+        self._preview_source: str | None = None
 
     def render(self, event: dict[str, Any]) -> None:
         kind = str(event.get("event_type", ""))
@@ -482,6 +504,11 @@ class EventRenderer:
             self._verification = None
             self._provider_failure_displayed = False
             self._last_assistant = ""
+            self._edited = False
+            self._answers.clear()
+            self._streamed_calls.clear()
+            self._revising = False
+            self._clear_preview()
         if isinstance(claim_id, str) and claim_id != self._claim_id:
             self._claim_id = claim_id
             self._provider_failure_displayed = False
@@ -546,6 +573,18 @@ class EventRenderer:
             if self._active is None:
                 self.ui.activity("Thinking…")
             return
+        if kind == "model.answer.preview":
+            # Text whose role (answer or narration) is known only once its
+            # turn completes. It stays transient; model.finished commits it.
+            text = payload.get("text")
+            if isinstance(text, str) and text:
+                self._preview_text += text
+                self._preview_source = "text"
+                self.ui.preview(self._preview_text)
+            return
+        if kind == "model.tool.delta" and payload.get("tool") == "finish_task":
+            self._stream_answer(turn, payload)
+            return
         if kind in {"model.tool.delta", "model.tool_call", "tool.called"}:
             self._end_block()
             tool = str(payload.get("tool", ""))
@@ -554,6 +593,15 @@ class EventRenderer:
                 if kind == "model.tool.delta"
                 else _TOOL_ACTIVITIES.get(tool, "Working…")
             )
+            if kind == "model.tool_call":
+                if tool in _WRITE_TOOLS:
+                    self._edited = True
+                elif tool == "finish_task":
+                    call = str(payload.get("call_id", ""))
+                    decoder = self._answers.get(call)
+                    if call in self._streamed_calls and decoder is not None:
+                        # Already on screen: model.finished must not repeat it.
+                        self._last_assistant = safe_text(decoder.text)
             if tool == "run_check" and kind == "model.tool_call":
                 self._check_failed = False
             return
@@ -561,8 +609,26 @@ class EventRenderer:
             if not payload.get("is_error"):
                 return
             self._end_block()
-            self.ui.activity(None)
             tool = safe_text(payload.get("tool") or "tool")
+            if tool == "finish_task":
+                # Completion corrections are instructions for the model. The
+                # user sees its resulting answer or terminal execution failure.
+                call = str(payload.get("call_id", ""))
+                self._answers.pop(call, None)
+                if self._preview_source == "answer":
+                    self._clear_preview()
+                if call in self._streamed_calls:
+                    # The draft is already in scrollback; say it is not final.
+                    self._streamed_calls.discard(call)
+                    self._revising = True
+                    self._last_assistant = ""
+                    self._streams.pop((turn, "text"), None)
+                    self.ui.notice(
+                        "  ! Loupe is revising this answer…", style="warning"
+                    )
+                self.ui.activity("Preparing response…")
+                return
+            self.ui.activity(None)
             if tool == "run_check" and self._check_failed:
                 return
             key = (kind, str(payload.get("call_id", "")))
@@ -577,21 +643,15 @@ class EventRenderer:
         payload = completed
         if kind == "model.turn.completed":
             self._end_block()
+            if self._preview_source == "text":
+                # The turn established the text's role; only model.finished
+                # can turn it into the answer.
+                self._clear_preview()
             return
         if kind == "model.text.delta":
-            channel = "text"
             text = payload.get("text")
             if isinstance(text, str) and text:
-                block = str(payload.get("block_id", ""))
-                state = self._streams.setdefault((turn, channel), _StreamedText())
-                previous_block = state.last_block
-                cleaned = state.feed(block, text)
-                if cleaned:
-                    self._begin_block(turn, channel)
-                    assert self._markdown is not None
-                    if previous_block is not None and previous_block != block:
-                        self._markdown.feed("\n")
-                    self._markdown.feed(cleaned)
+                self._stream_text(turn, str(payload.get("block_id", "")), text)
             return
         if kind == "model.said":
             text = payload.get("text")
@@ -654,20 +714,30 @@ class EventRenderer:
             self.ui.activity(None)
             question = question_text(event)
             if question:
-                self.ui.message_heading("Magnifio needs your input", style="warning")
+                self.ui.message_heading("Loupe needs your input", style="warning")
                 self.ui.body(question)
             return
         if kind == "model.finished":
             self.ui.activity(None)
+            self._clear_preview()
             answer = payload.get("answer")
             summary = payload.get("summary")
+            outcome = str(payload.get("outcome"))
             if isinstance(answer, str) and answer.strip():
                 if safe_text(answer).strip() != self._last_assistant.strip():
                     heading = {
-                        "blocked": "Magnifio — blocked",
-                        "partial": "Magnifio — incomplete",
-                    }.get(str(payload.get("outcome")), "Magnifio")
+                        "blocked": "Loupe — blocked",
+                        "partial": "Loupe — incomplete",
+                    }.get(
+                        outcome, "Loupe — revised answer" if self._revising else "Loupe"
+                    )
                     self._complete_text(turn, "text", answer, heading=heading)
+                elif outcome in _STREAMED_OUTCOMES:
+                    # The answer streamed before its outcome was known.
+                    self._end_block()
+                    self.ui.notice(
+                        f"  ! {_STREAMED_OUTCOMES[outcome]}", style="warning"
+                    )
             elif (
                 isinstance(summary, str)
                 and summary.strip()
@@ -676,6 +746,7 @@ class EventRenderer:
                 self._complete_text(turn, "text", summary, heading="Task summary")
             if isinstance(message_id, str):
                 self._answer_ids.add(message_id)
+            self._revising = False
             # The model can finish before validation or saving fails. Only the
             # execution's confirmed success earns the friendly completion line.
             self._end_block()
@@ -733,20 +804,62 @@ class EventRenderer:
             return None
         return payload
 
-    def _begin_block(self, turn: str, channel: str) -> None:
+    def _stream_text(
+        self, turn: str, block: str, text: str, *, heading: str = "Loupe"
+    ) -> None:
+        state = self._streams.setdefault((turn, "text"), _StreamedText())
+        previous_block = state.last_block
+        cleaned = state.feed(block, text)
+        if cleaned:
+            self._begin_block(turn, "text", heading=heading)
+            assert self._markdown is not None
+            if previous_block is not None and previous_block != block:
+                self._markdown.feed("\n")
+            self._markdown.feed(cleaned)
+
+    def _stream_answer(self, turn: str, payload: dict[str, Any]) -> None:
+        """Show the ``answer`` argument of a finish_task call as it streams."""
+
+        call = str(payload.get("call_id", ""))
+        decoder = self._answers.setdefault(call, AnswerFieldDecoder())
+        delta = payload.get("arguments_delta")
+        text = decoder.feed(delta) if isinstance(delta, str) else ""
+        if self._edited:
+            # Edits can still fail checks or publication: preview, don't commit.
+            self._end_block()
+            if decoder.text:
+                self._preview_source = "answer"
+                self.ui.preview(decoder.text)
+            else:
+                self.ui.activity("Writing the answer…")
+            return
+        if text:
+            self._streamed_calls.add(call)
+            heading = "Loupe — revised answer" if self._revising else "Loupe"
+            self._stream_text(turn, "finish_task:" + call, text, heading=heading)
+        elif self._active is None:
+            self.ui.activity("Writing the answer…")
+
+    def _clear_preview(self) -> None:
+        if self._preview_source is not None or self._preview_text:
+            self.ui.preview(None)
+        self._preview_text = ""
+        self._preview_source = None
+
+    def _begin_block(self, turn: str, channel: str, *, heading: str = "Loupe") -> None:
         key = (turn, channel)
         if self._active == key:
             return
         self._end_block()
         self.ui.activity(None)
-        self.ui.message_heading("Magnifio", style="assistant")
+        self.ui.message_heading(heading, style="assistant")
         if not self.ui.plain:
             self.ui.activity("Writing response…")
         self._active = key
         self._markdown = MarkdownStream(self.ui)
 
     def _complete_text(
-        self, turn: str, channel: str, text: str, *, heading: str = "Magnifio"
+        self, turn: str, channel: str, text: str, *, heading: str = "Loupe"
     ) -> None:
         cleaned = safe_text(text)
         state = self._streams.pop((turn, channel), None)
@@ -755,7 +868,7 @@ class EventRenderer:
             suffix = cleaned[len(streamed) :]
             if suffix:
                 # Reuse the active streaming block when it is still open.
-                self._begin_block(turn, channel)
+                self._begin_block(turn, channel, heading=heading)
                 assert self._markdown is not None
                 self._markdown.feed(suffix)
             self._end_block()
@@ -850,6 +963,7 @@ class EventRenderer:
                 self._complete_text(turn, "text", partial, heading=heading)
         self._parts.clear()
         self._end_block()
+        self._clear_preview()
         if streamed_response_interrupted:
             self.ui.notice(
                 "  ! Partial response (stream interrupted).", style="warning"

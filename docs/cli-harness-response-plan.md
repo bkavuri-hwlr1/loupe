@@ -1,4 +1,4 @@
-# Magnifio CLI harness: response and execution plan
+# Loupe CLI harness: response and execution plan
 
 Status: first response-and-delivery milestone implemented and locally validated;
 broader harness work remains.
@@ -52,7 +52,7 @@ gates.
 
 ## Product outcome
 
-Magnifio should deliver the result the user requested, show useful progress while
+Loupe should deliver the result the user requested, show useful progress while
 working, and describe execution outcomes accurately. A repository summary must
 explain the repository. “Reviewed the files and prepared a summary” is a work
 report, not that answer.
@@ -71,8 +71,8 @@ Illustrative response to “Give me a summary of what this repo is doing”:
 ```text
 ❯ Give me a summary of what this repo is doing
 
-Magnifio
-Magnifio is a terminal coding agent designed to let multiple sessions work
+Loupe
+Loupe is a terminal coding agent designed to let multiple sessions work
 in the same Git repository without silently overwriting each other's edits.
 
 • The CLI provides conversation, model selection, and plan/normal/auto modes.
@@ -189,6 +189,23 @@ a text block's role yet, buffer it until the completed turn establishes the role
 Mutation-result drafts must not be printed irreversibly as final before settlement.
 Finalization after settlement can stream immediately. Already complete drafts can
 render directly. Make this latency/correctness tradeoff explicit.
+
+**Decision (hybrid streaming).** The renderer decodes the `answer` argument of a
+`finish_task` call from its streamed arguments (`cli/partial_json.py`).
+
+- *No edits in the task:* the draft streams into the conversation as it is
+  written. The completion gate only applies when there are candidate edits, so a
+  read-only draft is rejected only for structural reasons (empty or oversized).
+  If that happens, a "revising this answer" notice follows the draft and the
+  accepted answer is labeled as revised.
+- *Edits in the task:* the draft appears only as a transient footer preview. It
+  enters the conversation once `model.finished` accepts it.
+- *Plain-text turns:* their role is unknown until the turn completes, so they are
+  published only as `model.answer.preview` events for that preview. Older clients
+  ignore this event type.
+
+`model.finished` remains the single committed answer and reconciles with
+whatever already streamed, so live output and replay agree.
 
 ## Implementation sequence
 

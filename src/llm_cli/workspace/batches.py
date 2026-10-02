@@ -58,6 +58,7 @@ class BatchFile:
     content: bytes | None
     mode: str
     original: bytes | None = None
+    permissions: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,17 +78,26 @@ class _JournalFile:
 
 
 def _identity_json(identity: FileIdentity) -> dict[str, object]:
-    return {
+    value: dict[str, object] = {
         "kind": str(identity.kind),
         "mode": identity.mode,
         "digest": identity.digest,
         "size": identity.size,
     }
+    if identity.permissions is not None:
+        value["permissions"] = identity.permissions
+    return value
 
 
 def _validate_base(base: FileIdentity) -> None:
     if not isinstance(base, FileIdentity):
         raise WorkspaceBrokerError("batch base must be a FileIdentity")
+    if base.permissions is not None and (
+        base.kind is not ObjectKind.REGULAR
+        or type(base.permissions) is not int
+        or not 0 <= base.permissions <= 0o777
+    ):
+        raise WorkspaceBrokerError("batch filesystem permissions are invalid")
     if base.kind is ObjectKind.ABSENT:
         if base != ABSENT:
             raise WorkspaceBrokerError("batch absent base identity is invalid")
@@ -110,7 +120,10 @@ def _validate_base(base: FileIdentity) -> None:
 
 
 def _identity_from_json(value: object) -> FileIdentity:
-    if not isinstance(value, dict) or set(value) != {"kind", "mode", "digest", "size"}:
+    if not isinstance(value, dict) or set(value) not in (
+        {"kind", "mode", "digest", "size"},
+        {"kind", "mode", "digest", "size", "permissions"},
+    ):
         raise WorkspaceBrokerError("stored batch identity is invalid")
     if (
         not isinstance(value["kind"], str)
@@ -120,7 +133,11 @@ def _identity_from_json(value: object) -> FileIdentity:
     ):
         raise WorkspaceBrokerError("stored batch identity fields are invalid")
     identity = FileIdentity(
-        ObjectKind(value["kind"]), value["mode"], value["digest"], value["size"]
+        ObjectKind(value["kind"]),
+        value["mode"],
+        value["digest"],
+        value["size"],
+        value.get("permissions"),
     )
     _validate_base(identity)
     return identity
@@ -157,12 +174,42 @@ def result_identity(item: BatchFile) -> FileIdentity:
         return ABSENT
     if item.mode == DIRECTORY_MODE:
         return directory_identity()
+    permissions = (
+        item.permissions if item.permissions is not None else item.base.permissions
+    )
+    if permissions is not None:
+        if type(permissions) is not int or not 0 <= permissions <= 0o777:
+            raise WorkspaceBrokerError("batch filesystem permissions are invalid")
+        permissions = (
+            permissions | 0o100
+            if item.mode == EXECUTABLE_MODE
+            else permissions & ~0o100
+        )
     return FileIdentity(
         ObjectKind.REGULAR,
         item.mode,
         content_identity(ObjectKind.REGULAR, item.mode, item.content),
         len(item.content),
+        permissions,
     )
+
+
+def _matches_snapshot(
+    current: FileIdentity, expected: FileIdentity, *, result: bool = False
+) -> bool:
+    if current != expected:
+        return False
+    if expected.permissions is None:
+        # Existing journals predate filesystem permission metadata. The
+        # atomic writer still preserves live permissions, or creates privately.
+        return True
+    if current.permissions is None:
+        return False
+    if result:
+        # A user may tighten access after publication. Never undo that on
+        # recovery merely to match the originally proposed permission mask.
+        return current.permissions & ~expected.permissions == 0
+    return current.permissions == expected.permissions
 
 
 def _target(root: Path, relative_path: str) -> Path:
@@ -236,6 +283,7 @@ def _request(
         if total > MAX_BATCH_BYTES:
             raise WorkspaceBrokerError("batch exceeds the 4 MiB aggregate byte limit")
         result = result_identity(item)
+        _validate_base(result)
         encoded.append(
             {
                 "relative_path": path,
@@ -443,7 +491,7 @@ class SharedBatchPublisher:
                     try:
                         current = _observe(targets[item.relative_path])
                         observed[item.relative_path] = _identity_json(current)
-                        if current != item.base:
+                        if not _matches_snapshot(current, item.base):
                             state = "diverged"
                     except (OSError, ValueError) as exc:
                         observed[item.relative_path] = {"error": str(exc)}
@@ -575,7 +623,10 @@ class SharedBatchPublisher:
                 bodies[item.relative_path] = body
                 current = _observe(_target(root, item.relative_path))
                 observations[item.relative_path] = _identity_json(current)
-                if current not in {item.base, item.result}:
+                if not (
+                    _matches_snapshot(current, item.base)
+                    or _matches_snapshot(current, item.result, result=True)
+                ):
                     raise WorkspaceBrokerError(
                         "batch recovery found an unrecognized path state"
                     )
@@ -596,9 +647,9 @@ class SharedBatchPublisher:
             for ordinal, item in enumerate(ordered):
                 current = _observe(_target(root, item.relative_path))
                 observations[item.relative_path] = _identity_json(current)
-                if current == item.result:
+                if _matches_snapshot(current, item.result, result=True):
                     continue
-                if current != item.base:
+                if not _matches_snapshot(current, item.base):
                     raise WorkspaceBrokerError("batch path changed during publication")
                 # IDs are caller-controlled labels. Hash them before constructing
                 # an administrative staging filename.
@@ -607,7 +658,7 @@ class SharedBatchPublisher:
                 ).hexdigest()
                 target = _target(root, item.relative_path)
                 if item.result.kind is ObjectKind.DIRECTORY_MARKER:
-                    target.mkdir(mode=0o755)
+                    target.mkdir(mode=0o700)
                     _sync_parent(target)
                     continue
                 if item.result.absent:
@@ -624,6 +675,7 @@ class SharedBatchPublisher:
                     content=bodies[item.relative_path],
                     mode=item.result.mode,
                     publication_id=staging_id,
+                    permissions=item.result.permissions,
                 )
             with (
                 self.store.connection() as connection,
@@ -632,7 +684,7 @@ class SharedBatchPublisher:
                 for item in files:
                     current = _observe(_target(root, item.relative_path))
                     observations[item.relative_path] = _identity_json(current)
-                    if current != item.result:
+                    if not _matches_snapshot(current, item.result, result=True):
                         raise WorkspaceBrokerError(
                             "batch materialized result failed verification"
                         )

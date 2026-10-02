@@ -94,7 +94,14 @@ def create_managed_worktree(
     try:
         run_git(
             canonical_repository,
-            ["worktree", "add", "--detach", str(candidate), resolved_base],
+            [
+                "worktree",
+                "add",
+                "--detach",
+                "--no-checkout",
+                str(candidate),
+                resolved_base,
+            ],
         )
         created = True
         canonical_path = candidate.resolve(strict=True)
@@ -103,6 +110,11 @@ def create_managed_worktree(
                 ErrorCode.REPOSITORY_UNSAFE,
                 "Git created the worktree at an unexpected canonical path",
             )
+
+        # Conditional includes can enable a filter only under the new Git
+        # directory. Register first without materializing source, then let the
+        # child-context guard inspect its effective config before checkout.
+        run_git(canonical_path, ["reset", "--hard", resolved_base])
 
         run_git(
             canonical_repository,

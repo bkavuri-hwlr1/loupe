@@ -1,35 +1,39 @@
-# Magnifio
+# Loupe
 
-Magnifio is a coding agent that lives in your terminal. It shows concise progress
+Loupe is a coding agent that lives in your terminal. It shows concise progress
 such as “Reviewing project files” and “Running checks,” followed by readable
-assistant messages and results. Markdown and syntax-colored code appear as
-complete blocks arrive. Routine file reads, tool payloads, and reasoning text
-stay out of the conversation. Answers remain in your terminal scrollback, with
-labeled dividers between messages and a single “Done” after a task completes.
+assistant messages and results. Answers to questions appear while the model
+writes them, with Markdown and syntax-colored code shown as complete blocks
+arrive. When a task has edited files, its answer is previewed below the
+conversation until Loupe accepts it, so a draft rejected by required checks
+never enters your scrollback. Routine
+file reads, tool payloads, and reasoning text stay out of the conversation.
+Answers remain in your terminal scrollback, with labeled dividers between
+messages and a single “Done” after a task completes.
 
 ## Install on Mac
 
 On macOS 15 or newer, with [Homebrew](https://brew.sh) installed:
 
 ```sh
-brew install magnifiosearchengine/tap/magnifio
-magnifio
+brew install magnifiosearchengine/tap/loupe
+loupe
 ```
 
 Apple Silicon and Intel Macs are supported. Python and both provider SDKs are
 included automatically; no source checkout or Python setup is needed.
 
-For upgrades, removal, and migration from a previous `uv` installation, see the
-[installation guide](packaging/README.md). Maintainers can follow the
+For upgrades, removal, and migration from Magnifio or a previous `uv`
+installation, see the [installation guide](packaging/README.md). Maintainers can follow the
 [release guide](docs/macos-releases.md).
 
 ## Start here
 
 ```shell
-magnifio
+loupe
 ```
 
-Magnifio opens immediately. Type `/login` whenever you're ready and choose:
+Loupe opens immediately. Type `/login` whenever you're ready and choose:
 
 - **Codex:** sign in through your browser with a ChatGPT subscription.
 - **Anthropic:** enter a Claude API key in a hidden prompt.
@@ -50,10 +54,10 @@ fallback when ordering metadata is missing. Older available models remain
 selectable. Refreshing the list keeps your saved model and effort unchanged;
 select a model and its effort setting, when offered, to switch.
 
-Codex also gates visibility by client compatibility version. Magnifio requests
+Codex also gates visibility by client compatibility version. Loupe requests
 version `0.155.0`. If a future release requires a newer compatible catalog
 version, set `LLM_COORD_CODEX_MODELS_CLIENT_VERSION` to that `major.minor.patch`
-version before launching Magnifio, then run `/model --refresh`. This updates
+version before launching Loupe, then run `/model --refresh`. This updates
 discovery without changing the selected model or its supported effort controls.
 
 The picker distinguishes models returned by the account from cached or reference
@@ -63,6 +67,9 @@ advertised effort controls do not get an invented effort menu.
 Effort choices are also checked against what the connection accepts, including
 cached lists. If a saved setting is no longer supported, use `/effort` to choose
 another level. Provider failures show one error with a suggested next step.
+Codex subscription requests retry connection failures up to twice before a
+response begins. Timeouts, service rejections, and interrupted response streams
+are not retried automatically.
 
 You can switch accounts with `/provider`, enter a model ID directly with
 `/model MODEL_ID`, inspect accounts with `/accounts`, or remove a saved login
@@ -70,7 +77,7 @@ with `/logout`. Changing provider, model, or effort starts a fresh conversation
 after the current task is finished. Cancelling either picker preserves your
 previous selection and conversation.
 
-Start in your Git project folder, or choose one inside Magnifio with `/cd PATH`.
+Start in your Git project folder, or choose one inside Loupe with `/cd PATH`.
 The repository is registered automatically when you first use it. You can
 explore the interface and connect accounts outside a Git repository too.
 
@@ -82,23 +89,29 @@ uv tool update-shell
 ```
 
 Open a new terminal after installing. For checkout-only development,
-`uv sync --all-extras` followed by `uv run magnifio` works too. `magnifio demo`
+`uv sync --all-extras` followed by `uv run loupe` works too. `loupe demo`
 previews the conversation display without a model connection.
 
 After upgrading a checkout that already has a daemon running, let its active
-tasks finish and run `magnifio daemon restart` to load the new code. Subsequent
-in-app logins are loaded on each new task without restarting the daemon.
+tasks finish and run `loupe daemon restart` to load the new code. Loupe warns
+when the daemon is running different code: older code from before an update,
+or code from another installation that shares the same profile.
+`loupe daemon status` reports `matches_this_cli`. Subsequent in-app logins are
+loaded on each new task without restarting the daemon.
 Earlier events that stored only character counts cannot recover old text.
 
 Existing `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` environment settings are also
 recognized. Explicit provider/model flags remain available for scripts.
+Naming your saved provider with `--provider` keeps its saved model and effort.
+`--effort LEVEL` (or `default`) sets the effort for a new conversation
+without changing your saved choice; use `/effort` to save one.
 API keys use separate provider billing; a ChatGPT subscription connects through
-the Codex option. `magnifio --help` lists all commands.
+the Codex option. `loupe --help` lists all commands.
 
 Chat uses the whole repository as its default scope and displays it in the
 header. Narrow it with `--scope src/ --scope tests/` or `/scope` during chat.
 New chats start in **normal** mode: edits stay private until you review and
-apply them. Choose a mode with `magnifio --mode plan`, `magnifio chat --mode auto`,
+apply them. Choose a mode with `loupe --mode plan`, `loupe chat --mode auto`,
 or `/mode plan`, `/mode normal`, and `/mode auto` inside the conversation.
 
 | Mode | What the model can do |
@@ -130,7 +143,7 @@ conflicting mode/publication flags are refused.
 | Shift+Tab | Cycle plan → normal → auto without submitting or clearing the draft |
 | Up, Down / Ctrl+R | Navigate / search input history |
 | `/` then type | Search command names and descriptions |
-| Up, Down / Tab or Enter / Esc in the command menu | Browse without changing your query / choose a command / dismiss the menu |
+| Up, Down / Tab / Enter / Esc in the command menu | Browse without changing your query / fill in a command / run the selected command / dismiss the menu |
 | Page Up, Page Down in the command menu | Browse six commands at a time |
 | `/login [PROVIDER]` | Connect an account now or skip until later |
 | `/provider`, `/accounts`, `/logout [PROVIDER]` | Choose an AI, inspect accounts, or remove a saved login |
@@ -151,13 +164,16 @@ conflicting mode/publication flags are refused.
 | Ctrl+C twice within 2 seconds | Exit the CLI; preserve the session if a task is active |
 
 The input editor supports multiline paste. Prompt history is in memory for the
-current visit. Choosing a command from the search menu inserts it into the
-prompt; add any arguments, then press Enter to run it. `/clear` clears the
-display without resetting model context.
+current visit. Enter runs the selected command from the search menu immediately.
+To add arguments first, press Tab to fill in the command, type the arguments,
+then press Enter. `/clear` clears the display without resetting model context.
 When essential information is missing, the model can pause and ask a question
 in the same editor. Enter a free-text answer or the number of a suggested
 choice; the task continues with your answer. Models are instructed to inspect
 available context first and make routine implementation decisions themselves.
+While a task runs, type `/stop` and press Enter to stop it, or press Ctrl+C to
+detach. Other commands and messages wait until the task finishes; Loupe says so
+rather than silently ignoring them.
 At a question, `/stop` cancels the task and retains pending edits. Ctrl+C leaves
 the question pending; `/attach TASK_ID` returns to it. Replaying an answered
 question does not ask it again. Questions wait up to ten minutes; after that,
@@ -165,26 +181,26 @@ the model is instructed to explain any missing information instead of guessing.
 To resume a detached conversation, use the command printed by `/detach`,
 including its profile, repository and scope.
 
-`magnifio run "your task" --scope src/ --follow` follows a background task.
+`loupe run "your task" --scope src/ --follow` follows a background task.
 Add `--interactive` instead of `--follow` to let a one-shot run ask questions
 and collect answers in the terminal. It implies following the task and cannot
 be combined with `--json` or `--claim-only`. Background runs cannot ask questions.
 To use modes for a one-shot task against the shared checkout, specify `--mode`:
 
 ```sh
-magnifio run "Plan the API change" --scope src/ --mode plan --interactive
-magnifio run "Implement the API change" --scope src/ --mode normal --follow
-magnifio run "Fix the typo" --scope docs/ --mode auto --follow
+loupe run "Plan the API change" --scope src/ --mode plan --interactive
+loupe run "Implement the API change" --scope src/ --mode normal --follow
+loupe run "Fix the typo" --scope docs/ --mode auto --follow
 ```
 
 An explicit `run --mode` creates a durable shared conversation and prints its
 resume command. Normal-mode proposals can be published with
-`magnifio task apply TASK_ID`. Without `--mode`, `run` retains its existing
+`loupe task apply TASK_ID`. Without `--mode`, `run` retains its existing
 isolated-worktree behavior and publishes a task result ref, not checkout edits.
 Mode runs cannot be combined with `--claim-only` or `--fixture-write`.
 
-`magnifio task watch TASK_ID` replays its conversation and follows live work.
-`magnifio --json task watch TASK_ID` produces the full newline-delimited event
+`loupe task watch TASK_ID` replays its conversation and follows live work.
+`loupe --json task watch TASK_ID` produces the full newline-delimited event
 trace, including tool calls and results, for explicit inspection.
 `--plain`, piped output, and `TERM=dumb` provide a plain-text display; `NO_COLOR`
 disables colors. JSON remains available for noninteractive commands.
@@ -204,15 +220,15 @@ entered separately from the prompt editor and never enter input history,
 task events, or daemon RPC. Logging out removes the saved login; environment
 credentials, if present, remain configured until removed from the environment.
 
-The `magnifio` and `magnifiod` commands are the public names. The `llm-coord`
+The `loupe` and `louped` commands are the public names. The `llm-coord`
 and `llm-coordd` aliases, Python distribution name and existing storage/config
 paths remain compatible, so older commands in the reference below still work.
 
-See [the terminal architecture decision](docs/adr/0008-magnifio-terminal.md).
+See [the terminal architecture decision](docs/adr/0008-loupe-terminal.md).
 
 ## Verified coding workflow
 
-Configure named test, lint, and build commands with `magnifio checks configure
+Configure named test, lint, and build commands with `loupe checks configure
 --file checks.toml`. The agent runs required checks against private snapshots
 containing its pending edits. Failed or stale verification retains the proposal
 for review. `chat --publish review` also retains successful proposals until applied.
@@ -246,7 +262,7 @@ independent of the selected provider.
 > completed.
 
 The Python distribution remains `llm-coord` for compatibility; the user-facing
-product and terminal command are Magnifio and `magnifio`.
+product and terminal command are Loupe and `loupe`.
 
 ## What the project is intended to provide
 
@@ -439,8 +455,10 @@ Without a usable adapter or credential, the run fails with
 the lifecycle: `--fixture-write PATH=CONTENT` runs the deterministic fixture
 driver, and `--claim-only` acquires or queues a claim without starting the harness.
 
-On the background path, the agent may read anywhere in its worktree but may
-only write inside the claimed scopes. A write outside them returns a
+On the background path, the agent may read eligible source anywhere in its
+worktree but may only write inside the claimed scopes. Both reads and file
+mutations honor the [source exclusions](SECURITY.md#secrets-and-privacy).
+A write outside the claimed scopes returns a
 correctable tool error and never reaches the filesystem. Because a driver that
 writes around the tool surface is still possible, publication independently
 revalidates the real Git object graph, so
