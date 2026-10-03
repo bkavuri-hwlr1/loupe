@@ -87,6 +87,9 @@ _PUBLIC_EVENTS = frozenset(
         "model.failed",
         "model.refused",
         "model.stalled",
+        "model.instructions.loaded",
+        "model.context.compacted",
+        "model.context.compaction_failed",
         "model.tool_interrupted",
         "model.turn.started",
         "model.turn.completed",
@@ -146,6 +149,9 @@ _LABELS: dict[str, str] = {
     "model.coordination_updated": "refreshed checkout context",
     "model.tool_interrupted": "tool outcome was interrupted; the model will inspect",
     "model.stalled": "the model stopped without finishing",
+    "model.instructions.loaded": "using repository instructions",
+    "model.context.compacted": "summarized earlier conversation to stay in context",
+    "model.context.compaction_failed": "could not summarize earlier conversation",
     "model.refused": "the model declined this task",
     "model.finished": "done",
 }
@@ -161,6 +167,7 @@ _MARKERS: dict[str, str] = {
     "execution.operator_attention": "!",
     "publication.operator_attention": "!",
     "model.stalled": "!",
+    "model.context.compaction_failed": "!",
 }
 
 _STREAMED_OUTCOMES = {
@@ -222,6 +229,10 @@ _PROVIDER_ERROR_HINTS: dict[str, tuple[str, str]] = {
     "rate_limit": (
         "Your provider's usage limit has been reached.",
         "Wait before retrying, or use /provider to switch accounts.",
+    ),
+    "context_overflow": (
+        "The conversation is too long for this model.",
+        "Run /compact to summarize it, then try again.",
     ),
     "request_rejected": (
         "The provider rejected this request.",
@@ -312,6 +323,16 @@ def _detail(kind: str, payload: dict[str, Any]) -> str:
     if kind == "model.coordination_updated":
         sequence = payload.get("through_sequence")
         return f" (through event {sequence})" if type(sequence) is int else ""
+    if kind == "model.instructions.loaded":
+        paths = payload.get("paths")
+        if isinstance(paths, list) and paths:
+            return " (" + ", ".join(_clip(path) for path in paths[:4]) + ")"
+        return ""
+    if kind == "model.context.compacted":
+        tokens = payload.get("context_tokens")
+        if type(tokens) is int and tokens > 0:
+            return f" (was about {max(1, round(tokens / 1000))}k tokens)"
+        return ""
     if kind == "model.finished":
         calls = payload.get("tool_calls")
         return f" ({calls} tool calls)" if isinstance(calls, int) else ""
@@ -772,7 +793,10 @@ class EventRenderer:
                 "model.finished",
             }:
                 style = "success"
-            elif kind.endswith("operator_attention") or kind == "model.stalled":
+            elif kind.endswith("operator_attention") or kind in {
+                "model.stalled",
+                "model.context.compaction_failed",
+            }:
                 style = "warning"
             self.ui.notice(line, style=style)
 

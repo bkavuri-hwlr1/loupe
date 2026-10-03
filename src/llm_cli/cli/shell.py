@@ -644,6 +644,19 @@ class ChatShell:
             if self.stream.isatty() and not self.plain:
                 self.ui.console.clear()
             self.ui.banner(**self._context())
+        elif command == "/compact":
+            if args:
+                raise ValueError("Usage: /compact")
+            if self.credentials is None:
+                self.ui.notice("Nothing to summarize yet.")
+                return True
+            self._require_idle()
+            self.ui.notice("Summarizing the conversation…")
+            result = session.compact_session(self.client, self.credentials)
+            self.ui.notice(
+                session.compact_notice(result),
+                style="success" if result["compacted"] else "muted",
+            )
         elif command == "/history":
             if not self.composer.prompts:
                 self.ui.notice("No prompts in this visit yet.")

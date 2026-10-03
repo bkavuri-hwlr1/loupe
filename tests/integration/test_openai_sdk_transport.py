@@ -243,7 +243,7 @@ def test_real_sdk_noncompleted_terminal_event_cannot_expose_tool_calls(
         with pytest.raises(LlmCoordError) as failure:
             session.send_user("hello")
         assert failure.value.code is ErrorCode.PROVIDER_UNAVAILABLE
-        assert session.snapshot() == {"input": [{"role": "user", "content": "hello"}]}
+        assert session.snapshot() == {"input": []}
 
 
 def test_real_sdk_stream_error_is_translated_without_raw_diagnostics() -> None:

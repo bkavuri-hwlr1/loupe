@@ -56,6 +56,7 @@ _COMMANDS = {
     "/model": "Browse available models and their effort levels",
     "/models": "Browse this account's available models",
     "/effort": "Choose thinking effort for the current model",
+    "/compact": "Summarize the conversation to free context",
     "/clear": "Clear the screen; keep the conversation",
     "/detach": "Leave this conversation available to resume",
     "/exit": "Close this conversation",

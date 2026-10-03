@@ -76,6 +76,9 @@ def run_session(
     ).run()
 
 
+# A summary waits for a model response, which can take minutes.
+_COMPACT_TIMEOUT_SECONDS = 600.0
+
 # A request the daemon validated and refused cannot have created a session;
 # anything else -- a lost connection, an unavailable daemon, an internal fault
 # -- leaves the outcome genuinely unknown.
@@ -216,6 +219,53 @@ def _verify_session_mode(value: dict[str, Any], expected: str) -> None:
             "The daemon did not confirm the requested mode. After active tasks "
             "finish, run 'loupe daemon restart' and reopen Loupe.",
         )
+
+
+def compact_session(
+    client: DaemonClient, credentials: _SessionCredentials
+) -> dict[str, Any]:
+    """Ask the daemon to summarize this session's saved conversation."""
+
+    # The daemon waits for a model response, which can take minutes.
+    patient = (
+        DaemonClient(
+            client.paths,
+            timeout_seconds=max(client.timeout_seconds, _COMPACT_TIMEOUT_SECONDS),
+        )
+        if isinstance(client, DaemonClient)
+        else client
+    )
+    response = patient.call(
+        "session.compact",
+        {
+            "session_id": credentials.session_id,
+            "resume_secret": credentials.resume_secret,
+        },
+    )
+    if not isinstance(response, dict) or not isinstance(
+        response.get("compacted"), bool
+    ):
+        raise LlmCoordError(
+            ErrorCode.PROTOCOL_MISMATCH, "the daemon returned an invalid summary result"
+        )
+    return response
+
+
+def compact_notice(result: dict[str, Any]) -> str:
+    if not result.get("compacted"):
+        return "Nothing to summarize yet."
+    before = result.get("context_tokens")
+    after = result.get("summary_tokens")
+    if type(before) is int and type(after) is int and before > 0:
+        return (
+            "Conversation summarized "
+            f"(about {_thousands(before)} → {_thousands(after)} tokens)."
+        )
+    return "Conversation summarized."
+
+
+def _thousands(tokens: int) -> str:
+    return f"{max(1, round(tokens / 1000))}k"
 
 
 def set_session_mode(

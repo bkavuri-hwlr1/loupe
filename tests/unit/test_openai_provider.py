@@ -6,14 +6,17 @@ import copy
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from llm_cli.errors import ErrorCode, LlmCoordError
+from llm_cli.paths import AppPaths
 from llm_cli.providers import openai_provider
 from llm_cli.providers.base import ToolCallResult
+from llm_cli.providers.codex_provider import CodexProvider
 from llm_cli.providers.openai_provider import DEFAULT_MODEL, OpenAIProvider
 
 
@@ -145,10 +148,14 @@ def test_function_conversion_and_request_preserve_optional_schema() -> None:
             }
         ],
         "store": False,
+        "prompt_cache_key": openai_provider._cache_key(
+            DEFAULT_MODEL, {"role": "user", "content": "hello"}
+        ),
         "include": ["reasoning.encrypted_content"],
         "max_output_tokens": 32_000,
     }
     assert turn.text == "done"
+    assert turn.context_tokens == 33
     assert turn.stop_reason == "end_turn"
     assert turn.usage == {
         "input_tokens": 20,
@@ -287,7 +294,7 @@ def test_unfinished_response_never_exposes_calls_or_appends_output(status: str) 
         session.send_user("first")
     assert failure.value.code is ErrorCode.PROVIDER_UNAVAILABLE
     assert "did not complete" in failure.value.message
-    assert session.snapshot() == {"input": [{"role": "user", "content": "first"}]}
+    assert session.snapshot() == {"input": []}
 
 
 @pytest.mark.parametrize(
@@ -309,7 +316,7 @@ def test_malformed_function_arguments_reject_complete_batch(arguments: str) -> N
     ).session(system="test", tools=[])
     with pytest.raises(LlmCoordError, match="invalid response"):
         session.send_user("first")
-    assert session.snapshot() == {"input": [{"role": "user", "content": "first"}]}
+    assert session.snapshot() == {"input": []}
 
 
 @pytest.mark.parametrize(
@@ -333,7 +340,7 @@ def test_invalid_native_output_is_rejected_before_any_calls(
     )
     with pytest.raises(LlmCoordError, match="invalid response"):
         session.send_user("first")
-    assert len(session.snapshot()["input"]) == 1
+    assert session.snapshot()["input"] == []
 
 
 @pytest.mark.parametrize(
@@ -436,7 +443,7 @@ def test_request_and_midstream_errors_are_translated_without_native_history(
         assert failure.value.details == {"provider_error": "connection"}
     elif isinstance(error, RuntimeError):
         assert failure.value.details == {"provider_error": "incomplete_response"}
-    assert session.snapshot() == {"input": [{"role": "user", "content": "hello"}]}
+    assert session.snapshot() == {"input": []}
 
 
 @pytest.mark.parametrize("wrapped", [False, True])
@@ -471,3 +478,175 @@ def test_programming_failures_and_process_interrupts_are_not_hidden() -> None:
         )
         with pytest.raises(type(error)):
             session.send_user("hello")
+
+
+def test_prompt_cache_key_is_stable_for_one_conversation() -> None:
+    client = Client(_response(_call()), _response(), _response())
+    session = OpenAIProvider(client=client).session(system="test", tools=[_tool()])
+    session.send_user("hello")
+    session.send_tool_results([ToolCallResult("call_1", "contents")])
+    other = OpenAIProvider(client=client).session(system="test", tools=[_tool()])
+    other.send_user("a different conversation")
+
+    keys = [call["prompt_cache_key"] for call in client.calls]
+    assert keys[0] == keys[1]
+    assert keys[2] != keys[0]
+
+
+def test_summarize_disables_tools_and_leaves_history_unchanged() -> None:
+    client = Client(_response(), _response(_message("the summary")))
+    session = OpenAIProvider(client=client).session(system="test", tools=[_tool()])
+    events: list[str] = []
+    session.set_event_callback(lambda kind, payload: events.append(kind))
+    session.send_user("hello")
+    before = session.snapshot()
+
+    turn = session.summarize("summarize please")
+
+    assert turn.text == "the summary"
+    assert client.calls[1]["tool_choice"] == "none"
+    assert client.calls[1]["tools"] == client.calls[0]["tools"]
+    assert client.calls[1]["input"][-1] == {
+        "role": "user",
+        "content": "summarize please",
+    }
+    assert session.snapshot() == before
+    assert (
+        "reasoning" not in client.calls[1]
+        or "summary" not in (client.calls[1]["reasoning"])
+    )
+
+
+def test_replace_history_keeps_only_the_summary() -> None:
+    client = Client(_response(), _response())
+    session = OpenAIProvider(client=client).session(system="test", tools=[])
+    session.send_user("hello")
+
+    session.replace_history("summary text")
+    session.send_user("next")
+
+    assert client.calls[1]["input"] == [
+        {"role": "user", "content": "summary text"},
+        {"role": "user", "content": "next"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("model", "budget"),
+    [
+        # GPT-5-family input limits are separate from the output limit.
+        (DEFAULT_MODEL, 272_000),
+        # Shared windows reserve the reply's output tokens.
+        ("o3", 200_000 - 32_000),
+        ("gpt-4o", 128_000 - 16_384),
+        # Loupe caps the output reservation at 32,000 tokens.
+        ("gpt-4.1", 1_047_576 - 32_000),
+        ("custom-model", 128_000 - 4_096),
+    ],
+)
+def test_input_budget_matches_each_model_family(model: str, budget: int) -> None:
+    assert OpenAIProvider(model=model, client=Client()).input_token_budget == budget
+
+
+def test_codex_budget_uses_the_gpt_input_limit(tmp_path: Path) -> None:
+    paths = AppPaths("test", *(tmp_path / key for key in ("c", "d", "s", "r")))
+
+    assert CodexProvider(paths=paths, client=Client()).input_token_budget == 272_000
+
+
+def test_context_length_rejection_is_classified() -> None:
+    client = Client(
+        APIStatusError(
+            400,
+            {
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": "Your input exceeds the context window of this model.",
+                }
+            },
+        )
+    )
+    session = OpenAIProvider(client=client).session(system="test", tools=[])
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert failure.value.details == {
+        "provider_error": "context_overflow",
+        "status_code": 400,
+    }
+    assert session.snapshot() == {"input": []}
+
+
+def test_failed_response_for_context_is_classified() -> None:
+    response = _response(status="failed")
+    response.error = SimpleNamespace(
+        code="context_length_exceeded", message="input too large"
+    )
+    session = OpenAIProvider(client=Client(response)).session(system="test", tools=[])
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert failure.value.details == {"provider_error": "context_overflow"}
+
+
+def test_shortened_summary_request_trims_tool_payloads_only() -> None:
+    client = Client(
+        _response(_call(arguments=json.dumps({"path": "p" * 30}))),
+        _response(_message("the summary")),
+    )
+    session = OpenAIProvider(client=client).session(system="test", tools=[_tool()])
+    session.send_user("hello")
+    session.record_tool_results([ToolCallResult("call_1", "z" * 30)])
+    before = session.snapshot()
+
+    session.summarize("summarize", max_tool_text=5)
+
+    sent = client.calls[1]["input"]
+    assert sent[0] == {"role": "user", "content": "hello"}
+    call = next(item for item in sent if item.get("type") == "function_call")
+    assert json.loads(call["arguments"])["path"].startswith("ppppp\n[... 25")
+    output = next(item for item in sent if item.get("type") == "function_call_output")
+    envelope = json.loads(output["output"])
+    assert envelope["content"].startswith("zzzzz\n[... 25")
+    assert envelope["is_error"] is False
+    assert session.snapshot() == before
+
+
+def test_unrelated_context_wording_is_not_an_overflow() -> None:
+    client = Client(
+        APIStatusError(
+            400,
+            {
+                "error": {
+                    "code": "invalid_value",
+                    "message": "max_output_tokens must be less than or equal to "
+                    "the model's maximum context length",
+                }
+            },
+        )
+    )
+    session = OpenAIProvider(client=client).session(system="test", tools=[])
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert (failure.value.details or {}).get("provider_error") != "context_overflow"
+
+
+def test_summary_can_cover_pending_tool_results() -> None:
+    client = Client(_response(_call()), _response(_message("the summary")))
+    session = OpenAIProvider(client=client).session(system="test", tools=[_tool()])
+    session.send_user("hello")
+    before = session.snapshot()
+
+    session.summarize(
+        "summarize", pending_results=[ToolCallResult("call_1", "contents")]
+    )
+
+    sent = client.calls[1]["input"]
+    assert sent[-2]["type"] == "function_call_output"
+    assert sent[-2]["call_id"] == "call_1"
+    assert sent[-1] == {"role": "user", "content": "summarize"}
+    assert session.snapshot() == before

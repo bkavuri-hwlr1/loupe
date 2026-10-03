@@ -13,6 +13,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from llm_cli.errors import ErrorCode, LlmCoordError
+
+# The fixed classification every adapter uses when a prompt exceeds the model's
+# context window, so the harness can summarize history and retry. Adapters must
+# classify only rejections they can identify precisely: a false match replaces
+# history with a lossy summary and still fails.
+CONTEXT_OVERFLOW = "context_overflow"
+
 
 @dataclass(frozen=True, slots=True)
 class ToolCallRequest:
@@ -41,6 +49,10 @@ class ModelTurn:
     stop_reason: str = "end_turn"
     usage: Mapping[str, int] = field(default_factory=dict)
     refusal_category: str | None = None
+    # Total tokens this request occupied in the model's context window: the
+    # whole prompt, cached or not, plus the generated output. None when the
+    # provider did not report usage.
+    context_tokens: int | None = None
     # Displayable provider summaries only. Opaque/native reasoning is retained
     # exclusively in the adapter's conversation history.
     reasoning: str = ""
@@ -114,6 +126,66 @@ class ToolResultRecorder(Protocol):
         """Append outcomes to native history without making a model request."""
 
 
+@runtime_checkable
+class CompactableSession(Protocol):
+    """Optional capability to replace long native history with a summary."""
+
+    def summarize(
+        self,
+        instruction: str,
+        *,
+        max_tool_text: int | None = None,
+        pending_results: Sequence[ToolCallResult] = (),
+    ) -> ModelTurn:
+        """Request a tools-disabled summary of the current history.
+
+        The instruction is sent after the existing history, but neither it nor
+        the reply is appended. Live event callbacks are not invoked.
+        ``pending_results`` answer the last turn's tool calls in this request
+        only, so a summary can cover them without recording them first. With
+        ``max_tool_text``, longer tool arguments and results are shortened in
+        this request only, so an oversized history can still be summarized.
+        """
+
+    def replace_history(self, summary: str) -> None:
+        """Replace all native history with a single user summary message."""
+
+
+def context_overflow_error(status_code: int | None = None) -> LlmCoordError:
+    details: dict[str, object] = {"provider_error": CONTEXT_OVERFLOW}
+    if status_code is not None:
+        details["status_code"] = status_code
+    return LlmCoordError(
+        ErrorCode.PROVIDER_UNAVAILABLE,
+        "the conversation is too long for the model's context window",
+        details=details,
+    )
+
+
+def is_context_overflow(error: BaseException) -> bool:
+    return (
+        isinstance(error, LlmCoordError)
+        and error.details is not None
+        and error.details.get("provider_error") == CONTEXT_OVERFLOW
+    )
+
+
+def mentions_any(text: object, phrases: Sequence[str]) -> bool:
+    """Match lowercase provider phrases near the start of an error message."""
+
+    return isinstance(text, str) and any(
+        phrase in text[:2000].lower() for phrase in phrases
+    )
+
+
+def shorten_tool_text(text: str, limit: int) -> str:
+    """Keep the start of a long tool payload for a summary-only request."""
+
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n[... {len(text) - limit} characters omitted ...]"
+
+
 class ChatProvider(Protocol):
     """Create model sessions bound to one system prompt and tool surface."""
 
@@ -136,7 +208,9 @@ class ChatProvider(Protocol):
 
 
 __all__ = [
+    "CONTEXT_OVERFLOW",
     "ChatProvider",
+    "CompactableSession",
     "ModelSession",
     "ModelTurn",
     "StreamCallback",
@@ -144,4 +218,8 @@ __all__ = [
     "ToolCallRequest",
     "ToolCallResult",
     "ToolResultRecorder",
+    "context_overflow_error",
+    "is_context_overflow",
+    "mentions_any",
+    "shorten_tool_text",
 ]

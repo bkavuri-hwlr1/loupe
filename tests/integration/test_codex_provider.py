@@ -494,7 +494,7 @@ def test_invalid_subscription_stream_never_exposes_completed_tools(
     with pytest.raises(LlmCoordError) as caught:
         session.send_user("edit")
     assert caught.value.details == {"provider_error": "incomplete_response"}
-    assert session.snapshot() == {"input": [{"role": "user", "content": "edit"}]}
+    assert session.snapshot() == {"input": []}
 
 
 @pytest.mark.parametrize(
@@ -559,7 +559,7 @@ def test_subscription_connection_retries_are_bounded_and_preserve_request(
             session.send_user("test")
         assert caught.value.details == {"provider_error": "connection"}
         assert "private" not in str(caught.value)
-        assert session.snapshot() == {"input": [{"role": "user", "content": "test"}]}
+        assert session.snapshot() == {"input": []}
     assert len(requests) == 3
     assert requests[0] == requests[1] == requests[2]
 
@@ -598,4 +598,4 @@ def test_subscription_does_not_retry_a_stream_that_has_started(
     with pytest.raises(httpx.ReadError):
         session.send_user("edit")
     assert len(requests) == 1
-    assert session.snapshot() == {"input": [{"role": "user", "content": "edit"}]}
+    assert session.snapshot() == {"input": []}

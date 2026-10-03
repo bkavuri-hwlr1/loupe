@@ -13,6 +13,7 @@ import pytest
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.providers import anthropic_provider
 from llm_cli.providers.anthropic_provider import AnthropicProvider
+from llm_cli.providers.base import ToolCallResult
 
 
 class APIStatusError(Exception):
@@ -102,7 +103,8 @@ def test_explicit_model_bad_request_retains_provider_explanation() -> None:
     assert len(client.calls) == 1
     assert client.calls[0][0] == "stable"
     assert client.calls[0][1]["model"] == "explicit-model"
-    assert session.snapshot() == {"messages": [{"role": "user", "content": "hello"}]}
+    # A failed request leaves native history unchanged.
+    assert session.snapshot() == {"messages": []}
 
 
 @pytest.mark.parametrize(
@@ -230,3 +232,262 @@ def test_unrelated_type_error_remains_a_programming_failure() -> None:
 
     with pytest.raises(TypeError, match="unsupported keyword"):
         session.send_user("hello")
+
+
+def test_requests_enable_automatic_prompt_caching() -> None:
+    client = Client(_message())
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=client
+    ).session(system="test", tools=[])
+
+    turn = session.send_user("hello")
+
+    assert client.calls[0][1]["cache_control"] == {"type": "ephemeral"}
+    assert "tool_choice" not in client.calls[0][1]
+    assert turn.context_tokens == 14
+
+
+def test_summarize_disables_tools_and_leaves_history_unchanged() -> None:
+    client = Client(_message(), _message("the summary"))
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=client
+    ).session(system="test", tools=[{"name": "read_file"}])
+    events: list[str] = []
+    session.set_event_callback(lambda kind, payload: events.append(kind))
+    session.send_user("hello")
+    before = session.snapshot()
+
+    turn = session.summarize("summarize please")
+
+    arguments = client.calls[1][1]
+    assert turn.text == "the summary"
+    assert arguments["tool_choice"] == {"type": "none"}
+    assert arguments["tools"] == [{"name": "read_file"}]
+    assert arguments["messages"][-1] == {
+        "role": "user",
+        "content": "summarize please",
+    }
+    assert session.snapshot() == before
+
+
+def test_replace_history_keeps_only_the_summary() -> None:
+    client = Client(_message(), _message())
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=client
+    ).session(system="test", tools=[])
+    session.send_user("hello")
+
+    session.replace_history("summary text")
+    session.send_user("next")
+
+    assert client.calls[1][1]["messages"] == [
+        {"role": "user", "content": "summary text"},
+        {"role": "user", "content": "next"},
+    ]
+
+
+def test_cached_prompt_tokens_count_toward_context_size() -> None:
+    message = _message()
+    message.usage = SimpleNamespace(
+        input_tokens=5,
+        output_tokens=7,
+        cache_read_input_tokens=1_000,
+        cache_creation_input_tokens=20,
+    )
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=Client(message)
+    ).session(system="test", tools=[])
+
+    assert session.send_user("hello").context_tokens == 1_032
+
+
+def test_oversized_prompt_is_classified_without_dropping_fallback() -> None:
+    client = Client(
+        BadRequestError(
+            400,
+            {
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "prompt is too long: 215000 tokens > 200000 maximum",
+                }
+            },
+        ),
+        _message(),
+    )
+    session = AnthropicProvider(client=client).session(system="test", tools=[])
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert failure.value.details == {
+        "provider_error": "context_overflow",
+        "status_code": 400,
+    }
+    assert [endpoint for endpoint, _ in client.calls] == ["beta"]
+    assert session.snapshot() == {"messages": []}
+    session.send_user("smaller")
+    # The refusal fallback stays enabled for later requests.
+    assert client.calls[1][0] == "beta"
+
+
+def test_failed_tool_result_request_leaves_history_unchanged() -> None:
+    client = Client(APIStatusError(503))
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=client
+    ).session(
+        system="test",
+        tools=[],
+        state={
+            "messages": [
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "read_file",
+                            "input": {},
+                        }
+                    ],
+                },
+            ]
+        },
+    )
+
+    with pytest.raises(LlmCoordError):
+        session.send_tool_results([ToolCallResult("t1", "contents")])
+
+    assert len(session.snapshot()["messages"]) == 2
+
+
+def test_shortened_summary_request_trims_tool_payloads_only() -> None:
+    client = Client(_message("the summary"))
+    state = {
+        "messages": [
+            {"role": "user", "content": "inspect"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "write_file",
+                        "input": {"path": "a.py", "content": "x" * 50},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "y" * 50}
+                ],
+            },
+        ]
+    }
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=client
+    ).session(system="test", tools=[], state=state)
+
+    session.summarize("summarize", max_tool_text=10)
+
+    sent = client.calls[0][1]["messages"]
+    assert sent[0] == {"role": "user", "content": "inspect"}
+    tool_input = sent[1]["content"][0]["input"]
+    assert tool_input["path"] == "a.py"
+    assert tool_input["content"].startswith("x" * 10 + "\n[... 40 characters omitted")
+    assert sent[2]["content"][0]["content"].startswith("y" * 10 + "\n[...")
+    assert session.snapshot() == state
+
+
+def test_input_and_max_tokens_rejection_is_an_overflow() -> None:
+    message = (
+        "input length and `max_tokens` exceed context limit: 190000 + 64000 > "
+        "200000, decrease input length or `max_tokens` and try again"
+    )
+    client = Client(BadRequestError(400, {"error": {"message": message}}))
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=client
+    ).session(system="test", tools=[])
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert failure.value.details == {
+        "provider_error": "context_overflow",
+        "status_code": 400,
+    }
+
+
+def test_unrelated_context_wording_is_not_an_overflow() -> None:
+    message = "thinking.budget_tokens must be less than the context window"
+    client = Client(BadRequestError(400, {"error": {"message": message}}))
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=client
+    ).session(system="test", tools=[])
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert (failure.value.details or {}).get("provider_error") != "context_overflow"
+
+
+def test_reply_cut_off_by_the_window_is_an_overflow() -> None:
+    message = _message("partial")
+    message.stop_reason = "model_context_window_exceeded"
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=Client(message)
+    ).session(system="test", tools=[])
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert failure.value.details == {"provider_error": "context_overflow"}
+    assert session.snapshot() == {"messages": []}
+
+
+def test_summary_rejection_does_not_disable_the_fallback() -> None:
+    client = Client(
+        BadRequestError(400, {"error": {"message": "beta not enabled"}}),
+        _message("the summary"),
+        _message(),
+    )
+    session = AnthropicProvider(client=client).session(system="test", tools=[])
+
+    assert session.summarize("summarize").text == "the summary"
+    session.send_user("next")
+
+    assert [endpoint for endpoint, _ in client.calls] == ["beta", "stable", "beta"]
+
+
+def test_summary_can_cover_pending_tool_results() -> None:
+    client = Client(_message("the summary"))
+    state = {
+        "messages": [
+            {"role": "user", "content": "inspect"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}
+                ],
+            },
+        ]
+    }
+    session = AnthropicProvider(
+        model="explicit-model", fallback_model=None, client=client
+    ).session(system="test", tools=[], state=state)
+
+    session.summarize("summarize", pending_results=[ToolCallResult("t1", "contents")])
+
+    last = client.calls[0][1]["messages"][-1]
+    assert last["role"] == "user"
+    assert last["content"] == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "t1",
+            "content": "contents",
+            "is_error": False,
+        },
+        {"type": "text", "text": "summarize"},
+    ]
+    assert session.snapshot() == state

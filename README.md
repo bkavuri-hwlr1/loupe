@@ -240,6 +240,23 @@ creation, deletion of regular text files, and renames. Ctrl+C still detaches.
 See [the verified workflow guide](docs/verified-workflow.md) for configuration,
 CLI equivalents, dependency setup, check gating, and recovery behavior.
 
+### Repository instructions and long conversations
+
+Put build, test, and style guidance for the agent in an `AGENTS.md` file (the
+cross-tool convention) or a Loupe-specific `LOUPE.md`. Loupe reads them from the
+repository root and from each directory leading to the task's claimed scopes;
+deeper files take precedence. Files are size-limited, must pass the same source
+policy as model reads (ignored, symlinked, or secret-bearing files are skipped),
+and cannot widen a task's tools or scopes.
+
+When a conversation approaches the model's context window, or a provider
+rejects a prompt as too long, Loupe asks the model to summarize the earlier
+history and continues from that summary. The conversation shows a short notice
+when this happens. Run `/compact` while no task is running to summarize the
+conversation yourself. Requests also use provider
+prompt caching (Anthropic automatic caching and an OpenAI/Codex
+`prompt_cache_key`) so repeated context is cheaper and faster.
+
 ## Coordination architecture
 
 This repository is the early foundation for a provider-neutral terminal coding

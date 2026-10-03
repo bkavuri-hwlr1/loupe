@@ -50,6 +50,14 @@ from llm_cli.workspace.identity import FileIdentity, ObjectKind
 _REPO_KEY = re.compile(r"^[a-f0-9]{64}$")
 _ANSWER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _ANSWER_CHUNK_CHARACTERS = 4096
+# A session runs at most one task at a time; these states are still live.
+_LIVE_SESSION_TASK = """
+    SELECT task_id FROM tasks
+    WHERE session_id = ? AND state NOT IN (
+        'completed', 'failed', 'cancelled', 'ready_for_integration',
+        'operator_attention', 'reviewing'
+    ) LIMIT 1
+"""
 
 
 def _accepted_answer(
@@ -337,14 +345,7 @@ class ControlStore:
                 return self.task_from_row(existing)
             if session_id is not None:
                 live_task = connection.execute(
-                    """
-                    SELECT task_id FROM tasks
-                    WHERE session_id = ? AND state NOT IN (
-                        'completed', 'failed', 'cancelled', 'ready_for_integration',
-                        'operator_attention', 'reviewing'
-                    ) LIMIT 1
-                    """,
-                    (session_id,),
+                    _LIVE_SESSION_TASK, (session_id,)
                 ).fetchone()
                 if live_task is not None:
                     raise ValueError("this session already has an active task")
@@ -1877,6 +1878,11 @@ class ControlStore:
             ).fetchall()
             return tuple(self.session_intent_from_row(connection, row) for row in rows)
 
+    def session_has_active_task(self, session_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(_LIVE_SESSION_TASK, (session_id,)).fetchone()
+            return row is not None
+
     def session_conversation(
         self, session_id: str
     ) -> tuple[str, str, dict[str, object]] | None:
@@ -2408,6 +2414,7 @@ class ControlStore:
             "model": state["model"],
             "session": state["session"],
             "coordination_sequence": state.get("coordination_sequence"),
+            "context_tokens": state.get("context_tokens"),
         }
         connection.execute(
             """UPDATE sessions SET conversation_json = ?,

@@ -1096,6 +1096,12 @@ def tool_schemas(names: Sequence[str]) -> tuple[dict[str, object], ...]:
     return tuple(_SCHEMAS[name] for name in names if name in _SCHEMAS)
 
 
+def all_tool_names() -> tuple[str, ...]:
+    """Every tool any broker can offer; native histories may reference any."""
+
+    return tuple(_SCHEMAS)
+
+
 def _schema(
     name: str, description: str, properties: dict[str, object], required: list[str]
 ) -> dict[str, object]:
