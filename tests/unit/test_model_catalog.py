@@ -523,6 +523,7 @@ def test_live_anthropic_output_limit_survives_offline_cache(
                     {
                         "id": "claude-small",
                         "max_tokens": 4096,
+                        "max_input_tokens": 1_000_000,
                         "capabilities": {"effort": {"supported": False}},
                     },
                     {"id": "claude-invalid", "max_tokens": True},
@@ -536,6 +537,12 @@ def test_live_anthropic_output_limit_survives_offline_cache(
     assert (
         catalog.model_option("anthropic", "claude-small", paths=paths).max_output_tokens
         == 4096
+    )
+    assert result.models[0].context_window == 1_000_000
+    assert result.models[1].context_window is None
+    assert (
+        catalog.model_option("anthropic", "claude-small", paths=paths).context_window
+        == 1_000_000
     )
 
 

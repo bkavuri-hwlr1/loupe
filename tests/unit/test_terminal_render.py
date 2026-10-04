@@ -714,3 +714,23 @@ def test_wide_markdown_table_does_not_ellipsize_response(
     compact = "".join(safe_text(output.getvalue()).split())
     assert all(compact.count(cell) == 2 for cell in cells)
     assert "…" not in output.getvalue()
+
+
+def test_context_and_instruction_events_render_as_short_notices() -> None:
+    assert (
+        render_event(
+            _event("model.instructions.loaded", paths=["AGENTS.md", "src/AGENTS.md"])
+        )
+        == "    using repository instructions (AGENTS.md, src/AGENTS.md)"
+    )
+    assert (
+        render_event(_event("model.context.compacted", context_tokens=182_400))
+        == "    summarized earlier conversation to stay in context"
+        " (was about 182k tokens)"
+    )
+    assert (
+        render_event(
+            _event("model.context.compaction_failed", reason="provider offline")
+        )
+        == "  ! could not summarize earlier conversation (provider offline)"
+    )

@@ -25,6 +25,7 @@ class Client:
         self.tasks: list[dict[str, Any]] = []
         self.sessions: dict[str, dict[str, Any]] = {}
         self.repository_error: LlmCoordError | None = None
+        self.compact_result: dict[str, Any] = {"compacted": False}
         identity = code_identity()
         self.daemon_identity: dict[str, Any] = {
             "code_fingerprint": identity["fingerprint"],
@@ -64,6 +65,8 @@ class Client:
             return {}
         if method == "session.events":
             return []
+        if method == "session.compact":
+            return self.compact_result
         if method in {"repo.add", "session.set_intent", "session.close"}:
             return {}
         raise AssertionError(f"Unexpected daemon call: {method}")
@@ -456,6 +459,7 @@ def test_switching_provider_or_model_closes_idle_session_and_opens_fresh_context
         "/model",
         "/effort",
         "/effort high",
+        "/compact",
     ],
 )
 def test_any_active_own_task_blocks_switches_and_logout_even_if_last_task_finished(
@@ -742,3 +746,41 @@ def test_reauthentication_preserves_current_session_settings_over_older_preferen
         "model": "resumed-model",
         "effort": "high",
     }
+
+
+def test_compact_without_a_conversation_needs_no_daemon_call(
+    client: Client, menu: Menu
+) -> None:
+    chat = start(client)
+
+    assert chat._command("/compact")
+
+    assert "Nothing to summarize yet." in output(chat)
+    assert calls(client, "session.compact") == []
+
+
+def test_compact_reports_the_summarized_size(client: Client, menu: Menu) -> None:
+    menu.ready.add("codex")
+    chat = start(client, provider="codex", model="first-model")
+    assert chat._ensure_session()
+    assert chat.credentials is not None
+    client.compact_result = {
+        "compacted": True,
+        "context_tokens": 182_400,
+        "summary_tokens": 3_100,
+    }
+
+    assert chat._command("/compact")
+
+    assert calls(client, "session.compact") == [
+        {
+            "session_id": chat.credentials.session_id,
+            "resume_secret": chat.credentials.resume_secret,
+        }
+    ]
+    assert "Conversation summarized (about 182k → 3k tokens)." in output(chat)
+
+
+def test_compact_rejects_arguments(client: Client, menu: Menu) -> None:
+    with pytest.raises(ValueError, match="Usage: /compact"):
+        start(client)._command("/compact now")

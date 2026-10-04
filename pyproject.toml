@@ -17,7 +17,8 @@ llm-coordd = "llm_cli.daemon.main:main"
 
 [project.optional-dependencies]
 anthropic = [
-    "anthropic>=0.40",
+    # Requests send top-level cache_control, verified with SDK 1.1.
+    "anthropic>=1.1",
 ]
 openai = [
     "openai>=2.0",

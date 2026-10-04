@@ -1,8 +1,8 @@
 # Loupe CLI harness: response and execution plan
 
 Status: first response-and-delivery milestone implemented and locally validated;
-broader harness work remains.
-Date: 2026-09-20
+context management (phase 7, items 1–3) implemented; broader harness work remains.
+Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -40,9 +40,11 @@ transaction that records trusted settlement facts, releases file claims while
 keeping the session task reserved, consumes the one model attempt durably, then
 commits the answer, promoted conversation, and terminal task state together.
 
-The remaining roadmap includes repository-instruction discovery and model
-context compaction, governed diagnostic commands, bounded repair stages,
-response-only retry, and the full deterministic/live-provider behavior matrix.
+Repository-instruction discovery, context compaction (automatic, after an
+oversized-prompt rejection, and through `/compact`), and provider prompt caching
+are implemented (phase 7, items 1–3). The remaining roadmap includes governed
+diagnostic commands, bounded repair stages, response-only retry, the rest of
+phase 7, and the full deterministic/live-provider behavior matrix.
 
 Revalidation against `origin/main` on macOS/Python 3.14 on 2026-09-23 passes
 1,233 tests with 83% branch coverage, Ruff, strict mypy, whitespace checks,
@@ -381,6 +383,150 @@ restricted control-thread pool, split PTY writes, resize, 40/80/120-column scree
 NO_COLOR, redirected output, and injected crashes at finalization boundaries.
 Update tests that currently require summary-as-answer or no-change banners.
 
+### 7. Parity with established coding-agent CLIs
+
+Compared with widely used coding-agent CLIs, the harness already has stronger
+safety foundations: execution limits, private candidates, source policy, and
+durable recovery. These items close the remaining gaps in what the agent can do
+and how much it costs. Items are ordered by impact. Each keeps the
+existing authority model: repository and tool content never grants authority.
+
+| # | Capability | Status |
+| --- | --- | --- |
+| 1 | Context-window management and compaction | Implemented, including `/compact` |
+| 2 | Provider prompt caching | Implemented |
+| 3 | Repository instruction files (`AGENTS.md`, `LOUPE.md`) | Implemented |
+| 4 | Governed shell execution with an OS sandbox | Planned; builds on phase 5 |
+| 5 | Concurrent execution of read-only tool calls | Planned |
+| 6 | Visible task plan tool | Planned |
+| 7 | MCP client support | Planned |
+| 8 | User hooks around tool calls and completion | Planned |
+| 9 | Subagents for broad exploration | Planned |
+| 10 | Read-only web fetch | Planned |
+| 11 | Token and cost display (`/cost`, footer) | Planned |
+| 12 | Live-model task benchmark | Planned; extends phase 6 |
+
+**1. Context-window management (implemented).** Each provider turn reports the
+tokens it occupied (`ModelTurn.context_tokens`, counting cached prompt tokens),
+and providers expose an `input_token_budget`. Anthropic uses the published
+window (default 200k) minus the output reservation. OpenAI and Codex use the
+catalog window minus the reservation, or defaults: GPT-5-family (and, by
+assumption, GPT-6) models get their separate 272k input limit, o-series models a
+shared 200k window, and other models a conservative 128k window. Before each
+request the harness estimates the next prompt size. At 80% of the budget it
+asks the model, with tools disabled, for a structured handoff summary: requests
+and constraints, decisions, files changed, check results, open questions, and
+next steps. The summary then replaces the native history. Compaction happens
+only at safe boundaries: before the opening prompt, before a nudge, or with a
+turn's pending tool results, which the summary request answers without
+recording them, so a failed summary leaves the results to be sent as usual. A
+dedicated `continue` checkpoint phase makes restart after compaction resume
+without resending results. At most one summary is made per model turn, and a
+prompt alone never triggers a summary of a near-empty history. Summaries are
+bounded, screened for secrets, framed as a record rather than instructions, and
+labeled as possibly stale so the model rereads files before acting. After a
+summary inside a task, Loupe restates that task's original opening prompt
+(instructions, claimed scopes, base) instead of trusting the summary to keep
+it. A coordination update attached to summarized results stays unconsumed and
+is delivered again with the continue prompt. A failed summary is reported
+(`model.context.compaction_failed`) and the task continues. The full transcript
+remains in the durable event log.
+
+Recovery after a rejection: adapters classify only precisely identified
+oversized-prompt rejections as `provider_error: context_overflow`, because a
+false match would replace history with a lossy summary and still fail.
+Anthropic: HTTP 413, a 400 saying "prompt is too long" or "input length and
+`max_tokens` exceed context limit", or a reply stopped with
+`model_context_window_exceeded`. Responses and Codex: the
+`context_length_exceeded` code, or a message saying the input "exceeds the
+context window" or "maximum context length is". A failed request leaves native
+history unchanged, and a reply cut off by the window is discarded rather than
+shown as partial text. The harness then summarizes once and sends the same
+prompt again, or summarizes with the rejected tool results and continues
+through the `continue` phase. A second rejection in the same turn, or a failed
+summary, fails the task with the original error, which the terminal shows with
+a `/compact` hint. If the summary request itself is too long, it is retried
+with tool arguments and results shortened to 4,000 and then 500 characters, in
+that request only. Summary requests never disable Anthropic's refusal fallback
+for later turns.
+
+Manual compaction: `/compact` sends `session.compact` to the daemon, which
+summarizes the idle session's saved conversation outside the authority lock and
+saves the replacement only if the conversation revision is unchanged and no
+task started meanwhile. Saved conversations now carry `context_tokens`,
+including after the deferred final response, so the next task's first estimate
+uses real usage rather than a size guess.
+
+**2. Prompt caching (implemented).** Anthropic requests use top-level automatic
+caching, which places the breakpoint at the last block so system prompt,
+tools, and earlier turns are reused across the agent loop. Summary requests keep
+the same tools so they also hit the cache. OpenAI and Codex requests send a
+`prompt_cache_key` derived from the model and first conversation item, so a
+conversation's requests route to the same cache until it is summarized.
+
+Live check, 2026-10-03, Codex `gpt-6-sol` at low effort: the endpoint accepted
+`prompt_cache_key` and tools-disabled summary requests. Summaries made no tool
+calls, and after the history was replaced the model still answered from the
+summary. Two of four follow-up requests reported about 1,280 cached tokens (the
+system prompt and tools); the others reported none, consistent with best-effort
+provider caching. Anthropic caching has not been checked live.
+
+**3. Repository instructions (implemented).** `AGENTS.md` and `LOUPE.md` are read
+from the repository root and from each directory leading to the claimed scopes,
+shallowest first; deeper files take precedence. Limits: 32 KiB per file, 64 KiB
+and 8 files in total. Symlinked, ignored, excluded, non-UTF-8, and
+secret-bearing files are skipped. The text is placed in the system prompt with
+its source path, framed as repository guidance that cannot widen tools, scopes,
+or mode. The first task of a conversation emits `model.instructions.loaded`
+with the paths used. File text cannot open or close its labeled frame, and
+paths are escaped. User-level global instructions are a possible follow-up.
+
+**4. Governed shell execution.** Arbitrary commands are the largest capability
+gap. Deliver them through the phase-5 command capability, not as an unrestricted
+tool: an OS sandbox (Seatbelt on macOS; bubblewrap or Landlock on Linux) with
+network disabled by default, write access limited to a private snapshot, an
+approval policy, recorded argv, cwd, environment policy, timeout, and output,
+and the capability disabled where the sandbox is unavailable.
+
+**5. Concurrent read-only tools.** When one model turn requests several reads,
+searches, or listings, run them concurrently and return the results in request
+order. Mutating tools stay sequential. Checkpoints must still record each
+completed result.
+
+**6. Task plan tool.** An `update_plan` tool that keeps a short ordered checklist,
+shown in the status footer and persisted with the checkpoint, for long tasks.
+
+**7. MCP client.** Connect configured Model Context Protocol servers. Their
+tools are external authority: per-server approval, no implicit write scope,
+results screened like source, and server output treated as untrusted data.
+
+**8. Hooks.** User-configured commands that run before or after tool calls and
+at completion (for example, format after edits, or block a path), using the
+existing event stream. Hooks run as the user, with the same command governance
+as item 4.
+
+**9. Subagents.** Delegate broad read-only exploration to a separate model
+context that returns a bounded summary, keeping the main context small. Pairs
+with item 1. Delegated agents inherit, never exceed, the parent's authority.
+
+**10. Web fetch.** A read-only fetch tool for documentation, with domain policy,
+size limits, and content treated as untrusted data.
+
+**11. Token and cost display.** Providers already report usage. Show per-turn and
+session totals, including cache reads, in the footer and a `/cost` command.
+
+**12. Live-model benchmark.** A small, versioned set of real repository tasks
+run against supported models, tracking success, tool calls, tokens, and
+latency to catch regressions when prompts or tools change.
+
+**Exit criteria (items 1–3):** a conversation that exceeds the input budget
+continues after one summary without losing task constraints; restart after a
+summary resumes without duplicate tool results; an oversized-prompt rejection
+is recovered once rather than failing the task; repeated prefixes report cache
+reads; repository instructions appear in the system prompt only when the source
+policy allows them. Remaining gaps: a live Anthropic cache check and a live
+oversized-prompt rejection on each provider.
+
 ## Delivery order and boundaries
 
 Phases 1 and 2 define the shared contract. Phase 3 can proceed against that
@@ -392,9 +538,11 @@ Keep each implementation slice independently testable. Publish only after the
 full CI matrix passes; run a real-model check of the exact reported prompt before
 calling response quality solved. Deterministic tests alone cannot establish it.
 
-Defer RAG/vector indexing, general plugins/MCP expansion, autonomous subagent
-delegation, remote orchestration, and broad binary/symlink editing. None is needed
-to make an ordinary prompt receive a complete, trustworthy answer.
+Defer RAG/vector indexing, remote orchestration, and broad binary/symlink
+editing. None is needed to make an ordinary prompt receive a complete,
+trustworthy answer. MCP, hooks, and subagent delegation are scheduled in
+phase 7 after the safety-critical phases, under the authority constraints
+stated there.
 
 The first milestone is explicit: **ask the pasted repository-summary question,
 receive an actual overview once, reattach and recover that same answer, and see

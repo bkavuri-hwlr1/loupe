@@ -11,13 +11,16 @@ from typing import Any
 from llm_cli import __version__
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.paths import AppPaths
+from llm_cli.providers.base import CONTEXT_OVERFLOW, context_overflow_error
 from llm_cli.providers.catalog import model_option
 from llm_cli.providers.codex_auth import CredentialStore
 from llm_cli.providers.openai_provider import (
     OpenAISession,
+    _failed_for_context,
     _json_value,
     _load_sdk,
     _provider_failure,
+    input_token_budget,
 )
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
@@ -46,10 +49,17 @@ class CodexProvider:
                 "use /effort to choose a supported level"
             )
         self._reasoning_supported = bool(option.efforts)
+        self._context_window = option.context_window
 
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def input_token_budget(self) -> int:
+        """Prompt tokens a request can carry while leaving room for output."""
+
+        return input_token_budget(self._model, self._context_window, None)
 
     def session(
         self,
@@ -154,6 +164,7 @@ def _create_subscription_stream(client: Any, arguments: dict[str, Any]) -> Any:
 
 
 _SUBSCRIPTION_ERROR_MESSAGES = {
+    CONTEXT_OVERFLOW: "the conversation is too long for the model's context window",
     "unsupported_effort": (
         "the selected reasoning effort is not accepted by Codex; "
         "use /effort to choose a supported level"
@@ -193,6 +204,8 @@ def _subscription_error_category(status: object, body: object) -> str | None:
         return "request_rejected"
     if body.get("param") in ("reasoning.effort", "reasoning[effort]"):
         return "unsupported_effort"
+    if _failed_for_context(body):
+        return CONTEXT_OVERFLOW
     for field in ("message", "detail"):
         value = body.get(field)
         if not isinstance(value, str):
@@ -254,6 +267,10 @@ class _SubscriptionStream:
                     raise self._invalid()
                 items[index] = data.get("item")
             elif kind in {"error", "response.failed", "response.incomplete"}:
+                response = data.get("response")
+                error = response.get("error") if isinstance(response, dict) else data
+                if _failed_for_context(error):
+                    raise context_overflow_error()
                 raise self._invalid()
             elif kind == "response.completed":
                 response = data.get("response")

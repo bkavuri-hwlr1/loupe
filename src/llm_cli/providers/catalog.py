@@ -60,6 +60,8 @@ class ModelOption:
     max_output_tokens: int | None = None
     created_at: float | None = None
     priority: int | None = None
+    # Maximum prompt tokens, when the provider publishes it.
+    context_window: int | None = None
 
 
 @dataclass(frozen=True)
@@ -109,9 +111,21 @@ _REFERENCE: dict[str, tuple[ModelOption, ...]] = {
             "gpt-5.1", "GPT-5.1", efforts=("none", *_NORMAL), default_effort="none"
         ),
         ModelOption("gpt-5", "GPT-5", efforts=("minimal", *_NORMAL)),
-        ModelOption("gpt-4.1", "GPT-4.1", max_output_tokens=32_768),
-        ModelOption("gpt-4.1-mini", "GPT-4.1 mini", max_output_tokens=32_768),
-        ModelOption("gpt-4o", "GPT-4o", max_output_tokens=16_384),
+        ModelOption(
+            "gpt-4.1",
+            "GPT-4.1",
+            max_output_tokens=32_768,
+            context_window=1_047_576,
+        ),
+        ModelOption(
+            "gpt-4.1-mini",
+            "GPT-4.1 mini",
+            max_output_tokens=32_768,
+            context_window=1_047_576,
+        ),
+        ModelOption(
+            "gpt-4o", "GPT-4o", max_output_tokens=16_384, context_window=128_000
+        ),
     ),
     # Official Codex app metadata; GPT-6 Sol/Luna levels verified 2026-09-27.
     # Live capabilities supersede these offline reference choices.
@@ -368,6 +382,16 @@ def _text(value: object, limit: int) -> str:
     return "".join(c for c in value[:limit] if c.isprintable()).strip()
 
 
+def _token_count(value: object) -> int | None:
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 < value <= 10_000_000
+    ):
+        return value
+    return None
+
+
 def _from_cache(value: object) -> ModelOption | None:
     if not isinstance(value, dict):
         return None
@@ -387,6 +411,9 @@ def _from_cache(value: object) -> ModelOption | None:
         or not 0 < maximum <= 10_000_000
     ):
         return None
+    window = value.get("context_window")
+    if window is not None and _token_count(window) is None:
+        return None
     return ModelOption(
         model,
         _text(value.get("name"), 160) or model,
@@ -397,6 +424,7 @@ def _from_cache(value: object) -> ModelOption | None:
         maximum,
         created_at=_created_at(value.get("created_at")),
         priority=_priority(value.get("priority")),
+        context_window=_token_count(window),
     )
 
 
@@ -588,6 +616,7 @@ def _api_models(paths: AppPaths, provider: str) -> tuple[ModelOption, ...]:
                         option,
                         name=_text(data.get("display_name"), 160) or option.name,
                         created_at=_created_at(data.get("created_at")),
+                        context_window=_token_count(data.get("max_input_tokens")),
                         max_output_tokens=maximum
                         if (
                             isinstance(maximum, int)

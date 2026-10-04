@@ -127,6 +127,7 @@ _PUBLIC_PROVIDER_ERRORS = frozenset(
         "timeout",
         "incomplete_response",
         "invalid_response",
+        "context_overflow",
     }
 )
 _ATTACH_POLL_SECONDS = 0.1
@@ -392,6 +393,10 @@ class DaemonService:
                         maximum=3_600_000,
                     ),
                 )
+            if request.method == "session.compact":
+                # The summary is a model request. Hold the authority lock only
+                # to read and to save, never while the provider responds.
+                return await self._session_compact(request.params)
             async with self._authority_lock:
                 return await self._dispatch(request)
         except LlmCoordError:
@@ -1992,6 +1997,57 @@ class DaemonService:
                 break
         return conversation, "\n".join(lines) if lines else None
 
+    async def _session_compact(self, params: Mapping[str, Any]) -> dict[str, object]:
+        """Summarize an idle session's saved conversation to free context."""
+
+        async with self._authority_lock:
+            session = self._authenticated_session(params, require_active=True)
+            if self.store.session_has_active_task(session.session_id):
+                raise LlmCoordError(
+                    ErrorCode.TASK_NOT_MUTABLE,
+                    "a task is still running in this conversation; let it finish "
+                    "before summarizing",
+                )
+            prior = self.store.session_conversation(session.session_id)
+            if prior is None:
+                return {"compacted": False}
+            provider, model, conversation = prior
+            if provider != session.provider or model != session.model:
+                raise ValueError("stored session conversation provider/model mismatch")
+            checkout = self.store.get_checkout(session.checkout_id)
+            if checkout is None:
+                raise KeyError("checkout")
+            harness = CodingAgentHarness(
+                self.providers.create(
+                    session.provider, session.model, effort=session.effort
+                )
+            )
+            revision = session.conversation_revision
+        updated, before, after = await asyncio.to_thread(
+            harness.compact_conversation,
+            conversation,
+            worktree=Path(checkout.canonical_path),
+        )
+        async with self._authority_lock:
+            current = self.store.get_session(session.session_id)
+            if (
+                current is None
+                or current.conversation_revision != revision
+                or self.store.session_has_active_task(session.session_id)
+            ):
+                raise LlmCoordError(
+                    ErrorCode.TASK_NOT_MUTABLE,
+                    "the conversation changed while it was being summarized; "
+                    "run /compact again",
+                )
+            self.store.save_session_conversation(
+                session.session_id,
+                provider=session.provider,
+                model=session.model,
+                conversation=updated,
+            )
+        return {"compacted": True, "context_tokens": before, "summary_tokens": after}
+
     def _save_completed_session_conversation(
         self, task: TaskRecord, execution_id: str
     ) -> None:
@@ -2024,6 +2080,7 @@ class DaemonService:
                 "model": model,
                 "session": dict(native),
                 "coordination_sequence": state.get("coordination_sequence"),
+                "context_tokens": state.get("context_tokens"),
             },
         )
 

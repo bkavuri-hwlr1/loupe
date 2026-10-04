@@ -69,7 +69,9 @@ def test_openai_respects_model_output_limit(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         openai_provider,
         "model_option",
-        lambda *a, **kw: SimpleNamespace(efforts=(), max_output_tokens=16384),
+        lambda *a, **kw: SimpleNamespace(
+            efforts=(), max_output_tokens=16384, context_window=None
+        ),
     )
     client = ResponsesClient(_response())
     chat = OpenAIProvider(model="gpt-4o", client=client).session(
@@ -161,7 +163,10 @@ def test_anthropic_caps_output_at_account_model_limit(
         anthropic_provider,
         "model_option",
         lambda *a, **kw: SimpleNamespace(
-            efforts=(), adaptive_thinking=False, max_output_tokens=maximum
+            efforts=(),
+            adaptive_thinking=False,
+            max_output_tokens=maximum,
+            context_window=None,
         ),
     )
     chat = AnthropicProvider(model="account-model", client=object()).session(

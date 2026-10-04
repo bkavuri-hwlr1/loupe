@@ -18,7 +18,10 @@ from llm_cli.errors import LlmCoordError
 from llm_cli.providers import anthropic_provider
 from llm_cli.providers.anthropic_provider import AnthropicProvider
 from llm_cli.providers.base import ModelTurn, ToolCallRequest, ToolCallResult
-from llm_cli.providers.codex_provider import _SubscriptionStream
+from llm_cli.providers.codex_provider import (
+    _subscription_error_category,
+    _SubscriptionStream,
+)
 from llm_cli.providers.openai_provider import OpenAIProvider
 
 
@@ -146,7 +149,7 @@ def test_interrupted_openai_stream_keeps_visible_deltas_without_executable_calls
     with pytest.raises(LlmCoordError, match="interrupted"):
         session.send_user("inspect")
     assert seen[0][1]["text"] == "Partial answer"
-    assert session.snapshot() == {"input": [{"role": "user", "content": "inspect"}]}
+    assert session.snapshot() == {"input": []}
 
 
 def test_anthropic_stream_exposes_display_thinking_but_never_signatures(
@@ -223,6 +226,38 @@ def test_codex_preserves_live_deltas_and_assembles_empty_terminal_output() -> No
     session.set_event_callback(lambda kind, data: seen.append((kind, data)))
     assert session.send_user("hello").text == "Hello"
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        WireEvent(
+            type="response.failed",
+            response={
+                "status": "failed",
+                "error": {"code": "context_length_exceeded", "message": "too long"},
+            },
+        ),
+        WireEvent(type="error", code="context_length_exceeded", message="too long"),
+    ],
+)
+def test_codex_context_rejection_is_classified(event: WireEvent) -> None:
+    client = Client(_SubscriptionStream(iter([event])))
+    session = OpenAIProvider(client=client).session(system="test", tools=[])
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert failure.value.details == {"provider_error": "context_overflow"}
+
+
+def test_codex_http_context_rejection_has_a_fixed_category() -> None:
+    body = {"error": {"message": "Your input exceeds the context window."}}
+
+    assert _subscription_error_category(400, body) == "context_overflow"
+    assert _subscription_error_category(400, {"message": "bad"}) == (
+        "request_rejected"
+    )
 
 
 class Script:

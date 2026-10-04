@@ -19,6 +19,9 @@ from llm_cli.providers.base import (
     StreamCallback,
     ToolCallRequest,
     ToolCallResult,
+    context_overflow_error,
+    mentions_any,
+    shorten_tool_text,
 )
 from llm_cli.providers.catalog import model_option
 
@@ -29,7 +32,18 @@ DEFAULT_FALLBACK_MODEL = "claude-opus-4-8"
 # output, and a non-streaming request of this size hits the SDK's HTTP timeout
 # before the model is finished.
 _MAX_TOKENS = 64_000
+# Used when account metadata does not publish the model's input limit.
+_DEFAULT_CONTEXT_WINDOW = 200_000
+# Automatic caching places the breakpoint on the last cacheable block, so each
+# request reuses the system prompt, tools, and every earlier turn.
+_CACHE_CONTROL = {"type": "ephemeral"}
 _FALLBACK_BETA = "server-side-fallback-2026-06-01"
+# Anthropic's explanations for a prompt that cannot fit: "prompt is too long:
+# N tokens > M maximum" and "input length and `max_tokens` exceed context
+# limit: N + M > L". Other 400s must not be mistaken for these.
+_OVERFLOW_PHRASES = ("prompt is too long", "exceed context limit")
+# Generation stopped because the context window filled before the reply ended.
+_CONTEXT_STOP = "model_context_window_exceeded"
 
 
 class _FallbackMode(Enum):
@@ -82,10 +96,17 @@ class AnthropicProvider:
             option.max_output_tokens
             or (_MAX_TOKENS if option.adaptive_thinking else 4096),
         )
+        self._context_window = option.context_window or _DEFAULT_CONTEXT_WINDOW
 
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def input_token_budget(self) -> int:
+        """Prompt tokens a request can carry while leaving room for output."""
+
+        return max(1, self._context_window - self._max_tokens)
 
     def _ensure_client(self) -> Any:
         if self._client is None:
@@ -156,39 +177,76 @@ class AnthropicSession:
         return {"messages": _json_value(self._messages)}
 
     def send_user(self, text: str) -> ModelTurn:
+        restore = len(self._messages)
         self._messages.append({"role": "user", "content": text})
-        return self._advance()
+        return self._advance(restore)
 
     def send_tool_results(self, results: Sequence[ToolCallResult]) -> ModelTurn:
+        restore = len(self._messages)
         self.record_tool_results(results)
-        return self._advance()
+        return self._advance(restore)
 
     def record_tool_results(self, results: Sequence[ToolCallResult]) -> None:
         if not results:
             raise ValueError("a tool-result turn must carry at least one result")
-        self._messages.append(
+        self._messages.append({"role": "user", "content": _result_blocks(results)})
+
+    def summarize(
+        self,
+        instruction: str,
+        *,
+        max_tool_text: int | None = None,
+        pending_results: Sequence[ToolCallResult] = (),
+    ) -> ModelTurn:
+        """Make one tools-disabled request without changing native history."""
+
+        request: list[dict[str, Any]] = [
+            *self._messages,
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": result.call_id,
-                        "content": result.content,
-                        "is_error": result.is_error,
-                    }
-                    for result in results
-                ],
-            }
-        )
+                    *_result_blocks(pending_results),
+                    {"type": "text", "text": instruction},
+                ]
+                if pending_results
+                else instruction,
+            },
+        ]
+        if max_tool_text is not None:
+            request = [_shortened_message(item, max_tool_text) for item in request]
+        callback, self._event_callback = self._event_callback, None
+        try:
+            # A summary is a side request: a rejection here must not change
+            # how later task turns are sent.
+            message = self._request(
+                request, tool_choice={"type": "none"}, keep_fallback=True
+            )
+        finally:
+            self._event_callback = callback
+        return _turn_from_message(message)
 
-    def _request_arguments(self, *, with_fallback: bool) -> dict[str, Any]:
+    def replace_history(self, summary: str) -> None:
+        # The API merges consecutive user turns, so the next prompt can follow
+        # this message directly without an invented assistant reply.
+        self._messages = [{"role": "user", "content": summary}]
+
+    def _request_arguments(
+        self,
+        *,
+        with_fallback: bool,
+        messages: list[dict[str, Any]] | None = None,
+        tool_choice: Mapping[str, object] | None = None,
+    ) -> dict[str, Any]:
         arguments: dict[str, Any] = {
             "model": self._model,
             "max_tokens": self._max_tokens,
             "system": self._system,
-            "messages": self._messages,
+            "messages": self._messages if messages is None else messages,
             "tools": self._tools,
+            "cache_control": dict(_CACHE_CONTROL),
         }
+        if tool_choice is not None:
+            arguments["tool_choice"] = dict(tool_choice)
         if self._adaptive_thinking:
             arguments["thinking"] = {"type": "adaptive"}
         if self._effort is not None:
@@ -198,20 +256,55 @@ class AnthropicSession:
             arguments["fallbacks"] = [{"model": self._fallback_model}]
         return arguments
 
-    def _advance(self) -> ModelTurn:
+    def _advance(self, restore: int) -> ModelTurn:
+        try:
+            message = self._request(self._messages)
+            if getattr(message, "stop_reason", None) == _CONTEXT_STOP:
+                # The reply was cut off by the window, not finished. Treat it
+                # like a rejected prompt so the caller can summarize and retry.
+                raise context_overflow_error()
+        except BaseException:
+            # A failed request leaves native history as it was, so the caller
+            # can summarize it and send the same prompt again.
+            del self._messages[restore:]
+            raise
+        # Provider-native blocks -- thinking, tool_use, cache markers -- must be
+        # replayed verbatim, so the assistant turn is appended as it arrived.
+        self._messages.append({"role": "assistant", "content": message.content})
+        return _turn_from_message(message)
+
+    def _request(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tool_choice: Mapping[str, object] | None = None,
+        keep_fallback: bool = False,
+    ) -> Any:
         anthropic = _load_sdk()
         try:
             try:
-                message = self._stream(self._request_arguments(with_fallback=True))
-            except anthropic.BadRequestError:
+                return self._stream(
+                    self._request_arguments(
+                        with_fallback=True, messages=messages, tool_choice=tool_choice
+                    )
+                )
+            except anthropic.BadRequestError as exc:
                 # A refusal fallback is optional. Retry without the beta if
                 # this deployment rejects it; both requests still need the
-                # same provider-error translation below.
-                if self._fallback_model is None:
+                # same provider-error translation below. An oversized prompt
+                # would fail the same way without the beta.
+                if self._fallback_model is None or _context_overflow(exc):
                     raise
-                self._fallback_model = None
-                message = self._stream(self._request_arguments(with_fallback=False))
+                if not keep_fallback:
+                    self._fallback_model = None
+                return self._stream(
+                    self._request_arguments(
+                        with_fallback=False, messages=messages, tool_choice=tool_choice
+                    )
+                )
         except anthropic.APIStatusError as exc:
+            if _context_overflow(exc):
+                raise context_overflow_error(exc.status_code) from exc
             raise LlmCoordError(
                 ErrorCode.PROVIDER_UNAVAILABLE,
                 f"the model provider returned HTTP {exc.status_code}",
@@ -233,11 +326,6 @@ class AnthropicSession:
                 "no Anthropic credential is configured; use /login anthropic "
                 "or set ANTHROPIC_API_KEY",
             ) from exc
-
-        # Provider-native blocks -- thinking, tool_use, cache markers -- must be
-        # replayed verbatim, so the assistant turn is appended as it arrived.
-        self._messages.append({"role": "assistant", "content": message.content})
-        return _turn_from_message(message)
 
     def _stream(self, arguments: dict[str, Any]) -> Any:
         endpoint = (
@@ -288,6 +376,59 @@ class AnthropicSession:
         else:
             payload["text"] = text
         self._event_callback(event_kind, payload)
+
+
+def _context_overflow(error: Any) -> bool:
+    status = getattr(error, "status_code", None)
+    if status == 413:
+        # request_too_large: the request body itself exceeds the size limit.
+        return True
+    body = getattr(error, "body", None)
+    details = body.get("error") if isinstance(body, Mapping) else None
+    return (
+        status == 400
+        and isinstance(details, Mapping)
+        and mentions_any(details.get("message"), _OVERFLOW_PHRASES)
+    )
+
+
+def _result_blocks(results: Sequence[ToolCallResult]) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "tool_result",
+            "tool_use_id": result.call_id,
+            "content": result.content,
+            "is_error": result.is_error,
+        }
+        for result in results
+    ]
+
+
+def _shortened_message(message: dict[str, Any], limit: int) -> dict[str, Any]:
+    """Shorten tool payloads in a copy of one message for a summary request."""
+
+    content = message.get("content")
+    if not isinstance(content, list):
+        return message
+    blocks: list[Any] = []
+    for block in content:
+        kind = _field(block, "type")
+        if kind == "tool_result" and isinstance(_field(block, "content"), str):
+            data = dict(block) if isinstance(block, Mapping) else _json_value(block)
+            data["content"] = shorten_tool_text(data["content"], limit)
+            blocks.append(data)
+        elif kind == "tool_use" and isinstance(_field(block, "input"), Mapping):
+            data = dict(block) if isinstance(block, Mapping) else _json_value(block)
+            data["input"] = {
+                key: (
+                    shorten_tool_text(value, limit) if isinstance(value, str) else value
+                )
+                for key, value in data["input"].items()
+            }
+            blocks.append(data)
+        else:
+            blocks.append(block)
+    return {**message, "content": blocks}
 
 
 def _field(value: Any, name: str) -> Any:
@@ -346,11 +487,14 @@ def _turn_from_message(message: Any) -> ModelTurn:
                 )
             )
     stop_details = getattr(message, "stop_details", None)
+    usage = _usage(message)
     return ModelTurn(
         text="\n".join(text_parts).strip(),
         tool_calls=tuple(calls),
         stop_reason=str(getattr(message, "stop_reason", "end_turn")),
-        usage=_usage(message),
+        usage=usage,
+        # input_tokens excludes cached prompt tokens; the window holds them all.
+        context_tokens=sum(usage.values()) if "input_tokens" in usage else None,
         reasoning="\n".join(reasoning_parts).strip(),
         refusal_category=(
             str(getattr(stop_details, "category", None))

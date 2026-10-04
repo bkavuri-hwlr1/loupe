@@ -100,6 +100,7 @@ def test_settled_mutation_gets_one_tools_disabled_final_turn(worktree: Path) -> 
         final_turn=ModelTurn(
             text="Updated the guide, published it, and verified the result.",
             usage={"input_tokens": 11, "output_tokens": 12},
+            context_tokens=23,
         ),
     )
     request = _request_finalization(draft, snapshots[-1], persist, facts)
@@ -117,6 +118,8 @@ def test_settled_mutation_gets_one_tools_disabled_final_turn(worktree: Path) -> 
     assert '"publication": "published"' in provider.user_messages[-1]
     finished = snapshots[-1]
     assert finished["phase"] == "finished"
+    # The next task inherits the size including the settled reply.
+    assert finished["context_tokens"] == 23
     assert finished["finalization"] == FinalizationState(
         "completed", 1, facts
     ).to_dict()

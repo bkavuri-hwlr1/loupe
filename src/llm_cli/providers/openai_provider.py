@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -16,11 +17,26 @@ from llm_cli.providers.base import (
     StreamCallback,
     ToolCallRequest,
     ToolCallResult,
+    context_overflow_error,
+    mentions_any,
+    shorten_tool_text,
 )
 from llm_cli.providers.catalog import model_option
 
 DEFAULT_MODEL = "gpt-5.3-codex"
 _MAX_OUTPUT_TOKENS = 32_000
+# Context limits used when the catalog has no model-specific window. GPT-5-family
+# models publish an input limit separate from their output limit; GPT-6 models
+# are assumed to follow it. Other models share one window between prompt and
+# reply, so the reply's reservation is subtracted.
+_SEPARATE_INPUT_LIMIT = 272_000
+_SEPARATE_INPUT_PREFIXES = ("gpt-5", "gpt-6")
+_REASONING_WINDOW = 200_000
+_REASONING_PREFIXES = ("o1", "o3", "o4")
+_DEFAULT_CONTEXT_WINDOW = 128_000
+# Responses explanations for an oversized prompt, beside the
+# context_length_exceeded code. Other 400s must not be mistaken for these.
+_OVERFLOW_PHRASES = ("exceeds the context window", "maximum context length is")
 
 
 def _load_sdk() -> Any:
@@ -61,10 +77,19 @@ class OpenAIProvider:
             option.max_output_tokens
             or (_MAX_OUTPUT_TOKENS if self._reasoning_supported else 4096),
         )
+        self._context_window = option.context_window
 
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def input_token_budget(self) -> int:
+        """Prompt tokens a request can carry while leaving room for output."""
+
+        return input_token_budget(
+            self._model, self._context_window, self._max_output_tokens
+        )
 
     def _ensure_client(self) -> Any:
         if self._client is None:
@@ -132,8 +157,9 @@ class OpenAISession:
     def send_user(self, text: str) -> ModelTurn:
         if _pending_calls(self._input):
             raise ValueError("OpenAI conversation has unanswered tool calls")
+        restore = len(self._input)
         self._input.append({"role": "user", "content": text})
-        return self._advance()
+        return self._advance(restore)
 
     def record_tool_results(self, results: Sequence[ToolCallResult]) -> None:
         """Record actual outcomes without requesting an additional model turn."""
@@ -146,32 +172,66 @@ class OpenAISession:
             or set(result_ids) != pending
         ):
             raise ValueError("OpenAI tool results must answer each pending call once")
-        self._input.extend(
-            {
-                "type": "function_call_output",
-                "call_id": result.call_id,
-                # Responses has no is_error field. An explicit envelope retains
-                # the broker's distinction without depending on content wording.
-                "output": json.dumps(
-                    {"content": result.content, "is_error": result.is_error},
-                    ensure_ascii=False,
-                ),
-            }
-            for result in results
-        )
+        self._input.extend(_result_items(results))
 
     def send_tool_results(self, results: Sequence[ToolCallResult]) -> ModelTurn:
+        restore = len(self._input)
         self.record_tool_results(results)
-        return self._advance()
+        return self._advance(restore)
 
-    def _advance(self) -> ModelTurn:
+    def summarize(
+        self,
+        instruction: str,
+        *,
+        max_tool_text: int | None = None,
+        pending_results: Sequence[ToolCallResult] = (),
+    ) -> ModelTurn:
+        """Make one tools-disabled request without changing native history."""
+
+        items = [
+            *self._input,
+            *_result_items(pending_results),
+            {"role": "user", "content": instruction},
+        ]
+        if max_tool_text is not None:
+            items = [_shortened_item(item, max_tool_text) for item in items]
+        callback, self._event_callback = self._event_callback, None
+        try:
+            _, turn = self._request(items, tool_choice="none")
+        finally:
+            self._event_callback = callback
+        return turn
+
+    def replace_history(self, summary: str) -> None:
+        self._input = [{"role": "user", "content": summary}]
+
+    def _advance(self, restore: int) -> ModelTurn:
+        try:
+            output, turn = self._request(self._input)
+        except BaseException:
+            # A failed request leaves native history as it was, so the caller
+            # can summarize it and send the same prompt again.
+            del self._input[restore:]
+            raise
+        self._input.extend(output)
+        return turn
+
+    def _request(
+        self, items: list[dict[str, Any]], *, tool_choice: str | None = None
+    ) -> tuple[list[dict[str, Any]], ModelTurn]:
         arguments = {
             "model": self._model,
             "instructions": self._system,
-            "input": _json_value(self._input),
+            "input": _json_value(items),
             "tools": _json_value(self._tools),
             "store": False,
         }
+        if items:
+            # Route every request of one conversation to the same prompt cache.
+            # The first item stays fixed until the history is summarized.
+            arguments["prompt_cache_key"] = _cache_key(self._model, items[0])
+        if tool_choice is not None:
+            arguments["tool_choice"] = tool_choice
         if self._reasoning_supported:
             arguments["include"] = ["reasoning.encrypted_content"]
             reasoning = {}
@@ -197,6 +257,8 @@ class OpenAISession:
                 raise failure from exc
             raise
         if _field(response, "status") != "completed":
+            if _failed_for_context(_field(response, "error")):
+                raise context_overflow_error()
             raise LlmCoordError(
                 ErrorCode.PROVIDER_UNAVAILABLE,
                 "the model provider did not complete its response; no tools were run",
@@ -210,7 +272,7 @@ class OpenAISession:
                 _validate_item(item, output=True)
                 _remove_sdk_annotations(item)
             # Validate the complete turn before returning any executable calls.
-            _pending_calls([*self._input, *output])
+            _pending_calls([*items, *output])
             turn = _turn_from_output(output, response)
         except ValueError as exc:
             raise LlmCoordError(
@@ -218,8 +280,7 @@ class OpenAISession:
                 "the model provider returned an invalid response; no tools were run",
                 details={"provider_error": "invalid_response"},
             ) from exc
-        self._input.extend(output)
-        return turn
+        return output, turn
 
     def _stream_event(self, event: Any, calls: dict[str, dict[str, object]]) -> None:
         assert self._event_callback is not None
@@ -448,14 +509,105 @@ def _turn_from_output(output: list[dict[str, Any]], response: Any) -> ModelTurn:
                     and isinstance(part.get("text"), str)
                 ):
                     reasoning.append(part["text"])
+    usage = _usage(response)
     return ModelTurn(
         text="\n".join(text).strip(),
         tool_calls=() if refused else tuple(calls),
         stop_reason="refusal" if refused else "tool_use" if calls else "end_turn",
-        usage=_usage(response),
+        usage=usage,
+        # Responses input_tokens already includes cached tokens.
+        context_tokens=(
+            usage["input_tokens"] + usage.get("output_tokens", 0)
+            if "input_tokens" in usage
+            else None
+        ),
         refusal_category="provider_refusal" if refused else None,
         reasoning="\n".join(reasoning).strip(),
     )
+
+
+def _failed_for_context(error: object) -> bool:
+    """Recognize an oversized-prompt rejection in a Responses error object."""
+
+    if isinstance(error, Mapping):
+        # SDK versions expose either the inner error or its enclosing object.
+        error = error.get("error", error)
+    code = _field(error, "code")
+    return code == "context_length_exceeded" or mentions_any(
+        _field(error, "message"), _OVERFLOW_PHRASES
+    )
+
+
+def _result_items(results: Sequence[ToolCallResult]) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function_call_output",
+            "call_id": result.call_id,
+            # Responses has no is_error field. An explicit envelope retains
+            # the broker's distinction without depending on content wording.
+            "output": json.dumps(
+                {"content": result.content, "is_error": result.is_error},
+                ensure_ascii=False,
+            ),
+        }
+        for result in results
+    ]
+
+
+def _shortened_item(item: dict[str, Any], limit: int) -> dict[str, Any]:
+    """Shorten tool payloads in a copy of one input item for a summary request."""
+
+    kind = item.get("type")
+    if kind == "function_call_output" and isinstance(item.get("output"), str):
+        envelope = _native_envelope(item["output"])
+        if isinstance(envelope, dict) and isinstance(envelope.get("content"), str):
+            envelope["content"] = shorten_tool_text(envelope["content"], limit)
+            output = json.dumps(envelope, ensure_ascii=False)
+        else:
+            output = shorten_tool_text(item["output"], limit)
+        return {**item, "output": output}
+    if kind == "function_call" and isinstance(item.get("arguments"), str):
+        arguments = _native_envelope(item["arguments"])
+        if isinstance(arguments, dict):
+            shortened = {
+                key: (
+                    shorten_tool_text(value, limit) if isinstance(value, str) else value
+                )
+                for key, value in arguments.items()
+            }
+            return {**item, "arguments": json.dumps(shortened, ensure_ascii=False)}
+    return item
+
+
+def _native_envelope(text: str) -> object:
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def input_token_budget(
+    model: str, context_window: int | None, max_output_tokens: int | None
+) -> int:
+    """Prompt tokens a request can carry, from the catalog window or defaults."""
+
+    reserve = max_output_tokens if max_output_tokens is not None else _MAX_OUTPUT_TOKENS
+    if context_window is None:
+        if model.startswith(_SEPARATE_INPUT_PREFIXES):
+            return _SEPARATE_INPUT_LIMIT
+        context_window = (
+            _REASONING_WINDOW
+            if model.startswith(_REASONING_PREFIXES)
+            else _DEFAULT_CONTEXT_WINDOW
+        )
+    return max(1, context_window - reserve)
+
+
+def _cache_key(model: str, first_item: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        [model, _json_value(first_item)], sort_keys=True, ensure_ascii=False
+    )
+    return "loupe-" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:40]
 
 
 def _usage(response: Any) -> dict[str, int]:
@@ -481,6 +633,12 @@ def _provider_failure(error: Exception, client: Any) -> LlmCoordError | None:
 
     names = {kind.__name__ for kind in type(error).__mro__}
     status = getattr(error, "status_code", None)
+    if (
+        "APIStatusError" in names
+        and status in {400, 413}
+        and _failed_for_context(getattr(error, "body", None))
+    ):
+        return context_overflow_error(status)
     if "APIStatusError" in names and isinstance(status, int):
         return LlmCoordError(
             ErrorCode.PROVIDER_UNAVAILABLE,
