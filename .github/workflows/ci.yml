@@ -24,6 +24,14 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: ${{ matrix.python }}
+      - name: Install bubblewrap for command sandbox tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces, which
+          # bubblewrap needs. Tests skip the real sandbox if it cannot start.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: uv sync --locked --all-groups --all-extras
       - run: uv run pytest --cov=llm_cli
       - run: uv run ruff check .

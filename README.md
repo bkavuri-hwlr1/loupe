@@ -240,6 +240,20 @@ creation, deletion of regular text files, and renames. Ctrl+C still detaches.
 See [the verified workflow guide](docs/verified-workflow.md) for configuration,
 CLI equivalents, dependency setup, check gating, and recovery behavior.
 
+### Commands in a sandbox
+
+The agent can run commands, such as tests or a reproduction script, with the
+`run_command` tool. Each command runs in a disposable copy of the checkout that
+includes the task's pending edits, inside an operating-system sandbox (Seatbelt
+on macOS, bubblewrap on Linux): no network, writes only to the copy, and the
+real checkout, Loupe's own state, and common credential stores unreadable.
+Dependency folders such as `.venv` and `node_modules` are available read-only.
+By default Loupe asks before each command in an interactive session; you can
+allow it once or for the rest of the task. Set `commands = "allow"` under
+`[agent]` in the configuration file to skip the question, or `"off"` to disable
+commands. Without a working sandbox the tool is not offered. See
+[SECURITY.md](SECURITY.md) for the full boundary and its limits.
+
 ### Repository instructions and long conversations
 
 Put build, test, and style guidance for the agent in an `AGENTS.md` file (the

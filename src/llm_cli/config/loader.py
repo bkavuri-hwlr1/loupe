@@ -12,7 +12,7 @@ from llm_cli.errors import ErrorCode, LlmCoordError
 
 _ROOT_KEYS = {"agent", "core", "leases"}
 _CORE_KEYS = {"coordination_mode"}
-_AGENT_KEYS = {"provider", "model"}
+_AGENT_KEYS = {"provider", "model", "commands"}
 _LEASE_KEYS = {
     "launch_ms",
     "work_ms",
@@ -62,10 +62,16 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         if raw_model is None
         else _bounded_text(raw_model, "agent.model", maximum=256)
     )
+    commands = agent.get("commands", settings.agent_commands)
+    if commands not in {"ask", "allow", "off"}:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID, "agent.commands must be ask, allow, or off"
+        )
     updates: dict[str, Any] = {
         "coordination_mode": mode,
         "agent_provider": provider,
         "agent_model": model,
+        "agent_commands": commands,
     }
     mapping = {
         "launch_ms": "launch_lease_ms",

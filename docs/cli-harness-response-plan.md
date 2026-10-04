@@ -1,8 +1,10 @@
 # Loupe CLI harness: response and execution plan
 
 Status: first response-and-delivery milestone implemented and locally validated;
-context management (phase 7, items 1–3) implemented; broader harness work remains.
-Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03
+context management (phase 7, items 1–3) and sandboxed commands (item 4)
+implemented; broader harness work remains.
+Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03,
+item 4 completed 2026-10-04
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -42,9 +44,10 @@ commits the answer, promoted conversation, and terminal task state together.
 
 Repository-instruction discovery, context compaction (automatic, after an
 oversized-prompt rejection, and through `/compact`), and provider prompt caching
-are implemented (phase 7, items 1–3). The remaining roadmap includes governed
-diagnostic commands, bounded repair stages, response-only retry, the rest of
-phase 7, and the full deterministic/live-provider behavior matrix.
+are implemented (phase 7, items 1–3), as are sandboxed diagnostic commands
+(item 4, which also covers phase 5's command capability). The remaining roadmap
+includes bounded repair stages, response-only retry, the rest of phase 7, and
+the full deterministic/live-provider behavior matrix.
 
 Revalidation against `origin/main` on macOS/Python 3.14 on 2026-09-23 passes
 1,233 tests with 83% branch coverage, Ruff, strict mypy, whitespace checks,
@@ -336,6 +339,9 @@ outcomes, and bounded command capabilities.
 - Allow targeted reproduction and diagnostic commands through a governed extension
   of the snapshot runner. Record argv, cwd, environment policy, timeout, output,
   cancellation, and exit status. Reuse command results as evidence.
+  *Implemented as `run_command` (phase 7, item 4): argv, cwd, timeout, sandbox,
+  outcome, and screened output are recorded as durable task events; results
+  reach the model as tool results. A dedicated evidence store is not built.*
 - Do not introduce arbitrary model-generated shell execution in the shared
   checkout. A snapshot alone is not a sandbox: command capabilities require an
   enforceable filesystem/network/credential boundary, or an explicit supported
@@ -396,7 +402,7 @@ existing authority model: repository and tool content never grants authority.
 | 1 | Context-window management and compaction | Implemented, including `/compact` |
 | 2 | Provider prompt caching | Implemented |
 | 3 | Repository instruction files (`AGENTS.md`, `LOUPE.md`) | Implemented |
-| 4 | Governed shell execution with an OS sandbox | Planned; builds on phase 5 |
+| 4 | Governed shell execution with an OS sandbox | Implemented (`run_command`, shared tasks) |
 | 5 | Concurrent execution of read-only tool calls | Planned |
 | 6 | Visible task plan tool | Planned |
 | 7 | MCP client support | Planned |
@@ -481,12 +487,29 @@ or mode. The first task of a conversation emits `model.instructions.loaded`
 with the paths used. File text cannot open or close its labeled frame, and
 paths are escaped. User-level global instructions are a possible follow-up.
 
-**4. Governed shell execution.** Arbitrary commands are the largest capability
-gap. Deliver them through the phase-5 command capability, not as an unrestricted
-tool: an OS sandbox (Seatbelt on macOS; bubblewrap or Landlock on Linux) with
-network disabled by default, write access limited to a private snapshot, an
-approval policy, recorded argv, cwd, environment policy, timeout, and output,
-and the capability disabled where the sandbox is unavailable.
+**4. Governed shell execution (implemented).** `run_command` runs a model-chosen
+argv list in a disposable copy of the checkout with the task's pending edits
+applied: tracked and untracked non-ignored files are copied, ignored dependency
+folders (`.venv`, `venv`, `node_modules`, configured `runtime_paths`) are linked
+read-only, and there is no `.git` directory. The copy is sandboxed by Seatbelt
+(`sandbox-exec`, deny-by-default profile, paths passed as parameters) on macOS
+or bubblewrap on Linux, and the tool is offered only when a probe command starts
+successfully. Inside the sandbox: no network except Unix sockets in the copy and
+its private home; writes only there; the real checkout, Loupe's directories, and
+common home-directory credential stores unreadable; an environment of `PATH`
+plus fixed settings. Arguments with recognized secrets are refused, output after
+recognized secrets is withheld, the model receives the first 4 KiB and last
+28 KiB of output, and a timeout (default 120 s, maximum 600 s) and task
+cancellation stop the process group through the existing check supervisor.
+Copies are deleted after each command and at daemon startup. The policy is
+`agent.commands`: `ask` (default) asks the user before each command in
+interactive sessions, with "allow once", "allow for this task", and "deny";
+`allow` runs without asking; `off` disables commands. Plan mode and isolated
+background tasks are not offered commands. Limits: other files on disk remain
+readable; localhost TCP is unavailable on macOS; tools that need the network or
+write into dependency folders fail; editable installs that point at the real
+checkout cannot be imported from it; each command copies the whole source tree.
+CI installs bubblewrap so the real Linux sandbox is tested.
 
 **5. Concurrent read-only tools.** When one model turn requests several reads,
 searches, or listings, run them concurrently and return the results in request

@@ -585,87 +585,113 @@ class CheckRunner:
         run_id: str,
         remaining: int,
     ) -> tuple[int, str, bool, str | None]:
-        process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).with_name("check_process.py")), *argv],
+        return supervised_run(
+            argv,
             cwd=cwd,
             env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            deadline=deadline,
+            remaining=remaining,
+            cancelled=self.cancelled,
+            on_output=lambda text: self.emit(
+                "check.output", {"run_id": run_id, "text": text}
+            ),
         )
-        assert process.stdin and process.stdout
-        selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ)
-        chunks: list[str] = []
-        partial_line: list[str] = []
-        withheld = False
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        clipped, stopped = False, None
 
-        def emit_safe(text: str) -> None:
-            for start in range(0, len(text), 4096):
-                chunk = text[start : start + 4096]
-                chunks.append(chunk)
-                self.emit("check.output", {"run_id": run_id, "text": chunk})
 
-        def screen_line() -> None:
-            nonlocal withheld
-            line = "".join(partial_line)
-            partial_line.clear()
-            try:
-                ensure_safe_content(line)
-            except LlmCoordError:
-                withheld = True
-                emit_safe(
-                    "[Remaining check output withheld: recognized secret material.]\n"
-                )
-            else:
-                emit_safe(line)
+def supervised_run(
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    deadline: float,
+    remaining: int,
+    cancelled: Callable[[], bool],
+    on_output: Callable[[str], None],
+) -> tuple[int, str, bool, str | None]:
+    """Run argv under the process-group supervisor, screening its output.
 
-        def collect(text: str) -> None:
-            # A key can span read() blocks. Emit only complete, screened lines;
-            # after a private-key header its following body is private too.
-            for part in text.splitlines(keepends=True):
-                if withheld:
-                    return
-                partial_line.append(part)
-                if part.endswith("\n"):
-                    screen_line()
+    Returns the exit code, the screened output, whether output was clipped or
+    withheld, and "cancelled", "timed_out", or "error" when the run stopped
+    early. Output after recognized secret material is withheld.
+    """
 
+    process = subprocess.Popen(
+        [sys.executable, str(Path(__file__).with_name("check_process.py")), *argv],
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert process.stdin and process.stdout
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    chunks: list[str] = []
+    partial_line: list[str] = []
+    withheld = False
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    clipped, stopped = False, None
+
+    def emit_safe(text: str) -> None:
+        for start in range(0, len(text), 4096):
+            chunk = text[start : start + 4096]
+            chunks.append(chunk)
+            on_output(chunk)
+
+    def screen_line() -> None:
+        nonlocal withheld
+        line = "".join(partial_line)
+        partial_line.clear()
         try:
-            while selector.get_map():
-                if stopped is None and (
-                    self.cancelled() or time.monotonic() >= deadline
-                ):
-                    stopped = "cancelled" if self.cancelled() else "timed_out"
-                    process.stdin.close()
-                for key, _ in selector.select(0.1):
-                    block = os.read(key.fd, 4096)
-                    if not block:
-                        selector.unregister(key.fileobj)
-                        continue
-                    allowed = block[: max(remaining, 0)]
-                    clipped |= len(allowed) < len(block)
-                    remaining -= len(allowed)
-                    text = decoder.decode(allowed)
-                    if text:
-                        collect(text)
-            collect(decoder.decode(b"", final=True))
-            # A capped partial line may contain an incomplete secret signature.
-            # Drop it instead of emitting a prefix that escaped classification.
-            if partial_line and not clipped and not withheld:
+            ensure_safe_content(line)
+        except LlmCoordError:
+            withheld = True
+            emit_safe("[Remaining output withheld: recognized secret material.]\n")
+        else:
+            emit_safe(line)
+
+    def collect(text: str) -> None:
+        # A key can span read() blocks. Emit only complete, screened lines;
+        # after a private-key header its following body is private too.
+        for part in text.splitlines(keepends=True):
+            if withheld:
+                return
+            partial_line.append(part)
+            if part.endswith("\n"):
                 screen_line()
-            return (
-                process.wait(),
-                "".join(chunks),
-                clipped or withheld,
-                stopped or ("error" if withheld else None),
-            )
-        finally:
-            selector.close()
-            process.stdin.close()
-            process.wait(timeout=10)
-            process.stdout.close()
+
+    try:
+        while selector.get_map():
+            if stopped is None and (cancelled() or time.monotonic() >= deadline):
+                stopped = "cancelled" if cancelled() else "timed_out"
+                process.stdin.close()
+            for key, _ in selector.select(0.1):
+                block = os.read(key.fd, 4096)
+                if not block:
+                    selector.unregister(key.fileobj)
+                    continue
+                allowed = block[: max(remaining, 0)]
+                clipped |= len(allowed) < len(block)
+                remaining -= len(allowed)
+                text = decoder.decode(allowed)
+                if text:
+                    collect(text)
+        collect(decoder.decode(b"", final=True))
+        # A capped partial line may contain an incomplete secret signature.
+        # Drop it instead of emitting a prefix that escaped classification.
+        if partial_line and not clipped and not withheld:
+            screen_line()
+        return (
+            process.wait(),
+            "".join(chunks),
+            clipped or withheld,
+            stopped or ("error" if withheld else None),
+        )
+    finally:
+        selector.close()
+        process.stdin.close()
+        process.wait(timeout=10)
+        process.stdout.close()
 
 
 def cleanup_interrupted_checks(store: ControlStore, managed_root: Path) -> None:
