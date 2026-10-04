@@ -46,6 +46,7 @@ from llm_cli.coordination.models import (
 from llm_cli.coordination.scopes import ScopeValidationError, normalize_changed_path
 from llm_cli.doctor import run_doctor
 from llm_cli.errors import ErrorCode, LlmCoordError
+from llm_cli.execution.commands import CommandSettings, cleanup_command_snapshots
 from llm_cli.execution.recovery import (
     ExecutionReconciler,
     RecoveryOutcome,
@@ -58,6 +59,7 @@ from llm_cli.execution.runner import (
     TaskExecutionRunner,
     parse_fixture_writes,
 )
+from llm_cli.execution.sandbox import protected_home_paths
 from llm_cli.execution.shared import SharedTaskExecutionRunner
 from llm_cli.git.inspect import RepositoryInfo, inspect_repository
 from llm_cli.ids import new_id
@@ -194,6 +196,18 @@ class DaemonService:
         )
         self.workflow = self.shared_runner.workflow
         self.shared_runner.is_shutting_down = self.shutdown.is_set
+        self.shared_runner.commands = CommandSettings(
+            snapshot_root=paths.data_dir / "command-snapshots",
+            # Loupe's credentials and state, plus the user's secret stores.
+            protected=(
+                paths.config_dir,
+                paths.data_dir,
+                paths.state_dir,
+                paths.runtime_dir,
+                *protected_home_paths(Path.home()),
+            ),
+            approval=settings.agent_commands,
+        )
         # Registries separate the durable harness identity from the model
         # adapter selected for one launch. Provider construction does not open
         # a client or resolve credentials; that happens on first use.
@@ -243,6 +257,9 @@ class DaemonService:
                 connection.execute(
                     "UPDATE check_runs SET state='uncertain' WHERE state='running'"
                 )
+            # Each command's supervisor stops with its daemon, so no snapshot
+            # left by an earlier boot can still be in use.
+            cleanup_command_snapshots(self.paths.data_dir / "command-snapshots")
             self._session_recovery_done = True
         self._recover_shared_workspace_publications()
         with closing(connect_knowledge(self.paths.knowledge_db)) as connection:

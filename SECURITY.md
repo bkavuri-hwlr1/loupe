@@ -53,7 +53,9 @@ In scope for defensive design:
 
 Not provided by the initial architecture:
 
-- an OS, container, VM, or hostile-code sandbox;
+- an OS, container, VM, or hostile-code sandbox for Loupe itself or configured
+  checks (model-chosen commands do run in an OS sandbox; see "Model-chosen
+  commands" below);
 - protection from an administrator, root process, or malicious process with the
   same account and unrestricted filesystem/debugging access;
 - multi-host coordination over a network filesystem;
@@ -151,6 +153,40 @@ General shell execution starts with a restrictive approval policy. Model output
 cannot approve a command, widen a scope, choose a cleanup root, expose credentials,
 or authorize integration. Approval records must bind to the exact operation,
 arguments, working directory, relevant content hash, task, and expiry.
+
+### Model-chosen commands
+
+The `run_command` tool runs an argv list the model chooses. It is offered only
+in shared-workspace normal and auto tasks, only where an operating-system
+sandbox starts successfully (Seatbelt through `sandbox-exec` on macOS,
+bubblewrap on Linux), and never unsandboxed. Each command runs in a disposable
+copy of the checkout with the task's pending edits applied:
+
+- the network is off; only Unix sockets inside the command's own copy and home
+  can be used, so host sockets such as SSH agents and Docker are unreachable;
+- writes are limited to the copy and a private home, both deleted afterwards;
+- the real checkout, Loupe's configuration, data, state, and runtime
+  directories, and common credential stores under the home directory (SSH,
+  GnuPG, cloud CLIs, `gh`, Docker, `.netrc`, package-registry tokens, Codex and
+  Claude credentials, keychains, browser profiles) are unreadable;
+- ignored dependency folders (`.venv`, `venv`, `node_modules`, and configured
+  `runtime_paths`) are readable in place but not writable;
+- the environment carries only `PATH` and fixed, non-secret settings;
+- arguments containing recognized secret material are refused, and output after
+  recognized secret material is withheld;
+- each command has a timeout (at most 600 seconds) and stops with its task.
+
+Other files on disk remain readable, so this is weaker than a read allowlist:
+a command could read a credential stored somewhere this policy does not list,
+and the pattern screening of its output is not a complete secret scanner.
+
+Approval follows `agent.commands` in the user configuration. The default,
+`ask`, offers commands only in interactive sessions and asks the user before
+each one, showing its exact arguments, directory, and timeout; the user may
+allow it once, allow commands for the rest of that task, or decline. The
+approval is answered only through the question channel, never by model
+output, and a task-wide approval expires with the task. `allow` runs sandboxed
+commands without asking, and `off` never offers them.
 
 ## Plugins and optional native code
 

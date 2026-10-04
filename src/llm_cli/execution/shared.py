@@ -31,8 +31,14 @@ from llm_cli.execution.checks import (
     verification_current,
     verification_status,
 )
+from llm_cli.execution.commands import (
+    DEPENDENCY_PATHS,
+    CommandRunner,
+    CommandSettings,
+)
 from llm_cli.execution.recovery import RecoveryOutcome
 from llm_cli.execution.runner import TaskExecutionRunner
+from llm_cli.execution.sandbox import available_sandbox
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.context import SharedCoordinationContext
@@ -56,6 +62,9 @@ class SharedTaskExecutionRunner:
         self.publisher = publisher
         self.workflow = TaskWorkflow(self.store, self.coordinator, publisher)
         self.is_shutting_down: Callable[[], bool] = lambda: False
+        # Set by the daemon. Without it, or without a working OS sandbox,
+        # tasks are never offered model-chosen commands.
+        self.commands: CommandSettings | None = None
 
     def ensure_available(self, workspace_id: str) -> None:
         if self.publisher.blocks_workspace(workspace_id):
@@ -184,6 +193,11 @@ class SharedTaskExecutionRunner:
                 ),
             )
             deadline_value = saved.checkpoint.get("deadline_at") if saved else None
+            deadline_at = (
+                float(deadline_value)
+                if isinstance(deadline_value, (float, int))
+                else time.time() + self.lifecycle.limits.wall_clock_seconds
+            )
             checker = CheckRunner(
                 self.workflow,
                 row,
@@ -196,11 +210,7 @@ class SharedTaskExecutionRunner:
                 ),
                 broker.emit,
                 self.publisher.lock,
-                deadline_at=(
-                    float(deadline_value)
-                    if isinstance(deadline_value, (float, int))
-                    else time.time() + self.lifecycle.limits.wall_clock_seconds
-                ),
+                deadline_at=deadline_at,
             )
             if checker.config.get("checks") and row["agent_mode"] != "plan":
                 broker.check_runner = checker.run
@@ -210,6 +220,34 @@ class SharedTaskExecutionRunner:
                 instructions += "\nConfigured checks: " + ", ".join(
                     checker.config["checks"]
                 )
+            sandbox = (
+                available_sandbox()
+                if self.commands is not None
+                and self.commands.approval != "off"
+                and row["agent_mode"] != "plan"
+                else None
+            )
+            if sandbox is not None:
+                assert self.commands is not None
+                broker.command_runner = CommandRunner(
+                    root=broker.worktree,
+                    snapshot_root=self.commands.snapshot_root,
+                    candidates=broker.candidates,
+                    cancelled=lambda: (
+                        self.workflow.stopped(task.task_id, task.attempt)
+                        or self.is_shutting_down()
+                    ),
+                    emit=broker.emit,
+                    lock=self.publisher.lock,
+                    sandbox=sandbox,
+                    protected=self.commands.protected,
+                    dependency_paths=(
+                        *DEPENDENCY_PATHS,
+                        *checker.config.get("runtime_paths", []),
+                    ),
+                    deadline_at=deadline_at,
+                ).run
+                broker.command_approval = self.commands.approval
             context = SharedCoordinationContext(
                 self.store, session.session_id, claim.scopes
             )

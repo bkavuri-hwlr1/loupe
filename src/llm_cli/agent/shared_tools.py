@@ -89,7 +89,7 @@ class SharedToolBroker(ToolBroker):
     def invoke(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
         # An operator can take minutes to answer. This tool has no shared
         # checkout effect and must not hold every other session's read barrier.
-        if name in {"ask_user", "run_check", "finish_task"}:
+        if name in {"ask_user", "run_check", "run_command", "finish_task"}:
             return ToolBroker.invoke(self, name, arguments)
         before = self.usage.calls
         with nullcontext() if name == "search_text" else self.publication_lock:

@@ -219,6 +219,20 @@ reader scan. Keep a narrow factual question short, and do not pad any answer.
 - Ground explanations in what you read. When asked how code works, read the
 relevant source, not only its documentation."""
 
+_COMMAND_GUIDANCE = """\
+
+Commands:
+- run_command runs argv in a disposable, sandboxed copy of the checkout that
+includes your pending edits. Use it to run tests, reproduce a reported problem,
+and confirm behavior before and after a change.
+- The network is off and changes the command makes are discarded. Edit files with
+the file tools. Commands that install packages or need the network will fail;
+dependency folders such as .venv and node_modules are available read-only.
+- A command's result is evidence for your answer, not publication verification;
+configured checks remain the required verification. Only report commands that
+run_command actually returned.
+"""
+
 _INTERACTIVE_GUIDANCE = """\
 
 Clarification:
@@ -307,6 +321,8 @@ class CodingAgentHarness:
                 else _AUTO_MODE_GUIDANCE
             )
         system += "\n" + _ANSWER_GUIDANCE
+        if "run_command" in tool_names:
+            system += "\n" + _COMMAND_GUIDANCE
         if "ask_user" in tool_names:
             system += "\n" + _INTERACTIVE_GUIDANCE
         instruction_files = discover_instructions(tools.worktree, request.scopes)

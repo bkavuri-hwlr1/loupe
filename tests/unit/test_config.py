@@ -56,3 +56,14 @@ def test_config_rejects_unknown_or_unsafe_values(tmp_path: Path) -> None:
     )
     with pytest.raises(LlmCoordError, match="shorter"):
         load_settings(config)
+
+
+def test_commands_ask_by_default_and_accept_allow_or_off(tmp_path: Path) -> None:
+    assert load_settings(tmp_path / "missing.toml").agent_commands == "ask"
+    config = tmp_path / "config.toml"
+    for value in ("allow", "off"):
+        config.write_text(f'[agent]\ncommands = "{value}"\n', encoding="utf-8")
+        assert load_settings(config).agent_commands == value
+    config.write_text('[agent]\ncommands = "unsandboxed"\n', encoding="utf-8")
+    with pytest.raises(LlmCoordError, match="ask, allow, or off"):
+        load_settings(config)

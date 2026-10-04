@@ -7,6 +7,7 @@ Assistant answers are preserved; terminal controls are stripped before display.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, TextIO
 
@@ -53,6 +54,7 @@ _QUIET_EVENTS = frozenset(
         "publication.confirmed",
         "model.coordination_updated",
         "check.output",
+        "command.output",
     }
 )
 
@@ -108,6 +110,8 @@ _PUBLIC_EVENTS = frozenset(
         "tool.completed",
         "check.started",
         "check.finished",
+        "command.started",
+        "command.finished",
         "question.asked",
         "workflow.awaiting_review",
         "workflow.cancelled",
@@ -251,6 +255,10 @@ def render_event(event: dict[str, Any]) -> str | None:
     payload = payload if isinstance(payload, dict) else {}
     marker = _MARKERS.get(kind, " ")
 
+    if kind == "command.started":
+        return f"  Running: {_command_text(payload)}"
+    if kind == "command.finished":
+        return f"  Command result: {_command_outcome(payload)}"
     if kind == "check.started":
         return f"  Running check: {safe_text(payload.get('name', ''))}"
     if kind == "check.finished":
@@ -313,6 +321,26 @@ def render_event(event: dict[str, Any]) -> str | None:
         return None
     detail = _detail(kind, payload)
     return f"  {marker} {label}{detail}"
+
+
+def _command_text(payload: dict[str, Any]) -> str:
+    argv = payload.get("argv")
+    if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
+        return "command"
+    return _clip(shlex.join(argv))
+
+
+def _command_outcome(payload: dict[str, Any]) -> str:
+    state = payload.get("state")
+    exit_code = payload.get("exit_code")
+    duration = payload.get("duration")
+    timed = isinstance(duration, (int, float)) and not isinstance(duration, bool)
+    if state == "completed" and type(exit_code) is int:
+        return f"exit {exit_code}" + (f" ({duration:.1f}s)" if timed else "")
+    label = {"timed_out": "timed out", "cancelled": "stopped"}.get(str(state))
+    if label is None:
+        return "could not run"
+    return label + (f" after {duration:.1f}s" if timed else "")
 
 
 def _detail(kind: str, payload: dict[str, Any]) -> str:
@@ -484,6 +512,7 @@ class EventRenderer:
         self._task_id = ""
         self._claim_id = ""
         self._check_failed = False
+        self._command: str | None = None
         self._completed = False
         self._verification: str | None = None
         self._answer_ids: set[str] = set()
@@ -714,6 +743,21 @@ class EventRenderer:
                 self.ui.notice(f"  {_CONVERSATION_PHASES[kind]}", style="warning")
             else:
                 self.ui.activity(_CONVERSATION_PHASES[kind])
+            return
+        if kind == "command.started":
+            self._command = _command_text(payload)
+            self.ui.activity(f"Running {self._command}…")
+            return
+        if kind == "command.finished":
+            self.ui.activity(None)
+            # Model-chosen commands are shown as they run, so the transcript
+            # records exactly what executed. A failing exit is information.
+            command = self._command or "command"
+            self._command = None
+            self.ui.notice(
+                f"  $ {command} · {_command_outcome(payload)}",
+                style="muted" if payload.get("state") == "completed" else "warning",
+            )
             return
         if kind == "check.started":
             self._check_failed = False

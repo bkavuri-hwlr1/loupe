@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -107,10 +108,16 @@ class ToolBroker:
     on_event: Callable[[str, dict[str, object]], None] | None = None
     cancelled: Callable[[], bool] | None = None
     check_runner: Callable[[str], ToolOutcome] | None = None
+    # Runs (argv, cwd, timeout) in a sandboxed snapshot; offered only when set.
+    command_runner: Callable[[list[str], str, int], ToolOutcome] | None = None
+    # "ask" needs the user's approval through ``asker`` for each command, or
+    # once for the rest of the task. "allow" runs sandboxed commands directly.
+    command_approval: str = "ask"
     finish_gate: Callable[[], ToolOutcome | None] | None = None
     usage: ToolUsage = field(default_factory=ToolUsage)
     agent_mode: str = "auto"
     _partial_reads: set[str] = field(default_factory=set, init=False)
+    _commands_approved: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         validate_agent_mode(self.agent_mode)
@@ -219,6 +226,10 @@ class ToolBroker:
         ]
         if self.check_runner is not None:
             names.append("run_check")
+        if self.command_runner is not None and (
+            self.command_approval == "allow" or self.asker is not None
+        ):
+            names.append("run_command")
         names.extend(("create_directory", "delete_file", "rename_file"))
         if self.asker is not None:
             names.append("ask_user")
@@ -517,6 +528,66 @@ class ToolBroker:
             return _error("no checks configured")
         result = self.check_runner(_string(arguments, "name"))
         return ToolOutcome(_ok(result.content, self.limits).content, result.is_error)
+
+    def _run_command(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        if self.command_runner is None:
+            return _error("commands are unavailable in this task")
+        argv = arguments.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or len(argv) > _MAX_COMMAND_ARGUMENTS
+            or not all(isinstance(item, str) and "\0" not in item for item in argv)
+            or not argv[0]
+            or sum(len(item) for item in argv) > _MAX_COMMAND_CHARACTERS
+        ):
+            return _error(
+                "argv must be a non-empty list of at most "
+                f"{_MAX_COMMAND_ARGUMENTS} strings"
+            )
+        cwd = _string(arguments, "cwd", default=".")
+        timeout = arguments.get("timeout", _DEFAULT_COMMAND_TIMEOUT)
+        if type(timeout) is not int or not 1 <= timeout <= _MAX_COMMAND_TIMEOUT:
+            return _error(
+                f"timeout must be between 1 and {_MAX_COMMAND_TIMEOUT} seconds"
+            )
+        refusal = self._command_refusal(list(argv), cwd, timeout)
+        if refusal is not None:
+            return refusal
+        result = self.command_runner(list(argv), cwd, timeout)
+        return ToolOutcome(_ok(result.content, self.limits).content, result.is_error)
+
+    def _command_refusal(
+        self, argv: list[str], cwd: str, timeout: int
+    ) -> ToolOutcome | None:
+        """Ask the user to approve a command; model output can never approve."""
+
+        if self.command_approval == "allow" or self._commands_approved:
+            return None
+        if self.asker is None:
+            return _error(
+                "commands need approval, but no interactive session is attached"
+            )
+        location = "" if cwd in {"", "."} else f"\nin {_visible(cwd)}"
+        question = (
+            "Allow this command? It runs in a sandboxed copy of the checkout with "
+            "no network, and its changes are discarded.\n\n"
+            f"$ {_visible(shlex.join(argv))}{location} (timeout {timeout}s)\n\n"
+            "1. Allow once\n2. Allow commands for the rest of this task\n3. Deny\n\n"
+            "Reply with a number or your own answer."
+        )
+        if len(question) > MAX_QUESTION_CHARACTERS:
+            return _error("that command is too long to show for approval; shorten it")
+        answer = self.asker(question).strip()
+        choice = answer.casefold()
+        if choice in {"1", "y", "yes", "allow", "allow once"}:
+            return None
+        if choice in {"2", "always", "allow all"}:
+            self._commands_approved = True
+            return None
+        self.usage.denied += 1
+        reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
+        return _error(f"the user declined this command{reason}")
 
     def _create_directory(self, arguments: Mapping[str, object]) -> ToolOutcome:
         path = normalize_changed_path(_string(arguments, "path"))
@@ -1073,8 +1144,24 @@ def _string(
     return value
 
 
+def _visible(text: str) -> str:
+    """Escape control and format characters so a shown command is exact.
+
+    Newlines, terminal escapes, and invisible bidirectional controls could
+    otherwise make an approval question differ from what would run.
+    """
+
+    return "".join(
+        f"\\u{ord(character):04x}"
+        if unicodedata.category(character) in {"Cc", "Cf"}
+        else character
+        for character in text
+    )
+
+
 _HANDLERS: Mapping[str, Callable[[ToolBroker, Mapping[str, object]], ToolOutcome]] = {
     "run_check": ToolBroker._run_check,
+    "run_command": ToolBroker._run_command,
     "create_directory": ToolBroker._create_directory,
     "delete_file": ToolBroker._delete_file,
     "rename_file": ToolBroker._rename_file,
@@ -1118,6 +1205,10 @@ def _schema(
 
 
 _TEXT = {"type": "string"}
+_DEFAULT_COMMAND_TIMEOUT = 120
+_MAX_COMMAND_TIMEOUT = 600
+_MAX_COMMAND_ARGUMENTS = 100
+_MAX_COMMAND_CHARACTERS = 64 * 1024
 
 _SCHEMAS: Mapping[str, dict[str, object]] = {
     "run_check": _schema(
@@ -1125,6 +1216,34 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
         "Run a configured named check against pending edits.",
         {"name": _TEXT},
         ["name"],
+    ),
+    "run_command": _schema(
+        "run_command",
+        (
+            "Run a command in a disposable, sandboxed copy of the checkout that "
+            "includes your pending edits. Pass argv as a list; use "
+            '["sh", "-c", "..."] only when you need shell syntax. The network is '
+            "off, the copy has no .git directory, credential locations are "
+            "unreadable, and any file changes are discarded. Ignored dependency "
+            "folders such as .venv and node_modules are available read-only. Use "
+            "it to run tests, reproduce failures, and inspect behavior; edit files "
+            "with the file tools."
+        ),
+        {
+            "argv": {"type": "array", "items": _TEXT, "minItems": 1},
+            "cwd": {
+                "type": "string",
+                "description": "Directory relative to the checkout root.",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": (
+                    f"Seconds, 1 to {_MAX_COMMAND_TIMEOUT}; default "
+                    f"{_DEFAULT_COMMAND_TIMEOUT}."
+                ),
+            },
+        },
+        ["argv"],
     ),
     "create_directory": _schema(
         "create_directory",
