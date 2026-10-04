@@ -327,7 +327,10 @@ def test_real_sandbox_hides_the_checkout_and_loupe_state(
     copy_result, real_result, state_result = seen
     assert copy_result.startswith("exit 0") and "original" in copy_result
     assert not real_result.startswith("exit 0")
-    assert not state_result.startswith("exit 0")
+    # Seatbelt refuses to list Loupe's data directory. Bubblewrap shows an empty
+    # stand-in that holds only the mount points for this command's own copy.
+    listing = state_result.splitlines()[1:]
+    assert not state_result.startswith("exit 0") or listing == ["command-snapshots"]
     assert "control.sqlite3" not in state_result
 
 

@@ -199,6 +199,8 @@ def _bubblewrap(policy: SandboxPolicy, argv: Sequence[str], cwd: Path) -> list[s
         "--tmpfs",
         "/run",
     ]
+    # A protected directory becomes an empty tmpfs. If a writable path lies
+    # inside it, only the directories leading to that mount point appear.
     for path in policy.protected:
         if path.is_dir():
             command.extend(("--tmpfs", str(path)))
