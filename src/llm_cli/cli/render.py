@@ -32,6 +32,7 @@ _TOOL_ACTIVITIES = {
     "finish_task": "Preparing the result…",
     "ask_user": "Waiting for your input…",
     "update_plan": "Updating the plan…",
+    "explore": "Exploring…",
 }
 _PLAN_MARKS = {"completed": "✓", "in_progress": "▸", "pending": "○"}
 # A task that called any of these may still fail checks or publication, so its
@@ -115,6 +116,8 @@ _PUBLIC_EVENTS = frozenset(
         "command.started",
         "command.finished",
         "plan.updated",
+        "explore.started",
+        "explore.finished",
         "question.asked",
         "workflow.awaiting_review",
         "workflow.cancelled",
@@ -262,6 +265,10 @@ def render_event(event: dict[str, Any]) -> str | None:
         return f"  Running: {_command_text(payload)}"
     if kind == "command.finished":
         return f"  Command result: {_command_outcome(payload)}"
+    if kind == "explore.started":
+        return f"  Exploring: {_clip(payload.get('task', ''))}"
+    if kind == "explore.finished":
+        return f"  {_exploration_outcome(payload)}"
     if kind == "plan.updated":
         steps = _plan_steps(payload)
         if not steps:
@@ -361,6 +368,21 @@ def _plan_progress(steps: tuple[tuple[str, str], ...]) -> str:
         if status == "in_progress":
             return f"Step {number} of {len(steps)} · {step}"
     return _plan_heading(steps)
+
+
+def _exploration_outcome(payload: dict[str, Any]) -> str:
+    task = _clip(payload.get("task", ""))
+    calls = payload.get("tool_calls")
+    seconds = payload.get("seconds")
+    details = []
+    if isinstance(calls, int) and not isinstance(calls, bool):
+        details.append(f"{calls} tool call{'' if calls == 1 else 's'}")
+    if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+        details.append(f"{seconds:.1f}s")
+    suffix = f" · {', '.join(details)}" if details else ""
+    if payload.get("state") == "completed":
+        return f"↳ Explored: {task}{suffix}"
+    return f"! Exploration stopped early: {task}{suffix}"
 
 
 def _command_text(payload: dict[str, Any]) -> str:
@@ -553,6 +575,8 @@ class EventRenderer:
         self._check_failed = False
         self._command: str | None = None
         self._plan: tuple[tuple[str, str], ...] = ()
+        # Running explorations by id, with their display task.
+        self._explorations: dict[str, str] = {}
         self._completed = False
         self._verification: str | None = None
         self._answer_ids: set[str] = set()
@@ -600,6 +624,7 @@ class EventRenderer:
             self._revising = False
             self._clear_preview()
             self._plan = ()
+            self._explorations.clear()
             self.ui.progress(None)
         if isinstance(claim_id, str) and claim_id != self._claim_id:
             self._claim_id = claim_id
@@ -784,6 +809,19 @@ class EventRenderer:
             else:
                 self.ui.activity(_CONVERSATION_PHASES[kind])
             return
+        if kind == "explore.started":
+            exploration = str(payload.get("exploration_id", ""))
+            self._explorations[exploration] = _clip(payload.get("task", ""))
+            self._show_explorations()
+            return
+        if kind == "explore.finished":
+            self._explorations.pop(str(payload.get("exploration_id", "")), None)
+            self.ui.notice(
+                f"  {_exploration_outcome(payload)}",
+                style="muted" if payload.get("state") == "completed" else "warning",
+            )
+            self._show_explorations()
+            return
         if kind == "plan.updated":
             steps = _plan_steps(payload)
             if not steps or steps == self._plan:
@@ -899,6 +937,17 @@ class EventRenderer:
             }:
                 style = "warning"
             self.ui.notice(line, style=style)
+
+    def _show_explorations(self) -> None:
+        if not self._explorations:
+            self.ui.activity("Thinking…")
+        elif len(self._explorations) == 1:
+            (task,) = self._explorations.values()
+            self.ui.activity(f"Exploring: {task}…")
+        else:
+            self.ui.activity(
+                f"Exploring {len(self._explorations)} questions in parallel…"
+            )
 
     def _collect_parts(
         self, kind: str, turn: str, payload: dict[str, Any]

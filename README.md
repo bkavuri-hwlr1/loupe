@@ -262,6 +262,17 @@ progress stays above the status footer while the task runs. The plan is saved
 with the task's checkpoint, so it survives a daemon restart and a context
 summary. Plan mode, whose answer is itself a plan, does not use it.
 
+### Exploration helpers
+
+For broad questions, such as how a feature is wired through the codebase, the
+agent can hand a read-only question to a helper with the `explore` tool. The
+helper runs in its own model context with read-only tools, sees the task's
+pending edits, and returns a short report, so the main conversation stays
+focused. Several explorations in one turn run in parallel, and the
+conversation shows each one as it finishes. Helpers cannot edit, run commands,
+or ask you questions; their tool calls and tokens count toward the task. Set
+`explore = false` under `[agent]` in the configuration file to turn them off.
+
 ### Repository instructions and long conversations
 
 Put build, test, and style guidance for the agent in an `AGENTS.md` file (the

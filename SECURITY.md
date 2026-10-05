@@ -192,6 +192,27 @@ approval is answered only through the question channel, never by model
 output, and a task-wide approval expires with the task. `allow` runs sandboxed
 commands without asking, and `off` never offers them.
 
+### Exploration helpers
+
+The `explore` tool hands a read-only question to a helper: a separate model
+session with the same provider. A helper has no more authority than the task
+that started it:
+
+- its only tools are `list_files`, `read_file`, `search_text`, and `read_diff`,
+  through a view of the task's broker with the same source exclusions, secret
+  screening, and pending edits; it cannot edit, run checks or commands, ask the
+  user, or start further helpers;
+- it keeps its own observations, so a file a helper read never counts as the
+  task having read it before a full-file write;
+- its tool calls are reserved from the task's call budget before it starts,
+  always leaving the task some calls of its own, and its token usage is added
+  to the task's total;
+- its report is tool output for the task's model: screened for recognized
+  secret material, bounded in size, and labelled as unverified findings.
+
+A helper sends repository content it reads to the configured provider, as the
+task's own reads do. Set `explore = false` under `[agent]` to disable helpers.
+
 ## Plugins and optional native code
 
 External plugins are disabled by default. User-installed plugins must declare

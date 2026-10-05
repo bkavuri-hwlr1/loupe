@@ -15,6 +15,8 @@ class Settings:
     # Sandboxed run_command policy: "ask" needs the user's approval in an
     # interactive session, "allow" runs without asking, "off" never offers it.
     agent_commands: str = "ask"
+    # Offer the explore tool, whose read-only helpers spend extra model tokens.
+    agent_explore: bool = True
     launch_lease_ms: int = 10 * 60 * 1_000
     work_lease_ms: int = 90 * 1_000
     renewal_interval_ms: int = 30 * 1_000

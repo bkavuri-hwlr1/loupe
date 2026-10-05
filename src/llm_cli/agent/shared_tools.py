@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from llm_cli.agent.bounded_search import SearchBudget, SearchError, SearchSnapshot
+from llm_cli.agent.limits import ExecutionLimits
 from llm_cli.agent.source_policy import (
     contains_secret_material,
     ensure_safe_content,
@@ -102,6 +103,7 @@ class SharedToolBroker(ToolBroker):
             "run_command",
             "finish_task",
             "update_plan",
+            "explore",
         }:
             return ToolBroker.invoke(self, name, arguments)
         before = self.usage.calls
@@ -137,6 +139,36 @@ class SharedToolBroker(ToolBroker):
                 if self.usage.calls == before:
                     self.record_interrupted_call()
                 return _error(f"the repository refused that operation: {exc.message}")
+
+    def read_only_view(self, limits: ExecutionLimits) -> SharedToolBroker:
+        """A helper's view: the same shared source and pending edits, read-only.
+
+        Pending edits are copied, so the helper sees this task's overlay as it
+        was when the helper started. Observations stay separate: the helper's
+        reads never authorize this broker's writes.
+        """
+
+        view = SharedToolBroker(
+            worktree=self.worktree,
+            scopes=self.scopes,
+            case_insensitive_filesystem=self.case_insensitive_filesystem,
+            base_oid=self.base_oid,
+            limits=limits,
+            cancelled=self.cancelled,
+            agent_mode="plan",
+            publication_lock=self.publication_lock,
+            guard=self.guard,
+        )
+        with self.publication_lock:
+            view._contents = dict(self._contents)
+            view._modes = dict(self._modes)
+            view._permissions = dict(self._permissions)
+            view._observations = {
+                relative: observation
+                for relative, observation in self._observations.items()
+                if relative in self._contents
+            }
+        return view
 
     def candidates(self) -> tuple[BatchFile, ...]:
         """Return immutable pending files; only the runner may publish them."""

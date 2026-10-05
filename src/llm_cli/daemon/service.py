@@ -1774,7 +1774,10 @@ class DaemonService:
             raise ValueError("the coding-agent launch model is malformed")
         if effort is not None and not isinstance(effort, str):
             raise ValueError("the coding-agent launch effort is malformed")
-        return CodingAgentHarness(self.providers.create(provider, model, effort=effort))
+        return CodingAgentHarness(
+            self.providers.create(provider, model, effort=effort),
+            explorations=self.settings.agent_explore,
+        )
 
     @staticmethod
     def _fixture_driver(parameters: Mapping[str, object]) -> FixtureWriteDriver:

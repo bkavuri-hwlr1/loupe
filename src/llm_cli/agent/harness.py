@@ -16,6 +16,7 @@ import json
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from llm_cli.agent.driver import (
     RunRequest,
     RunResult,
 )
+from llm_cli.agent.explorer import Explorer
 from llm_cli.agent.finalization import (
     FinalizationState,
     SettlementFacts,
@@ -57,6 +59,13 @@ from llm_cli.providers.base import (
 )
 
 _MAX_IDLE_TURNS = 2
+# Tools whose calls in one turn may run at the same time. They change nothing
+# that a later call depends on, so after a restart an interrupted call simply
+# runs again.
+_PARALLEL_TOOLS = frozenset({"explore"})
+_MAX_PARALLEL_CALLS = 4
+# Tools whose interrupted calls run again instead of being reported unknown.
+_REPEATABLE_TOOLS = frozenset({"ask_user", *_PARALLEL_TOOLS})
 _MAX_COORDINATION_BYTES = 16 * 1024
 _TRANSCRIPT_CHUNK_CHARS = 4096
 _STREAM_FLUSH_SECONDS = 0.08
@@ -250,6 +259,22 @@ approach changes. Keep exactly one step in_progress while you work on it.
 your progress; it is not the answer and does not replace finishing the task.
 """
 
+_EXPLORE_GUIDANCE = """\
+
+Exploration helpers:
+- explore hands a self-contained, read-only question to a helper with its own
+context and returns its report. Use it for broad investigation that would take
+many searches or reads, such as tracing how a feature is wired through the
+codebase or finding everything that depends on a module, so your own context
+stays focused on the task.
+- The helper does not see this conversation: include what to look for and what
+the report should cover. Call explore several times in one turn to investigate
+independent questions in parallel.
+- Read files yourself for small, targeted lookups and before editing; a report
+does not count as having read a file. Reports are a helper's findings, not
+verified facts: check what your answer depends on.
+"""
+
 _INTERACTIVE_GUIDANCE = """\
 
 Clarification:
@@ -286,10 +311,13 @@ class CodingAgentHarness:
         *,
         limits: ExecutionLimits = DEFAULT_LIMITS,
         clock: Callable[[], float] = time.time,
+        explorations: bool = True,
     ) -> None:
         self.provider = provider
         self.limits = limits
         self.clock = clock
+        # Offer the explore tool, whose helpers use the same provider.
+        self.explorations = explorations
 
     def run(self, request: RunRequest, tools: ToolBroker) -> RunResult:
         saved = _saved_checkpoint(request.resume_state, provider=self.provider)
@@ -323,6 +351,10 @@ class CodingAgentHarness:
             if context_state is not None
             else None
         )
+        explorer: Explorer | None = None
+        if self.explorations and tools.explorer is None:
+            explorer = Explorer(self.provider, tools)
+            tools.explorer = explorer
         tool_names = tools.tool_names()
         if request.agent_mode == "plan":
             system = _PLAN_SYSTEM_PROMPT
@@ -340,6 +372,8 @@ class CodingAgentHarness:
         system += "\n" + _ANSWER_GUIDANCE
         if "update_plan" in tool_names:
             system += "\n" + _PLAN_GUIDANCE
+        if "explore" in tool_names:
+            system += "\n" + _EXPLORE_GUIDANCE
         if "run_command" in tool_names:
             system += "\n" + _COMMAND_GUIDANCE
         if "ask_user" in tool_names:
@@ -778,6 +812,8 @@ class CodingAgentHarness:
                 ),
             )
             in_flight = None
+            if explorer is not None:
+                _accumulate(usage_total, explorer.take_usage())
             if tools.usage.finished:
                 break
             phase = "tool_results"
@@ -1142,11 +1178,11 @@ class CodingAgentHarness:
             if in_flight != len(results) or in_flight >= len(turn.tool_calls):
                 raise ValueError("saved in-flight tool call is inconsistent")
             interrupted = turn.tool_calls[in_flight]
-            # Asking has no filesystem effect. An unanswered question remains
-            # in the normal tool loop below, where it is reasked and counted
-            # once against the restored budget. Completed answers stay in
-            # results and are never replayed.
-            if interrupted.name != "ask_user":
+            # Asking and exploring have no filesystem effect. An unanswered
+            # question or unfinished exploration remains in the normal tool
+            # loop below, where it runs again and is counted once against the
+            # restored budget. Completed results are never replayed.
+            if interrupted.name not in _REPEATABLE_TOOLS:
                 tools.record_interrupted_call()
                 tools.emit("model.tool_interrupted", {"tool": interrupted.name})
                 results.append(
@@ -1171,48 +1207,61 @@ class CodingAgentHarness:
                     },
                 )
                 checkpoint(tuple(results), None)
-        remaining = turn.tool_calls[len(results) :]
-        for index, call in enumerate(remaining, start=len(results)):
+        index = len(results)
+        while index < len(turn.tool_calls):
+            group = [turn.tool_calls[index]]
+            while (
+                group[0].name in _PARALLEL_TOOLS
+                and len(group) < _MAX_PARALLEL_CALLS
+                and index + len(group) < len(turn.tool_calls)
+                and turn.tool_calls[index + len(group)].name in _PARALLEL_TOOLS
+            ):
+                group.append(turn.tool_calls[index + len(group)])
+            # A group's results are recorded together. If the daemon stops
+            # first, the whole group runs again on resume.
             checkpoint(tuple(results), index)
-            _emit_transcript(
-                tools,
-                "model.tool_call",
-                {
-                    "call_id": call.call_id,
-                    "tool": call.name,
-                    "arguments": dict(call.arguments),
-                },
-            )
+            for call in group:
+                _emit_transcript(
+                    tools,
+                    "model.tool_call",
+                    {
+                        "call_id": call.call_id,
+                        "tool": call.name,
+                        "arguments": dict(call.arguments),
+                    },
+                )
             try:
-                outcome = tools.invoke(call.name, call.arguments)
+                outcomes = _invoke_all(tools, group)
             except ToolBudgetExhausted as exc:
                 raise LlmCoordError(ErrorCode.PROVIDER_UNAVAILABLE, str(exc)) from exc
-            try:
-                ensure_safe_content(outcome.content)
-            except LlmCoordError:
-                outcome = ToolOutcome(
-                    "The tool output contained recognized secret material "
-                    "and was withheld.",
-                    is_error=True,
+            for call, outcome in zip(group, outcomes, strict=True):
+                try:
+                    ensure_safe_content(outcome.content)
+                except LlmCoordError:
+                    outcome = ToolOutcome(
+                        "The tool output contained recognized secret material "
+                        "and was withheld.",
+                        is_error=True,
+                    )
+                results.append(
+                    ToolCallResult(
+                        call_id=call.call_id,
+                        content=outcome.content,
+                        is_error=outcome.is_error,
+                    )
                 )
-            results.append(
-                ToolCallResult(
-                    call_id=call.call_id,
-                    content=outcome.content,
-                    is_error=outcome.is_error,
+                _emit_transcript(
+                    tools,
+                    "model.tool_result",
+                    {
+                        "call_id": call.call_id,
+                        "tool": call.name,
+                        "content": outcome.content,
+                        "is_error": outcome.is_error,
+                    },
                 )
-            )
-            _emit_transcript(
-                tools,
-                "model.tool_result",
-                {
-                    "call_id": call.call_id,
-                    "tool": call.name,
-                    "content": outcome.content,
-                    "is_error": outcome.is_error,
-                },
-            )
             checkpoint(tuple(results), None)
+            index += len(group)
         return tuple(results)
 
     @staticmethod
@@ -1333,6 +1382,23 @@ class CodingAgentHarness:
                 details={"provider_error": "incomplete_response"},
             )
         return turn
+
+
+def _invoke_all(
+    tools: ToolBroker, calls: Sequence[ToolCallRequest]
+) -> list[ToolOutcome]:
+    """Run one call, or a group of parallel-safe calls at the same time."""
+
+    if len(calls) == 1:
+        return [tools.invoke(calls[0].name, calls[0].arguments)]
+    with ThreadPoolExecutor(
+        max_workers=len(calls), thread_name_prefix="loupe-explore"
+    ) as pool:
+        futures = [
+            pool.submit(tools.invoke, call.name, call.arguments) for call in calls
+        ]
+        # Leaving the block waits for every call, so none outlives a failure.
+        return [future.result() for future in futures]
 
 
 def _plan_lines(plan: Sequence[tuple[str, str]]) -> str:
