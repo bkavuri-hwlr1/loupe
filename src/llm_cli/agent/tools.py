@@ -63,6 +63,7 @@ _MAX_QUESTION_OPTIONS = 5
 _MAX_OPTION_CHARACTERS = 200
 _MAX_INSPECTION_FILE_BYTES = 8 * 1024 * 1024
 MAX_EXPLORE_TASK_CHARACTERS = 4_000
+MAX_EXPLORE_LABEL_CHARACTERS = 80
 PLAN_STATUSES = ("pending", "in_progress", "completed")
 _MAX_PLAN_STEPS = 12
 _MAX_PLAN_STEP_CHARACTERS = 200
@@ -125,8 +126,9 @@ class ToolBroker:
     # "ask" needs the user's approval through ``asker`` for each command, or
     # once for the rest of the task. "allow" runs sandboxed commands directly.
     command_approval: str = "ask"
-    # Answers an explore task with a read-only helper's report; offered when set.
-    explorer: Callable[[str], ToolOutcome] | None = None
+    # Answers an explore task, shown to the user by its short label, with a
+    # read-only helper's report; offered when set.
+    explorer: Callable[[str, str], ToolOutcome] | None = None
     finish_gate: Callable[[], ToolOutcome | None] | None = None
     usage: ToolUsage = field(default_factory=ToolUsage)
     agent_mode: str = "auto"
@@ -819,9 +821,14 @@ class ToolBroker:
                 "task must be nonblank and at most "
                 f"{MAX_EXPLORE_TASK_CHARACTERS} characters"
             )
-        if contains_secret_material(task):
+        # The label only names the exploration for the user, so a missing or
+        # overlong one is shortened rather than refused.
+        label = " ".join(_string(arguments, "description", default="").split())
+        if len(label) > MAX_EXPLORE_LABEL_CHARACTERS:
+            label = label[: MAX_EXPLORE_LABEL_CHARACTERS - 1].rstrip() + "…"
+        if contains_secret_material(f"{task}\n{label}"):
             return _error("the task contains recognized secret material; leave it out")
-        return self.explorer(task)
+        return self.explorer(task, label)
 
     def _update_plan(self, arguments: Mapping[str, object]) -> ToolOutcome:
         try:
@@ -1567,9 +1574,18 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
         "would take many searches or reads, such as tracing how something is "
         "wired through the codebase. Several explore calls in one turn run in "
         "parallel. The helper sees your pending edits but cannot edit, run "
-        "commands, or ask the user. Its report does not count as your own read "
-        "of any file.",
+        "commands, or ask the user. Rely on its findings to understand the "
+        "code, but read a file yourself before editing it: a report does not "
+        "count as reading it.",
         {
+            "description": {
+                **_TEXT,
+                "maxLength": MAX_EXPLORE_LABEL_CHARACTERS,
+                "description": (
+                    "A short label the user sees while the helper works, "
+                    "3 to 6 words, such as 'Callers of publish_batch'."
+                ),
+            },
             "task": {
                 **_TEXT,
                 "minLength": 1,
@@ -1581,7 +1597,7 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
                 ),
             },
         },
-        ["task"],
+        ["description", "task"],
     ),
     "update_plan": _schema(
         "update_plan",

@@ -89,7 +89,7 @@ class Explorer:
             usage, self._usage = self._usage, {}
         return usage
 
-    def __call__(self, task: str) -> ToolOutcome:
+    def __call__(self, task: str, label: str = "") -> ToolOutcome:
         parent = self._broker
         budget = parent.reserve_calls(_MAX_HELPER_TOOL_CALLS, keep=_RESERVED_FOR_PARENT)
         if budget == 0:
@@ -100,10 +100,8 @@ class Explorer:
             )
         exploration_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
-        parent.emit(
-            "explore.started",
-            {"exploration_id": exploration_id, "task": _display(task)},
-        )
+        shown = {"task": _display(task), "label": label}
+        parent.emit("explore.started", {"exploration_id": exploration_id, **shown})
         # Counts calls as they happen, so a failed helper is still charged.
         progress = _Progress()
         report, state = "", "failed"
@@ -125,7 +123,7 @@ class Explorer:
                 "explore.finished",
                 {
                     "exploration_id": exploration_id,
-                    "task": _display(task),
+                    **shown,
                     "state": state,
                     "tool_calls": progress.used,
                     "seconds": round(time.monotonic() - started, 1),
@@ -209,8 +207,8 @@ def _outcome(report: str, used: int, note: str | None) -> ToolOutcome:
     parts = []
     if report:
         parts.append(
-            f"Exploration report ({calls}). These are a helper's findings, not "
-            "verified facts, and they do not count as your own reads.\n\n" + report
+            f"Exploration report ({calls}). Read a file yourself before editing "
+            "it; this report does not count as reading it.\n\n" + report
         )
     if note is not None:
         parts.append(

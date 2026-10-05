@@ -571,16 +571,36 @@ own: a helper's read never authorizes the task's full-file writes. Up to 40
 tool calls are reserved from the task's budget for each helper, always leaving
 five for the task, and unused calls are returned. Helper reads are capped at
 100 files and 384 KiB per exploration. The helper's report (at most 16,000
-characters) returns as the tool result, labelled as unverified findings;
-provider failures, a spent budget, or a cut-off report become an explicit
-partial or failed result rather than a task failure. Helper token usage is
-added to the task's total. Consecutive `explore` calls in one turn run in
-parallel (up to four); their results are recorded together, and after a
-restart an interrupted group runs again. The conversation shows each
-exploration while it runs and a one-line result when it finishes. Helpers are
-offered in every mode, including plan mode, and `agent.explore = false`
-disables them. Remaining gaps: helpers cannot run sandboxed commands, and no
-live-model comparison of answer quality with and without helpers exists yet.
+characters) returns as the tool result; the agent is told to rely on it for
+understanding but to read a file itself before editing it. Provider failures,
+a spent budget, or a cut-off report become an explicit partial or failed
+result rather than a task failure. Helper token usage is added to the task's
+total. Consecutive `explore` calls in one turn run in parallel (up to four);
+their results are recorded together, and after a restart an interrupted group
+runs again. The conversation shows each exploration by a short label the
+model provides while it runs, and a one-line result when it finishes. Helpers
+are offered in every mode, including plan mode, and `agent.explore = false`
+disables them.
+
+A live check with a Codex subscription model at `xhigh` effort, on this
+repository, found:
+
+- **Choice:** the model answered a narrow question with direct reads, used
+  one exploration per question for three independent questions, and explored
+  before editing in a coding task.
+- **Accuracy:** every sampled path and line citation in the reports was
+  correct, and the reports listed what they had not checked.
+- **Re-reading:** the first guidance called reports unverified, and the agent
+  re-read about 35 cited ranges after receiving them. With the guidance to rely
+  on reports, the three-question task fell from 39 to 5 tool calls in the main
+  context, and its peak context from 36k to 10k tokens.
+- **Cost:** for one broad trace question, exploring kept the main context
+  smaller (46k against 78k tokens) but used more tokens in total and took
+  longer than answering without helpers. Helpers inherit the task's effort
+  level and often use the full 40 calls.
+
+Remaining gaps: helpers cannot run sandboxed commands, and helpers always run
+at the task's effort level; a lower helper effort may lower cost and time.
 
 **10. Web fetch.** A read-only fetch tool for documentation, with domain policy,
 size limits, and content treated as untrusted data.

@@ -266,13 +266,14 @@ Exploration helpers:
 context and returns its report. Use it for broad investigation that would take
 many searches or reads, such as tracing how a feature is wired through the
 codebase or finding everything that depends on a module, so your own context
-stays focused on the task.
+stays focused on the task. Read files yourself for small, targeted lookups.
 - The helper does not see this conversation: include what to look for and what
 the report should cover. Call explore several times in one turn to investigate
 independent questions in parallel.
-- Read files yourself for small, targeted lookups and before editing; a report
-does not count as having read a file. Reports are a helper's findings, not
-verified facts: check what your answer depends on.
+- Rely on a report's findings to understand the code and answer questions; do
+not re-read files just to confirm them. Read a file yourself before editing it,
+since a report does not count as reading it, or when a finding is surprising
+and your next step depends on it.
 """
 
 _INTERACTIVE_GUIDANCE = """\

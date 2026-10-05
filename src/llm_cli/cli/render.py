@@ -16,6 +16,8 @@ from llm_cli.cli.streaming_markdown import MarkdownStream
 from llm_cli.cli.terminal import TerminalUI, TextSanitizer, safe_text
 
 _MAX_DETAIL = 200
+# Explorations are named by the model's short label, or failing that a clipped task.
+_MAX_EXPLORATION_NAME = 60
 
 _TOOL_ACTIVITIES = {
     "list_files": "Reviewing project files…",
@@ -266,7 +268,7 @@ def render_event(event: dict[str, Any]) -> str | None:
     if kind == "command.finished":
         return f"  Command result: {_command_outcome(payload)}"
     if kind == "explore.started":
-        return f"  Exploring: {_clip(payload.get('task', ''))}"
+        return f"  Exploring: {_exploration_name(payload)}"
     if kind == "explore.finished":
         return f"  {_exploration_outcome(payload)}"
     if kind == "plan.updated":
@@ -370,8 +372,15 @@ def _plan_progress(steps: tuple[tuple[str, str], ...]) -> str:
     return _plan_heading(steps)
 
 
+def _exploration_name(payload: dict[str, Any]) -> str:
+    name = _clip(payload.get("label") or payload.get("task", ""))
+    if len(name) > _MAX_EXPLORATION_NAME:
+        name = name[: _MAX_EXPLORATION_NAME - 1].rstrip() + "…"
+    return name
+
+
 def _exploration_outcome(payload: dict[str, Any]) -> str:
-    task = _clip(payload.get("task", ""))
+    task = _exploration_name(payload)
     calls = payload.get("tool_calls")
     seconds = payload.get("seconds")
     details = []
@@ -811,7 +820,7 @@ class EventRenderer:
             return
         if kind == "explore.started":
             exploration = str(payload.get("exploration_id", ""))
-            self._explorations[exploration] = _clip(payload.get("task", ""))
+            self._explorations[exploration] = _exploration_name(payload)
             self._show_explorations()
             return
         if kind == "explore.finished":
@@ -943,7 +952,7 @@ class EventRenderer:
             self.ui.activity("Thinking…")
         elif len(self._explorations) == 1:
             (task,) = self._explorations.values()
-            self.ui.activity(f"Exploring: {task}…")
+            self.ui.activity(f"Exploring: {task.removesuffix('…')}…")
         else:
             self.ui.activity(
                 f"Exploring {len(self._explorations)} questions in parallel…"
