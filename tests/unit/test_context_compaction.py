@@ -460,3 +460,32 @@ def test_coordination_update_survives_a_summary(tmp_path: Path) -> None:
     continuing = next(state for state in checkpoints if state["phase"] == "continue")
     assert continuing["coordination_sequence"] == 1
     assert checkpoints[-1]["coordination_sequence"] == 2
+
+
+def test_recorded_plan_survives_a_summary(tmp_path: Path) -> None:
+    steps = [
+        {"step": "Inspect docs", "status": "completed"},
+        {"step": "Write the answer", "status": "in_progress"},
+    ]
+    plan_turn = ModelTurn(
+        text="",
+        tool_calls=(ToolCallRequest("plan-1", "update_plan", {"steps": steps}),),
+        stop_reason="tool_use",
+        context_tokens=5_000,
+    )
+    provider = Compactable([plan_turn, _tool_turn(90_000), _answer()])
+
+    _, _, answer = _run(provider, tmp_path)
+
+    assert answer == "final answer"
+    handoff = str(provider.history[0])
+    assert "last recorded with update_plan" in handoff
+    assert handoff.endswith("[x] Inspect docs\n[>] Write the answer")
+
+
+def test_summary_without_a_plan_adds_no_plan_section(tmp_path: Path) -> None:
+    provider = Compactable([_tool_turn(90_000), _answer()])
+
+    _run(provider, tmp_path)
+
+    assert "update_plan" not in str(provider.history[0])

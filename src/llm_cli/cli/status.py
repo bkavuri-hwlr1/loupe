@@ -41,6 +41,7 @@ class TaskStatusUI(TerminalUI):
         self._live: Live | None = None
         self._pending = Text()
         self._activity_text: str | None = None
+        self._progress: str | None = None
         self._preview: str | None = None
         self._lock = threading.RLock()
 
@@ -80,6 +81,7 @@ class TaskStatusUI(TerminalUI):
     def stop(self) -> None:
         with self._lock:
             self._activity_text = None
+            self._progress = None
             self._preview = None
             if self._live is None:
                 super().activity(None)
@@ -103,6 +105,17 @@ class TaskStatusUI(TerminalUI):
             if self._live is None:
                 super().activity(current)
                 return
+            self._update()
+
+    def progress(self, text: str | None) -> None:
+        """Keep the plan's current step above the activity line."""
+
+        cleaned = " ".join(safe_text(text).split()) if text is not None else ""
+        current = cleaned or None
+        with self._lock:
+            if current == self._progress:
+                return
+            self._progress = current
             self._update()
 
     def preview(self, text: str | None) -> None:
@@ -185,6 +198,12 @@ class TaskStatusUI(TerminalUI):
         # scrollback on redraw. Reply text takes priority in a tiny viewport.
         spare = self.console.height - 2 - bool(self._pending)
         dim = Style(dim=True, bold=False, reverse=False, bgcolor="default")
+        # The plan step yields to the activity line when only one row is free.
+        if self._progress is not None and spare >= 2:
+            rows.append(
+                Text(self._progress, style=dim, no_wrap=True, overflow="ellipsis")
+            )
+            spare -= 1
         if self._preview is not None and spare >= 1:
             rows.append(
                 Text(

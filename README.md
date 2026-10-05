@@ -254,6 +254,14 @@ allow it once or for the rest of the task. Set `commands = "allow"` under
 commands. Without a working sandbox the tool is not offered. See
 [SECURITY.md](SECURITY.md) for the full boundary and its limits.
 
+### Task plans
+
+For work with several steps, the agent keeps a short checklist with the
+`update_plan` tool. Each update is printed in the conversation, and the step in
+progress stays above the status footer while the task runs. The plan is saved
+with the task's checkpoint, so it survives a daemon restart and a context
+summary. Plan mode, whose answer is itself a plan, does not use it.
+
 ### Repository instructions and long conversations
 
 Put build, test, and style guidance for the agent in an `AGENTS.md` file (the

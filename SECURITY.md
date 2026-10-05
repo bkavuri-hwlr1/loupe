@@ -114,8 +114,12 @@ files, private-key files, and credential directories are excluded from both
 discovery and explicit reads. The same exclusions apply to model file mutations,
 including both source and destination paths of a rename. Recognized private-key
 and provider-token formats are screened before source observations or tool
-results are retained or sent to the model. This conservative pattern screening
-is not a complete secret scanner.
+results are retained or sent to the model. A search skips files that match these
+formats and reports only how many it withheld, not their names. This
+conservative pattern screening is not a complete secret scanner.
+The `core.excludesFile` setting is read once per tool call, so a changed setting
+applies from the next tool call; the excluded patterns themselves are read on
+every check.
 Saved direct-file reads recheck current exclusions, but older aggregate search
 and diff results lack reliable per-file provenance. Changing exclusions does not
 erase already stored conversation content; start a new conversation when

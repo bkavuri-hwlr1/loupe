@@ -6,7 +6,10 @@ import os
 import re
 import subprocess
 import tempfile
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from llm_cli.errors import ErrorCode, LlmCoordError
@@ -37,6 +40,8 @@ _PRIVATE_NAMES = frozenset(
 # model; these exclusions also apply to the resolved path.
 _PRIVATE_DIRECTORIES = frozenset({".git", ".ssh", ".aws", ".azure", ".gnupg"})
 _EXAMPLE_SUFFIXES = (".example", ".sample", ".template")
+# Paths per git check-ignore process.
+_CHECK_BATCH = 1_000
 _SECRET_PATTERNS = (
     re.compile(rb"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"),
     re.compile(rb"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
@@ -44,6 +49,34 @@ _SECRET_PATTERNS = (
     re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{40,255}\b"),
     re.compile(rb"\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,255}\b"),
 )
+
+
+# Within one tool call, each root's user exclusion setting is read once.
+_user_excludes_cache: ContextVar[dict[Path, str] | None] = ContextVar(
+    "loupe_user_excludes", default=None
+)
+# User rules are evaluated in an empty repository; one per process suffices
+# because nothing ever writes to it.
+_empty_lock = threading.Lock()
+_empty_repository_directory: tempfile.TemporaryDirectory[str] | None = None
+
+
+@contextmanager
+def exclusion_scope() -> Iterator[None]:
+    """Read the user's exclusion setting at most once per root in this block.
+
+    One tool call then sees one consistent setting, and a walk over many
+    directories does not start a Git process per directory to read it again.
+    """
+
+    if _user_excludes_cache.get() is not None:
+        yield
+        return
+    token = _user_excludes_cache.set({})
+    try:
+        yield
+    finally:
+        _user_excludes_cache.reset(token)
 
 
 def _private_path(relative: str) -> bool:
@@ -105,6 +138,42 @@ def _user_excludes_file(root: Path, remaining: Callable[[], float] | None) -> st
     return str(Path(config_home) / "git" / "ignore")
 
 
+def _scoped_user_excludes_file(
+    root: Path, remaining: Callable[[], float] | None
+) -> str:
+    cache = _user_excludes_cache.get()
+    if cache is None:
+        return _user_excludes_file(root, remaining)
+    if root not in cache:
+        cache[root] = _user_excludes_file(root, remaining)
+    return cache[root]
+
+
+def _empty_repository(remaining: Callable[[], float] | None) -> Path:
+    global _empty_repository_directory
+    with _empty_lock:
+        directory = _empty_repository_directory
+        if directory is not None and not (Path(directory.name) / ".git/HEAD").is_file():
+            # A temporary-file cleaner removed it; start a fresh one.
+            directory.cleanup()
+            directory = _empty_repository_directory = None
+        if directory is None:
+            directory = tempfile.TemporaryDirectory(
+                prefix="loupe-exclusions-", ignore_cleanup_errors=True
+            )
+            try:
+                run_git(
+                    Path(directory.name),
+                    ["init", "--quiet", "--template="],
+                    remaining=remaining,
+                )
+            except BaseException:
+                directory.cleanup()
+                raise
+            _empty_repository_directory = directory
+        return Path(directory.name)
+
+
 def _ignored(
     root: Path,
     paths: list[str],
@@ -136,16 +205,16 @@ def excluded_paths(
     if not relative_paths:
         return set()
     excluded = {path for path in relative_paths if _private_path(path)}
-    for start in range(0, len(relative_paths), 200):
+    for start in range(0, len(relative_paths), _CHECK_BATCH):
         excluded.update(
             _ignored(
                 root,
-                relative_paths[start : start + 200],
+                relative_paths[start : start + _CHECK_BATCH],
                 options=[],
                 remaining=remaining,
             )
         )
-    user_excludes = _user_excludes_file(root, remaining)
+    user_excludes = _scoped_user_excludes_file(root, remaining)
     if not user_excludes:
         return excluded
     user_path = Path(user_excludes)
@@ -159,29 +228,29 @@ def excluded_paths(
         )
     # Evaluate user rules in an empty, owner-private repository. The real
     # repository's .gitignore negations and core.excludesFile cannot undo them.
-    with tempfile.TemporaryDirectory(prefix="loupe-exclusions-") as directory:
-        empty = Path(directory)
-        run_git(empty, ["init", "--quiet", "--template="], remaining=remaining)
-        for start in range(0, len(relative_paths), 200):
-            paths = relative_paths[start : start + 200]
-            queries = [path + "/" if (root / path).is_dir() else path for path in paths]
-            matches = _ignored(
-                empty,
-                queries,
-                options=["-c", f"core.excludesFile={user_path}"],
-                remaining=remaining,
-            )
-            excluded.update(
-                path
-                for path, query in zip(paths, queries, strict=True)
-                if query in matches
-            )
+    empty = _empty_repository(remaining)
+    for start in range(0, len(relative_paths), _CHECK_BATCH):
+        paths = relative_paths[start : start + _CHECK_BATCH]
+        queries = [path + "/" if (root / path).is_dir() else path for path in paths]
+        matches = _ignored(
+            empty,
+            queries,
+            options=["-c", f"core.excludesFile={user_path}"],
+            remaining=remaining,
+        )
+        excluded.update(
+            path for path, query in zip(paths, queries, strict=True) if query in matches
+        )
     return excluded
 
 
-def ensure_safe_content(content: str | bytes) -> None:
+def contains_secret_material(content: str | bytes) -> bool:
     raw = content.encode("utf-8") if isinstance(content, str) else content
-    if any(pattern.search(raw) for pattern in _SECRET_PATTERNS):
+    return any(pattern.search(raw) for pattern in _SECRET_PATTERNS)
+
+
+def ensure_safe_content(content: str | bytes) -> None:
+    if contains_secret_material(content):
         raise LlmCoordError(
             ErrorCode.REPOSITORY_UNSAFE,
             "source content contains recognized secret material "

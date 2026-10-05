@@ -284,6 +284,9 @@ class TerminalUI:
             self.notice(cleaned)
         self._last_activity = cleaned
 
+    def progress(self, text: str | None) -> None:
+        """Show the task plan's current step; scrollback already lists the plan."""
+
     def preview(self, text: str | None) -> None:
         """Without a transient region, announce a draft answer but not its text.
 
