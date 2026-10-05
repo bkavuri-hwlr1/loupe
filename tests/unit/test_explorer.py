@@ -148,8 +148,12 @@ def test_helper_reads_pending_edits_and_its_report_returns_to_the_agent(
     )
     assert not staged.is_error
     task = "What does docs/guide.md say, and what prints in src/app.py?"
+    label = "Guide and app output"
     provider = Provider(
-        [_calls(("explore", {"task": task})), _text("The guide was edited.")],
+        [
+            _calls(("explore", {"description": label, "task": task})),
+            _text("The guide was edited."),
+        ],
         {
             task: [
                 _calls(
@@ -184,6 +188,7 @@ def test_helper_reads_pending_edits_and_its_report_returns_to_the_agent(
     assert finished["state"] == "completed"
     assert finished["tool_calls"] == 2
     assert finished["task"] == task
+    assert finished["label"] == label
     # The helper's view never reaches the parent's own tool events.
     assert [p["tool"] for k, p in events if k == "tool.called"] == [
         "read_file",
@@ -375,13 +380,21 @@ def test_cancellation_stops_the_helper_and_the_task(tmp_path: Path) -> None:
 
 
 def test_explore_validates_its_task(tmp_path: Path) -> None:
-    _, broker, provider, _ = _explorer(tmp_path, [_text("unused")])
+    _, broker, provider, events = _explorer(tmp_path, [_text("report")])
 
     assert broker.invoke("explore", {"task": "  "}).is_error
     assert broker.invoke("explore", {"task": "x" * 4_001}).is_error
     secret = "AKIA" + "ABCDEFGHIJKLMNOP"
     assert "secret" in broker.invoke("explore", {"task": secret}).content
+    refused = broker.invoke("explore", {"task": "question", "description": secret})
+    assert "secret" in refused.content
     assert provider.sessions == []
+
+    # The label only names the exploration, so an overlong one is shortened.
+    long = broker.invoke("explore", {"task": "question", "description": "y " * 60})
+    assert not long.is_error
+    started = next(payload for kind, payload in events if kind == "explore.started")
+    assert started["label"] == ("y " * 40).rstrip() + "…"
 
 
 def test_explore_calls_in_one_turn_run_in_parallel(checkout: Path) -> None:
@@ -515,3 +528,22 @@ def test_explorations_are_shown_while_running_and_when_finished() -> None:
     assert render_event(_event("explore.started", task="Find \x1b[2Jcallers")) == (
         "  Exploring: Find callers"
     )
+
+
+def test_explorations_are_named_by_their_label_or_a_short_task() -> None:
+    stream = io.StringIO()
+    renderer = EventRenderer(stream, plain=True)
+    activity: list[str | None] = []
+    renderer.ui.activity = activity.append  # type: ignore[method-assign,assignment]
+    task = "Trace how the daemon recovers in-flight tasks after a restart. " * 3
+
+    renderer.render(
+        _event("explore.started", exploration_id="a", task=task, label="Task recovery")
+    )
+    assert activity[-1] == "Exploring: Task recovery…"
+    renderer.render(_event("explore.finished", exploration_id="a", task=task, label=""))
+    renderer.render(_event("explore.started", exploration_id="b", task=task))
+    clipped = task[:59].rstrip() + "…"
+    assert activity[-1] == f"Exploring: {clipped}"
+    assert len(clipped) == 60
+    assert stream.getvalue() == f"  ! Exploration stopped early: {clipped}\n"
