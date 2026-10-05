@@ -67,3 +67,13 @@ def test_commands_ask_by_default_and_accept_allow_or_off(tmp_path: Path) -> None
     config.write_text('[agent]\ncommands = "unsandboxed"\n', encoding="utf-8")
     with pytest.raises(LlmCoordError, match="ask, allow, or off"):
         load_settings(config)
+
+
+def test_explore_is_on_by_default_and_can_be_turned_off(tmp_path: Path) -> None:
+    assert load_settings(tmp_path / "missing.toml").agent_explore is True
+    config = tmp_path / "config.toml"
+    config.write_text("[agent]\nexplore = false\n", encoding="utf-8")
+    assert load_settings(config).agent_explore is False
+    config.write_text('[agent]\nexplore = "no"\n', encoding="utf-8")
+    with pytest.raises(LlmCoordError, match="must be true or false"):
+        load_settings(config)

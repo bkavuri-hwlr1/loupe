@@ -2,10 +2,10 @@
 
 Status: first response-and-delivery milestone implemented and locally validated;
 context management (phase 7, items 1–3), sandboxed commands (item 4), faster
-read tools (item 5), and the task plan tool (item 6) implemented; broader
-harness work remains.
+read tools (item 5), the task plan tool (item 6), and exploration helpers
+(item 9) implemented; broader harness work remains.
 Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03,
-items 4–6 completed 2026-10-04
+items 4–6 and 9 completed 2026-10-04
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -47,7 +47,8 @@ Repository-instruction discovery, context compaction (automatic, after an
 oversized-prompt rejection, and through `/compact`), and provider prompt caching
 are implemented (phase 7, items 1–3), as are sandboxed diagnostic commands
 (item 4, which also covers phase 5's command capability), faster read tools
-(item 5), and the `update_plan` checklist (item 6). The remaining roadmap
+(item 5), the `update_plan` checklist (item 6), and `explore` helpers (item 9).
+The remaining roadmap
 includes bounded repair stages, response-only retry, the rest of phase 7, and
 the full deterministic/live-provider behavior matrix.
 
@@ -409,7 +410,7 @@ existing authority model: repository and tool content never grants authority.
 | 6 | Visible task plan tool | Implemented (`update_plan`) |
 | 7 | MCP client support | Planned |
 | 8 | User hooks around tool calls and completion | Planned |
-| 9 | Subagents for broad exploration | Planned |
+| 9 | Subagents for broad exploration | Implemented (`explore`) |
 | 10 | Read-only web fetch | Planned |
 | 11 | Token and cost display (`/cost`, footer) | Planned |
 | 12 | Live-model task benchmark | Planned; extends phase 6 |
@@ -536,9 +537,9 @@ checks are now cheaper:
 On this repository, a shared `search_text` dropped from about 750 ms to about
 150 ms, `read_file` from about 45 ms to 20 ms, and `list_files` from about
 38 ms to 25 ms.
-Concurrent execution remains worthwhile once slow tools exist (web fetch, MCP,
-subagents; items 7, 9 and 10) or if shared reads move to a shared/exclusive
-lock. Isolated tasks still check exclusions per directory during a search.
+Concurrent execution remains worthwhile for slow tools: it now applies to
+`explore` helpers (item 9) and should extend to web fetch and MCP tools
+(items 10 and 7), or to shared reads if they move to a shared/exclusive lock. Isolated tasks still check exclusions per directory during a search.
 
 **6. Task plan tool (implemented).** `update_plan` records an ordered checklist
 of at most 12 steps, each pending, in progress (at most one), or completed. The
@@ -561,9 +562,25 @@ at completion (for example, format after edits, or block a path), using the
 existing event stream. Hooks run as the user, with the same command governance
 as item 4.
 
-**9. Subagents.** Delegate broad read-only exploration to a separate model
-context that returns a bounded summary, keeping the main context small. Pairs
-with item 1. Delegated agents inherit, never exceed, the parent's authority.
+**9. Subagents (implemented as `explore`).** The `explore` tool hands a
+self-contained question to a helper: a new session with the same provider, its
+own system prompt, and only `list_files`, `read_file`, `search_text`, and
+`read_diff`. The helper reads through a view of the task's broker, so the
+source policy and pending edits are the same, but its observations are its
+own: a helper's read never authorizes the task's full-file writes. Up to 40
+tool calls are reserved from the task's budget for each helper, always leaving
+five for the task, and unused calls are returned. Helper reads are capped at
+100 files and 384 KiB per exploration. The helper's report (at most 16,000
+characters) returns as the tool result, labelled as unverified findings;
+provider failures, a spent budget, or a cut-off report become an explicit
+partial or failed result rather than a task failure. Helper token usage is
+added to the task's total. Consecutive `explore` calls in one turn run in
+parallel (up to four); their results are recorded together, and after a
+restart an interrupted group runs again. The conversation shows each
+exploration while it runs and a one-line result when it finishes. Helpers are
+offered in every mode, including plan mode, and `agent.explore = false`
+disables them. Remaining gaps: helpers cannot run sandboxed commands, and no
+live-model comparison of answer quality with and without helpers exists yet.
 
 **10. Web fetch.** A read-only fetch tool for documentation, with domain policy,
 size limits, and content treated as untrusted data.

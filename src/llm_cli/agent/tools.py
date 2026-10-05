@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shlex
+import threading
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -61,6 +62,7 @@ _COMPLETION_OUTCOMES = {"completed", "blocked", "partial"}
 _MAX_QUESTION_OPTIONS = 5
 _MAX_OPTION_CHARACTERS = 200
 _MAX_INSPECTION_FILE_BYTES = 8 * 1024 * 1024
+MAX_EXPLORE_TASK_CHARACTERS = 4_000
 PLAN_STATUSES = ("pending", "in_progress", "completed")
 _MAX_PLAN_STEPS = 12
 _MAX_PLAN_STEP_CHARACTERS = 200
@@ -123,11 +125,17 @@ class ToolBroker:
     # "ask" needs the user's approval through ``asker`` for each command, or
     # once for the rest of the task. "allow" runs sandboxed commands directly.
     command_approval: str = "ask"
+    # Answers an explore task with a read-only helper's report; offered when set.
+    explorer: Callable[[str], ToolOutcome] | None = None
     finish_gate: Callable[[], ToolOutcome | None] | None = None
     usage: ToolUsage = field(default_factory=ToolUsage)
     agent_mode: str = "auto"
     _partial_reads: set[str] = field(default_factory=set, init=False)
     _commands_approved: bool = field(default=False, init=False)
+    # Explorations run in parallel threads and share the call budget.
+    _budget_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         validate_agent_mode(self.agent_mode)
@@ -222,11 +230,47 @@ class ToolBroker:
     def record_interrupted_call(self) -> None:
         """Count a tool call whose filesystem outcome cannot be replayed safely."""
 
-        if self.usage.calls >= self.limits.max_tool_calls:
-            raise ToolBudgetExhausted(
-                f"execution exceeded its {self.limits.max_tool_calls} tool-call budget"
-            )
-        self.usage.calls += 1
+        with self._budget_lock:
+            if self.usage.calls >= self.limits.max_tool_calls:
+                raise ToolBudgetExhausted(
+                    "execution exceeded its "
+                    f"{self.limits.max_tool_calls} tool-call budget"
+                )
+            self.usage.calls += 1
+
+    def reserve_calls(self, maximum: int, *, keep: int) -> int:
+        """Set aside up to ``maximum`` calls for a helper, leaving ``keep``.
+
+        Returns how many were reserved, possibly zero. The helper returns what
+        it did not use with release_calls.
+        """
+
+        with self._budget_lock:
+            available = self.limits.max_tool_calls - self.usage.calls - keep
+            reserved = max(0, min(maximum, available))
+            self.usage.calls += reserved
+            return reserved
+
+    def release_calls(self, count: int) -> None:
+        with self._budget_lock:
+            self.usage.calls -= max(0, count)
+
+    def read_only_view(self, limits: ExecutionLimits) -> ToolBroker:
+        """A read-only broker over the same source for a delegated helper.
+
+        The view applies the same source policy but keeps its own budget and
+        observations, so a helper's reads never authorize this broker's writes.
+        """
+
+        return ToolBroker(
+            worktree=self.worktree,
+            scopes=self.scopes,
+            case_insensitive_filesystem=self.case_insensitive_filesystem,
+            base_oid=self.base_oid,
+            limits=limits,
+            cancelled=self.cancelled,
+            agent_mode="plan",
+        )
 
     def tool_names(self) -> tuple[str, ...]:
         names = [
@@ -249,6 +293,8 @@ class ToolBroker:
         # Plan mode's answer is itself a plan; a progress checklist would
         # compete with it, so the plan mode filter below drops this tool.
         names.append("update_plan")
+        if self.explorer is not None:
+            names.append("explore")
         if self.asker is not None:
             names.append("ask_user")
         if self.agent_mode == "plan":
@@ -259,6 +305,7 @@ class ToolBroker:
                 "read_diff",
                 "validate_changes",
                 "finish_task",
+                "explore",
                 "ask_user",
             }
             names = [name for name in names if name in allowed]
@@ -270,12 +317,15 @@ class ToolBroker:
         self.check_cancelled()
         if self.usage.finished:
             return _error("the task is already finished; make no further tool calls")
-        if self.usage.calls >= self.limits.max_tool_calls:
-            raise ToolBudgetExhausted(
-                f"execution exceeded its {self.limits.max_tool_calls} tool-call budget"
-            )
-        self.usage.calls += 1
-        self.emit("tool.called", {"tool": name, "call": self.usage.calls})
+        with self._budget_lock:
+            if self.usage.calls >= self.limits.max_tool_calls:
+                raise ToolBudgetExhausted(
+                    "execution exceeded its "
+                    f"{self.limits.max_tool_calls} tool-call budget"
+                )
+            self.usage.calls += 1
+            call = self.usage.calls
+        self.emit("tool.called", {"tool": name, "call": call})
         if self.agent_mode == "plan" and name not in self.tool_names():
             self.usage.denied += 1
             return _error(
@@ -759,6 +809,19 @@ class ToolBroker:
         # free text so a user's custom answer is never silently discarded.
         selections = {str(index): option for index, option in enumerate(options, 1)}
         return _ok(selections.get(answer.strip(), answer), self.limits)
+
+    def _explore(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        if self.explorer is None:
+            return _error("exploration helpers are unavailable")
+        task = _string(arguments, "task").strip()
+        if not task or len(task) > MAX_EXPLORE_TASK_CHARACTERS:
+            return _error(
+                "task must be nonblank and at most "
+                f"{MAX_EXPLORE_TASK_CHARACTERS} characters"
+            )
+        if contains_secret_material(task):
+            return _error("the task contains recognized secret material; leave it out")
+        return self.explorer(task)
 
     def _update_plan(self, arguments: Mapping[str, object]) -> ToolOutcome:
         try:
@@ -1256,6 +1319,7 @@ _HANDLERS: Mapping[str, Callable[[ToolBroker, Mapping[str, object]], ToolOutcome
     "finish_task": ToolBroker._finish_task,
     "ask_user": ToolBroker._ask_user,
     "update_plan": ToolBroker._update_plan,
+    "explore": ToolBroker._explore,
 }
 
 
@@ -1496,6 +1560,29 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
         },
         ["question"],
     ),
+    "explore": _schema(
+        "explore",
+        "Hand a self-contained, read-only question to a helper with its own "
+        "context, and get back its report. Use it for broad investigation that "
+        "would take many searches or reads, such as tracing how something is "
+        "wired through the codebase. Several explore calls in one turn run in "
+        "parallel. The helper sees your pending edits but cannot edit, run "
+        "commands, or ask the user. Its report does not count as your own read "
+        "of any file.",
+        {
+            "task": {
+                **_TEXT,
+                "minLength": 1,
+                "maxLength": MAX_EXPLORE_TASK_CHARACTERS,
+                "description": (
+                    "The question and any context the helper needs: what to "
+                    "find, where to start if known, and what the report should "
+                    "cover. The helper does not see this conversation."
+                ),
+            },
+        },
+        ["task"],
+    ),
     "update_plan": _schema(
         "update_plan",
         "Record a short ordered checklist for work with several distinct steps, "
@@ -1529,6 +1616,7 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
 
 
 __all__ = [
+    "MAX_EXPLORE_TASK_CHARACTERS",
     "PLAN_STATUSES",
     "ToolBroker",
     "ToolBudgetExhausted",

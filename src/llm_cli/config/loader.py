@@ -12,7 +12,7 @@ from llm_cli.errors import ErrorCode, LlmCoordError
 
 _ROOT_KEYS = {"agent", "core", "leases"}
 _CORE_KEYS = {"coordination_mode"}
-_AGENT_KEYS = {"provider", "model", "commands"}
+_AGENT_KEYS = {"provider", "model", "commands", "explore"}
 _LEASE_KEYS = {
     "launch_ms",
     "work_ms",
@@ -67,11 +67,17 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         raise LlmCoordError(
             ErrorCode.CONFIG_INVALID, "agent.commands must be ask, allow, or off"
         )
+    explore = agent.get("explore", settings.agent_explore)
+    if not isinstance(explore, bool):
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID, "agent.explore must be true or false"
+        )
     updates: dict[str, Any] = {
         "coordination_mode": mode,
         "agent_provider": provider,
         "agent_model": model,
         "agent_commands": commands,
+        "agent_explore": explore,
     }
     mapping = {
         "launch_ms": "launch_lease_ms",
