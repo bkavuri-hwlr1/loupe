@@ -14,13 +14,18 @@ import difflib
 import hashlib
 import json
 from _thread import RLock
+from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from llm_cli.agent.bounded_search import SearchBudget, SearchError, SearchSnapshot
-from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
+from llm_cli.agent.source_policy import (
+    contains_secret_material,
+    ensure_safe_content,
+    excluded_paths,
+)
 from llm_cli.agent.tools import (
     ToolBroker,
     ToolOutcome,
@@ -61,6 +66,8 @@ from llm_cli.workspace.identity import (
 _MAX_CANDIDATES = 50
 _MAX_OBSERVATIONS = 200
 _MAX_RETAINED_BYTES = 4 * 1024 * 1024
+# Directory entries gathered before one exclusion check during a search.
+_SEARCH_BATCH_ENTRIES = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +96,13 @@ class SharedToolBroker(ToolBroker):
     def invoke(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
         # An operator can take minutes to answer. This tool has no shared
         # checkout effect and must not hold every other session's read barrier.
-        if name in {"ask_user", "run_check", "run_command", "finish_task"}:
+        if name in {
+            "ask_user",
+            "run_check",
+            "run_command",
+            "finish_task",
+            "update_plan",
+        }:
             return ToolBroker.invoke(self, name, arguments)
         before = self.usage.calls
         with nullcontext() if name == "search_text" else self.publication_lock:
@@ -373,29 +386,35 @@ class SharedToolBroker(ToolBroker):
             )
             else None
         )
-        directories = (
-            []
+        top = (
+            None
             if single_file is not None
-            else [self._directory(raw, remaining=budget.remaining)]
+            else self._directory(raw, remaining=budget.remaining)
         )
+        tree = self._source_tree(top, budget.remaining) if top is not None else {}
+        directories = [] if top is None else [top]
         files: list[tuple[str, str]] = []
         scanned = 0
         scanned_bytes = 0
+        withheld = 0
         fingerprint = hashlib.sha256(
             (_string(arguments, "pattern") + "\0" + raw).encode("utf-8")
         )
 
         def finish(*, stop_reason: str | None = None) -> SearchSnapshot:
-            return SearchSnapshot(files, fingerprint.hexdigest(), stop_reason)
+            return SearchSnapshot(files, fingerprint.hexdigest(), stop_reason, withheld)
 
         while directories or single_file is not None:
             budget.remaining()
             directory = directories.pop() if single_file is None else None
-            children, capped = (
-                self._visible_children(directory, remaining=budget.remaining)
-                if directory is not None
-                else ([], False)
-            )
+            children: list[Path] = []
+            capped = False
+            if directory is not None:
+                if directory not in tree:
+                    # Listing stopped at the scan limit before this directory;
+                    # list its part of the tree now that the scan needs it.
+                    tree.update(self._source_tree(directory, budget.remaining))
+                children, capped = tree[directory]
             directories.extend(
                 reversed(
                     [
@@ -435,16 +454,20 @@ class SharedToolBroker(ToolBroker):
                 try:
                     content = self._contents.get(relative)
                     if content is None:
-                        # This directory's entries were already filtered in
-                        # one Git call; do not spawn Git again for every file.
-                        _, content = self._observe(relative, check_ignored=False)
+                        # The tree was already filtered in batched Git calls;
+                        # do not spawn Git again for every file.
+                        _, content = self._observe(
+                            relative, check_ignored=False, screen=False
+                        )
                     if content is None:
                         continue
                     scanned_bytes += len(content)
                     if scanned_bytes > self.limits.max_read_bytes:
                         return finish(stop_reason="read_size_limit; narrow path")
+                    if contains_secret_material(content):
+                        withheld += 1
+                        continue
                     current = content.decode("utf-8")
-                    ensure_safe_content(current)
                     fingerprint.update(
                         json.dumps(
                             [relative, hashlib.sha256(content).hexdigest()]
@@ -456,6 +479,42 @@ class SharedToolBroker(ToolBroker):
             if capped:
                 return finish(stop_reason="scanned_file_limit; narrow path")
         return finish()
+
+    def _source_tree(
+        self, top: Path, remaining: Callable[[], float]
+    ) -> dict[Path, tuple[list[Path], bool]]:
+        """List visible entries under ``top``, a batch of directories at a time.
+
+        Each batch's exclusion rules cost two Git processes rather than two
+        per directory. Listing stops once it has found as many files as a
+        search may scan; the search lists any directory it reaches beyond that.
+        """
+
+        tree: dict[Path, tuple[list[Path], bool]] = {}
+        pending = deque([top])
+        found = 0
+        while pending and found < self.limits.max_scanned_files:
+            listing: dict[Path, tuple[list[Path], bool]] = {}
+            entries = 0
+            while pending and entries < _SEARCH_BATCH_ENTRIES:
+                remaining()
+                directory = pending.popleft()
+                listing[directory] = self._candidate_children(directory)
+                entries += len(listing[directory][0])
+            for directory, (children, capped) in self._unignored(
+                listing, remaining=remaining
+            ).items():
+                tree[directory] = (children, capped)
+                for child in children:
+                    if (
+                        child.is_dir()
+                        or self._modes.get(child.relative_to(self.worktree).as_posix())
+                        == DIRECTORY_MODE
+                    ):
+                        pending.append(child)
+                    else:
+                        found += 1
+        return tree
 
     def _write_file(self, arguments: Mapping[str, object]) -> ToolOutcome:
         relative = normalize_changed_path(_string(arguments, "path"))
@@ -652,7 +711,8 @@ class SharedToolBroker(ToolBroker):
             # partial view, even when a peer published while the model thought.
             content = self._observations[relative].content
         else:
-            identity, content = self._observe(relative)
+            # _target above already applied the exclusion rules.
+            identity, content = self._observe(relative, check_ignored=False)
             if content is not None:
                 try:
                     content.decode("utf-8")
@@ -715,15 +775,18 @@ class SharedToolBroker(ToolBroker):
         )
 
     def _observe(
-        self, relative: str, *, check_ignored: bool = True
+        self, relative: str, *, check_ignored: bool = True, screen: bool = True
     ) -> tuple[FileIdentity, bytes | None]:
+        """Read one path; ``screen=False`` leaves secret screening to the caller."""
+
         identity, content = read_identified_path(
             self._target(relative, check_ignored=check_ignored),
             max_bytes=MAX_SHARED_TEXT_BYTES,
         )
         if identity.kind not in {ObjectKind.ABSENT, ObjectKind.REGULAR}:
             raise WorkspaceBrokerError(f"{relative} is not a regular source file")
-        ensure_safe_content(content or b"")
+        if screen:
+            ensure_safe_content(content or b"")
         return identity, content
 
     def _target(
@@ -766,6 +829,12 @@ class SharedToolBroker(ToolBroker):
     def _visible_children(
         self, directory: Path, *, remaining: Callable[[], float] | None = None
     ) -> tuple[list[Path], bool]:
+        listing = {directory: self._candidate_children(directory)}
+        return self._unignored(listing, remaining=remaining)[directory]
+
+    def _candidate_children(self, directory: Path) -> tuple[list[Path], bool]:
+        """List a directory's source entries before exclusion rules apply."""
+
         raw_children, capped = (
             _bounded_children(directory, self.limits.max_scanned_files)
             if directory.exists()
@@ -786,18 +855,38 @@ class SharedToolBroker(ToolBroker):
             and (self.worktree / path).parent == directory
             and self.worktree / path not in children
         )
+        return children, capped
+
+    def _unignored(
+        self,
+        listing: Mapping[Path, tuple[list[Path], bool]],
+        *,
+        remaining: Callable[[], float] | None = None,
+    ) -> dict[Path, tuple[list[Path], bool]]:
+        """Drop excluded entries from several directories in one exclusion check."""
+
         ignored = self._ignored_paths(
-            [child.relative_to(self.worktree).as_posix() for child in children],
+            [
+                child.relative_to(self.worktree).as_posix()
+                for children, _ in listing.values()
+                for child in children
+            ],
             remaining=remaining,
         )
-        return sorted(
-            [
-                child
-                for child in children
-                if child.relative_to(self.worktree).as_posix() not in ignored
-            ],
-            key=lambda child: child.name,
-        ), capped
+        return {
+            directory: (
+                sorted(
+                    (
+                        child
+                        for child in children
+                        if child.relative_to(self.worktree).as_posix() not in ignored
+                    ),
+                    key=lambda child: child.name,
+                ),
+                capped,
+            )
+            for directory, (children, capped) in listing.items()
+        }
 
     def _ignored_paths(
         self, relative_paths: list[str], *, remaining: Callable[[], float] | None = None

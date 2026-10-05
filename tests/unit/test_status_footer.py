@@ -277,6 +277,42 @@ def test_answer_preview_shrinks_to_fit_a_small_terminal(
     assert terminal.transcript == ""
 
 
+def test_plan_step_sits_above_activity_and_yields_in_a_small_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    terminal = Terminal(height=6)
+    footer = ["─" * terminal.width, _STATUS]
+    with _ui(terminal) as ui:
+        ui.delta("Earlier reply\n")
+        ui.progress("Step 2 of 3 · Add tests")
+        ui.activity("Searching the codebase…")
+        assert terminal.transcript.splitlines() == [
+            "Earlier reply",
+            "Step 2 of 3 · Add tests",
+            "Searching the codebase…",
+            *footer,
+        ]
+        ui.progress(None)
+        assert terminal.transcript.splitlines() == [
+            "Earlier reply",
+            "Searching the codebase…",
+            *footer,
+        ]
+    assert terminal.transcript == "Earlier reply"
+
+    small = Terminal(height=3)
+    with _ui(small) as ui:
+        ui.progress("Step 1 of 2 · Read")
+        ui.activity("Thinking…")
+        assert small.transcript.splitlines() == [
+            "Thinking…",
+            "─" * small.width,
+            _STATUS,
+        ]
+    assert small.transcript == ""
+
+
 def test_answer_preview_without_a_live_region_only_announces_progress() -> None:
     output = io.StringIO()
     ui = TaskStatusUI(output, status=lambda: _STATUS, plain=True)

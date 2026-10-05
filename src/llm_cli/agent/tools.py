@@ -38,7 +38,12 @@ from llm_cli.agent.limits import (
     ExecutionLimits,
 )
 from llm_cli.agent.modes import validate_agent_mode
-from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
+from llm_cli.agent.source_policy import (
+    contains_secret_material,
+    ensure_safe_content,
+    excluded_paths,
+    exclusion_scope,
+)
 from llm_cli.coordination.scopes import (
     ScopeValidationError,
     normalize_changed_path,
@@ -56,6 +61,9 @@ _COMPLETION_OUTCOMES = {"completed", "blocked", "partial"}
 _MAX_QUESTION_OPTIONS = 5
 _MAX_OPTION_CHARACTERS = 200
 _MAX_INSPECTION_FILE_BYTES = 8 * 1024 * 1024
+PLAN_STATUSES = ("pending", "in_progress", "completed")
+_MAX_PLAN_STEPS = 12
+_MAX_PLAN_STEP_CHARACTERS = 200
 
 
 class TaskCancelled(RuntimeError):
@@ -88,6 +96,8 @@ class ToolUsage:
     summary: str = ""
     answer: str = ""
     outcome: str = "completed"
+    # The model's latest update_plan checklist, as (step, status) pairs.
+    plan: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(slots=True)
@@ -152,6 +162,9 @@ class ToolBroker:
             "answer": self.usage.answer,
             "outcome": self.usage.outcome,
             "partial_reads": sorted(self._partial_reads),
+            "plan": [
+                {"step": step, "status": status} for step, status in self.usage.plan
+            ],
         }
 
     def restore_usage(self, saved: Mapping[str, object]) -> None:
@@ -191,6 +204,7 @@ class ToolBroker:
             )
         ):
             raise ValueError("saved partial file reads are malformed")
+        plan = parse_plan(saved.get("plan", []))
         self._partial_reads = set(partial_reads)
         self.usage = ToolUsage(
             calls=values["calls"],
@@ -202,6 +216,7 @@ class ToolBroker:
             summary=summary[:MAX_TASK_SUMMARY_CHARACTERS],
             answer=answer,
             outcome=outcome,
+            plan=plan,
         )
 
     def record_interrupted_call(self) -> None:
@@ -231,6 +246,9 @@ class ToolBroker:
         ):
             names.append("run_command")
         names.extend(("create_directory", "delete_file", "rename_file"))
+        # Plan mode's answer is itself a plan; a progress checklist would
+        # compete with it, so the plan mode filter below drops this tool.
+        names.append("update_plan")
         if self.asker is not None:
             names.append("ask_user")
         if self.agent_mode == "plan":
@@ -273,7 +291,8 @@ class ToolBroker:
             bound_handler: Callable[[Mapping[str, object]], ToolOutcome] = getattr(
                 self, handler.__name__
             )
-            return bound_handler(arguments)
+            with exclusion_scope():
+                return bound_handler(arguments)
         except ScopeValidationError as exc:
             self.usage.denied += 1
             return _error(f"that path is not usable: {exc}")
@@ -389,10 +408,11 @@ class ToolBroker:
         files: list[tuple[str, str]] = []
         scanned = 0
         scanned_bytes = 0
+        withheld = 0
         fingerprint = hashlib.sha256((pattern + "\0" + raw).encode("utf-8"))
 
         def finish(*, stop_reason: str | None = None) -> SearchSnapshot:
-            return SearchSnapshot(files, fingerprint.hexdigest(), stop_reason)
+            return SearchSnapshot(files, fingerprint.hexdigest(), stop_reason, withheld)
 
         # os.walk rather than rglob: pruning subdirectories in place stops the
         # walk from descending into .git at all, and streaming avoids building
@@ -435,8 +455,10 @@ class ToolBroker:
                     scanned_bytes += len(raw_content)
                     if scanned_bytes > self.limits.max_read_bytes:
                         return finish(stop_reason="read_size_limit; narrow path")
+                    if contains_secret_material(raw_content):
+                        withheld += 1
+                        continue
                     content = raw_content.decode("utf-8")
-                    ensure_safe_content(content)
                 except (UnicodeDecodeError, OSError):
                     continue
                 relative = candidate.relative_to(self.worktree).as_posix()
@@ -738,6 +760,29 @@ class ToolBroker:
         selections = {str(index): option for index, option in enumerate(options, 1)}
         return _ok(selections.get(answer.strip(), answer), self.limits)
 
+    def _update_plan(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        try:
+            plan = parse_plan(arguments.get("steps"))
+        except ValueError as exc:
+            return _error(str(exc))
+        if not plan:
+            return _error("steps must contain at least one step")
+        if contains_secret_material("\n".join(step for step, _ in plan)):
+            return _error("the plan contains recognized secret material; leave it out")
+        self.usage.plan = plan
+        completed = sum(status == "completed" for _, status in plan)
+        self.emit(
+            "plan.updated",
+            {
+                "steps": [{"step": step, "status": status} for step, status in plan],
+                "completed": completed,
+                "total": len(plan),
+            },
+        )
+        return _ok(
+            f"Plan updated: {completed} of {len(plan)} steps completed.", self.limits
+        )
+
     # -- path safety -----------------------------------------------------
 
     def _write_denial(self, relative: str) -> ToolOutcome | None:
@@ -862,6 +907,35 @@ class ToolBroker:
                 ErrorCode.REPOSITORY_UNSAFE,
                 f"{relative} resolves outside the managed worktree",
             )
+
+
+def parse_plan(value: object) -> tuple[tuple[str, str], ...]:
+    """Validate update_plan steps, raising ValueError with a correctable message."""
+
+    if value is None:
+        raise ValueError("steps is required")
+    if not isinstance(value, list) or len(value) > _MAX_PLAN_STEPS:
+        raise ValueError(f"steps must be a list of at most {_MAX_PLAN_STEPS} items")
+    plan: list[tuple[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {"step", "status"}:
+            raise ValueError("each step needs exactly a step and a status")
+        step, status = item["step"], item["status"]
+        if (
+            not isinstance(step, str)
+            or not step.strip()
+            or len(step) > _MAX_PLAN_STEP_CHARACTERS
+        ):
+            raise ValueError(
+                "each step must be nonblank text of at most "
+                f"{_MAX_PLAN_STEP_CHARACTERS} characters"
+            )
+        if status not in PLAN_STATUSES:
+            raise ValueError("each status must be pending, in_progress, or completed")
+        plan.append((" ".join(step.split()), status))
+    if sum(status == "in_progress" for _, status in plan) > 1:
+        raise ValueError("at most one step can be in_progress")
+    return tuple(plan)
 
 
 def _integer(
@@ -1021,6 +1095,7 @@ def _search_response(
         stop_reason=snapshot.stop_reason,
         snapshot=snapshot.fingerprint,
         expected_snapshot=arguments.get("snapshot"),
+        withheld=snapshot.withheld,
     )
 
 
@@ -1041,6 +1116,7 @@ def _page_response(
     stop_reason: str | None = None,
     snapshot: str | None = None,
     expected_snapshot: object = None,
+    withheld: int = 0,
 ) -> ToolOutcome:
     if expected_snapshot is not None and expected_snapshot != snapshot:
         return _error(
@@ -1052,6 +1128,7 @@ def _page_response(
         not explicit
         and not more
         and stop_reason is None
+        and not withheld
         and len(body.encode("utf-8")) <= limits.max_tool_output_bytes
     ):
         return ToolOutcome(body, metadata={"truncated": False, "next_offset": None})
@@ -1065,6 +1142,10 @@ def _page_response(
         }
         if stop_reason is not None:
             metadata["stop_reason"] = stop_reason
+        if withheld:
+            # Names stay hidden too: only the count says results are incomplete.
+            metadata["withheld_files"] = withheld
+            metadata["withheld_reason"] = "recognized secret material"
         if snapshot is not None:
             metadata["snapshot"] = snapshot
         response = _metadata_content("\n".join(visible) or empty, metadata)
@@ -1174,6 +1255,7 @@ _HANDLERS: Mapping[str, Callable[[ToolBroker, Mapping[str, object]], ToolOutcome
     "validate_changes": ToolBroker._validate_changes,
     "finish_task": ToolBroker._finish_task,
     "ask_user": ToolBroker._ask_user,
+    "update_plan": ToolBroker._update_plan,
 }
 
 
@@ -1414,13 +1496,44 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
         },
         ["question"],
     ),
+    "update_plan": _schema(
+        "update_plan",
+        "Record a short ordered checklist for work with several distinct steps, "
+        "and call again with the whole list as steps finish or the approach "
+        "changes. Keep at most one step in_progress. The user sees it as "
+        "progress; it is not the answer. Skip it for quick, single-step tasks.",
+        {
+            "steps": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": _MAX_PLAN_STEPS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "step": {
+                            **_TEXT,
+                            "minLength": 1,
+                            "maxLength": _MAX_PLAN_STEP_CHARACTERS,
+                            "description": "One short, concrete step.",
+                        },
+                        "status": {"type": "string", "enum": list(PLAN_STATUSES)},
+                    },
+                    "required": ["step", "status"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        ["steps"],
+    ),
 }
 
 
 __all__ = [
+    "PLAN_STATUSES",
     "ToolBroker",
     "ToolBudgetExhausted",
     "ToolOutcome",
     "ToolUsage",
+    "parse_plan",
     "tool_schemas",
 ]

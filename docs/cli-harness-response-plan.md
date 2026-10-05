@@ -1,10 +1,11 @@
 # Loupe CLI harness: response and execution plan
 
 Status: first response-and-delivery milestone implemented and locally validated;
-context management (phase 7, items 1–3) and sandboxed commands (item 4)
-implemented; broader harness work remains.
+context management (phase 7, items 1–3), sandboxed commands (item 4), faster
+read tools (item 5), and the task plan tool (item 6) implemented; broader
+harness work remains.
 Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03,
-item 4 completed 2026-10-04
+items 4–6 completed 2026-10-04
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -45,7 +46,8 @@ commits the answer, promoted conversation, and terminal task state together.
 Repository-instruction discovery, context compaction (automatic, after an
 oversized-prompt rejection, and through `/compact`), and provider prompt caching
 are implemented (phase 7, items 1–3), as are sandboxed diagnostic commands
-(item 4, which also covers phase 5's command capability). The remaining roadmap
+(item 4, which also covers phase 5's command capability), faster read tools
+(item 5), and the `update_plan` checklist (item 6). The remaining roadmap
 includes bounded repair stages, response-only retry, the rest of phase 7, and
 the full deterministic/live-provider behavior matrix.
 
@@ -403,8 +405,8 @@ existing authority model: repository and tool content never grants authority.
 | 2 | Provider prompt caching | Implemented |
 | 3 | Repository instruction files (`AGENTS.md`, `LOUPE.md`) | Implemented |
 | 4 | Governed shell execution with an OS sandbox | Implemented (`run_command`, shared tasks) |
-| 5 | Concurrent execution of read-only tool calls | Planned |
-| 6 | Visible task plan tool | Planned |
+| 5 | Faster read-only tools | Implemented; concurrent execution deferred |
+| 6 | Visible task plan tool | Implemented (`update_plan`) |
 | 7 | MCP client support | Planned |
 | 8 | User hooks around tool calls and completion | Planned |
 | 9 | Subagents for broad exploration | Planned |
@@ -511,13 +513,44 @@ write into dependency folders fail; editable installs that point at the real
 checkout cannot be imported from it; each command copies the whole source tree.
 CI installs bubblewrap so the real Linux sandbox is tested.
 
-**5. Concurrent read-only tools.** When one model turn requests several reads,
-searches, or listings, run them concurrently and return the results in request
-order. Mutating tools stay sequential. Checkpoints must still record each
-completed result.
+**5. Faster read-only tools (implemented; concurrency deferred).** The
+original plan was to run a turn's reads, searches and listings concurrently.
+Profiling the shared-checkout path showed that this would not help yet: every
+shared read holds the daemon-wide publication lock, so threaded reads took as
+long as sequential ones, and most of each call's time went to starting Git
+processes for source-exclusion checks (up to four per directory searched). Those
+checks are now cheaper:
 
-**6. Task plan tool.** An `update_plan` tool that keeps a short ordered checklist,
-shown in the status footer and persisted with the checkpoint, for long tasks.
+- Within one tool call, the user's `core.excludesFile` setting is read once,
+  and user rules are evaluated in one reusable, owner-private empty repository
+  rather than a new one per check. A changed setting applies from the next
+  tool call.
+- A search lists the tree first, checking the exclusions of up to 1,000
+  entries per Git process, and then reads files in the same depth-first order
+  as before, so its results and limits are unchanged. Listing stops once it
+  has found as many files as a search may scan; the search lists any further
+  directory it reaches. `read_file` no longer checks the same path twice.
+- A search skips files with recognized secret material and reports how many it
+  withheld (`withheld_files`), instead of failing the whole search.
+
+On this repository, a shared `search_text` dropped from about 750 ms to about
+150 ms, `read_file` from about 45 ms to 20 ms, and `list_files` from about
+38 ms to 25 ms.
+Concurrent execution remains worthwhile once slow tools exist (web fetch, MCP,
+subagents; items 7, 9 and 10) or if shared reads move to a shared/exclusive
+lock. Isolated tasks still check exclusions per directory during a search.
+
+**6. Task plan tool (implemented).** `update_plan` records an ordered checklist
+of at most 12 steps, each pending, in progress (at most one), or completed. The
+tool is offered outside plan mode, whose answer is itself a plan; the system
+prompt asks the model to use it for multi-step work and skip it for quick
+tasks. Each update emits a durable `plan.updated` event: the terminal prints
+the checklist once per change and keeps the step in progress above the status
+footer. The plan is saved with the checkpoint's tool usage, restored on resume,
+and restated after a context summary as the model's own record rather than new
+instructions. Step text is collapsed to one line, screened for recognized
+secrets, and sanitized before display. In the shared checkout the tool does
+not take the publication lock.
 
 **7. MCP client.** Connect configured Model Context Protocol servers. Their
 tools are external authority: per-server approval, no implicit write scope,

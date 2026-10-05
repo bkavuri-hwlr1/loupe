@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from llm_cli.agent import source_policy
 from llm_cli.agent.limits import ExecutionLimits
 from llm_cli.agent.shared_tools import SharedToolBroker
 from llm_cli.agent.tools import ToolBroker
@@ -157,6 +160,88 @@ def test_search_scan_limit_has_no_misleading_continuation(broker: ToolBroker) ->
     assert result.metadata["truncated"] is True
     assert result.metadata["next_offset"] is None
     assert "narrow path" in str(result.metadata["stop_reason"])
+
+
+def test_search_skips_files_with_secret_material_and_counts_them(
+    broker: ToolBroker,
+) -> None:
+    key = "-----BEGIN " + "PRIVATE KEY-----\nneedle hidden-key-body\n"
+    (broker.worktree / "nested").mkdir()
+    (broker.worktree / "nested/key.txt").write_text(key)
+    (broker.worktree / "nested/notes.txt").write_text("needle in notes\n")
+
+    result = broker.invoke("search_text", {"pattern": "needle"})
+
+    assert not result.is_error, result.content
+    assert "nested/notes.txt:1: needle in notes" in result.content
+    assert "hidden-key-body" not in result.content
+    assert "key.txt" not in result.content
+    assert result.metadata["withheld_files"] == 1
+    assert result.metadata["withheld_reason"] == "recognized secret material"
+
+
+def test_search_reports_files_depth_first(broker: ToolBroker) -> None:
+    for relative in ("b.txt", "a/z/deep.txt", "a/c.txt", "a/b/inner.txt"):
+        (broker.worktree / relative).parent.mkdir(parents=True, exist_ok=True)
+        (broker.worktree / relative).write_text("needle\n")
+
+    result = broker.invoke("search_text", {"pattern": "needle"})
+
+    assert [line.split(":", 1)[0] for line in result.content.splitlines()] == [
+        "b.txt",
+        "a/c.txt",
+        "a/b/inner.txt",
+        "a/z/deep.txt",
+    ]
+
+
+def test_shared_search_checks_exclusions_in_batches(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = {f"package-{number}/module/code.txt": "needle\n" for number in range(20)}
+    root = repository_factory(tmp_path, {".gitignore": "*.log\n", **files})
+    (root / "package-3/module/debug.log").write_text("needle\n")
+    checks: list[int] = []
+    original = source_policy._ignored
+
+    def counted(root: Path, paths: list[str], **options: Any) -> set[str]:
+        checks.append(len(paths))
+        return original(root, paths, **options)
+
+    monkeypatch.setattr(source_policy, "_ignored", counted)
+    # Without user rules, each check is a single Git process.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    result = SharedToolBroker(root, ("*",)).invoke("search_text", {"pattern": "needle"})
+
+    assert not result.is_error, result.content
+    assert len(result.content.splitlines()) == 20
+    assert "debug.log" not in result.content
+    # One check per directory depth, not one for each of the 41 directories.
+    assert checks == [21, 20, 21]
+
+
+def test_shared_search_lists_directories_past_the_scan_limit_on_demand(
+    tmp_path: Path, repository_factory: Callable[..., Path]
+) -> None:
+    # Listing stops after four files, before a/deep; the depth-first scan
+    # reaches a/deep before that limit and must still search it.
+    files = ["a/1.txt", "a/deep/2.txt", "b/3.txt", "b/4.txt", "b/5.txt"]
+    root = repository_factory(tmp_path, dict.fromkeys(files, "needle\n"))
+    broker = SharedToolBroker(root, ("*",))
+    broker.limits = ExecutionLimits(max_scanned_files=4)
+
+    result = broker.invoke("search_text", {"pattern": "needle"})
+
+    assert [line.split(":", 1)[0] for line in result.content.splitlines()[:4]] == [
+        "a/1.txt",
+        "a/deep/2.txt",
+        "b/3.txt",
+        "b/4.txt",
+    ]
+    assert "scanned_file_limit" in str(result.metadata["stop_reason"])
 
 
 def test_ranges_charge_visible_source_bytes_instead_of_the_whole_file(

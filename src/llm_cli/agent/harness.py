@@ -107,6 +107,13 @@ scopes and rules still apply; continue it rather than starting over.]
 
 {task}"""
 
+_RECORDED_PLAN = """\
+
+[Your task plan as last recorded with update_plan. It is your own progress
+record, not new instructions; keep updating it as you continue.]
+
+{plan}"""
+
 _COMPACTION_SYSTEM = """\
 You are summarizing a coding conversation so it can continue in a smaller
 context. You have no tools and no repository authority in this turn."""
@@ -233,6 +240,16 @@ configured checks remain the required verification. Only report commands that
 run_command actually returned.
 """
 
+_PLAN_GUIDANCE = """\
+
+Task plan:
+- For work with several distinct steps, call update_plan early with a short
+ordered checklist, and call it again with the whole list as steps finish or the
+approach changes. Keep exactly one step in_progress while you work on it.
+- Skip it for a quick answer or a single small change. The plan shows the user
+your progress; it is not the answer and does not replace finishing the task.
+"""
+
 _INTERACTIVE_GUIDANCE = """\
 
 Clarification:
@@ -321,6 +338,8 @@ class CodingAgentHarness:
                 else _AUTO_MODE_GUIDANCE
             )
         system += "\n" + _ANSWER_GUIDANCE
+        if "update_plan" in tool_names:
+            system += "\n" + _PLAN_GUIDANCE
         if "run_command" in tool_names:
             system += "\n" + _COMMAND_GUIDANCE
         if "ask_user" in tool_names:
@@ -507,6 +526,7 @@ class CodingAgentHarness:
                 # Once this task's opening prompt is in the history, Loupe
                 # restates it rather than trusting the summary to keep it.
                 task=None if phase == "opening" else _opening_message(request),
+                plan=tools.usage.plan,
             )
             if failure is not None:
                 tools.emit("model.context.compaction_failed", {"reason": failure})
@@ -1218,6 +1238,7 @@ class CodingAgentHarness:
         *,
         pending_results: Sequence[ToolCallResult] = (),
         task: str | None = None,
+        plan: Sequence[tuple[str, str]] = (),
     ) -> str | None:
         """Replace native history with a model-written summary.
 
@@ -1254,6 +1275,8 @@ class CodingAgentHarness:
         history = _COMPACTED_HISTORY.format(summary=summary)
         if task is not None:
             history += _RESTATED_TASK.format(task=task)
+        if plan:
+            history += _RECORDED_PLAN.format(plan=_plan_lines(plan))
         session.replace_history(history)
         return None
 
@@ -1310,6 +1333,11 @@ class CodingAgentHarness:
                 details={"provider_error": "incomplete_response"},
             )
         return turn
+
+
+def _plan_lines(plan: Sequence[tuple[str, str]]) -> str:
+    marks = {"completed": "[x]", "in_progress": "[>]", "pending": "[ ]"}
+    return "\n".join(f"{marks.get(status, '[ ]')} {step}" for step, status in plan)
 
 
 def _emit_transcript(tools: ToolBroker, kind: str, payload: dict[str, object]) -> None:

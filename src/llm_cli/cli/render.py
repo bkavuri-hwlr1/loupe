@@ -31,7 +31,9 @@ _TOOL_ACTIVITIES = {
     "run_check": "Running checks…",
     "finish_task": "Preparing the result…",
     "ask_user": "Waiting for your input…",
+    "update_plan": "Updating the plan…",
 }
+_PLAN_MARKS = {"completed": "✓", "in_progress": "▸", "pending": "○"}
 # A task that called any of these may still fail checks or publication, so its
 # answer draft is only previewed until the model.finished event accepts it.
 _WRITE_TOOLS = frozenset(
@@ -112,6 +114,7 @@ _PUBLIC_EVENTS = frozenset(
         "check.finished",
         "command.started",
         "command.finished",
+        "plan.updated",
         "question.asked",
         "workflow.awaiting_review",
         "workflow.cancelled",
@@ -259,6 +262,14 @@ def render_event(event: dict[str, Any]) -> str | None:
         return f"  Running: {_command_text(payload)}"
     if kind == "command.finished":
         return f"  Command result: {_command_outcome(payload)}"
+    if kind == "plan.updated":
+        steps = _plan_steps(payload)
+        if not steps:
+            return None
+        return "\n".join(
+            [f"  {_plan_heading(steps)}"]
+            + [f"    {_PLAN_MARKS[status]} {step}" for step, status in steps]
+        )
     if kind == "check.started":
         return f"  Running check: {safe_text(payload.get('name', ''))}"
     if kind == "check.finished":
@@ -321,6 +332,35 @@ def render_event(event: dict[str, Any]) -> str | None:
         return None
     detail = _detail(kind, payload)
     return f"  {marker} {label}{detail}"
+
+
+def _plan_steps(payload: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    raw = payload.get("steps")
+    if not isinstance(raw, list):
+        return ()
+    steps: list[tuple[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return ()
+        step, status = item.get("step"), item.get("status")
+        if not isinstance(step, str) or status not in _PLAN_MARKS:
+            return ()
+        steps.append((_clip(step), status))
+    return tuple(steps)
+
+
+def _plan_heading(steps: tuple[tuple[str, str], ...]) -> str:
+    completed = sum(status == "completed" for _, status in steps)
+    return f"Plan · {completed} of {len(steps)} done"
+
+
+def _plan_progress(steps: tuple[tuple[str, str], ...]) -> str:
+    """The footer's one-line view: the step in progress, or the plan's tally."""
+
+    for number, (step, status) in enumerate(steps, 1):
+        if status == "in_progress":
+            return f"Step {number} of {len(steps)} · {step}"
+    return _plan_heading(steps)
 
 
 def _command_text(payload: dict[str, Any]) -> str:
@@ -387,8 +427,7 @@ def _review_notice(payload: dict[str, Any]) -> str:
     verification = payload.get("verification")
     check = (
         f" · checks {safe_text(verification).replace('_', ' ')}"
-        if isinstance(verification, str)
-        and verification not in {"", "not_applicable"}
+        if isinstance(verification, str) and verification not in {"", "not_applicable"}
         else ""
     )
     if outcome == "completed":
@@ -513,6 +552,7 @@ class EventRenderer:
         self._claim_id = ""
         self._check_failed = False
         self._command: str | None = None
+        self._plan: tuple[tuple[str, str], ...] = ()
         self._completed = False
         self._verification: str | None = None
         self._answer_ids: set[str] = set()
@@ -559,6 +599,8 @@ class EventRenderer:
             self._streamed_calls.clear()
             self._revising = False
             self._clear_preview()
+            self._plan = ()
+            self.ui.progress(None)
         if isinstance(claim_id, str) and claim_id != self._claim_id:
             self._claim_id = claim_id
             self._provider_failure_displayed = False
@@ -596,9 +638,7 @@ class EventRenderer:
             return
         if kind in {"workflow.awaiting_review", "workflow.cancelled"}:
             expected = (
-                "REVIEW_REQUIRED"
-                if kind == "workflow.awaiting_review"
-                else "CANCELLED"
+                "REVIEW_REQUIRED" if kind == "workflow.awaiting_review" else "CANCELLED"
             )
             pending = self._pending_settlement_failure
             if pending is not None and pending[1] == expected:
@@ -744,6 +784,21 @@ class EventRenderer:
             else:
                 self.ui.activity(_CONVERSATION_PHASES[kind])
             return
+        if kind == "plan.updated":
+            steps = _plan_steps(payload)
+            if not steps or steps == self._plan:
+                return
+            self._plan = steps
+            self.ui.notice(f"  {_plan_heading(steps)}")
+            for step, status in steps:
+                self.ui.notice(
+                    f"    {_PLAN_MARKS[status]} {step}",
+                    style={"completed": "muted", "in_progress": "assistant"}.get(
+                        status, ""
+                    ),
+                )
+            self.ui.progress(_plan_progress(steps))
+            return
         if kind == "command.started":
             self._command = _command_text(payload)
             self.ui.activity(f"Running {self._command}…")
@@ -784,6 +839,7 @@ class EventRenderer:
             return
         if kind == "model.finished":
             self.ui.activity(None)
+            self.ui.progress(None)
             self._clear_preview()
             answer = payload.get("answer")
             summary = payload.get("summary")
@@ -1012,8 +1068,10 @@ class EventRenderer:
                 partial = safe_text("".join(parts))
                 state = self._streams.get((turn, "text"))
                 streamed = state.text if state else ""
-                if field_name != "summary" and streamed and (
-                    streamed.startswith(partial) or partial.startswith(streamed)
+                if (
+                    field_name != "summary"
+                    and streamed
+                    and (streamed.startswith(partial) or partial.startswith(streamed))
                 ):
                     streamed_response_interrupted = True
                 if streamed and streamed.startswith(partial):

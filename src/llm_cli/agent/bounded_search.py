@@ -83,6 +83,8 @@ class SearchSnapshot:
     files: list[tuple[str, str]]
     fingerprint: str
     stop_reason: str | None = None
+    # Files skipped because they contain recognized secret material.
+    withheld: int = 0
 
 
 def find_matches(
