@@ -75,13 +75,15 @@ def test_two_wrappers_resuming_one_session_cannot_launch_duplicate_active_work(
     task = cluster.task("a")
     second = cluster.chat("second", resume=task["session_id"])
     cluster.submit(second, "duplicate", {"docs/shared.md": "must not publish\n"})
+    # The refusal and the /attach hint are separate writes; wait for the hint.
     _wait(
         lambda: (
-            "finish the session's current task"
-            in (cluster.root / "second.log").read_text()
+            f"/attach {task['task_id']}" in (cluster.root / "second.log").read_text()
         )
     )
-    assert f"/attach {task['task_id']}" in (cluster.root / "second.log").read_text()
+    assert (
+        "finish the session's current task" in (cluster.root / "second.log").read_text()
+    )
     tasks = cluster.rpc("task.list")
     assert [t["task_id"] for t in tasks] == [task["task_id"]]
     cluster.send(second, "/attach")
