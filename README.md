@@ -547,7 +547,8 @@ operator has established what the repository actually contains.
 Agent runs are bounded: a two-hour wall clock, a 500 tool-call cap, and 64 KiB
 per tool result. The work lease is renewed on a timer for as long as the driver
 runs, and a lease lost mid-turn is raised the moment the driver returns, so it
-can never reach publication.
+can never reach publication. Time the computer spends asleep does not count
+against a lease, so a laptop that sleeps mid-task resumes the task on waking.
 
 `llm-coord chat --scope docs/` opens a durable session. The model conversation
 spans prompts, but each mutation is still its own fenced task: authority is

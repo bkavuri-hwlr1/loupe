@@ -235,6 +235,68 @@ def test_renewal_requires_the_exact_fence_and_an_unexpired_lease(
         )
 
 
+class _Clocks:
+    """A wall clock that keeps running while asleep, and a monotonic one."""
+
+    def __init__(self) -> None:
+        self.wall = 1_000.0
+        self.monotonic = 50.0
+
+    def sleep(self, seconds: float) -> None:
+        self.wall += seconds
+
+    def run(self, seconds: float) -> None:
+        self.wall += seconds
+        self.monotonic += seconds
+
+
+def test_time_asleep_does_not_count_against_leases(tmp_path: Path) -> None:
+    harness = _harness(tmp_path, "owner", "waiter")
+    clocks = _Clocks()
+    coordinator = RepositoryCoordinator(
+        harness.store,
+        launch_lease_ms=100,
+        work_lease_ms=30,
+        wall_clock=lambda: clocks.wall,
+        monotonic_clock=lambda: clocks.monotonic,
+    )
+    owner = coordinator.request_claim("owner", ("src/",), now=NOW + 1)
+    waiter = coordinator.request_claim("waiter", ("src/parser.py",), now=NOW + 2)
+    assert owner.fencing_token is not None
+    assert owner.lease_expires_at == NOW + 101
+
+    # Ten minutes asleep. The first call afterwards fails and rolls back, which
+    # must not undo the lease time given back for the sleep.
+    clocks.sleep(600)
+    with pytest.raises(ClaimAuthorityError, match="stale"):
+        coordinator.renew_claim(
+            task_id="owner",
+            claim_id=owner.claim_id,
+            fencing_token=owner.fencing_token + 1,
+            attempt=1,
+            now=NOW + 600_050,
+        )
+    result = coordinator.reconcile_expired(REPO_KEY, now=NOW + 600_050)
+    assert result.expired_claim_ids == ()
+    stored = harness.store.get_claim(owner.claim_id)
+    assert stored is not None and stored.state is ClaimState.ACTIVE_WORK
+    assert stored.lease_expires_at == NOW + 600_101
+    renewed = coordinator.renew_claim(
+        task_id="owner",
+        claim_id=owner.claim_id,
+        fencing_token=owner.fencing_token,
+        attempt=1,
+        now=NOW + 600_060,
+    )
+    assert renewed.lease_expires_at == NOW + 600_090
+
+    # Awake, a worker that stops renewing still loses its lease.
+    clocks.run(600)
+    result = coordinator.reconcile_expired(REPO_KEY, now=NOW + 1_200_090)
+    assert result.expired_claim_ids == (owner.claim_id,)
+    assert [claim.claim_id for claim in result.activated] == [waiter.claim_id]
+
+
 def test_reconcile_expires_owner_and_activates_waiter_with_a_new_fence(
     tmp_path: Path,
 ) -> None:

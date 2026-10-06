@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterable, Mapping
+import threading
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from typing import cast
 
 from llm_cli.coordination.models import (
@@ -36,6 +39,8 @@ _TERMINAL_STATES = {"released", "expired", "cancelled"}
 # open to a decision while ``confirmed`` and ``failed_safe`` do not.
 _UNDECIDED_INTENT_STATES = {"prepared", "side_effect_unknown", "operator_attention"}
 _LIVE_ACTIVE_STATES = {"active_work", "publishing", "active_integration"}
+# Wall-clock jumps shorter than this are clock noise, not a suspension.
+_SUSPENSION_TOLERANCE_MS = 2_000
 
 
 class RepositoryCoordinator:
@@ -54,6 +59,8 @@ class RepositoryCoordinator:
         launch_lease_ms: int = 600_000,
         work_lease_ms: int = 90_000,
         terminal_retention_ms: int = 30 * 24 * 60 * 60 * 1_000,
+        wall_clock: Callable[[], float] = time.time,
+        monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if min(launch_lease_ms, work_lease_ms, terminal_retention_ms) <= 0:
             raise ValueError("lease and retention durations must be positive")
@@ -61,6 +68,13 @@ class RepositoryCoordinator:
         self.launch_lease_ms = launch_lease_ms
         self.work_lease_ms = work_lease_ms
         self.terminal_retention_ms = terminal_retention_ms
+        # The monotonic clock stops while the machine sleeps; the wall clock
+        # does not. Their difference is time this process spent suspended.
+        self._wall_clock = wall_clock
+        self._monotonic_clock = monotonic_clock
+        self._suspension_lock = threading.Lock()
+        self._clock_reference = (wall_clock(), monotonic_clock())
+        self._unapplied_suspension_ms = 0
 
     def request_claim(
         self,
@@ -83,7 +97,7 @@ class RepositoryCoordinator:
         if scheduling_mode not in {"exclusive", "optimistic"}:
             raise ValueError("claim scheduling mode must be exclusive or optimistic")
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             task = self._task_row(connection, task_id)
             repo_key = str(task["repo_key"])
             fold_case = self._path_case_insensitive(connection, repo_key)
@@ -240,7 +254,7 @@ class RepositoryCoordinator:
         now: int | None = None,
     ) -> ClaimRecord:
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             row = self._claim_row(connection, claim_id)
             repo_key = str(row["repo_key"])
             effective_now = self._effective_now(connection, repo_key, timestamp)
@@ -277,7 +291,7 @@ class RepositoryCoordinator:
         now: int | None = None,
     ) -> ClaimRecord:
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             row = self._claim_row(connection, claim_id)
             repo_key = str(row["repo_key"])
             effective_now = self._effective_now(connection, repo_key, timestamp)
@@ -315,7 +329,7 @@ class RepositoryCoordinator:
         if task_state not in {"cancelled", "failed"}:
             raise ValueError("release task state must be cancelled or failed")
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             row = self._claim_row(connection, claim_id)
             repo_key = str(row["repo_key"])
             effective_now = self._effective_now(connection, repo_key, timestamp)
@@ -405,10 +419,7 @@ class RepositoryCoordinator:
         expired_tasks: list[str] = []
         activated: list[ClaimRecord] = []
         for key in keys:
-            with (
-                self.store.connection() as connection,
-                immediate_transaction(connection),
-            ):
+            with self._transaction() as connection:
                 effective_now = self._effective_now(connection, key, timestamp)
                 expired = self._expire_stale(connection, key, effective_now)
                 expired_claims.extend(item[0] for item in expired)
@@ -444,7 +455,7 @@ class RepositoryCoordinator:
         if not result_tree_id:
             raise PublicationError("result tree ID must not be empty")
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             stopped = connection.execute(
                 (
                     "SELECT stop_requested FROM task_workflows WHERE task_id"
@@ -598,7 +609,7 @@ class RepositoryCoordinator:
         if not result_commit_id or not task_ref.startswith("refs/llm-coord/tasks/"):
             raise PublicationError("confirmed publication identity is invalid")
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             intent = connection.execute(
                 "SELECT * FROM publication_intents WHERE intent_id = ?", (intent_id,)
             ).fetchone()
@@ -685,7 +696,7 @@ class RepositoryCoordinator:
         if not reason.strip():
             raise ValueError("publication failure reason must not be empty")
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             intent = connection.execute(
                 "SELECT * FROM publication_intents WHERE intent_id = ?", (intent_id,)
             ).fetchone()
@@ -777,7 +788,7 @@ class RepositoryCoordinator:
         if not reason.strip():
             raise ValueError("operator-attention reason must not be empty")
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             intent = connection.execute(
                 "SELECT * FROM publication_intents WHERE intent_id = ?", (intent_id,)
             ).fetchone()
@@ -840,7 +851,7 @@ class RepositoryCoordinator:
         """
 
         paths = tuple(normalize_changed_path(path) for path in changed_paths)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             execution = connection.execute(
                 "SELECT * FROM task_executions WHERE execution_id = ?",
                 (execution_id,),
@@ -940,7 +951,7 @@ class RepositoryCoordinator:
             )
         ):
             raise ValueError("read-only execution evidence is invalid")
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             execution = connection.execute(
                 "SELECT * FROM task_executions WHERE execution_id = ?",
                 (execution_id,),
@@ -1044,7 +1055,7 @@ class RepositoryCoordinator:
 
         if outcome not in {"published", "diverged", "no_changes", "failed_safe"}:
             raise ValueError("unknown shared execution outcome")
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             execution = connection.execute(
                 "SELECT * FROM task_executions WHERE execution_id = ?",
                 (execution_id,),
@@ -1209,7 +1220,7 @@ class RepositoryCoordinator:
         """
 
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM claims WHERE task_id = ?
@@ -1270,7 +1281,7 @@ class RepositoryCoordinator:
         """Explicitly discard a confirmed branch result and release its reservation."""
 
         timestamp = self.store._now(now)
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with self._transaction() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM claims WHERE task_id = ?
@@ -1655,6 +1666,52 @@ class RepositoryCoordinator:
             and row["lease_expires_at"] is not None
             and int(row["lease_expires_at"]) > now
         )
+
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """Open one ``BEGIN IMMEDIATE`` coordination transaction.
+
+        Any time the process just spent suspended is first taken off every
+        live lease, in its own transaction, so a rollback of the caller's
+        work cannot undo it.
+        """
+
+        self._discount_suspension()
+        with self.store.connection() as connection, immediate_transaction(connection):
+            yield connection
+
+    def _discount_suspension(self) -> None:
+        """Extend live leases by the time this process spent suspended.
+
+        A lease is a crash backstop: it measures how long the daemon has gone
+        without hearing from a worker. While the machine sleeps, the daemon --
+        the only authority that can grant a claim's scopes -- is suspended with
+        every worker, so that time is not evidence that a worker died, and no
+        one can have taken the scopes meanwhile. Without this, a laptop that
+        slept longer than a lease would fail every running task on waking.
+        """
+
+        with self._suspension_lock:
+            wall, monotonic = self._wall_clock(), self._monotonic_clock()
+            last_wall, last_monotonic = self._clock_reference
+            self._clock_reference = (wall, monotonic)
+            gap_ms = int(((wall - last_wall) - (monotonic - last_monotonic)) * 1_000)
+            if gap_ms > _SUSPENSION_TOLERANCE_MS:
+                self._unapplied_suspension_ms += gap_ms
+            if self._unapplied_suspension_ms == 0:
+                return
+            with (
+                self.store.connection() as connection,
+                immediate_transaction(connection),
+            ):
+                connection.execute(
+                    """
+                    UPDATE claims SET lease_expires_at = lease_expires_at + ?
+                    WHERE state = 'active_work' AND lease_expires_at IS NOT NULL
+                    """,
+                    (self._unapplied_suspension_ms,),
+                )
+            self._unapplied_suspension_ms = 0
 
     @staticmethod
     def _effective_now(
