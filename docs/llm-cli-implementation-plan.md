@@ -643,6 +643,14 @@ Start with the proven v4 timing model:
 The daemon starts renewal before worktree preparation and process launch. A
 failed launch releases immediately; the lease is only a crash backstop.
 
+Time the daemon spends suspended by system sleep does not count against
+leases. The wall clock keeps running during sleep while the monotonic clock
+stops, so before each coordination transaction the coordinator adds any gap
+between them (beyond two seconds) to every live `active_work` lease, in its own
+committed transaction. While the daemon is suspended, no other party can be
+granted a claim's scopes and no worker can be heard from, so that time is not
+evidence of a crash. The fencing predicate below is unchanged.
+
 ### 13.4 Fencing predicate
 
 Renew, validate, delegate, begin integration, and accept child output only when
