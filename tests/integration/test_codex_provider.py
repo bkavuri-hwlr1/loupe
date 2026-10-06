@@ -595,7 +595,10 @@ def test_subscription_does_not_retry_a_stream_that_has_started(
 
     _install_transport(monkeypatch, handle)
     session = CodexProvider(paths=paths).session(system="test", tools=[])
-    with pytest.raises(httpx.ReadError):
+    # Classified as a lost connection, but never replayed by the client: only
+    # the caller knows whether sending the turn again is safe.
+    with pytest.raises(LlmCoordError) as failure:
         session.send_user("edit")
+    assert failure.value.details == {"provider_error": "connection"}
     assert len(requests) == 1
     assert session.snapshot() == {"input": []}

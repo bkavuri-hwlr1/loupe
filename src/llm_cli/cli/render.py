@@ -391,6 +391,9 @@ def _exploration_outcome(payload: dict[str, Any]) -> str:
     suffix = f" · {', '.join(details)}" if details else ""
     if payload.get("state") == "completed":
         return f"↳ Explored: {task}{suffix}"
+    reason = payload.get("reason")
+    if isinstance(reason, str) and reason:
+        suffix += f" ({_clip(reason)})"
     return f"! Exploration stopped early: {task}{suffix}"
 
 

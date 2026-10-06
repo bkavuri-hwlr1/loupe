@@ -1715,6 +1715,9 @@ class DaemonService:
                 # Journaled work belongs to recovery; driver availability says
                 # nothing about whether its filesystem effect was completed.
         payload: dict[str, object] = {"failure_code": code}
+        if not isinstance(error, LlmCoordError):
+            # The class name alone, never the message, which may echo a prompt.
+            payload["error_type"] = type(error).__name__
         if (
             isinstance(error, LlmCoordError)
             and error.code is ErrorCode.PROVIDER_UNAVAILABLE

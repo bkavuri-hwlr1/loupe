@@ -242,6 +242,55 @@ def test_unknown_provider_classification_is_not_persisted(
     asyncio.run(scenario())
 
 
+def test_an_unclassified_failure_records_its_type_but_not_its_text(
+    tmp_path: Path,
+    repository_factory: Callable[[Path, dict[str, str]], Path],
+    service_factory: Callable[[Path], DaemonService],
+    request_factory: Callable[[str, dict[str, Any]], Request],
+) -> None:
+    async def scenario() -> None:
+        repository = repository_factory(tmp_path, {"README.md": "base\n"})
+        service = service_factory(tmp_path)
+        service.initialize()
+        try:
+            await service.handle(request_factory("repo.add", {"path": str(repository)}))
+            accepted = await service.handle(
+                request_factory(
+                    "task.run",
+                    {
+                        "path": str(repository),
+                        "task_id": "task-error",
+                        "title": "Inspect the readme",
+                        "scopes": ["README.md"],
+                        "claim_only": True,
+                    },
+                )
+            )
+            task = service.store.get_task("task-error")
+            claim = service.store.get_claim(accepted["claim"]["claim_id"])
+            assert task is not None and claim is not None
+            service._fail_unstarted_launch(
+                task, claim, RuntimeError("PRIVATE_RESPONSE_TEXT")
+            )
+            events = await service.handle(
+                request_factory("task.events", {"task_id": "task-error"})
+            )
+            failure = next(
+                event
+                for event in events
+                if event["event_type"] == "execution.background_failed"
+            )
+            assert failure["payload"] == {
+                "failure_code": "EXECUTION_FAILED",
+                "error_type": "RuntimeError",
+            }
+            assert "PRIVATE_RESPONSE_TEXT" not in json.dumps(events)
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
+
+
 def test_old_provider_failure_records_deduplicate_and_offer_recovery() -> None:
     output = io.StringIO()
     renderer = EventRenderer(output, plain=True)

@@ -107,6 +107,30 @@ def test_explicit_model_bad_request_retains_provider_explanation() -> None:
     assert session.snapshot() == {"messages": []}
 
 
+class TransportError(Exception):
+    """Named like the HTTP library's base class for network failures."""
+
+
+class RemoteProtocolError(TransportError):
+    pass
+
+
+def test_a_connection_lost_while_a_reply_streams_is_classified() -> None:
+    session = AnthropicProvider(client=Client(RemoteProtocolError("closed"))).session(
+        system="test", tools=[]
+    )
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert failure.value.message == "the connection to the model provider was lost"
+    assert failure.value.details == {"provider_error": "connection"}
+    with pytest.raises(ValueError):
+        AnthropicProvider(client=Client(ValueError("a real defect"))).session(
+            system="test", tools=[]
+        ).send_user("hello")
+
+
 @pytest.mark.parametrize(
     ("retry_error", "expected_message"),
     [
@@ -133,6 +157,9 @@ def test_fallback_retry_errors_are_translated(
 
     assert failure.value.code is ErrorCode.PROVIDER_UNAVAILABLE
     assert expected_message in failure.value.message
+    if isinstance(retry_error, APIConnectionError):
+        # Tagged like the OpenAI adapters, so callers can tell it is transient.
+        assert failure.value.details == {"provider_error": "connection"}
     assert [endpoint for endpoint, _ in client.calls] == ["beta", "stable"]
     assert "fallbacks" in client.calls[0][1]
     assert "fallbacks" not in client.calls[1][1]

@@ -572,9 +572,14 @@ tool calls are reserved from the task's budget for each helper, always leaving
 five for the task, and unused calls are returned. Helper reads are capped at
 100 files and 384 KiB per exploration. The helper's report (at most 16,000
 characters) returns as the tool result; the agent is told to rely on it for
-understanding but to read a file itself before editing it. Provider failures,
-a spent budget, or a cut-off report become an explicit partial or failed
-result rather than a task failure. Helper token usage is added to the task's
+understanding but to read a file itself before editing it. Because helpers
+only read, a request that fails in transit (a connection failure, timeout,
+dropped stream, or 5xx response) is sent again, up to twice per exploration,
+after 2 and then 6 seconds. Provider failures, a spent budget, or a cut-off
+report become an explicit partial or failed result rather than a task failure.
+A helper that fails without a report lists the files it read and the searches
+it ran, so the agent can continue from there, and the conversation shows why
+it stopped. Helper token usage is added to the task's
 total. Consecutive `explore` calls in one turn run in parallel (up to four);
 their results are recorded together, and after a restart an interrupted group
 runs again. The conversation shows each exploration by a short label the

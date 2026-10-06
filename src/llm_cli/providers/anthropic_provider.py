@@ -23,6 +23,7 @@ from llm_cli.providers.base import (
     context_overflow_error,
     mentions_any,
     shorten_tool_text,
+    transport_failure,
 )
 from llm_cli.providers.catalog import model_option
 
@@ -327,6 +328,7 @@ class AnthropicSession:
             raise LlmCoordError(
                 ErrorCode.PROVIDER_UNAVAILABLE,
                 "the model provider could not be reached",
+                details={"provider_error": "connection"},
             ) from exc
         except TypeError as exc:
             # The SDK reports a missing credential as a bare TypeError at
@@ -339,6 +341,11 @@ class AnthropicSession:
                 "no Anthropic credential is configured; use /login anthropic "
                 "or set ANTHROPIC_API_KEY",
             ) from exc
+        except Exception as exc:
+            failure = transport_failure(exc)
+            if failure is None:
+                raise
+            raise failure from exc
 
     def _stream(self, arguments: dict[str, Any]) -> Any:
         endpoint = (

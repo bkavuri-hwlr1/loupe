@@ -472,6 +472,41 @@ def test_http_detail_is_private_redacted_and_bounded(
     assert "request" not in details
 
 
+class TransportError(Exception):
+    """Named like the HTTP library's base class for network failures."""
+
+
+class ReadError(TransportError):
+    pass
+
+
+class TimeoutException(TransportError):
+    pass
+
+
+class ReadTimeout(TimeoutException):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [(ReadError("connection reset"), "connection"), (ReadTimeout("slow"), "timeout")],
+)
+def test_network_failures_while_a_reply_streams_are_classified(
+    error: Exception, category: str
+) -> None:
+    # The SDK wraps network errors while sending, but not while streaming.
+    session = OpenAIProvider(client=Client(error, midstream=True)).session(
+        system="test", tools=[]
+    )
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert failure.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+    assert failure.value.details == {"provider_error": category}
+
+
 def test_programming_failures_and_process_interrupts_are_not_hidden() -> None:
     for error in (TypeError("invalid keyword"), KeyboardInterrupt()):
         session = OpenAIProvider(client=Client(error, midstream=True)).session(
