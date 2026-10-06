@@ -2,10 +2,10 @@
 
 Status: first response-and-delivery milestone implemented and locally validated;
 context management (phase 7, items 1–3), sandboxed commands (item 4), faster
-read tools (item 5), the task plan tool (item 6), and exploration helpers
-(item 9) implemented; broader harness work remains.
+read tools (item 5), the task plan tool (item 6), exploration helpers (item 9),
+and token usage display (item 11) implemented; broader harness work remains.
 Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03,
-items 4–6 and 9 completed 2026-10-04
+items 4–6 and 9 completed 2026-10-04, item 11 completed 2026-10-06
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -47,8 +47,8 @@ Repository-instruction discovery, context compaction (automatic, after an
 oversized-prompt rejection, and through `/compact`), and provider prompt caching
 are implemented (phase 7, items 1–3), as are sandboxed diagnostic commands
 (item 4, which also covers phase 5's command capability), faster read tools
-(item 5), the `update_plan` checklist (item 6), and `explore` helpers (item 9).
-The remaining roadmap
+(item 5), the `update_plan` checklist (item 6), `explore` helpers (item 9), and
+token usage display (item 11). The remaining roadmap
 includes bounded repair stages, response-only retry, the rest of phase 7, and
 the full deterministic/live-provider behavior matrix.
 
@@ -412,7 +412,7 @@ existing authority model: repository and tool content never grants authority.
 | 8 | User hooks around tool calls and completion | Planned |
 | 9 | Subagents for broad exploration | Implemented (`explore`) |
 | 10 | Read-only web fetch | Planned |
-| 11 | Token and cost display (`/cost`, footer) | Planned |
+| 11 | Token usage display (`/usage`, footer context meter) | Implemented; no cost estimates |
 | 12 | Live-model task benchmark | Planned; extends phase 6 |
 
 **1. Context-window management (implemented).** Each provider turn reports the
@@ -611,8 +611,22 @@ Remaining gap: helpers cannot run sandboxed commands.
 **10. Web fetch.** A read-only fetch tool for documentation, with domain policy,
 size limits, and content treated as untrusted data.
 
-**11. Token and cost display.** Providers already report usage. Show per-turn and
-session totals, including cache reads, in the footer and a `/cost` command.
+**11. Token usage display (implemented).** Adapters now report `prompt_tokens`
+with one meaning for every provider: all prompt tokens, cached or not
+(Anthropic's `input_tokens` excludes cached tokens; Responses' includes them).
+Each `model.turn.completed` event carries `context_tokens` and
+`context_budget`, and summaries carry the budget, so the status footer shows
+how full the context window is ("Context: 26%") and updates as turns land.
+`/usage` sends `session.usage` to the daemon, which totals the session's task
+runs from their recorded usage, falling back to the latest checkpoint for runs
+that are still running or failed, and reports the current context size and
+budget. Explore helper tokens count in the totals, and `/usage` also shows the
+helpers' share, recorded as `explore_prompt_tokens` and `explore_output_tokens`.
+The context meter covers only the main conversation. Older runs recorded before `prompt_tokens` count their `input_tokens`,
+which undercounts cached Anthropic prompts. Loupe shows tokens, not dollar
+cost: prices depend on the provider and plan, and ChatGPT subscriptions are
+not billed per token. The meter appears after the first turn of a visit or a
+`/usage`; it is not fetched when a session opens.
 
 **12. Live-model benchmark.** A small, versioned set of real repository tasks
 run against supported models, tracking success, tool calls, tokens, and

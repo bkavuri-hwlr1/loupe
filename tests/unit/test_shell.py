@@ -26,6 +26,7 @@ class Client:
         self.sessions: dict[str, dict[str, Any]] = {}
         self.repository_error: LlmCoordError | None = None
         self.compact_result: dict[str, Any] = {"compacted": False}
+        self.usage_result: dict[str, Any] = {"task_runs": 0, "usage": {}}
         identity = code_identity()
         self.daemon_identity: dict[str, Any] = {
             "code_fingerprint": identity["fingerprint"],
@@ -67,6 +68,8 @@ class Client:
             return []
         if method == "session.compact":
             return self.compact_result
+        if method == "session.usage":
+            return self.usage_result
         if method in {"repo.add", "session.set_intent", "session.close"}:
             return {}
         raise AssertionError(f"Unexpected daemon call: {method}")
@@ -778,9 +781,91 @@ def test_compact_reports_the_summarized_size(client: Client, menu: Menu) -> None
             "resume_secret": chat.credentials.resume_secret,
         }
     ]
-    assert "Conversation summarized (about 182k → 3k tokens)." in output(chat)
+    assert "Conversation summarized (about 182k → 3.1k tokens)." in output(chat)
 
 
 def test_compact_rejects_arguments(client: Client, menu: Menu) -> None:
     with pytest.raises(ValueError, match="Usage: /compact"):
         start(client)._command("/compact now")
+
+
+def test_compact_updates_the_context_meter(client: Client, menu: Menu) -> None:
+    menu.ready.add("codex")
+    chat = start(client, provider="codex", model="first-model")
+    assert chat._ensure_session()
+    client.compact_result = {
+        "compacted": True,
+        "context_tokens": 180_000,
+        "summary_tokens": 4_000,
+        "context_budget": 200_000,
+    }
+
+    chat._command("/compact")
+
+    assert chat.composer.context_percent == 2
+
+
+def test_usage_without_a_conversation_needs_no_daemon_call(
+    client: Client, menu: Menu
+) -> None:
+    chat = start(client)
+
+    assert chat._command("/usage")
+
+    assert "No token usage yet" in output(chat)
+    assert calls(client, "session.usage") == []
+
+
+def test_usage_reports_totals_and_updates_the_context_meter(
+    client: Client, menu: Menu
+) -> None:
+    menu.ready.add("codex")
+    chat = start(client, provider="codex", model="first-model")
+    assert chat._ensure_session()
+    assert chat.credentials is not None
+    client.usage_result = {
+        "task_runs": 3,
+        "usage": {
+            "prompt_tokens": 1_250_000,
+            "cache_read_input_tokens": 840_000,
+            "output_tokens": 45_000,
+            "reasoning_tokens": 12_000,
+        },
+        "context_tokens": 63_000,
+        "context_budget": 240_000,
+    }
+
+    assert chat._command("/usage")
+
+    assert calls(client, "session.usage") == [
+        {
+            "session_id": chat.credentials.session_id,
+            "resume_secret": chat.credentials.resume_secret,
+        }
+    ]
+    text = output(chat)
+    assert "Token usage in this conversation (3 task runs):" in text
+    assert "Prompt:  1.2M tokens, 840k read from cache" in text
+    assert "Output:  45k tokens, 12k of them reasoning" in text
+    assert "Context: 63k of 240k tokens (26%)" in text
+    assert chat.composer.context_percent == 26
+    assert "Context: 26%" in chat.composer.status_text()
+
+
+def test_closing_the_conversation_clears_the_context_meter(
+    client: Client, menu: Menu
+) -> None:
+    menu.ready.add("codex")
+    chat = start(client, provider="codex", model="first-model")
+    assert chat._ensure_session()
+    chat.composer.context_percent = 40
+
+    chat._close()
+
+    assert chat.composer.context_percent is None
+    assert "Context" not in chat.composer.status_text()
+
+
+def test_usage_rejects_arguments(client: Client, menu: Menu) -> None:
+    with pytest.raises(ValueError, match="Usage: /usage"):
+        start(client)._command("/usage now")

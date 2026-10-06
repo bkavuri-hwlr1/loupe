@@ -147,7 +147,7 @@ def test_rejected_fallback_can_succeed_and_stays_disabled_for_later_turns() -> N
     second = session.send_user("again")
 
     assert first.text == "first"
-    assert first.usage == {"input_tokens": 11, "output_tokens": 3}
+    assert first.usage == {"input_tokens": 11, "output_tokens": 3, "prompt_tokens": 11}
     assert second.text == "second"
     assert [endpoint for endpoint, _ in client.calls] == ["beta", "stable", "stable"]
     assert client.calls[0][1]["messages"] == client.calls[1][1]["messages"]
@@ -298,7 +298,10 @@ def test_cached_prompt_tokens_count_toward_context_size() -> None:
         model="explicit-model", fallback_model=None, client=Client(message)
     ).session(system="test", tools=[])
 
-    assert session.send_user("hello").context_tokens == 1_032
+    turn = session.send_user("hello")
+
+    assert turn.usage["prompt_tokens"] == 1_025
+    assert turn.context_tokens == 1_032
 
 
 def test_oversized_prompt_is_classified_without_dropping_fallback() -> None:

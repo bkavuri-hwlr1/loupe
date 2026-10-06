@@ -14,6 +14,9 @@ _KIB = 1024
 _MIB = 1024 * _KIB
 MAX_ANSWER_CHARACTERS = 256 * _KIB
 MAX_TASK_SUMMARY_CHARACTERS = 2_000
+# Summarize history before a request is expected to exceed this share of the
+# provider's input budget. The margin absorbs estimation error.
+COMPACT_AT_FRACTION = 0.8
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +63,7 @@ class ExecutionLimits:
 DEFAULT_LIMITS = ExecutionLimits()
 
 __all__ = [
+    "COMPACT_AT_FRACTION",
     "DEFAULT_LIMITS",
     "MAX_ANSWER_CHARACTERS",
     "MAX_TASK_SUMMARY_CHARACTERS",

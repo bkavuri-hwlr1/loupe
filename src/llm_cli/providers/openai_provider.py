@@ -528,10 +528,9 @@ def _turn_from_output(output: list[dict[str, Any]], response: Any) -> ModelTurn:
         tool_calls=() if refused else tuple(calls),
         stop_reason="refusal" if refused else "tool_use" if calls else "end_turn",
         usage=usage,
-        # Responses input_tokens already includes cached tokens.
         context_tokens=(
-            usage["input_tokens"] + usage.get("output_tokens", 0)
-            if "input_tokens" in usage
+            usage["prompt_tokens"] + usage.get("output_tokens", 0)
+            if "prompt_tokens" in usage
             else None
         ),
         refusal_category="provider_refusal" if refused else None,
@@ -638,6 +637,9 @@ def _usage(response: Any) -> dict[str, int]:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             # These are subsets of the top-level counts, never added to them.
             counts[name] = value
+    if "input_tokens" in counts:
+        # Responses input_tokens already includes cached prompt tokens.
+        counts["prompt_tokens"] = counts["input_tokens"]
     return counts
 
 

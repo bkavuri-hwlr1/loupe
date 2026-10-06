@@ -159,6 +159,7 @@ def test_function_conversion_and_request_preserve_optional_schema() -> None:
     assert turn.stop_reason == "end_turn"
     assert turn.usage == {
         "input_tokens": 20,
+        "prompt_tokens": 20,
         "output_tokens": 13,
         "cache_read_input_tokens": 10,
         "reasoning_tokens": 8,

@@ -203,8 +203,12 @@ def test_helper_reads_pending_edits_and_its_report_returns_to_the_agent(
     assert not report.is_error
     assert report.content.startswith("Exploration report (2 tool calls).")
     assert "src/app.py:1 prints hi." in report.content
-    # Main turns, helper turns: two each.
-    assert result.usage == {"input_tokens": 40, "output_tokens": 8}
+    # Main turns, helper turns: two each. The helpers' share is kept separately.
+    assert result.usage == {
+        "input_tokens": 40,
+        "output_tokens": 8,
+        "explore_output_tokens": 4,
+    }
     # explore itself plus the helper's two calls.
     assert result.tool_calls == broker.usage.calls == 5
     kinds = [kind for kind, _ in events]

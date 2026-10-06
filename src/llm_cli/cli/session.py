@@ -20,6 +20,7 @@ from llm_cli.cli.interrupts import EXIT_HINT
 from llm_cli.cli.render import EventRenderer, checkout_event_text, question_text
 from llm_cli.cli.status import TaskStatusUI
 from llm_cli.cli.terminal import TerminalUI
+from llm_cli.cli.usage import format_tokens
 from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.ids import new_id
@@ -259,13 +260,45 @@ def compact_notice(result: dict[str, Any]) -> str:
     if type(before) is int and type(after) is int and before > 0:
         return (
             "Conversation summarized "
-            f"(about {_thousands(before)} → {_thousands(after)} tokens)."
+            f"(about {format_tokens(before)} → {format_tokens(after)} tokens)."
         )
     return "Conversation summarized."
 
 
-def _thousands(tokens: int) -> str:
-    return f"{max(1, round(tokens / 1000))}k"
+def session_usage(
+    client: DaemonClient, credentials: _SessionCredentials
+) -> dict[str, Any]:
+    """Return token totals and the context size for this session."""
+
+    response = client.call(
+        "session.usage",
+        {
+            "session_id": credentials.session_id,
+            "resume_secret": credentials.resume_secret,
+        },
+    )
+    if not isinstance(response, dict) or not isinstance(response.get("usage"), dict):
+        raise LlmCoordError(
+            ErrorCode.PROTOCOL_MISMATCH, "the daemon returned an invalid usage result"
+        )
+    return response
+
+
+def _note_context(composer: Composer | None, event: dict[str, Any]) -> None:
+    """Keep the footer's context meter current as turns and summaries land."""
+
+    payload = event.get("payload")
+    if composer is None or not isinstance(payload, dict):
+        return
+    kind = event.get("event_type")
+    if kind == "model.turn.completed":
+        composer.note_context(
+            payload.get("context_tokens"), payload.get("context_budget")
+        )
+    elif kind == "model.context.compacted":
+        composer.note_context(
+            payload.get("summary_tokens"), payload.get("context_budget")
+        )
 
 
 def set_session_mode(
@@ -507,6 +540,7 @@ def _follow_with_status(
                             pending = (question, question_id)
                             break
                     renderer.render(event)
+                    _note_context(composer, event)
         except LlmCoordError as exc:
             renderer.finish()
             ui.error(exc.message)

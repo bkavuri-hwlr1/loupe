@@ -47,6 +47,9 @@ class ModelTurn:
     text: str
     tool_calls: tuple[ToolCallRequest, ...] = ()
     stop_reason: str = "end_turn"
+    # Token counts. Adapters report "prompt_tokens" (every prompt token, cached
+    # or not), "output_tokens", and when known "cache_read_input_tokens" and
+    # "reasoning_tokens" (subsets of those). Other keys are provider-specific.
     usage: Mapping[str, int] = field(default_factory=dict)
     refusal_category: str | None = None
     # Total tokens this request occupied in the model's context window: the
