@@ -291,7 +291,9 @@ When a conversation approaches the model's context window, or a provider
 rejects a prompt as too long, Loupe asks the model to summarize the earlier
 history and continues from that summary. The conversation shows a short notice
 when this happens. Run `/compact` while no task is running to summarize the
-conversation yourself. Requests also use provider
+conversation yourself. The status line shows how full the context window is,
+and `/usage` reports the conversation's prompt, cached, output, and reasoning
+tokens, including how many of them explore helpers used. Requests also use provider
 prompt caching (Anthropic automatic caching and an OpenAI/Codex
 `prompt_cache_key`) so repeated context is cheaper and faster.
 

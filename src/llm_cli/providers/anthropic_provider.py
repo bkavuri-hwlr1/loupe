@@ -506,8 +506,11 @@ def _turn_from_message(message: Any) -> ModelTurn:
         tool_calls=tuple(calls),
         stop_reason=str(getattr(message, "stop_reason", "end_turn")),
         usage=usage,
-        # input_tokens excludes cached prompt tokens; the window holds them all.
-        context_tokens=sum(usage.values()) if "input_tokens" in usage else None,
+        context_tokens=(
+            usage["prompt_tokens"] + usage.get("output_tokens", 0)
+            if "prompt_tokens" in usage
+            else None
+        ),
         reasoning="\n".join(reasoning_parts).strip(),
         refusal_category=(
             str(getattr(stop_details, "category", None))
@@ -531,6 +534,13 @@ def _usage(message: Any) -> dict[str, int]:
         value = getattr(usage, field, None)
         if isinstance(value, int):
             counts[field] = value
+    if "input_tokens" in counts:
+        # input_tokens excludes cached prompt tokens; the prompt holds them all.
+        counts["prompt_tokens"] = (
+            counts["input_tokens"]
+            + counts.get("cache_read_input_tokens", 0)
+            + counts.get("cache_creation_input_tokens", 0)
+        )
     return counts
 
 

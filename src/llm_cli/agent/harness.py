@@ -34,7 +34,7 @@ from llm_cli.agent.finalization import (
     checkpoint_finalization,
 )
 from llm_cli.agent.instructions import discover_instructions, render_instructions
-from llm_cli.agent.limits import DEFAULT_LIMITS, ExecutionLimits
+from llm_cli.agent.limits import COMPACT_AT_FRACTION, DEFAULT_LIMITS, ExecutionLimits
 from llm_cli.agent.modes import validate_agent_mode
 from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
 from llm_cli.agent.tools import (
@@ -69,9 +69,6 @@ _REPEATABLE_TOOLS = frozenset({"ask_user", *_PARALLEL_TOOLS})
 _MAX_COORDINATION_BYTES = 16 * 1024
 _TRANSCRIPT_CHUNK_CHARS = 4096
 _STREAM_FLUSH_SECONDS = 0.08
-# Summarize history before a request is expected to exceed this share of the
-# provider's input budget. The margin absorbs estimation error.
-_COMPACT_AT_FRACTION = 0.8
 # Never summarize a history this small; there is nothing worth reclaiming.
 _MIN_COMPACTABLE_TOKENS = 8_000
 _MAX_COMPACTION_SUMMARY_CHARS = 48_000
@@ -549,7 +546,7 @@ class CodingAgentHarness:
             if input_budget is None or not can_summarize(with_results=False):
                 return False
             expected = history_tokens() + pending_characters // _CHARS_PER_TOKEN
-            return expected >= input_budget * _COMPACT_AT_FRACTION
+            return expected >= input_budget * COMPACT_AT_FRACTION
 
         def compact(pending: Sequence[ToolCallResult] = ()) -> bool:
             nonlocal context_tokens, summarized_this_turn
@@ -572,10 +569,13 @@ class CodingAgentHarness:
                 tools.emit("model.context.compaction_failed", {"reason": failure})
                 return False
             context_tokens = _estimated_history_tokens(session)
-            tools.emit(
-                "model.context.compacted",
-                {"context_tokens": before, "summary_tokens": context_tokens},
-            )
+            compacted: dict[str, object] = {
+                "context_tokens": before,
+                "summary_tokens": context_tokens,
+            }
+            if input_budget is not None:
+                compacted["context_budget"] = input_budget
+            tools.emit("model.context.compacted", compacted)
             return True
 
         def send_prompt(text: str) -> ModelTurn:
@@ -819,7 +819,7 @@ class CodingAgentHarness:
             )
             in_flight = None
             if explorer is not None:
-                _accumulate(usage_total, explorer.take_usage())
+                _accumulate_helper_usage(usage_total, explorer.take_usage())
             if tools.usage.finished:
                 break
             phase = "tool_results"
@@ -1365,15 +1365,14 @@ class CodingAgentHarness:
         # Provider text is provisional until completion checks accept the turn.
         # The durable model.finished event below is the single public answer.
         live.discard_text()
-        live.emit(
-            "model.turn.completed",
-            {
-                "usage": dict(turn.usage),
-                "stop_reason": turn.stop_reason,
-                "tool_calls": len(turn.tool_calls),
-                "answer_complete": turn.answer_complete,
-            },
-        )
+        completed: dict[str, object] = {
+            "usage": dict(turn.usage),
+            "stop_reason": turn.stop_reason,
+            "tool_calls": len(turn.tool_calls),
+            "answer_complete": turn.answer_complete,
+        }
+        completed.update(_context_fields(turn.context_tokens, self.provider))
+        live.emit("model.turn.completed", completed)
         if turn.refused:
             tools.emit("model.refused", {"category": turn.refusal_category or ""})
             raise LlmCoordError(
@@ -1735,6 +1734,32 @@ def _accumulate(total: dict[str, int], addition: object) -> None:
     for key, value in addition.items():
         if isinstance(value, int):
             total[str(key)] = total.get(str(key), 0) + value
+
+
+def _accumulate_helper_usage(total: dict[str, int], addition: object) -> None:
+    """Count helper usage in the task's, also keeping the helpers' share."""
+
+    _accumulate(total, addition)
+    if isinstance(addition, dict):
+        _accumulate(
+            total,
+            {
+                f"explore_{key}": addition[key]
+                for key in ("prompt_tokens", "output_tokens")
+                if key in addition
+            },
+        )
+
+
+def _context_fields(
+    context_tokens: int | None, provider: ChatProvider
+) -> dict[str, object]:
+    """Context-window size facts for display; empty when either is unknown."""
+
+    budget = _input_token_budget(provider)
+    if context_tokens is None or budget is None:
+        return {}
+    return {"context_tokens": context_tokens, "context_budget": budget}
 
 
 def _input_token_budget(provider: ChatProvider) -> int | None:

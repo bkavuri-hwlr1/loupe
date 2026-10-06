@@ -16,6 +16,7 @@ from llm_cli.cli.interrupts import EXIT_HINT, ExitRequested
 from llm_cli.cli.models import ModelMenu
 from llm_cli.cli.output import emit
 from llm_cli.cli.terminal import TerminalUI, safe_text
+from llm_cli.cli.usage import usage_lines
 from llm_cli.config.loader import load_settings
 from llm_cli.coordination.scopes import normalize_scopes
 from llm_cli.errors import ErrorCode, LlmCoordError
@@ -245,6 +246,7 @@ class ChatShell:
         session.remove_session_secret(self.client.paths, self.credentials.session_id)
         self.credentials = None
         self.last_task = None
+        self.composer.context_percent = None
 
     def _switch(
         self, provider: str, model: str | None = None, effort: str | None = None
@@ -657,6 +659,22 @@ class ChatShell:
                 session.compact_notice(result),
                 style="success" if result["compacted"] else "muted",
             )
+            if result["compacted"]:
+                self.composer.note_context(
+                    result.get("summary_tokens"), result.get("context_budget")
+                )
+        elif command == "/usage":
+            if args:
+                raise ValueError("Usage: /usage")
+            if self.credentials is None:
+                self.ui.notice("No token usage yet; start a conversation first.")
+                return True
+            result = session.session_usage(self.client, self.credentials)
+            self.composer.note_context(
+                result.get("context_tokens"), result.get("context_budget")
+            )
+            for line in usage_lines(result):
+                self.ui.notice(line, style="")
         elif command == "/history":
             if not self.composer.prompts:
                 self.ui.notice("No prompts in this visit yet.")

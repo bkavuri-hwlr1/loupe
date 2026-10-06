@@ -133,6 +133,10 @@ _PUBLIC_PROVIDER_ERRORS = frozenset(
     }
 )
 _ATTACH_POLL_SECONDS = 0.1
+# Execution states whose checkpoint may still change; its usage is not final.
+_LIVE_EXECUTION_STATES = frozenset(
+    {"preparing", "worktree_ready", "running", "validated", "publishing"}
+)
 _SETTLED_TASK_STATES = frozenset(
     {
         "reviewing",
@@ -592,6 +596,8 @@ class DaemonService:
                 "intent": _asdict_or_none(cleared),
                 "event": _asdict_or_none(cleared_event),
             }
+        if method == "session.usage":
+            return self._session_usage(self._authenticated_session(params))
         if method == "session.intents":
             session = self._authenticated_session(params)
             return [
@@ -2018,6 +2024,62 @@ class DaemonService:
                 break
         return conversation, "\n".join(lines) if lines else None
 
+    def _session_usage(self, session: SessionRecord) -> dict[str, object]:
+        """Total token usage across a session's task runs, and its context size.
+
+        A run that has not recorded final usage, because it is still running
+        or it failed, contributes the usage in its latest checkpoint.
+        """
+
+        totals: dict[str, int] = {}
+        runs = 0
+        live_context: int | None = None
+        for execution_id, state, usage in self.store.session_execution_usage(
+            session.session_id
+        ):
+            live = state in _LIVE_EXECUTION_STATES
+            checkpoint: Mapping[str, object] | None = None
+            if live or not usage:
+                record = self.store.get_execution_checkpoint(execution_id)
+                checkpoint = record.checkpoint if record is not None else None
+            if not usage and checkpoint is not None:
+                usage = _counts(checkpoint.get("usage_total"))
+            if "prompt_tokens" not in usage and "input_tokens" in usage:
+                # Runs recorded before prompt_tokens existed. Anthropic's
+                # input_tokens excluded cached tokens, so these may undercount.
+                usage = {**usage, "prompt_tokens": usage["input_tokens"]}
+            if usage:
+                runs += 1
+                for key, value in usage.items():
+                    totals[key] = totals.get(key, 0) + value
+            if live and checkpoint is not None:
+                tokens = checkpoint.get("context_tokens")
+                if type(tokens) is int and tokens >= 0:
+                    live_context = tokens
+        context = live_context
+        if context is None:
+            prior = self.store.session_conversation(session.session_id)
+            tokens = prior[2].get("context_tokens") if prior is not None else None
+            context = tokens if type(tokens) is int and tokens >= 0 else None
+        return {
+            "task_runs": runs,
+            "usage": totals,
+            "context_tokens": context,
+            "context_budget": self._context_budget(session),
+        }
+
+    def _context_budget(self, session: SessionRecord) -> int | None:
+        """The session model's input budget; adapter construction is local."""
+
+        try:
+            provider = self.providers.create(
+                session.provider, session.model, effort=session.effort
+            )
+        except (LlmCoordError, ValueError):
+            return None
+        budget = getattr(provider, "input_token_budget", None)
+        return budget if type(budget) is int and budget > 0 else None
+
     async def _session_compact(self, params: Mapping[str, Any]) -> dict[str, object]:
         """Summarize an idle session's saved conversation to free context."""
 
@@ -2067,7 +2129,12 @@ class DaemonService:
                 model=session.model,
                 conversation=updated,
             )
-        return {"compacted": True, "context_tokens": before, "summary_tokens": after}
+        return {
+            "compacted": True,
+            "context_tokens": before,
+            "summary_tokens": after,
+            "context_budget": self._context_budget(session),
+        }
 
     def _save_completed_session_conversation(
         self, task: TaskRecord, execution_id: str
@@ -2392,6 +2459,18 @@ def _integer(params: dict[str, Any], key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ValueError(f"{key} must be a positive integer")
     return value
+
+
+def _counts(value: object) -> dict[str, int]:
+    """Read a checkpoint's token counts, ignoring anything malformed."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key): count
+        for key, count in value.items()
+        if isinstance(key, str) and type(count) is int and count >= 0
+    }
 
 
 def _non_negative_integer(params: dict[str, Any], key: str, default: int) -> int:

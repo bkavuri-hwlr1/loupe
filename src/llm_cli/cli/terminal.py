@@ -229,6 +229,7 @@ class TerminalUI:
             ("/diff [TASK_ID]", "Inspect prepared changes"),
             ("/apply [TASK_ID]", "Publish reviewed changes"),
             ("/compact", "Summarize the conversation to free context"),
+            ("/usage", "Show token usage and how full the context is"),
             ("/clear", "Clear the terminal display"),
             ("/detach", "Leave this session available to resume"),
             ("/exit, /quit", "Close this session"),

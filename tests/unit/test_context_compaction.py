@@ -489,3 +489,27 @@ def test_summary_without_a_plan_adds_no_plan_section(tmp_path: Path) -> None:
     _run(provider, tmp_path)
 
     assert "update_plan" not in str(provider.history[0])
+
+
+def test_turn_events_report_context_size_against_the_budget(tmp_path: Path) -> None:
+    provider = Compactable([_tool_turn(90_000), _answer()])
+
+    events, _, _ = _run(provider, tmp_path)
+
+    turns = [payload for kind, payload in events if kind == "model.turn.completed"]
+    assert turns[0]["context_tokens"] == 90_000
+    assert turns[0]["context_budget"] == _BUDGET
+    compacted = next(
+        payload for kind, payload in events if kind == "model.context.compacted"
+    )
+    assert compacted["context_budget"] == _BUDGET
+
+
+def test_turn_events_omit_context_size_without_a_budget(tmp_path: Path) -> None:
+    provider = Compactable([_answer()], budget=None)
+
+    events, _, _ = _run(provider, tmp_path)
+
+    turns = [payload for kind, payload in events if kind == "model.turn.completed"]
+    assert "context_tokens" not in turns[0]
+    assert "context_budget" not in turns[0]

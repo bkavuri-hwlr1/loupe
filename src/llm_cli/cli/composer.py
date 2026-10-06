@@ -37,6 +37,7 @@ from llm_cli.cli.interrupts import (
     InterruptState,
 )
 from llm_cli.cli.terminal import TerminalUI, safe_text
+from llm_cli.cli.usage import context_percent
 from llm_cli.errors import LlmCoordError
 
 _COMMANDS = {
@@ -57,6 +58,7 @@ _COMMANDS = {
     "/models": "Browse this account's available models",
     "/effort": "Choose thinking effort for the current model",
     "/compact": "Summarize the conversation to free context",
+    "/usage": "Show token usage and how full the context is",
     "/clear": "Clear the screen; keep the conversation",
     "/detach": "Leave this conversation available to resume",
     "/exit": "Close this conversation",
@@ -114,6 +116,8 @@ class Composer:
         self.effort = "default"
         self.scope = ""
         self.mode = "normal"
+        # How full the conversation's context window is, when known.
+        self.context_percent: int | None = None
         self.prompts: list[str] = []
         self.interrupts = InterruptState()
         self._session: PromptSession[str] | None = None
@@ -390,13 +394,18 @@ class Composer:
         effort = (
             safe_text(self.effort or "default").replace("\n", " ").replace("\t", " ")
         )
+        context = self.context_percent
         prefix = " Model: "
         suffix = f" · Effort: {effort} · Mode: {self.mode}"
+        if context is not None:
+            suffix += f" · Context: {context}%"
         if self._session is not None:
             width = self._session.output.get_size().columns
             if width < 55:
                 prefix = " "
                 suffix = f" · {effort} effort · {self.mode} mode"
+                if context is not None:
+                    suffix += f" · {context}% context"
             label = Text(model)
             label.truncate(
                 max(1, width - Text(suffix).cell_len - len(prefix) - 1),
@@ -404,6 +413,13 @@ class Composer:
             )
             model = label.plain
         return f"{prefix}{model}{suffix}"
+
+    def note_context(self, tokens: object, budget: object) -> None:
+        """Update the footer's context meter from a size report, if complete."""
+
+        percent = context_percent(tokens, budget)
+        if percent is not None:
+            self.context_percent = percent
 
     def _toolbar_fragments(self) -> StyleAndTextTuples:
         width = self._session.output.get_size().columns if self._session else 80

@@ -15,7 +15,7 @@ import pytest
 from llm_cli.daemon.service import DaemonService
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.protocol.envelopes import Request
-from llm_cli.providers.base import ModelTurn, ToolCallResult
+from llm_cli.providers.base import ModelTurn, ToolCallRequest, ToolCallResult
 
 type Step = ModelTurn | Callable[[], ModelTurn]
 
@@ -219,6 +219,108 @@ def test_compact_is_refused_while_a_task_is_running(
         release.set()
         await asyncio.wait_for(background, timeout=20)
         assert provider.summaries == 0
+        service.close()
+
+    asyncio.run(scenario())
+
+
+def test_usage_totals_task_runs_and_reports_the_context_size(
+    tmp_path: Path,
+    repository_factory: Callable[[Path, dict[str, str]], Path],
+    service_factory: Callable[[Path], DaemonService],
+) -> None:
+    async def scenario() -> None:
+        provider = SummarizingProvider(
+            "usage-session",
+            [
+                ModelTurn(
+                    text="first answer",
+                    usage={
+                        "prompt_tokens": 1_000,
+                        "cache_read_input_tokens": 400,
+                        "output_tokens": 50,
+                    },
+                    context_tokens=1_050,
+                ),
+                ModelTurn(
+                    text="second answer",
+                    usage={"prompt_tokens": 1_200, "output_tokens": 70},
+                    context_tokens=1_270,
+                ),
+            ],
+        )
+        provider.input_token_budget = 240_000  # type: ignore[attr-defined]
+        service, repository = _service(
+            tmp_path, repository_factory, service_factory, provider
+        )
+        await service.handle(_request("repo.add", {"path": str(repository)}))
+        credentials = await _open(service, repository, provider)
+
+        empty = await service.handle(_request("session.usage", credentials))
+        assert empty == {
+            "task_runs": 0,
+            "usage": {},
+            "context_tokens": None,
+            "context_budget": 240_000,
+        }
+
+        for task_id in ("first", "second"):
+            await asyncio.wait_for(
+                await _run(service, repository, credentials, task_id), timeout=20
+            )
+        result = await service.handle(_request("session.usage", credentials))
+
+        assert result == {
+            "task_runs": 2,
+            "usage": {
+                "prompt_tokens": 2_200,
+                "cache_read_input_tokens": 400,
+                "output_tokens": 120,
+            },
+            "context_tokens": 1_270,
+            "context_budget": 240_000,
+        }
+        service.close()
+
+    asyncio.run(scenario())
+
+
+def test_usage_counts_a_failed_run_from_its_checkpoint(
+    tmp_path: Path,
+    repository_factory: Callable[[Path, dict[str, str]], Path],
+    service_factory: Callable[[Path], DaemonService],
+) -> None:
+    async def scenario() -> None:
+        # The tool turn is checkpointed, then sending its results fails.
+        provider = SummarizingProvider(
+            "failed-usage-session",
+            [
+                ModelTurn(
+                    text="",
+                    tool_calls=(ToolCallRequest("list", "list_files", {"path": "."}),),
+                    stop_reason="tool_use",
+                    usage={"prompt_tokens": 900, "output_tokens": 30},
+                    context_tokens=930,
+                )
+            ],
+        )
+        service, repository = _service(
+            tmp_path, repository_factory, service_factory, provider
+        )
+        await service.handle(_request("repo.add", {"path": str(repository)}))
+        credentials = await _open(service, repository, provider)
+        await asyncio.wait_for(
+            await _run(service, repository, credentials, "fails"), timeout=20
+        )
+        task = service.store.get_task("fails")
+        assert task is not None and task.state == "failed"
+
+        result = await service.handle(_request("session.usage", credentials))
+
+        assert result["task_runs"] == 1
+        assert result["usage"] == {"prompt_tokens": 900, "output_tokens": 30}
+        # A failed run's history is never promoted to the conversation.
+        assert result["context_tokens"] is None
         service.close()
 
     asyncio.run(scenario())

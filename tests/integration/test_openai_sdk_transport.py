@@ -160,6 +160,7 @@ def test_real_sdk_stream_and_restart_replay_only_api_native_fields() -> None:
         assert [call.call_id for call in turn.tool_calls] == ["read_1", "finish_1"]
         assert turn.usage == {
             "input_tokens": 18,
+            "prompt_tokens": 18,
             "cache_read_input_tokens": 5,
             "output_tokens": 11,
             "reasoning_tokens": 7,

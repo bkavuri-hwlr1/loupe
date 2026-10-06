@@ -1878,6 +1878,30 @@ class ControlStore:
             ).fetchall()
             return tuple(self.session_intent_from_row(connection, row) for row in rows)
 
+    def session_execution_usage(
+        self, session_id: str
+    ) -> tuple[tuple[str, str, dict[str, int]], ...]:
+        """Return each of a session's task runs as (execution, state, usage)."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.execution_id, e.state, e.usage_json
+                FROM task_executions e JOIN tasks t ON t.task_id = e.task_id
+                WHERE t.session_id = ?
+                ORDER BY e.created_at, e.execution_id
+                """,
+                (session_id,),
+            ).fetchall()
+            return tuple(
+                (
+                    str(row["execution_id"]),
+                    str(row["state"]),
+                    _decoded_usage(row["usage_json"]),
+                )
+                for row in rows
+            )
+
     def session_has_active_task(self, session_id: str) -> bool:
         with self.connection() as connection:
             row = connection.execute(_LIVE_SESSION_TASK, (session_id,)).fetchone()
