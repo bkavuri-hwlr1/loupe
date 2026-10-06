@@ -18,8 +18,8 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import TypeVar
 
 from llm_cli.agent.source_policy import contains_secret_material
@@ -66,12 +66,21 @@ _BUDGET_SPENT = (
     "what you found, noting anything left unchecked."
 )
 
+# Helpers only read, so a request that failed in transit can be sent again.
+_RETRY_DELAYS = (2.0, 6.0)
+_TRANSIENT_FAILURES = frozenset({"connection", "timeout", "incomplete_response"})
+# A helper that fails names at most this many places it had looked.
+_MAX_VISITED = 20
+
 _T = TypeVar("_T")
 
 
 @dataclass(slots=True)
 class _Progress:
     used: int = 0
+    retries: int = 0
+    # Files read and searches run, so a failed helper's work is not all lost.
+    visited: list[str] = field(default_factory=list)
 
 
 class Explorer:
@@ -83,9 +92,11 @@ class Explorer:
         broker: ToolBroker,
         *,
         effort_ceiling: str | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._provider = provider
         self._broker = broker
+        self._sleep = sleep
         # Helpers think at most ``effort_ceiling`` hard, never more than the
         # task. None keeps the task's effort.
         self._effort: str | None = None
@@ -129,6 +140,8 @@ class Explorer:
                 if is_context_overflow(exc)
                 else f"the model request failed: {exc.message}"
             )
+            if progress.retries:
+                note += f" (after {progress.retries} retries)"
         except TaskCancelled:
             state = "cancelled"
             raise
@@ -142,9 +155,11 @@ class Explorer:
                     "state": state,
                     "tool_calls": progress.used,
                     "seconds": round(time.monotonic() - started, 1),
+                    "retries": progress.retries,
+                    "reason": note,
                 },
             )
-        return _outcome(report, progress.used, note)
+        return _outcome(report, progress.used, note, progress.visited)
 
     def _explore(
         self, task: str, budget: int, progress: _Progress
@@ -165,7 +180,7 @@ class Explorer:
             )
         else:
             session = provider.session(system=_SYSTEM_PROMPT, tools=tools)
-        turn = self._send(session.send_user, task, view)
+        turn = self._send(session.send_user, task, view, progress)
         spent = False
         while turn.tool_calls:
             if turn.stop_reason not in {"end_turn", "tool_use"}:
@@ -189,6 +204,9 @@ class Explorer:
                 outcome = view.invoke(call.name, call.arguments)
                 progress.used += 1
                 content, is_error = outcome.content, outcome.is_error
+                place = _visited(call.name, call.arguments)
+                if not is_error and place and place not in progress.visited:
+                    progress.visited.append(place)
                 if contains_secret_material(content):
                     content = (
                         "The tool output contained recognized secret material "
@@ -196,7 +214,7 @@ class Explorer:
                     )
                     is_error = True
                 results.append(ToolCallResult(call.call_id, content, is_error))
-            turn = self._send(session.send_tool_results, results, view)
+            turn = self._send(session.send_tool_results, results, view, progress)
         if turn.refused:
             return "", "failed", "the model declined the exploration"
         report = turn.text.strip()
@@ -209,17 +227,58 @@ class Explorer:
         return report, "completed", None
 
     def _send(
-        self, send: Callable[[_T], ModelTurn], payload: _T, view: ToolBroker
+        self,
+        send: Callable[[_T], ModelTurn],
+        payload: _T,
+        view: ToolBroker,
+        progress: _Progress,
     ) -> ModelTurn:
-        view.check_cancelled()
-        turn = send(payload)
+        # A failed turn leaves the session's history as it was, so the same
+        # payload can be sent again.
+        while True:
+            view.check_cancelled()
+            try:
+                turn = send(payload)
+            except LlmCoordError as exc:
+                if progress.retries >= len(_RETRY_DELAYS) or not _transient(exc):
+                    raise
+                self._sleep(_RETRY_DELAYS[progress.retries])
+                progress.retries += 1
+                continue
+            break
         with self._lock:
             _accumulate(self._usage, turn.usage)
         view.check_cancelled()
         return turn
 
 
-def _outcome(report: str, used: int, note: str | None) -> ToolOutcome:
+def _transient(error: LlmCoordError) -> bool:
+    """A failure in transit or on the provider's side, not in the request."""
+
+    details = error.details or {}
+    status = details.get("status_code")
+    return details.get("provider_error") in _TRANSIENT_FAILURES or (
+        type(status) is int and status >= 500
+    )
+
+
+def _visited(name: str, arguments: Mapping[str, object]) -> str | None:
+    path = arguments.get("path")
+    path = path if isinstance(path, str) and path else None
+    if name == "read_file" and path is not None:
+        start, end = arguments.get("start_line"), arguments.get("end_line")
+        if type(start) is int and type(end) is int:
+            return f"{path}:{start}-{end}"
+        return path
+    pattern = arguments.get("pattern")
+    if name == "search_text" and isinstance(pattern, str) and pattern:
+        return f"search for {pattern!r}" + (f" in {path}" if path else "")
+    return None
+
+
+def _outcome(
+    report: str, used: int, note: str | None, visited: Sequence[str] = ()
+) -> ToolOutcome:
     if len(report) > _MAX_REPORT_CHARACTERS:
         report = report[:_MAX_REPORT_CHARACTERS] + "\n[report truncated]"
     calls = f"{used} tool call{'' if used == 1 else 's'}"
@@ -230,10 +289,16 @@ def _outcome(report: str, used: int, note: str | None) -> ToolOutcome:
             "it; this report does not count as reading it.\n\n" + report
         )
     if note is not None:
-        parts.append(
-            f"[The exploration stopped early after {calls}: {note}."
-            + (" The report may be incomplete.]" if report else "]")
-        )
+        looked = ", ".join(visited[:_MAX_VISITED])
+        if len(visited) > _MAX_VISITED:
+            looked += f", and {len(visited) - _MAX_VISITED} more"
+        if report:
+            ending = " The report may be incomplete.]"
+        elif looked and not contains_secret_material(looked):
+            ending = f" Before stopping it had looked at: {looked}.]"
+        else:
+            ending = "]"
+        parts.append(f"[The exploration stopped early after {calls}: {note}." + ending)
     return ToolOutcome("\n\n".join(parts), is_error=not report)
 
 

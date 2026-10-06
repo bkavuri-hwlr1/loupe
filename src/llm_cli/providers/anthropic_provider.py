@@ -327,6 +327,7 @@ class AnthropicSession:
             raise LlmCoordError(
                 ErrorCode.PROVIDER_UNAVAILABLE,
                 "the model provider could not be reached",
+                details={"provider_error": "connection"},
             ) from exc
         except TypeError as exc:
             # The SDK reports a missing credential as a bare TypeError at

@@ -346,6 +346,15 @@ def test_a_small_budget_limits_the_helper_and_unused_calls_return(
             LlmCoordError(ErrorCode.PROVIDER_UNAVAILABLE, "rate limited"),
             "the model request failed: rate limited",
         ),
+        # A rejected request would fail the same way again, so it is not retried.
+        (
+            LlmCoordError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "the model provider returned HTTP 400",
+                details={"status_code": 400},
+            ),
+            "the model request failed: the model provider returned HTTP 400",
+        ),
     ],
 )
 def test_helper_failures_become_tool_errors_not_task_failures(
@@ -375,6 +384,83 @@ def test_a_helper_that_fails_midway_is_charged_for_its_calls(tmp_path: Path) -> 
     assert "stopped early after 2 tool calls" in outcome.content
     assert broker.usage.calls == 2
     assert events[-1][1]["tool_calls"] == 2
+
+
+_DROPPED = LlmCoordError(
+    ErrorCode.PROVIDER_UNAVAILABLE,
+    "the model provider could not be reached",
+    details={"provider_error": "connection"},
+)
+
+
+def _retrying(
+    tmp_path: Path, helper: Sequence[Step]
+) -> tuple[Explorer, list[float], list[tuple]]:
+    events: list[tuple[str, dict[str, object]]] = []
+    broker = ToolBroker(
+        tmp_path,
+        ("*",),
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+    sleeps: list[float] = []
+    explorer = Explorer(Provider([], {"question": helper}), broker, sleep=sleeps.append)
+    broker.explorer = explorer
+    return explorer, sleeps, events
+
+
+def test_helpers_retry_failures_in_transit(tmp_path: Path) -> None:
+    overloaded = LlmCoordError(
+        ErrorCode.PROVIDER_UNAVAILABLE,
+        "the model provider returned HTTP 503",
+        details={"status_code": 503},
+    )
+    explorer, sleeps, events = _retrying(
+        tmp_path,
+        [_calls(("list_files", {})), _DROPPED, overloaded, _text("The report.")],
+    )
+
+    outcome = explorer("question")
+
+    assert not outcome.is_error and "The report." in outcome.content
+    assert sleeps == [2.0, 6.0]
+    finished = events[-1][1]
+    assert finished["state"] == "completed"
+    assert finished["retries"] == 2
+    assert finished["reason"] is None
+
+
+def test_a_helper_that_keeps_failing_names_what_it_read(checkout: Path) -> None:
+    explorer, sleeps, events = _retrying(
+        checkout,
+        [
+            _calls(
+                (
+                    "read_file",
+                    {"path": "docs/guide.md", "start_line": 1, "end_line": 1},
+                ),
+                ("search_text", {"pattern": "print"}),
+                ("read_file", {"path": "missing.md"}),
+            ),
+            _DROPPED,
+            _DROPPED,
+            _DROPPED,
+        ],
+    )
+
+    outcome = explorer("question")
+
+    assert outcome.is_error
+    assert sleeps == [2.0, 6.0]
+    reason = (
+        "the model request failed: the model provider could not be reached "
+        "(after 2 retries)"
+    )
+    # A failed read is not something it looked at.
+    assert outcome.content == (
+        f"[The exploration stopped early after 3 tool calls: {reason}. Before "
+        "stopping it had looked at: docs/guide.md:1-1, search for 'print'.]"
+    )
+    assert events[-1][1]["reason"] == reason
 
 
 def test_incomplete_and_refused_reports_are_marked(tmp_path: Path) -> None:
@@ -592,6 +678,19 @@ def test_explorations_are_shown_while_running_and_when_finished() -> None:
     )
     assert render_event(_event("explore.started", task="Find \x1b[2Jcallers")) == (
         "  Exploring: Find callers"
+    )
+    assert render_event(
+        _event(
+            "explore.finished",
+            task="Trace config",
+            state="failed",
+            tool_calls=40,
+            seconds=76.3,
+            reason="the model request failed: the model provider could not be reached",
+        )
+    ) == (
+        "  ! Exploration stopped early: Trace config · 40 tool calls, 76.3s "
+        "(the model request failed: the model provider could not be reached)"
     )
 
 

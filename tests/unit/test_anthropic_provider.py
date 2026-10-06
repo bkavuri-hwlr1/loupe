@@ -133,6 +133,9 @@ def test_fallback_retry_errors_are_translated(
 
     assert failure.value.code is ErrorCode.PROVIDER_UNAVAILABLE
     assert expected_message in failure.value.message
+    if isinstance(retry_error, APIConnectionError):
+        # Tagged like the OpenAI adapters, so callers can tell it is transient.
+        assert failure.value.details == {"provider_error": "connection"}
     assert [endpoint for endpoint, _ in client.calls] == ["beta", "stable"]
     assert "fallbacks" in client.calls[0][1]
     assert "fallbacks" not in client.calls[1][1]
