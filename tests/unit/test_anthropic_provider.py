@@ -107,6 +107,30 @@ def test_explicit_model_bad_request_retains_provider_explanation() -> None:
     assert session.snapshot() == {"messages": []}
 
 
+class TransportError(Exception):
+    """Named like the HTTP library's base class for network failures."""
+
+
+class RemoteProtocolError(TransportError):
+    pass
+
+
+def test_a_connection_lost_while_a_reply_streams_is_classified() -> None:
+    session = AnthropicProvider(client=Client(RemoteProtocolError("closed"))).session(
+        system="test", tools=[]
+    )
+
+    with pytest.raises(LlmCoordError) as failure:
+        session.send_user("hello")
+
+    assert failure.value.message == "the connection to the model provider was lost"
+    assert failure.value.details == {"provider_error": "connection"}
+    with pytest.raises(ValueError):
+        AnthropicProvider(client=Client(ValueError("a real defect"))).session(
+            system="test", tools=[]
+        ).send_user("hello")
+
+
 @pytest.mark.parametrize(
     ("retry_error", "expected_message"),
     [

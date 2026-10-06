@@ -21,6 +21,7 @@ from llm_cli.providers.base import (
     context_overflow_error,
     mentions_any,
     shorten_tool_text,
+    transport_failure,
 )
 from llm_cli.providers.catalog import model_option
 
@@ -672,6 +673,8 @@ def _provider_failure(error: Exception, client: Any) -> LlmCoordError | None:
             "the model provider could not be reached",
             details={"provider_error": "connection"},
         )
+    if (failure := transport_failure(error)) is not None:
+        return failure
     if "APIError" in names or (
         isinstance(error, RuntimeError)
         and (

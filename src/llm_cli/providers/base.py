@@ -173,6 +173,30 @@ def is_context_overflow(error: BaseException) -> bool:
     )
 
 
+def transport_failure(error: BaseException) -> LlmCoordError | None:
+    """Classify a network error raised while a response was streaming.
+
+    The SDKs wrap network errors raised while sending a request, but not those
+    raised while reading a streamed reply, which arrive as the HTTP library's
+    own ``TransportError``. Matched by class name, so no SDK is imported.
+    """
+
+    names = {kind.__name__ for kind in type(error).__mro__}
+    if "TransportError" not in names:
+        return None
+    if "TimeoutException" in names:
+        return LlmCoordError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "the model provider timed out",
+            details={"provider_error": "timeout"},
+        )
+    return LlmCoordError(
+        ErrorCode.PROVIDER_UNAVAILABLE,
+        "the connection to the model provider was lost",
+        details={"provider_error": "connection"},
+    )
+
+
 def mentions_any(text: object, phrases: Sequence[str]) -> bool:
     """Match lowercase provider phrases near the start of an error message."""
 
@@ -273,4 +297,5 @@ __all__ = [
     "is_context_overflow",
     "mentions_any",
     "shorten_tool_text",
+    "transport_failure",
 ]
