@@ -1,0 +1,69 @@
+# Tasks for scripts/live_benchmark.py. Each one is answered by a real model in
+# a clone of this repository at `revision`, and its answer is checked for
+# `facts`: each fact is a list of alternatives, and any one of them appearing in
+# the answer (ignoring case) counts. Bump `version` whenever the tasks, facts,
+# or revision change, so results from different task sets are not compared.
+version = 1
+revision = "c47444e0ecfeeecf1005a2bca79ba30e11015a5e"
+
+[[tasks]]
+id = "narrow-function"
+mode = "plan"
+prompt = """
+What does the _display function in src/llm_cli/agent/explorer.py do? One short \
+paragraph."""
+# A one-function question should be answered with direct reads.
+explore = "never"
+facts = [
+    ["whitespace", "single line", "one line", "spaces"],
+    ["200"],
+    ["…", "ellipsis"],
+]
+
+[[tasks]]
+id = "three-questions"
+mode = "plan"
+prompt = """
+Before a refactor I need three independent answers: (1) how each provider \
+adapter (anthropic, openai, codex) detects and reports a context-window \
+overflow; (2) how the daemon recovers in-flight tasks after a restart; (3) how \
+the terminal UI decides what text goes on the activity line. Give a concise \
+summary for each."""
+explore = "expected"
+min_facts = 0.8
+facts = [
+    ["413"],
+    ["context_length_exceeded"],
+    ["model_context_window_exceeded"],
+    ["response.failed"],
+    ["context_overflow"],
+    ["checkpoint"],
+    ["DAEMON_INTERRUPTED", "failed_safe", "operator_attention"],
+    ["EventRenderer"],
+    ["Thinking"],
+    ["Writing the answer", "answer preview"],
+]
+
+[[tasks]]
+id = "trace-shared-edit"
+mode = "plan"
+prompt = """
+Trace the full path of a file edit in a shared-workspace task, from the \
+model's write_file tool call until the change is published to the checkout on \
+disk. Name the components and functions involved, and explain where the edit \
+can be held, rejected, or rolled back."""
+explore = "expected"
+min_facts = 0.8
+facts = [
+    ["_write_file"],
+    ["_stage"],
+    ["os.replace"],
+    ["SharedBatchPublisher"],
+    ["reserve_shared_publication"],
+    ["settle_shared_execution"],
+    ["retain"],
+    ["operator_attention"],
+    ["CheckRunner"],
+    ["restore_usage"],
+    ["atomic_replace"],
+]

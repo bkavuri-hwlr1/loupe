@@ -3,9 +3,10 @@
 Status: first response-and-delivery milestone implemented and locally validated;
 context management (phase 7, items 1–3), sandboxed commands (item 4), faster
 read tools (item 5), the task plan tool (item 6), exploration helpers (item 9),
-and token usage display (item 11) implemented; broader harness work remains.
+token usage display (item 11), and the live-model benchmark (item 12)
+implemented; broader harness work remains.
 Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03,
-items 4–6 and 9 completed 2026-10-04, item 11 completed 2026-10-06
+items 4–6 and 9 completed 2026-10-04, items 11–12 completed 2026-10-06
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -413,7 +414,7 @@ existing authority model: repository and tool content never grants authority.
 | 9 | Subagents for broad exploration | Implemented (`explore`) |
 | 10 | Read-only web fetch | Planned |
 | 11 | Token usage display (`/usage`, footer context meter) | Implemented; no cost estimates |
-| 12 | Live-model task benchmark | Planned; extends phase 6 |
+| 12 | Live-model task benchmark | Implemented (`scripts/live_benchmark.py`) |
 
 **1. Context-window management (implemented).** Each provider turn reports the
 tokens it occupied (`ModelTurn.context_tokens`, counting cached prompt tokens),
@@ -633,9 +634,22 @@ cost: prices depend on the provider and plan, and ChatGPT subscriptions are
 not billed per token. The meter appears after the first turn of a visit or a
 `/usage`; it is not fetched when a session opens.
 
-**12. Live-model benchmark.** A small, versioned set of real repository tasks
-run against supported models, tracking success, tool calls, tokens, and
-latency to catch regressions when prompts or tools change.
+**12. Live-model benchmark (implemented).** `scripts/live_benchmark.py` answers
+a small, versioned set of real repository questions
+(`scripts/live_benchmark.toml`) with a real model, to catch regressions when
+prompts, tools, or settings change. It is opt-in and billed, so it never runs in
+CI. It runs against a signed-in profile other than `default`, whose background
+service it restarts with a temporary configuration built from `--set` options,
+and answers each task in a clean clone of this repository at the task file's
+pinned revision. Each task records whether it completed, which expected facts
+the answer states (each fact lists acceptable wordings), whether it used
+`explore` when expected or avoided it when not, main-conversation turns and tool
+calls, peak context, prompt, output, cached, and helper tokens, and each
+exploration's state, calls, time, retries, and effort. Wall time is reported
+with the time the machine slept during the task, so slept runs are not compared
+as if they were slow. A token budget (default 3M) stops the run before the next
+task once spent. Results are JSON; `--compare OLD NEW` shows per-task changes.
+No model judges answers.
 
 **Exit criteria (items 1–3):** a conversation that exceeds the input budget
 continues after one summary without losing task constraints; restart after a
