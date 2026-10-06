@@ -173,6 +173,55 @@ def is_context_overflow(error: BaseException) -> bool:
     )
 
 
+# Provider failures in transit or on the provider's side, not in the request.
+_TRANSIENT_FAILURES = frozenset({"connection", "timeout", "incomplete_response"})
+
+
+def is_transient(error: BaseException) -> bool:
+    """Whether sending the same request again might succeed.
+
+    Connection failures, timeouts, replies cut off mid-stream, and 5xx
+    responses qualify. A rejected request, an oversized prompt, or a refusal
+    would fail the same way again.
+    """
+
+    if not isinstance(error, LlmCoordError):
+        return False
+    details = error.details or {}
+    status = details.get("status_code")
+    return details.get("provider_error") in _TRANSIENT_FAILURES or (
+        type(status) is int and status >= 500
+    )
+
+
+# Fixed descriptions of provider failure classifications.
+_FAILURE_DESCRIPTIONS = {
+    "connection": "the connection to the model provider failed",
+    "timeout": "the model provider timed out",
+    "incomplete_response": "the model provider's reply ended before it completed",
+    "rate_limit": "the provider's usage limit was reached",
+    "authentication": "the provider could not authenticate the request",
+    CONTEXT_OVERFLOW: "the conversation is too long for the model's context window",
+}
+
+
+def describe_failure(error: LlmCoordError) -> str:
+    """Describe a provider failure from its classification alone.
+
+    The message is never used: provider text can echo a private prompt, so
+    only fixed classifications belong in events and model-facing notes.
+    """
+
+    details = error.details or {}
+    category = details.get("provider_error")
+    if isinstance(category, str) and category in _FAILURE_DESCRIPTIONS:
+        return _FAILURE_DESCRIPTIONS[category]
+    status = details.get("status_code")
+    if type(status) is int and 100 <= status <= 599:
+        return f"the model provider returned HTTP {status}"
+    return "the model request failed"
+
+
 def transport_failure(error: BaseException) -> LlmCoordError | None:
     """Classify a network error raised while a response was streaming.
 
@@ -294,7 +343,9 @@ __all__ = [
     "ToolResultRecorder",
     "capped_effort",
     "context_overflow_error",
+    "describe_failure",
     "is_context_overflow",
+    "is_transient",
     "mentions_any",
     "shorten_tool_text",
     "transport_failure",

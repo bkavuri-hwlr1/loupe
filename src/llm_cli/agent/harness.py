@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import math
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -55,7 +56,9 @@ from llm_cli.providers.base import (
     ToolCallRequest,
     ToolCallResult,
     ToolResultRecorder,
+    describe_failure,
     is_context_overflow,
+    is_transient,
 )
 
 _MAX_IDLE_TURNS = 2
@@ -69,6 +72,12 @@ _REPEATABLE_TOOLS = frozenset({"ask_user", *_PARALLEL_TOOLS})
 _MAX_COORDINATION_BYTES = 16 * 1024
 _TRANSCRIPT_CHUNK_CHARS = 4096
 _STREAM_FLUSH_SECONDS = 0.08
+# A model request that failed in transit is sent again after each of these
+# waits. A failed request leaves the conversation as it was and runs no tools,
+# so sending it again is safe; a machine waking from sleep can take a while to
+# reconnect. Waits are cut into short slices so cancellation stays prompt.
+_RETRY_DELAYS = (2.0, 6.0, 15.0)
+_RETRY_SLICE_SECONDS = 0.5
 # Never summarize a history this small; there is nothing worth reclaiming.
 _MIN_COMPACTABLE_TOKENS = 8_000
 _MAX_COMPACTION_SUMMARY_CHARS = 48_000
@@ -311,10 +320,12 @@ class CodingAgentHarness:
         clock: Callable[[], float] = time.time,
         explorations: bool = True,
         explore_effort: str | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.provider = provider
         self.limits = limits
         self.clock = clock
+        self.sleep = sleep
         # Offer the explore tool, whose helpers use the same provider at no
         # more than ``explore_effort``, or the task's own effort when None.
         self.explorations = explorations
@@ -1335,6 +1346,15 @@ class CodingAgentHarness:
         session.replace_history(history)
         return None
 
+    def _wait(self, seconds: float, tools: ToolBroker) -> None:
+        """Wait before a retry, stopping promptly if the task is cancelled."""
+
+        slices = max(1, math.ceil(seconds / _RETRY_SLICE_SECONDS))
+        for _ in range(slices):
+            tools.check_cancelled()
+            self.sleep(seconds / slices)
+        tools.check_cancelled()
+
     def _guarded[T](
         self,
         send: Callable[[T], ModelTurn],
@@ -1343,21 +1363,42 @@ class CodingAgentHarness:
         live: _LiveEvents,
     ) -> ModelTurn:
         tools.check_cancelled()
-        live.start_turn()
-        try:
-            turn = send(payload)
-        except BaseException as exc:
-            # A broken text-only response is still useful, but text emitted
-            # alongside an unfinished tool call is provisional narration. Keep
-            # that narration out of permanent chat scrollback. A reply cut off
-            # by the context window is retried after a summary, so its partial
-            # text would only duplicate the retried answer.
-            live.flush()
-            if is_context_overflow(exc):
-                live.discard_text()
-            else:
-                live.emit_interrupted_text()
-            raise
+        retries = 0
+        while True:
+            live.start_turn()
+            try:
+                turn = send(payload)
+                break
+            except BaseException as exc:
+                live.flush()
+                if is_transient(exc) and retries < len(_RETRY_DELAYS):
+                    # The reply never completed, so its preview is not an
+                    # answer; the next attempt starts a fresh turn.
+                    live.discard_text()
+                    delay = _RETRY_DELAYS[retries]
+                    retries += 1
+                    assert isinstance(exc, LlmCoordError)
+                    tools.emit(
+                        "model.retrying",
+                        {
+                            "reason": describe_failure(exc),
+                            "retry": retries,
+                            "retries": len(_RETRY_DELAYS),
+                            "delay": delay,
+                        },
+                    )
+                    self._wait(delay, tools)
+                    continue
+                # A broken text-only response is still useful, but text emitted
+                # alongside an unfinished tool call is provisional narration.
+                # Keep that narration out of permanent chat scrollback. A reply
+                # cut off by the context window is retried after a summary, so
+                # its partial text would only duplicate the retried answer.
+                if is_context_overflow(exc):
+                    live.discard_text()
+                else:
+                    live.emit_interrupted_text()
+                raise
         live.flush()
         tools.check_cancelled()
         if turn.reasoning:
