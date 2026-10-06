@@ -108,6 +108,31 @@ class Provider:
         return next(session for session in self.sessions if not session.helper)
 
 
+class CappedProvider(Provider):
+    """A provider that can open helper sessions at a lower effort."""
+
+    def __init__(self, *args: Any, capped: str | None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.capped = capped
+        self.ceilings: list[str] = []
+        self.efforts: list[str | None] = []
+
+    def capped_effort(self, ceiling: str) -> str | None:
+        self.ceilings.append(ceiling)
+        return self.capped
+
+    def session(  # type: ignore[override]
+        self,
+        *,
+        system: str,
+        tools: object,
+        state: object = None,
+        effort: str | None = None,
+    ) -> Session:
+        self.efforts.append(effort)
+        return super().session(system=system, tools=tools, state=state)
+
+
 @pytest.fixture
 def checkout(tmp_path: Path) -> Path:
     root = tmp_path / "checkout"
@@ -377,6 +402,42 @@ def test_cancellation_stops_the_helper_and_the_task(tmp_path: Path) -> None:
         explorer("question")
     assert events[-1][1]["state"] == "cancelled"
     assert broker.usage.calls == 0
+
+
+def test_helpers_use_the_configured_lower_effort(checkout: Path) -> None:
+    broker, events = _shared(checkout)
+    provider = CappedProvider(
+        [_calls(("explore", {"task": "question"})), _text("done")],
+        {"question": [_text("report")]},
+        capped="low",
+    )
+
+    CodingAgentHarness(provider, explore_effort="medium").run(
+        _request(checkout), broker
+    )
+
+    assert provider.ceilings == ["medium"]
+    # The main session keeps the task's effort; the helper uses the cap.
+    assert provider.efforts == [None, "low"]
+    started = next(payload for kind, payload in events if kind == "explore.started")
+    assert started["effort"] == "low"
+
+
+def test_helpers_keep_the_tasks_effort_without_a_lower_one(tmp_path: Path) -> None:
+    unchanged = CappedProvider([], {"question": [_text("report")]}, capped=None)
+    broker = ToolBroker(tmp_path, ("*",))
+    explorer = Explorer(unchanged, broker, effort_ceiling="low")
+    broker.explorer = explorer
+    assert not explorer("question").is_error
+    assert unchanged.efforts == [None]
+
+    # A provider without the capability, or no setting, uses the task's effort.
+    plain, _, _, events = _explorer(tmp_path, [_text("report")])
+    assert not plain("question").is_error
+    assert events[0][1]["effort"] is None
+    capped = CappedProvider([], {"question": [_text("report")]}, capped="low")
+    assert not Explorer(capped, ToolBroker(tmp_path, ("*",)))("question").is_error
+    assert capped.ceilings == [] and capped.efforts == [None]
 
 
 def test_explore_validates_its_task(tmp_path: Path) -> None:

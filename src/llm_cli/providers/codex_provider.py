@@ -11,7 +11,11 @@ from typing import Any
 from llm_cli import __version__
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.paths import AppPaths
-from llm_cli.providers.base import CONTEXT_OVERFLOW, context_overflow_error
+from llm_cli.providers.base import (
+    CONTEXT_OVERFLOW,
+    capped_effort,
+    context_overflow_error,
+)
 from llm_cli.providers.catalog import model_option
 from llm_cli.providers.codex_auth import CredentialStore
 from llm_cli.providers.openai_provider import (
@@ -48,6 +52,8 @@ class CodexProvider:
                 f"model {model!r} does not support effort {effort!r}; "
                 "use /effort to choose a supported level"
             )
+        self._efforts = option.efforts
+        self._default_effort = option.default_effort
         self._reasoning_supported = bool(option.efforts)
         self._context_window = option.context_window
 
@@ -61,17 +67,27 @@ class CodexProvider:
 
         return input_token_budget(self._model, self._context_window, None)
 
+    def capped_effort(self, ceiling: str) -> str | None:
+        return capped_effort(
+            self._effort or self._default_effort, ceiling, self._efforts
+        )
+
     def session(
         self,
         *,
         system: str,
         tools: Sequence[Mapping[str, object]],
         state: Mapping[str, object] | None = None,
+        effort: str | None = None,
     ) -> OpenAISession:
+        if effort is not None and effort not in self._efforts:
+            raise ValueError(
+                f"model {self._model!r} does not support effort {effort!r}"
+            )
         return OpenAISession(
             client=self._client or _SubscriptionClient(CredentialStore(self._paths)),
             model=self._model,
-            effort=self._effort,
+            effort=effort or self._effort,
             reasoning_supported=self._reasoning_supported,
             system=system,
             tools=tools,

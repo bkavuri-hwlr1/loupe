@@ -17,6 +17,10 @@ class Settings:
     agent_commands: str = "ask"
     # Offer the explore tool, whose read-only helpers spend extra model tokens.
     agent_explore: bool = True
+    # The most reasoning effort explore helpers use; None means the task's own.
+    # Helpers never use more effort than the task. Low effort halved helper
+    # time in live runs without visibly weaker reports.
+    agent_explore_effort: str | None = "low"
     launch_lease_ms: int = 10 * 60 * 1_000
     work_lease_ms: int = 90 * 1_000
     renewal_interval_ms: int = 30 * 1_000

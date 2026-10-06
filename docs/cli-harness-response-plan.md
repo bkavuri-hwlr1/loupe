@@ -595,12 +595,18 @@ repository, found:
   on reports, the three-question task fell from 39 to 5 tool calls in the main
   context, and its peak context from 36k to 10k tokens.
 - **Cost:** for one broad trace question, exploring kept the main context
-  smaller (46k against 78k tokens) but used more tokens in total and took
-  longer than answering without helpers. Helpers inherit the task's effort
-  level and often use the full 40 calls.
+  smaller (46k against 78k tokens) but used more tokens in total than
+  answering without helpers. At the task's `xhigh` effort, helpers often used
+  the full 40 calls and took about 2.5 minutes each.
+- **Helper effort:** helpers now default to `low` effort, set by
+  `agent.explore_effort` and never above the task's. With the main
+  conversation still at `xhigh`, helper time fell to about half (63–100s for
+  five of six helpers, against 116–164s). Total input tokens fell 36% on the
+  three-question task and 20% on the broad trace. Answers covered the same key
+  steps and facts, and sampled citations in the low-effort reports were all
+  correct. These are single runs per scenario.
 
-Remaining gaps: helpers cannot run sandboxed commands, and helpers always run
-at the task's effort level; a lower helper effort may lower cost and time.
+Remaining gap: helpers cannot run sandboxed commands.
 
 **10. Web fetch.** A read-only fetch tool for documentation, with domain policy,
 size limits, and content treated as untrusted data.

@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from llm_cli.config.models import Settings
+from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 
 _ROOT_KEYS = {"agent", "core", "leases"}
 _CORE_KEYS = {"coordination_mode"}
-_AGENT_KEYS = {"provider", "model", "commands", "explore"}
+_AGENT_KEYS = {"provider", "model", "commands", "explore", "explore_effort"}
 _LEASE_KEYS = {
     "launch_ms",
     "work_ms",
@@ -72,12 +73,21 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         raise LlmCoordError(
             ErrorCode.CONFIG_INVALID, "agent.explore must be true or false"
         )
+    explore_effort = agent.get("explore_effort", settings.agent_explore_effort)
+    if explore_effort == "task":
+        explore_effort = None
+    elif explore_effort is not None and explore_effort not in EFFORT_LEVELS:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            'agent.explore_effort must be "task" or an effort level, such as low',
+        )
     updates: dict[str, Any] = {
         "coordination_mode": mode,
         "agent_provider": provider,
         "agent_model": model,
         "agent_commands": commands,
         "agent_explore": explore,
+        "agent_explore_effort": explore_effort,
     }
     mapping = {
         "launch_ms": "launch_lease_ms",

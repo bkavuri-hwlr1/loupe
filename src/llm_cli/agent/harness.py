@@ -313,12 +313,15 @@ class CodingAgentHarness:
         limits: ExecutionLimits = DEFAULT_LIMITS,
         clock: Callable[[], float] = time.time,
         explorations: bool = True,
+        explore_effort: str | None = None,
     ) -> None:
         self.provider = provider
         self.limits = limits
         self.clock = clock
-        # Offer the explore tool, whose helpers use the same provider.
+        # Offer the explore tool, whose helpers use the same provider at no
+        # more than ``explore_effort``, or the task's own effort when None.
         self.explorations = explorations
+        self.explore_effort = explore_effort
 
     def run(self, request: RunRequest, tools: ToolBroker) -> RunResult:
         saved = _saved_checkpoint(request.resume_state, provider=self.provider)
@@ -354,7 +357,9 @@ class CodingAgentHarness:
         )
         explorer: Explorer | None = None
         if self.explorations and tools.explorer is None:
-            explorer = Explorer(self.provider, tools)
+            explorer = Explorer(
+                self.provider, tools, effort_ceiling=self.explore_effort
+            )
             tools.explorer = explorer
         tool_names = tools.tool_names()
         if request.agent_mode == "plan":

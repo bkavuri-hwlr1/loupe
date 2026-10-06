@@ -1777,6 +1777,7 @@ class DaemonService:
         return CodingAgentHarness(
             self.providers.create(provider, model, effort=effort),
             explorations=self.settings.agent_explore,
+            explore_effort=self.settings.agent_explore_effort,
         )
 
     @staticmethod

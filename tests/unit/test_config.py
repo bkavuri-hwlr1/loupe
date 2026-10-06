@@ -77,3 +77,18 @@ def test_explore_is_on_by_default_and_can_be_turned_off(tmp_path: Path) -> None:
     config.write_text('[agent]\nexplore = "no"\n', encoding="utf-8")
     with pytest.raises(LlmCoordError, match="must be true or false"):
         load_settings(config)
+
+
+def test_explore_effort_defaults_to_low_and_accepts_task_or_a_level(
+    tmp_path: Path,
+) -> None:
+    assert load_settings(tmp_path / "missing.toml").agent_explore_effort == "low"
+    config = tmp_path / "config.toml"
+    config.write_text('[agent]\nexplore_effort = "medium"\n', encoding="utf-8")
+    assert load_settings(config).agent_explore_effort == "medium"
+    config.write_text('[agent]\nexplore_effort = "task"\n', encoding="utf-8")
+    assert load_settings(config).agent_explore_effort is None
+    for value in ('"lowest"', "1"):
+        config.write_text(f"[agent]\nexplore_effort = {value}\n", encoding="utf-8")
+        with pytest.raises(LlmCoordError, match="or an effort level"):
+            load_settings(config)
