@@ -186,6 +186,33 @@ def shorten_tool_text(text: str, limit: int) -> str:
     return text[:limit] + f"\n[... {len(text) - limit} characters omitted ...]"
 
 
+# Reasoning effort levels from least to most thinking.
+EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+def capped_effort(
+    current: str | None, ceiling: str, supported: Sequence[str]
+) -> str | None:
+    """Return the supported effort at most ``ceiling`` if it lowers ``current``.
+
+    ``current`` is the effort a session would otherwise use, or None when the
+    model's default is unknown. Without a supported level at or below the
+    ceiling, the lowest supported level is used. None means keep ``current``.
+    """
+
+    if not supported:
+        return None
+    ordered = sorted(supported, key=EFFORT_ORDER.index)
+    rank = EFFORT_ORDER.index(ceiling)
+    allowed = [effort for effort in ordered if EFFORT_ORDER.index(effort) <= rank]
+    chosen = allowed[-1] if allowed else ordered[0]
+    if current is not None and EFFORT_ORDER.index(chosen) >= EFFORT_ORDER.index(
+        current
+    ):
+        return None
+    return chosen
+
+
 class ChatProvider(Protocol):
     """Create model sessions bound to one system prompt and tool surface."""
 
@@ -207,10 +234,30 @@ class ChatProvider(Protocol):
         """Open or restore a conversation that can call exactly ``tools``."""
 
 
+@runtime_checkable
+class EffortCappedProvider(Protocol):
+    """Optional capability to open sessions that think less than the provider."""
+
+    def capped_effort(self, ceiling: str) -> str | None:
+        """The effort a session capped at ``ceiling`` uses, or None if unchanged."""
+
+    def session(
+        self,
+        *,
+        system: str,
+        tools: Sequence[Mapping[str, object]],
+        state: Mapping[str, object] | None = None,
+        effort: str | None = None,
+    ) -> ModelSession:
+        """Like ``ChatProvider.session``; ``effort`` replaces the provider's own."""
+
+
 __all__ = [
     "CONTEXT_OVERFLOW",
+    "EFFORT_ORDER",
     "ChatProvider",
     "CompactableSession",
+    "EffortCappedProvider",
     "ModelSession",
     "ModelTurn",
     "StreamCallback",
@@ -218,6 +265,7 @@ __all__ = [
     "ToolCallRequest",
     "ToolCallResult",
     "ToolResultRecorder",
+    "capped_effort",
     "context_overflow_error",
     "is_context_overflow",
     "mentions_any",

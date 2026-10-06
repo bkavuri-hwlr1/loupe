@@ -17,6 +17,7 @@ from llm_cli.providers.base import (
     StreamCallback,
     ToolCallRequest,
     ToolCallResult,
+    capped_effort,
     context_overflow_error,
     mentions_any,
     shorten_tool_text,
@@ -71,6 +72,8 @@ class OpenAIProvider:
         option = model_option(self.name, model, paths=paths)
         if effort is not None and effort not in option.efforts:
             raise ValueError(f"model {model!r} does not support effort {effort!r}")
+        self._efforts = option.efforts
+        self._default_effort = option.default_effort
         self._reasoning_supported = bool(option.efforts)
         self._max_output_tokens = min(
             _MAX_OUTPUT_TOKENS,
@@ -104,17 +107,27 @@ class OpenAIProvider:
             self._client = sdk.OpenAI(api_key=credential)
         return self._client
 
+    def capped_effort(self, ceiling: str) -> str | None:
+        return capped_effort(
+            self._effort or self._default_effort, ceiling, self._efforts
+        )
+
     def session(
         self,
         *,
         system: str,
         tools: Sequence[Mapping[str, object]],
         state: Mapping[str, object] | None = None,
+        effort: str | None = None,
     ) -> OpenAISession:
+        if effort is not None and effort not in self._efforts:
+            raise ValueError(
+                f"model {self._model!r} does not support effort {effort!r}"
+            )
         return OpenAISession(
             client=self._ensure_client(),
             model=self._model,
-            effort=self._effort,
+            effort=effort or self._effort,
             reasoning_supported=self._reasoning_supported,
             max_output_tokens=self._max_output_tokens,
             system=system,

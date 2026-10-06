@@ -27,6 +27,7 @@ from llm_cli.agent.tools import TaskCancelled, ToolBroker, ToolOutcome, tool_sch
 from llm_cli.errors import LlmCoordError
 from llm_cli.providers.base import (
     ChatProvider,
+    EffortCappedProvider,
     ModelTurn,
     ToolCallResult,
     is_context_overflow,
@@ -76,9 +77,20 @@ class _Progress:
 class Explorer:
     """Run explorations for one task's broker; safe to call from several threads."""
 
-    def __init__(self, provider: ChatProvider, broker: ToolBroker) -> None:
+    def __init__(
+        self,
+        provider: ChatProvider,
+        broker: ToolBroker,
+        *,
+        effort_ceiling: str | None = None,
+    ) -> None:
         self._provider = provider
         self._broker = broker
+        # Helpers think at most ``effort_ceiling`` hard, never more than the
+        # task. None keeps the task's effort.
+        self._effort: str | None = None
+        if effort_ceiling is not None and isinstance(provider, EffortCappedProvider):
+            self._effort = provider.capped_effort(effort_ceiling)
         self._lock = threading.Lock()
         self._usage: dict[str, int] = {}
 
@@ -101,7 +113,10 @@ class Explorer:
         exploration_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         shown = {"task": _display(task), "label": label}
-        parent.emit("explore.started", {"exploration_id": exploration_id, **shown})
+        parent.emit(
+            "explore.started",
+            {"exploration_id": exploration_id, **shown, "effort": self._effort},
+        )
         # Counts calls as they happen, so a failed helper is still charged.
         progress = _Progress()
         report, state = "", "failed"
@@ -143,9 +158,13 @@ class Explorer:
                 max_read_bytes=min(parent.limits.max_read_bytes, _HELPER_READ_BYTES),
             )
         )
-        session = self._provider.session(
-            system=_SYSTEM_PROMPT, tools=tool_schemas(EXPLORER_TOOLS)
-        )
+        provider, tools = self._provider, tool_schemas(EXPLORER_TOOLS)
+        if self._effort is not None and isinstance(provider, EffortCappedProvider):
+            session = provider.session(
+                system=_SYSTEM_PROMPT, tools=tools, effort=self._effort
+            )
+        else:
+            session = provider.session(system=_SYSTEM_PROMPT, tools=tools)
         turn = self._send(session.send_user, task, view)
         spent = False
         while turn.tool_calls:

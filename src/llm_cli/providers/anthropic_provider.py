@@ -19,6 +19,7 @@ from llm_cli.providers.base import (
     StreamCallback,
     ToolCallRequest,
     ToolCallResult,
+    capped_effort,
     context_overflow_error,
     mentions_any,
     shorten_tool_text,
@@ -88,6 +89,8 @@ class AnthropicProvider:
         option = model_option(self.name, model, paths=paths)
         if effort is not None and effort not in option.efforts:
             raise ValueError(f"model {model!r} does not support effort {effort!r}")
+        self._efforts = option.efforts
+        self._default_effort = option.default_effort
         self._adaptive_thinking = option.adaptive_thinking
         # Account model metadata supplies exact limits. Preserve the modern
         # adaptive models' budget; older unknown models get a compatible cap.
@@ -121,18 +124,28 @@ class AnthropicProvider:
             )
         return self._client
 
+    def capped_effort(self, ceiling: str) -> str | None:
+        return capped_effort(
+            self._effort or self._default_effort, ceiling, self._efforts
+        )
+
     def session(
         self,
         *,
         system: str,
         tools: Sequence[Mapping[str, object]],
         state: Mapping[str, object] | None = None,
+        effort: str | None = None,
     ) -> AnthropicSession:
+        if effort is not None and effort not in self._efforts:
+            raise ValueError(
+                f"model {self._model!r} does not support effort {effort!r}"
+            )
         return AnthropicSession(
             client=self._ensure_client(),
             model=self._model,
             fallback_model=self._fallback_model,
-            effort=self._effort,
+            effort=effort or self._effort,
             adaptive_thinking=self._adaptive_thinking,
             max_tokens=self._max_tokens,
             system=system,

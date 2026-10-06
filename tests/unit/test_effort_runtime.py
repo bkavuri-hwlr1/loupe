@@ -26,6 +26,7 @@ from llm_cli.paths import AppPaths
 from llm_cli.protocol.client import DaemonClient
 from llm_cli.providers import anthropic_provider, openai_provider
 from llm_cli.providers.anthropic_provider import AnthropicProvider
+from llm_cli.providers.base import capped_effort
 from llm_cli.providers.codex_provider import CodexProvider
 from llm_cli.providers.openai_provider import OpenAIProvider
 from llm_cli.providers.registry import ProviderRegistry
@@ -70,7 +71,10 @@ def test_openai_respects_model_output_limit(monkeypatch: pytest.MonkeyPatch):
         openai_provider,
         "model_option",
         lambda *a, **kw: SimpleNamespace(
-            efforts=(), max_output_tokens=16384, context_window=None
+            efforts=(),
+            default_effort=None,
+            max_output_tokens=16384,
+            context_window=None,
         ),
     )
     client = ResponsesClient(_response())
@@ -79,6 +83,68 @@ def test_openai_respects_model_output_limit(monkeypatch: pytest.MonkeyPatch):
     )
     chat.send_user("hello")
     assert client.calls[0]["max_output_tokens"] == 16384
+
+
+@pytest.mark.parametrize(
+    ("current", "ceiling", "supported", "expected"),
+    [
+        ("xhigh", "low", ("low", "medium", "high", "xhigh", "max"), "low"),
+        # A cap never raises effort, and an equal level changes nothing.
+        ("low", "medium", ("low", "medium", "high"), None),
+        ("low", "low", ("low", "medium", "high"), None),
+        # Unknown defaults take the cap.
+        (None, "low", ("low", "medium", "high"), "low"),
+        # Without a level at or below the cap, the lowest supported one is used.
+        ("high", "minimal", ("low", "medium", "high"), "low"),
+        ("high", "medium", ("low", "high"), "low"),
+        ("high", "low", (), None),
+    ],
+)
+def test_capped_effort_only_ever_lowers_to_a_supported_level(
+    current: str | None, ceiling: str, supported: tuple[str, ...], expected: str | None
+):
+    assert capped_effort(current, ceiling, supported) == expected
+
+
+def test_sessions_can_think_less_than_their_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    client = ResponsesClient(_response(), _response())
+    paths = AppPaths("test", *(tmp_path / key for key in ("c", "d", "s", "r")))
+    codex = CodexProvider(
+        paths=paths, model="gpt-6-astra", effort="xhigh", client=client
+    )
+    assert codex.capped_effort("low") == "low"
+    codex.session(system="test", tools=[], effort="low").send_user("hello")
+    codex.session(system="test", tools=[]).send_user("hello")
+    assert [call["reasoning"] for call in client.calls] == [
+        {"effort": "low"},
+        {"effort": "xhigh"},
+    ]
+    with pytest.raises(ValueError, match="does not support effort"):
+        codex.session(system="test", tools=[], effort="ultra")
+
+    # gpt-5.4 defaults to no reasoning, so a low cap would think more.
+    assert OpenAIProvider(model="gpt-5.4", client=object()).capped_effort("low") is None
+
+    monkeypatch.setattr(
+        anthropic_provider,
+        "_load_sdk",
+        lambda: SimpleNamespace(
+            BadRequestError=BadRequestError,
+            APIStatusError=APIStatusError,
+            APIConnectionError=APIConnectionError,
+        ),
+    )
+    messages = AnthropicClient(_message())
+    claude = AnthropicProvider(
+        model="claude-opus-5", effort="max", fallback_model=None, client=messages
+    )
+    assert claude.capped_effort("low") == "low"
+    claude.session(system="test", tools=[], effort="low").send_user("hello")
+    assert messages.calls[0][1]["output_config"] == {"effort": "low"}
+    haiku = AnthropicProvider(model="claude-haiku-4-5", client=object())
+    assert haiku.capped_effort("low") is None
 
 
 def test_codex_subscription_passes_effort_without_output_token_limit(tmp_path: Path):
@@ -164,6 +230,7 @@ def test_anthropic_caps_output_at_account_model_limit(
         "model_option",
         lambda *a, **kw: SimpleNamespace(
             efforts=(),
+            default_effort=None,
             adaptive_thinking=False,
             max_output_tokens=maximum,
             context_window=None,

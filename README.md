@@ -273,6 +273,11 @@ conversation shows each one as it finishes. Helpers cannot edit, run commands,
 or ask you questions; their tool calls and tokens count toward the task. Set
 `explore = false` under `[agent]` in the configuration file to turn them off.
 
+Helpers use low reasoning effort, which keeps explorations fast and cheaper,
+and never use more effort than the task itself. Set `explore_effort` under
+`[agent]` to another level, such as `"medium"`, or to `"task"` to give helpers
+the task's own effort. Models without effort levels ignore the setting.
+
 ### Repository instructions and long conversations
 
 Put build, test, and style guidance for the agent in an `AGENTS.md` file (the
