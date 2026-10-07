@@ -3,10 +3,12 @@
 Status: first response-and-delivery milestone implemented and locally validated;
 context management (phase 7, items 1–3), sandboxed commands (item 4), faster
 read tools (item 5), the task plan tool (item 6), stdio MCP tools (item 7),
-exploration helpers (item 9), token usage display (item 11), and the
-live-model benchmark (item 12) implemented; broader harness work remains.
+user hooks (item 8), exploration helpers (item 9), token usage display
+(item 11), and the live-model benchmark (item 12) implemented; broader harness
+work remains.
 Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03,
-items 4–6 and 9 completed 2026-10-04, items 7 and 11–12 completed 2026-10-06
+items 4–6 and 9 completed 2026-10-04, items 7–8 and 11–12 completed
+2026-10-06
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -417,7 +419,7 @@ existing authority model: repository and tool content never grants authority.
 | 5 | Faster read-only tools | Implemented; concurrent execution deferred |
 | 6 | Visible task plan tool | Implemented (`update_plan`) |
 | 7 | MCP client support | Implemented (stdio servers, tools) |
-| 8 | User hooks around tool calls and completion | Planned |
+| 8 | User hooks around tool calls and completion | Implemented (`pre_tool`, `post_edit`) |
 | 9 | Subagents for broad exploration | Implemented (`explore`) |
 | 10 | Read-only web fetch | Planned |
 | 11 | Token usage display (`/usage`, footer context meter) | Implemented; no cost estimates |
@@ -581,10 +583,20 @@ servers are available. Remaining gaps: HTTP transports, MCP resources and
 prompts, offering read-only MCP tools in plan mode, and isolated-workspace
 tasks (which do not offer `run_command` either).
 
-**8. Hooks.** User-configured commands that run before or after tool calls and
-at completion (for example, format after edits, or block a path), using the
-existing event stream. Hooks run as the user, with the same command governance
-as item 4.
+**8. Hooks (implemented).** User-configured commands around the agent's tool
+calls in shared tasks, run with the same governance as item 4's commands: a
+disposable sandboxed snapshot of the checkout with pending edits, no network,
+and no access to the real checkout. A `[[hooks.pre_tool]]` hook matches tool
+names (glob patterns), reads the call as JSON from `$LOUPE_HOOK_INPUT`, and
+blocks it by exiting with status 2, its output becoming the reason; other
+failures are reported and do not block. A `[[hooks.post_edit]]` hook matches
+edited paths and runs with `{paths}` expanded; changes it makes to those
+paths are read back and staged through the broker like the agent's own edits,
+so they are reviewed before they apply, and the agent is told to re-read them.
+Hooks run outside the shared publication lock. Completion verification
+remains the configured checks (`run_check` and the finish gate), so there is
+no separate completion hook. `hook.blocked`, `hook.changed`, `hook.failed`,
+and `hooks.unavailable` events show hook activity without hook output.
 
 **9. Subagents (implemented as `explore`).** The `explore` tool hands a
 self-contained question to a helper: a new session with the same provider, its

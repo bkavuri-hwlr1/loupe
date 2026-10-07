@@ -101,6 +101,10 @@ _PUBLIC_EVENTS = frozenset(
         "model.tool_interrupted",
         "mcp.server.started",
         "mcp.server.failed",
+        "hook.blocked",
+        "hook.changed",
+        "hook.failed",
+        "hooks.unavailable",
         "model.turn.started",
         "model.turn.completed",
         "model.reasoning",
@@ -172,6 +176,10 @@ _LABELS: dict[str, str] = {
     "model.finished": "done",
     "mcp.server.started": "using MCP server",
     "mcp.server.failed": "an MCP server is unavailable",
+    "hook.blocked": "a hook blocked",
+    "hook.changed": "a hook updated",
+    "hook.failed": "a hook failed",
+    "hooks.unavailable": "hooks are unavailable",
 }
 
 _MARKERS: dict[str, str] = {
@@ -187,6 +195,9 @@ _MARKERS: dict[str, str] = {
     "model.stalled": "!",
     "model.context.compaction_failed": "!",
     "mcp.server.failed": "!",
+    "hook.blocked": "!",
+    "hook.failed": "!",
+    "hooks.unavailable": "!",
     "model.retrying": "!",
 }
 
@@ -453,6 +464,18 @@ def _detail(kind: str, payload: dict[str, Any]) -> str:
     if kind == "model.finished":
         calls = payload.get("tool_calls")
         return f" ({calls} tool calls)" if isinstance(calls, int) else ""
+    if kind in {"hook.blocked", "hook.changed", "hook.failed"}:
+        hook = _clip(payload.get("hook", ""))
+        if kind == "hook.blocked":
+            return f" {_clip(payload.get('tool', 'a tool call'))} ({hook})"
+        if kind == "hook.changed":
+            paths = payload.get("paths")
+            if isinstance(paths, list) and paths:
+                shown = ", ".join(_clip(path) for path in paths[:4])
+                return f" {shown} ({hook})"
+            return f" ({hook})"
+        reason = payload.get("reason")
+        return f" ({hook}: {_clip(reason)})" if reason else f" ({hook})"
     if kind in {"mcp.server.started", "mcp.server.failed"}:
         server = _clip(payload.get("server", ""))
         tools = payload.get("tools")
@@ -981,6 +1004,9 @@ class EventRenderer:
                 "model.stalled",
                 "model.context.compaction_failed",
                 "mcp.server.failed",
+                "hook.blocked",
+                "hook.failed",
+                "hooks.unavailable",
                 "model.retrying",
             }:
                 style = "warning"

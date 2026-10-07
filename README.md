@@ -303,6 +303,34 @@ unless you set `cwd`. Its output reaches the model labelled as external data,
 screened for recognized secrets and limited in size. The conversation shows
 which servers started and why any could not.
 
+### Hooks
+
+Hooks run your own commands around the agent's tool calls. They run like the
+agent's commands, in a sandboxed copy of the checkout with the task's pending
+edits and no network, so a hook never changes your files directly:
+
+```toml
+[[hooks.pre_tool]]
+match = ["write_file", "apply_patch"]  # tool names; patterns like "mcp__*" work
+command = ["./scripts/guard.sh"]       # reads the call from $LOUPE_HOOK_INPUT
+timeout = 30
+name = "path guard"                    # optional; shown in the conversation
+
+[[hooks.post_edit]]
+match = ["*.py"]                       # edited paths
+command = ["ruff", "format", "{paths}"]
+```
+
+A `pre_tool` hook gets the tool name and arguments as JSON in the file named
+by `LOUPE_HOOK_INPUT`. Exiting with status 2 blocks the call, and its output
+becomes the reason the agent sees; other failures are reported but do not
+block. A `post_edit` hook runs after an edit to a matching file, with
+`{paths}` replaced by the edited paths. Changes it makes to those files are
+staged like the agent's own edits, so you review them before they apply, and
+the agent is told to read the file again. The conversation shows when a hook
+blocks a call, updates a file, or fails. For checks that must pass before a
+task finishes, use the project's configured checks.
+
 ### Repository instructions and long conversations
 
 Put build, test, and style guidance for the agent in an `AGENTS.md` file (the

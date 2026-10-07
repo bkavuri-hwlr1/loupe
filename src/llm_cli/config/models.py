@@ -24,6 +24,24 @@ class McpServerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class HookConfig:
+    """A user command run in a sandboxed snapshot around the agent's tools.
+
+    A "pre_tool" hook runs before tool calls whose names match ``match`` and
+    can block them by exiting with status 2. A "post_edit" hook runs after an
+    edit to paths matching ``match`` (glob patterns); "{paths}" in its command
+    expands to those paths, and changes it makes to them are staged.
+    """
+
+    kind: str
+    match: tuple[str, ...]
+    command: tuple[str, ...]
+    timeout_seconds: int = 60
+    # Shown in the conversation; defaults to the program and first argument.
+    name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     profile_id: str = "default"
     coordination_mode: str = "enforce"
@@ -40,6 +58,7 @@ class Settings:
     # time in live runs without visibly weaker reports.
     agent_explore_effort: str | None = "low"
     mcp_servers: tuple[McpServerConfig, ...] = field(default=())
+    hooks: tuple[HookConfig, ...] = field(default=())
     launch_lease_ms: int = 10 * 60 * 1_000
     work_lease_ms: int = 90 * 1_000
     renewal_interval_ms: int = 30 * 1_000
@@ -50,4 +69,4 @@ class Settings:
     max_frame_bytes: int = 4 * 1024 * 1024
 
 
-__all__ = ["McpServerConfig", "Settings"]
+__all__ = ["HookConfig", "McpServerConfig", "Settings"]

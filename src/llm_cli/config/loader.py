@@ -8,11 +8,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from llm_cli.config.models import McpServerConfig, Settings
+from llm_cli.config.models import HookConfig, McpServerConfig, Settings
 from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 
-_ROOT_KEYS = {"agent", "core", "leases", "mcp"}
+_ROOT_KEYS = {"agent", "core", "hooks", "leases", "mcp"}
+_HOOK_KINDS = ("pre_tool", "post_edit")
+_HOOK_KEYS = {"match", "command", "timeout", "name"}
+_MAX_HOOKS = 16
 _MCP_SERVER_KEYS = {"command", "env", "approval", "timeout", "cwd"}
 # Server names become part of tool names, which providers limit to letters,
 # digits, "_" and "-"; a double underscore would make names ambiguous.
@@ -96,6 +99,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "agent_explore": explore,
         "agent_explore_effort": explore_effort,
         "mcp_servers": _mcp_servers(_table(data, "mcp")),
+        "hooks": _hooks(_table(data, "hooks")),
     }
     mapping = {
         "launch_ms": "launch_lease_ms",
@@ -118,6 +122,67 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
             "lease renewal interval must be shorter than the work lease",
         )
     return candidate
+
+
+def _hooks(hooks: dict[str, Any]) -> tuple[HookConfig, ...]:
+    if set(hooks) - set(_HOOK_KINDS):
+        raise _unknown("hooks", set(hooks) - set(_HOOK_KINDS))
+    configured: list[HookConfig] = []
+    for kind in _HOOK_KINDS:
+        entries = hooks.get(kind, [])
+        if not isinstance(entries, list) or len(entries) > _MAX_HOOKS:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                f"hooks.{kind} must be a list of at most {_MAX_HOOKS} tables; "
+                f"write each as [[hooks.{kind}]]",
+            )
+        for index, raw in enumerate(entries, 1):
+            where = f"hooks.{kind} #{index}"
+            if not isinstance(raw, dict):
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID, f"{where} must be a table"
+                )
+            if set(raw) - _HOOK_KEYS:
+                raise _unknown(where, set(raw) - _HOOK_KEYS)
+            match = raw.get("match")
+            if (
+                not isinstance(match, list)
+                or not 1 <= len(match) <= 32
+                or not all(isinstance(item, str) and item for item in match)
+            ):
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID,
+                    f"{where}.match must list 1 to 32 non-empty patterns",
+                )
+            command = raw.get("command")
+            if (
+                not isinstance(command, list)
+                or not command
+                or len(command) > 64
+                or not all(isinstance(part, str) and part for part in command)
+            ):
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID,
+                    f"{where}.command must be a list of 1 to 64 non-empty strings",
+                )
+            if kind == "pre_tool" and "{paths}" in command:
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID,
+                    f"{where}: only post_edit hooks receive {{paths}}",
+                )
+            timeout = raw.get("timeout", 60)
+            if type(timeout) is not int or not 1 <= timeout <= 600:
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID,
+                    f"{where}.timeout must be a whole number of seconds from 1 to 600",
+                )
+            name = raw.get("name")
+            if name is not None:
+                name = _bounded_text(name, f"{where}.name", maximum=40)
+            configured.append(
+                HookConfig(kind, tuple(match), tuple(command), timeout, name)
+            )
+    return tuple(configured)
 
 
 def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
