@@ -1325,7 +1325,9 @@ class CodingAgentHarness:
             except LlmCoordError as exc:
                 if is_context_overflow(exc) and limit != limits[-1]:
                     continue
-                return exc.message
+                # The reason is recorded in an event, so it must not carry
+                # provider text.
+                return describe_failure(exc)
             break
         check_cancelled()
         _accumulate(usage_total, dict(turn.usage))
