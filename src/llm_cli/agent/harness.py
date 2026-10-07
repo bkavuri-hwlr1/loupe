@@ -398,13 +398,13 @@ class CodingAgentHarness:
         session = (
             self.provider.session(
                 system=system,
-                tools=tool_schemas(tool_names),
+                tools=tools.tool_schemas(tool_names),
                 state=_mapping(session_state, "saved provider conversation"),
             )
             if session_state is not None
             else self.provider.session(
                 system=system,
-                tools=tool_schemas(tool_names),
+                tools=tools.tool_schemas(tool_names),
             )
         )
         live = _LiveEvents(tools)

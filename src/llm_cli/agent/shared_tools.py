@@ -47,6 +47,7 @@ from llm_cli.coordination.scopes import (
     uncovered_paths,
 )
 from llm_cli.errors import LlmCoordError
+from llm_cli.mcp.tools import PREFIX as MCP_PREFIX
 from llm_cli.workspace.batches import BatchFile, candidate_target
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
@@ -95,8 +96,9 @@ class SharedToolBroker(ToolBroker):
     _permissions: dict[str, int] = field(default_factory=dict, init=False)
 
     def invoke(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
-        # An operator can take minutes to answer. This tool has no shared
-        # checkout effect and must not hold every other session's read barrier.
+        # An operator or an MCP server can take minutes to answer. These tools
+        # have no shared checkout effect and must not hold every other
+        # session's read barrier.
         if name in {
             "ask_user",
             "run_check",
@@ -104,7 +106,7 @@ class SharedToolBroker(ToolBroker):
             "finish_task",
             "update_plan",
             "explore",
-        }:
+        } or name.startswith(MCP_PREFIX):
             return ToolBroker.invoke(self, name, arguments)
         before = self.usage.calls
         with nullcontext() if name == "search_text" else self.publication_lock:

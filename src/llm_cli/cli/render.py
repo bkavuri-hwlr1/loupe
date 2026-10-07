@@ -99,6 +99,8 @@ _PUBLIC_EVENTS = frozenset(
         "model.context.compaction_failed",
         "model.retrying",
         "model.tool_interrupted",
+        "mcp.server.started",
+        "mcp.server.failed",
         "model.turn.started",
         "model.turn.completed",
         "model.reasoning",
@@ -168,6 +170,8 @@ _LABELS: dict[str, str] = {
     "model.retrying": "retrying the model request",
     "model.refused": "the model declined this task",
     "model.finished": "done",
+    "mcp.server.started": "using MCP server",
+    "mcp.server.failed": "an MCP server is unavailable",
 }
 
 _MARKERS: dict[str, str] = {
@@ -182,6 +186,7 @@ _MARKERS: dict[str, str] = {
     "publication.operator_attention": "!",
     "model.stalled": "!",
     "model.context.compaction_failed": "!",
+    "mcp.server.failed": "!",
     "model.retrying": "!",
 }
 
@@ -375,6 +380,13 @@ def _plan_progress(steps: tuple[tuple[str, str], ...]) -> str:
     return _plan_heading(steps)
 
 
+def _tool_activity(tool: str) -> str:
+    if tool.startswith("mcp__"):
+        server = tool.removeprefix("mcp__").split("__", 1)[0]
+        return f"Using MCP server {_clip(server)}…"
+    return _TOOL_ACTIVITIES.get(tool, "Working…")
+
+
 def _exploration_name(payload: dict[str, Any]) -> str:
     name = _clip(payload.get("label") or payload.get("task", ""))
     if len(name) > _MAX_EXPLORATION_NAME:
@@ -441,6 +453,13 @@ def _detail(kind: str, payload: dict[str, Any]) -> str:
     if kind == "model.finished":
         calls = payload.get("tool_calls")
         return f" ({calls} tool calls)" if isinstance(calls, int) else ""
+    if kind in {"mcp.server.started", "mcp.server.failed"}:
+        server = _clip(payload.get("server", ""))
+        tools = payload.get("tools")
+        if kind == "mcp.server.started" and type(tools) is int:
+            return f" {server} ({tools} tool{'' if tools == 1 else 's'})"
+        reason = payload.get("reason")
+        return f" ({server}: {_clip(reason)})" if reason else f" ({server})"
     if kind == "model.retrying":
         retry, retries, delay = (
             payload.get("retry"),
@@ -730,9 +749,7 @@ class EventRenderer:
             self._end_block()
             tool = str(payload.get("tool", ""))
             self.ui.activity(
-                "Thinking…"
-                if kind == "model.tool.delta"
-                else _TOOL_ACTIVITIES.get(tool, "Working…")
+                "Thinking…" if kind == "model.tool.delta" else _tool_activity(tool)
             )
             if kind == "model.tool_call":
                 if tool in _WRITE_TOOLS:
@@ -963,6 +980,7 @@ class EventRenderer:
             elif kind.endswith("operator_attention") or kind in {
                 "model.stalled",
                 "model.context.compaction_failed",
+                "mcp.server.failed",
                 "model.retrying",
             }:
                 style = "warning"

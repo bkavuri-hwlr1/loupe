@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from llm_cli.config.models import Settings
+from llm_cli.config.models import McpServerConfig, Settings
 from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 
-_ROOT_KEYS = {"agent", "core", "leases"}
+_ROOT_KEYS = {"agent", "core", "leases", "mcp"}
+_MCP_SERVER_KEYS = {"command", "env", "approval", "timeout", "cwd"}
+# Server names become part of tool names, which providers limit to letters,
+# digits, "_" and "-"; a double underscore would make names ambiguous.
+_MCP_SERVER_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]|_(?!_)){0,23}")
+_MCP_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_MAX_MCP_SERVERS = 16
 _CORE_KEYS = {"coordination_mode"}
 _AGENT_KEYS = {"provider", "model", "commands", "explore", "explore_effort"}
 _LEASE_KEYS = {
@@ -88,6 +95,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "agent_commands": commands,
         "agent_explore": explore,
         "agent_explore_effort": explore_effort,
+        "mcp_servers": _mcp_servers(_table(data, "mcp")),
     }
     mapping = {
         "launch_ms": "launch_lease_ms",
@@ -110,6 +118,81 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
             "lease renewal interval must be shorter than the work lease",
         )
     return candidate
+
+
+def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
+    if set(mcp) - {"servers"}:
+        raise _unknown("mcp", set(mcp) - {"servers"})
+    servers = _table(mcp, "servers")
+    if len(servers) > _MAX_MCP_SERVERS:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            f"at most {_MAX_MCP_SERVERS} MCP servers can be configured",
+        )
+    configured = []
+    for name, raw in servers.items():
+        where = f"mcp.servers.{name}"
+        if not _MCP_SERVER_NAME.fullmatch(name) or name.endswith("_"):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                f"{where}: names use lowercase letters, digits, '-' and single "
+                "'_', at most 24 characters",
+            )
+        if not isinstance(raw, dict):
+            raise LlmCoordError(ErrorCode.CONFIG_INVALID, f"{where} must be a table")
+        if set(raw) - _MCP_SERVER_KEYS:
+            raise _unknown(where, set(raw) - _MCP_SERVER_KEYS)
+        command = raw.get("command")
+        if (
+            not isinstance(command, list)
+            or not command
+            or len(command) > 64
+            or not all(isinstance(part, str) and part for part in command)
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                f"{where}.command must be a list of 1 to 64 non-empty strings",
+            )
+        env = raw.get("env", {})
+        if not isinstance(env, dict) or not all(
+            isinstance(key, str)
+            and _MCP_ENV_NAME.fullmatch(key)
+            and isinstance(value, str)
+            for key, value in env.items()
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                f"{where}.env must map variable names to text",
+            )
+        approval = raw.get("approval", "ask")
+        if approval not in {"ask", "allow"}:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, f"{where}.approval must be ask or allow"
+            )
+        timeout = raw.get("timeout", 120)
+        if type(timeout) is not int or not 1 <= timeout <= 600:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                f"{where}.timeout must be a whole number of seconds from 1 to 600",
+            )
+        cwd = raw.get("cwd")
+        if cwd is not None and (
+            not isinstance(cwd, str) or not Path(cwd).is_absolute()
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, f"{where}.cwd must be an absolute path"
+            )
+        configured.append(
+            McpServerConfig(
+                name=name,
+                command=tuple(command),
+                env=tuple(sorted(env.items())),
+                approval=approval,
+                timeout_seconds=timeout,
+                cwd=Path(cwd) if cwd is not None else None,
+            )
+        )
+    return tuple(configured)
 
 
 def _table(data: dict[str, Any], name: str) -> dict[str, Any]:

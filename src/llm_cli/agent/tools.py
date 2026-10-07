@@ -25,6 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from llm_cli.agent.bounded_search import (
     SearchBudget,
@@ -54,6 +55,9 @@ from llm_cli.coordination.scopes import (
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
 from llm_cli.git.validate import collect_changed_paths
+
+if TYPE_CHECKING:
+    from llm_cli.mcp.tools import McpToolset
 
 _SKIPPED_DIRECTORIES = frozenset({".git"})
 _TRUNCATION_NOTE = "\n\n[... output truncated at {limit} bytes ...]"
@@ -129,11 +133,14 @@ class ToolBroker:
     # Answers an explore task, shown to the user by its short label, with a
     # read-only helper's report; offered when set.
     explorer: Callable[[str, str], ToolOutcome] | None = None
+    # This task's MCP servers; their tools are offered outside plan mode.
+    mcp: McpToolset | None = None
     finish_gate: Callable[[], ToolOutcome | None] | None = None
     usage: ToolUsage = field(default_factory=ToolUsage)
     agent_mode: str = "auto"
     _partial_reads: set[str] = field(default_factory=set, init=False)
     _commands_approved: bool = field(default=False, init=False)
+    _mcp_approved: set[str] = field(default_factory=set, init=False)
     # Explorations run in parallel threads and share the call budget.
     _budget_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
@@ -299,6 +306,8 @@ class ToolBroker:
             names.append("explore")
         if self.asker is not None:
             names.append("ask_user")
+        if self.mcp is not None:
+            names.extend(self.mcp.names())
         if self.agent_mode == "plan":
             allowed = {
                 "list_files",
@@ -334,6 +343,8 @@ class ToolBroker:
                 "Plan mode is read-only; editing and running checks are unavailable. "
                 "Inspect the source and finish with a plan."
             )
+        if self.mcp is not None and name in self.mcp.names():
+            return self._call_mcp(name, arguments)
         handler = _HANDLERS.get(name)
         if handler is None or name not in self.tool_names():
             return _error(f"unknown tool {name!r}")
@@ -354,6 +365,48 @@ class ToolBroker:
             return _error(
                 f"the filesystem refused that operation: {exc.strerror or exc}"
             )
+
+    def tool_schemas(self, names: Sequence[str]) -> tuple[dict[str, object], ...]:
+        """Schemas for the named tools, including this task's MCP tools."""
+
+        external = self.mcp.schemas(names) if self.mcp is not None else ()
+        return (*tool_schemas(names), *external)
+
+    def _call_mcp(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
+        """Run an MCP tool once its server is approved; output is untrusted."""
+
+        assert self.mcp is not None
+        server = self.mcp.server_of(name)
+        assert server is not None
+        if server.approval == "ask" and server.name not in self._mcp_approved:
+            if self.asker is None:
+                return _error(
+                    f"the MCP server {server.name!r} needs approval, but no "
+                    "interactive session is attached"
+                )
+            shown = _visible(json.dumps(dict(arguments), ensure_ascii=False))
+            if len(shown) > 1_000:
+                shown = shown[:999] + "…"
+            question = (
+                f"Allow a call to MCP server {server.name!r}? It runs outside "
+                "Loupe with your privileges.\n\n"
+                f"{_visible(name.removeprefix('mcp__' + server.name + '__'))} "
+                f"{shown}\n\n"
+                f"1. Allow once\n2. Allow {server.name} for the rest of this "
+                "task\n3. Deny\n\nReply with a number or your own answer."
+            )
+            answer = self.asker(question).strip()
+            choice = answer.casefold()
+            if choice in {"2", "always", "allow all"}:
+                self._mcp_approved.add(server.name)
+            elif choice not in {"1", "y", "yes", "allow", "allow once"}:
+                self.usage.denied += 1
+                reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
+                return _error(f"the user declined this MCP tool call{reason}")
+        content, is_error = self.mcp.call(
+            name, arguments, max_bytes=self.limits.max_tool_output_bytes
+        )
+        return ToolOutcome(content, is_error=is_error)
 
     # -- read tools ------------------------------------------------------
 
