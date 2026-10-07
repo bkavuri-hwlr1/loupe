@@ -15,6 +15,7 @@ from llm_cli.agent.driver import (
 )
 from llm_cli.agent.shared_tools import SharedToolBroker
 from llm_cli.agent.tools import TaskCancelled
+from llm_cli.config.models import McpServerConfig
 from llm_cli.coordination.models import (
     ClaimConflict,
     ClaimRecord,
@@ -39,6 +40,7 @@ from llm_cli.execution.commands import (
 from llm_cli.execution.recovery import RecoveryOutcome
 from llm_cli.execution.runner import TaskExecutionRunner
 from llm_cli.execution.sandbox import available_sandbox
+from llm_cli.mcp.tools import McpToolset
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.context import SharedCoordinationContext
@@ -65,6 +67,8 @@ class SharedTaskExecutionRunner:
         # Set by the daemon. Without it, or without a working OS sandbox,
         # tasks are never offered model-chosen commands.
         self.commands: CommandSettings | None = None
+        # Configured MCP servers, started for each task outside plan mode.
+        self.mcp_servers: tuple[McpServerConfig, ...] = ()
 
     def ensure_available(self, workspace_id: str) -> None:
         if self.publisher.blocks_workspace(workspace_id):
@@ -248,6 +252,14 @@ class SharedTaskExecutionRunner:
                     deadline_at=deadline_at,
                 ).run
                 broker.command_approval = self.commands.approval
+            mcp = (
+                McpToolset(
+                    self.mcp_servers, interactive=asker is not None, emit=broker.emit
+                )
+                if self.mcp_servers and row["agent_mode"] != "plan"
+                else None
+            )
+            broker.mcp = mcp
             context = SharedCoordinationContext(
                 self.store, session.session_id, claim.scopes
             )
@@ -276,8 +288,15 @@ class SharedTaskExecutionRunner:
                 agent_mode=row["agent_mode"],
                 refresh_coordination=refresh_coordination,
             )
+            # Starting servers can take longer than a lease, so it is renewed.
             with self.lifecycle._renewing_lease(task=task, claim=claim):
-                run = driver.run(request, broker)
+                try:
+                    if mcp is not None:
+                        mcp.start()
+                    run = driver.run(request, broker)
+                finally:
+                    if mcp is not None:
+                        mcp.close()
             self.store.update_execution(
                 execution.execution_id,
                 state="validated",

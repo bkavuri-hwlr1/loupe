@@ -278,6 +278,31 @@ and never use more effort than the task itself. Set `explore_effort` under
 `[agent]` to another level, such as `"medium"`, or to `"task"` to give helpers
 the task's own effort. Models without effort levels ignore the setting.
 
+### MCP servers
+
+Loupe can offer the agent tools from Model Context Protocol servers you
+configure. Each server runs for the length of a task, over standard input and
+output:
+
+```toml
+[mcp.servers.docs]
+command = ["npx", "-y", "@example/docs-mcp"]
+env = { DOCS_TOKEN = "..." }  # passed to this server only
+approval = "ask"              # or "allow"
+timeout = 120                 # seconds per call
+# cwd = "/absolute/path"      # defaults to your home directory
+```
+
+Servers run outside Loupe's scope enforcement with your privileges, so by
+default Loupe asks before the first call to each server in a task: allow once,
+allow that server for the rest of the task, or deny. A server that needs
+approval is not offered when no one can answer, and MCP tools are not offered
+in plan mode. A server gets a minimal environment plus the variables you
+configure, never Loupe's own credentials, and does not run in your checkout
+unless you set `cwd`. Its output reaches the model labelled as external data,
+screened for recognized secrets and limited in size. The conversation shows
+which servers started and why any could not.
+
 ### Repository instructions and long conversations
 
 Put build, test, and style guidance for the agent in an `AGENTS.md` file (the

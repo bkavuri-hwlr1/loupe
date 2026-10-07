@@ -212,6 +212,7 @@ class DaemonService:
             ),
             approval=settings.agent_commands,
         )
+        self.shared_runner.mcp_servers = settings.mcp_servers
         # Registries separate the durable harness identity from the model
         # adapter selected for one launch. Provider construction does not open
         # a client or resolve credentials; that happens on first use.

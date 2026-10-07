@@ -208,10 +208,37 @@ that started it:
   always leaving the task some calls of its own, and its token usage is added
   to the task's total;
 - its report is tool output for the task's model: screened for recognized
-  secret material, bounded in size, and labelled as unverified findings.
+  secret material, bounded in size, and labelled so the task still reads a
+  file itself before editing it.
 
 A helper sends repository content it reads to the configured provider, as the
 task's own reads do. Set `explore = false` under `[agent]` to disable helpers.
+
+### MCP servers
+
+Model Context Protocol servers configured under `[mcp.servers]` are external
+authority: they run as the user, outside Loupe's scope enforcement and
+sandbox, so Loupe cannot limit what they do. Loupe controls only what it hands
+them and how it treats what they return:
+
+- a server runs only when configured, for the length of one task, in its own
+  process group that is ended when the task finishes;
+- by default each server needs the user's approval before its first call in a
+  task, given through the interactive session; model output can never approve
+  it, and a server that needs approval is not offered without someone to ask;
+- MCP tools are not offered in plan mode or to exploration helpers;
+- a server inherits only a minimal environment (such as `PATH` and `HOME`)
+  plus its configured variables, so provider keys in Loupe's environment never
+  reach it, and its working directory is the user's home unless configured;
+- tool names, descriptions, and input schemas from a server are validated and
+  bounded before they reach the model, and descriptions name the server;
+- results are text only, bounded in size, withheld if they contain recognized
+  secret material, and labelled as external data rather than instructions;
+- events record which servers started or failed by name and reason category,
+  never server output.
+
+Arguments the model passes to an MCP tool are sent to that server, and its
+output is sent to the configured model provider as tool output.
 
 ## Plugins and optional native code
 

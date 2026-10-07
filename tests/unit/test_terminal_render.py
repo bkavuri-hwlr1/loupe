@@ -221,6 +221,23 @@ def test_partial_response_has_an_explicit_heading() -> None:
     assert "The provider disconnected mid-answer." in output.getvalue()
 
 
+def test_mcp_activity_and_server_events_name_the_server() -> None:
+    output = io.StringIO()
+    renderer = EventRenderer(output, plain=True)
+    activity: list[str | None] = []
+    renderer.ui.activity = activity.append  # type: ignore[method-assign,assignment]
+    renderer.render(_event("tool.called", tool="mcp__docs__search", call=1))
+    assert activity[-1] == "Using MCP server docs…"
+    renderer.render(_event("mcp.server.started", server="docs", tools=3))
+    renderer.render(
+        _event("mcp.server.failed", server="git", reason="it could not start")
+    )
+    renderer.finish()
+    text = output.getvalue()
+    assert "using MCP server docs (3 tools)" in text
+    assert "! an MCP server is unavailable (git: it could not start)" in text
+
+
 def test_reasoning_is_hidden_and_explicit_messages_remain_visible() -> None:
     output = io.StringIO()
     renderer = EventRenderer(output)
