@@ -238,6 +238,33 @@ def test_mcp_activity_and_server_events_name_the_server() -> None:
     assert "! an MCP server is unavailable (git: it could not start)" in text
 
 
+def test_a_retry_is_announced_and_drops_the_failed_draft() -> None:
+    output = io.StringIO()
+    renderer = EventRenderer(output, plain=True)
+    previews: list[str | None] = []
+    renderer.ui.preview = previews.append  # type: ignore[method-assign,assignment]
+    renderer.render(_event("model.turn.started", turn_id="first"))
+    renderer.render(_event("model.answer.preview", text="Half an ans", block_id="1"))
+    renderer.render(
+        _event(
+            "model.retrying",
+            reason="the connection to the model provider was lost",
+            retry=1,
+            retries=3,
+            delay=2.0,
+        )
+    )
+
+    assert previews == ["Half an ans", None]
+    renderer.finish()
+    text = output.getvalue()
+    assert (
+        "  ! retrying the model request (the connection to the model provider "
+        "was lost; retry 1 of 3 in 2s)\n"
+    ) in text
+    assert "Half an ans" not in text
+
+
 def test_reasoning_is_hidden_and_explicit_messages_remain_visible() -> None:
     output = io.StringIO()
     renderer = EventRenderer(output)

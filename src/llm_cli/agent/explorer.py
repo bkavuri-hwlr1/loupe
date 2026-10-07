@@ -30,7 +30,9 @@ from llm_cli.providers.base import (
     EffortCappedProvider,
     ModelTurn,
     ToolCallResult,
+    describe_failure,
     is_context_overflow,
+    is_transient,
 )
 
 EXPLORER_TOOLS = ("list_files", "read_file", "search_text", "read_diff")
@@ -68,7 +70,6 @@ _BUDGET_SPENT = (
 
 # Helpers only read, so a request that failed in transit can be sent again.
 _RETRY_DELAYS = (2.0, 6.0)
-_TRANSIENT_FAILURES = frozenset({"connection", "timeout", "incomplete_response"})
 # A helper that fails names at most this many places it had looked.
 _MAX_VISITED = 20
 
@@ -138,7 +139,7 @@ class Explorer:
             note = (
                 "it ran out of context; ask a narrower question"
                 if is_context_overflow(exc)
-                else f"the model request failed: {exc.message}"
+                else describe_failure(exc)
             )
             if progress.retries:
                 note += f" (after {progress.retries} retries)"
@@ -240,7 +241,7 @@ class Explorer:
             try:
                 turn = send(payload)
             except LlmCoordError as exc:
-                if progress.retries >= len(_RETRY_DELAYS) or not _transient(exc):
+                if progress.retries >= len(_RETRY_DELAYS) or not is_transient(exc):
                     raise
                 self._sleep(_RETRY_DELAYS[progress.retries])
                 progress.retries += 1
@@ -250,16 +251,6 @@ class Explorer:
             _accumulate(self._usage, turn.usage)
         view.check_cancelled()
         return turn
-
-
-def _transient(error: LlmCoordError) -> bool:
-    """A failure in transit or on the provider's side, not in the request."""
-
-    details = error.details or {}
-    status = details.get("status_code")
-    return details.get("provider_error") in _TRANSIENT_FAILURES or (
-        type(status) is int and status >= 500
-    )
 
 
 def _visited(name: str, arguments: Mapping[str, object]) -> str | None:

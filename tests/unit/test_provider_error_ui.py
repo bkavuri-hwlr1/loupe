@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from llm_cli.agent import harness
 from llm_cli.cli.render import EventRenderer, render_event
 from llm_cli.daemon.service import DaemonService
 from llm_cli.errors import ErrorCode, LlmCoordError
@@ -82,9 +83,14 @@ def test_shared_request_failure_replays_one_actionable_private_safe_error(
     repository_factory: Callable[[Path, dict[str, str]], Path],
     service_factory: Callable[[Path], DaemonService],
     request_factory: Callable[[str, dict[str, Any]], Request],
+    monkeypatch: pytest.MonkeyPatch,
     category: str,
     hint: str,
 ) -> None:
+    # Failures in transit are retried first; keep the waits out of the test.
+    monkeypatch.setattr(harness, "_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    transient = category in {"connection", "timeout", "incomplete_response"}
+
     async def scenario() -> None:
         repository = repository_factory(tmp_path, {"README.md": "base\n"})
         service = service_factory(tmp_path)
@@ -148,6 +154,8 @@ def test_shared_request_failure_replays_one_actionable_private_safe_error(
                 "provider_status": 400,
                 "provider_error": category,
             }
+            retries = [e for e in events if e["event_type"] == "model.retrying"]
+            assert len(retries) == (3 if transient else 0)
             before = copy.deepcopy(events)
             for plain in (True, False):
                 output = io.StringIO()

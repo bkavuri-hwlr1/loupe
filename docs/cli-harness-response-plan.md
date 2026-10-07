@@ -49,7 +49,14 @@ oversized-prompt rejection, and through `/compact`), and provider prompt caching
 are implemented (phase 7, items 1–3), as are sandboxed diagnostic commands
 (item 4, which also covers phase 5's command capability), faster read tools
 (item 5), the `update_plan` checklist (item 6), `explore` helpers (item 9), and
-token usage display (item 11). The remaining roadmap
+token usage display (item 11). A main-conversation model request that fails
+in transit (a connection failure, timeout, reply cut off mid-stream, or 5xx
+response) is sent again up to three times, after 2, 6, and 15 seconds, and a
+`model.retrying` event shows each retry. A failed request leaves the
+conversation unchanged and runs no tools, so this is safe; the failed
+attempt's draft is dropped rather than kept as a partial response.
+Finalization requests are not retried this way, because their attempts are
+budgeted separately (see phase 2). The remaining roadmap
 includes bounded repair stages, response-only retry, the rest of phase 7, and
 the full deterministic/live-provider behavior matrix.
 

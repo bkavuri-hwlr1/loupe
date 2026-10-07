@@ -343,8 +343,8 @@ def test_a_small_budget_limits_the_helper_and_unused_calls_return(
     [
         (context_overflow_error(400), "ran out of context; ask a narrower question"),
         (
-            LlmCoordError(ErrorCode.PROVIDER_UNAVAILABLE, "rate limited"),
-            "the model request failed: rate limited",
+            LlmCoordError(ErrorCode.PROVIDER_UNAVAILABLE, "PRIVATE_PROVIDER_TEXT"),
+            "after 0 tool calls: the model request failed.]",
         ),
         # A rejected request would fail the same way again, so it is not retried.
         (
@@ -353,7 +353,7 @@ def test_a_small_budget_limits_the_helper_and_unused_calls_return(
                 "the model provider returned HTTP 400",
                 details={"status_code": 400},
             ),
-            "the model request failed: the model provider returned HTTP 400",
+            "the model provider returned HTTP 400",
         ),
     ],
 )
@@ -365,6 +365,8 @@ def test_helper_failures_become_tool_errors_not_task_failures(
     outcome = explorer("question")
 
     assert outcome.is_error and message in outcome.content
+    # Only fixed descriptions, never provider text, reach notes and events.
+    assert "PRIVATE" not in outcome.content and "PRIVATE" not in str(events)
     assert events[-1][1]["state"] == "failed"
     assert broker.usage.calls == 0
 
@@ -451,10 +453,7 @@ def test_a_helper_that_keeps_failing_names_what_it_read(checkout: Path) -> None:
 
     assert outcome.is_error
     assert sleeps == [2.0, 6.0]
-    reason = (
-        "the model request failed: the model provider could not be reached "
-        "(after 2 retries)"
-    )
+    reason = "the connection to the model provider failed (after 2 retries)"
     # A failed read is not something it looked at.
     assert outcome.content == (
         f"[The exploration stopped early after 3 tool calls: {reason}. Before "

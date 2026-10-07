@@ -97,6 +97,7 @@ _PUBLIC_EVENTS = frozenset(
         "model.instructions.loaded",
         "model.context.compacted",
         "model.context.compaction_failed",
+        "model.retrying",
         "model.tool_interrupted",
         "mcp.server.started",
         "mcp.server.failed",
@@ -166,6 +167,7 @@ _LABELS: dict[str, str] = {
     "model.instructions.loaded": "using repository instructions",
     "model.context.compacted": "summarized earlier conversation to stay in context",
     "model.context.compaction_failed": "could not summarize earlier conversation",
+    "model.retrying": "retrying the model request",
     "model.refused": "the model declined this task",
     "model.finished": "done",
     "mcp.server.started": "using MCP server",
@@ -185,6 +187,7 @@ _MARKERS: dict[str, str] = {
     "model.stalled": "!",
     "model.context.compaction_failed": "!",
     "mcp.server.failed": "!",
+    "model.retrying": "!",
 }
 
 _STREAMED_OUTCOMES = {
@@ -457,6 +460,17 @@ def _detail(kind: str, payload: dict[str, Any]) -> str:
             return f" {server} ({tools} tool{'' if tools == 1 else 's'})"
         reason = payload.get("reason")
         return f" ({server}: {_clip(reason)})" if reason else f" ({server})"
+    if kind == "model.retrying":
+        retry, retries, delay = (
+            payload.get("retry"),
+            payload.get("retries"),
+            payload.get("delay"),
+        )
+        parts = [_clip(payload["reason"])] if payload.get("reason") else []
+        if type(retry) is int and type(retries) is int:
+            when = f" in {delay:g}s" if isinstance(delay, (int, float)) else ""
+            parts.append(f"retry {retry} of {retries}{when}")
+        return f" ({'; '.join(parts)})" if parts else ""
     failure = payload.get("failure_code")
     if failure:
         status = payload.get("provider_status")
@@ -939,6 +953,9 @@ class EventRenderer:
             # execution's confirmed success earns the friendly completion line.
             self._end_block()
             return
+        if kind == "model.retrying":
+            # The failed attempt's draft is not an answer; the retry redraws.
+            self._clear_preview()
         line = render_event({**event, "payload": payload})
         if line is not None:
             self.ui.activity(None)
@@ -964,6 +981,7 @@ class EventRenderer:
                 "model.stalled",
                 "model.context.compaction_failed",
                 "mcp.server.failed",
+                "model.retrying",
             }:
                 style = "warning"
             self.ui.notice(line, style=style)
