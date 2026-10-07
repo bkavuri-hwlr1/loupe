@@ -23,7 +23,19 @@ _MCP_SERVER_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]|_(?!_)){0,23}")
 _MCP_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _MAX_MCP_SERVERS = 16
 _CORE_KEYS = {"coordination_mode"}
-_AGENT_KEYS = {"provider", "model", "commands", "explore", "explore_effort"}
+_AGENT_KEYS = {
+    "provider",
+    "model",
+    "commands",
+    "explore",
+    "explore_effort",
+    "web_fetch",
+    "web_domains",
+}
+# A hostname, optionally led by "*." for its subdomains.
+_WEB_DOMAIN = re.compile(
+    r"(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+"
+)
 _LEASE_KEYS = {
     "launch_ms",
     "work_ms",
@@ -91,6 +103,25 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
             ErrorCode.CONFIG_INVALID,
             'agent.explore_effort must be "task" or an effort level, such as low',
         )
+    web_fetch = agent.get("web_fetch", settings.agent_web_fetch)
+    if web_fetch not in {"ask", "allow", "off"}:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID, "agent.web_fetch must be ask, allow, or off"
+        )
+    web_domains = agent.get("web_domains", list(settings.agent_web_domains))
+    if (
+        not isinstance(web_domains, list)
+        or len(web_domains) > 64
+        or not all(
+            isinstance(domain, str) and _WEB_DOMAIN.fullmatch(domain)
+            for domain in web_domains
+        )
+    ):
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            "agent.web_domains must list at most 64 lowercase hostnames, each "
+            'optionally starting with "*."',
+        )
     updates: dict[str, Any] = {
         "coordination_mode": mode,
         "agent_provider": provider,
@@ -98,6 +129,8 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "agent_commands": commands,
         "agent_explore": explore,
         "agent_explore_effort": explore_effort,
+        "agent_web_fetch": web_fetch,
+        "agent_web_domains": tuple(web_domains),
         "mcp_servers": _mcp_servers(_table(data, "mcp")),
         "hooks": _hooks(_table(data, "hooks")),
     }

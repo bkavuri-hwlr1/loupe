@@ -331,6 +331,26 @@ the agent is told to read the file again. The conversation shows when a hook
 blocks a call, updates a file, or fails. For checks that must pass before a
 task finishes, use the project's configured checks.
 
+### Web pages
+
+The agent can read public web pages, such as a library's documentation, with
+the `web_fetch` tool. By default Loupe asks before the first page from each
+domain in a task: allow once, allow that domain for the rest of the task, or
+deny, and the question shows the full address. Domains you trust can be read
+without asking:
+
+```toml
+[agent]
+web_fetch = "ask"                                   # or "allow", or "off"
+web_domains = ["docs.python.org", "*.readthedocs.io"]
+```
+
+Only http and https addresses on public hosts can be read, never your own
+machine or private network, and redirects are checked the same way. Requests
+carry no cookies or credentials. Pages arrive as text, limited in size and
+screened for recognized secrets, and the agent treats them as information
+rather than instructions. The conversation shows which domains were read.
+
 ### Repository instructions and long conversations
 
 Put build, test, and style guidance for the agent in an `AGENTS.md` file (the

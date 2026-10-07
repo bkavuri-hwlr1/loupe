@@ -57,6 +57,12 @@ class Settings:
     # Helpers never use more effort than the task. Low effort halved helper
     # time in live runs without visibly weaker reports.
     agent_explore_effort: str | None = "low"
+    # Read-only web_fetch: "ask" needs approval for each new domain in a task,
+    # "allow" fetches any public page, "off" never offers the tool. Domains in
+    # agent_web_domains ("docs.python.org", "*.readthedocs.io") need no
+    # approval.
+    agent_web_fetch: str = "ask"
+    agent_web_domains: tuple[str, ...] = field(default=())
     mcp_servers: tuple[McpServerConfig, ...] = field(default=())
     hooks: tuple[HookConfig, ...] = field(default=())
     launch_lease_ms: int = 10 * 60 * 1_000
