@@ -13,9 +13,10 @@ from llm_cli.agent.driver import (
     DriverCapabilities,
     RunRequest,
 )
+from llm_cli.agent.hooks import HookRunner
 from llm_cli.agent.shared_tools import SharedToolBroker
 from llm_cli.agent.tools import TaskCancelled
-from llm_cli.config.models import McpServerConfig
+from llm_cli.config.models import HookConfig, McpServerConfig
 from llm_cli.coordination.models import (
     ClaimConflict,
     ClaimRecord,
@@ -69,6 +70,8 @@ class SharedTaskExecutionRunner:
         self.commands: CommandSettings | None = None
         # Configured MCP servers, started for each task outside plan mode.
         self.mcp_servers: tuple[McpServerConfig, ...] = ()
+        # User hooks, run in a sandbox around each task's tool calls.
+        self.hooks: tuple[HookConfig, ...] = ()
 
     def ensure_available(self, workspace_id: str) -> None:
         if self.publisher.blocks_workspace(workspace_id):
@@ -252,6 +255,36 @@ class SharedTaskExecutionRunner:
                     deadline_at=deadline_at,
                 ).run
                 broker.command_approval = self.commands.approval
+            if self.hooks and self.commands is not None:
+                hook_sandbox = available_sandbox()
+                if hook_sandbox is None:
+                    broker.emit(
+                        "hooks.unavailable",
+                        {"reason": "no working operating-system sandbox"},
+                    )
+                else:
+                    broker.hooks = HookRunner(
+                        self.hooks,
+                        CommandRunner(
+                            root=broker.worktree,
+                            snapshot_root=self.commands.snapshot_root,
+                            candidates=broker.candidates,
+                            cancelled=lambda: (
+                                self.workflow.stopped(task.task_id, task.attempt)
+                                or self.is_shutting_down()
+                            ),
+                            emit=broker.emit,
+                            lock=self.publisher.lock,
+                            sandbox=hook_sandbox,
+                            protected=self.commands.protected,
+                            dependency_paths=(
+                                *DEPENDENCY_PATHS,
+                                *checker.config.get("runtime_paths", []),
+                            ),
+                            deadline_at=deadline_at,
+                        ).run_hook,
+                        broker.emit,
+                    )
             mcp = (
                 McpToolset(
                     self.mcp_servers, interactive=asker is not None, emit=broker.emit

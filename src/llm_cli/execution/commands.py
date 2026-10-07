@@ -1,20 +1,22 @@
-"""Model-chosen commands in sandboxed, disposable copies of the checkout.
+"""Model-chosen commands and user hooks in sandboxed copies of the checkout.
 
 A command runs against a private copy of the checkout with the task's pending
 edits applied, inside an operating-system sandbox (see ``sandbox``). Changes
 the command makes are discarded with its copy; edits still go through the
 file tools. Commands diagnose; configured checks remain the verification
-required for publication.
+required for publication. Hooks run the same way, but can hand back the
+contents of named files, which the task may then stage as edits.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 
@@ -35,6 +37,19 @@ DEPENDENCY_PATHS = (".venv", "venv", "node_modules")
 _CAPTURE_BYTES = 1024 * 1024
 _RESULT_HEAD_BYTES = 4 * 1024
 _RESULT_TAIL_BYTES = 28 * 1024
+# Files a hook hands back are source files; larger ones are not read back.
+_MAX_READ_BACK_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class HookRun:
+    """How a hook ended, and the files it was asked to hand back."""
+
+    state: str
+    exit_code: int | None
+    output: str
+    # Path to content after the run; None when the file no longer exists.
+    files: dict[str, bytes | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +104,49 @@ class CommandRunner:
                 "command arguments contain recognized secret material", True
             )
         relative_cwd = "." if cwd in {"", "."} else normalize_changed_path(cwd)
+        state, exit_code, output, clipped, duration, _ = self._execute(
+            argv, relative_cwd, timeout, quiet=False
+        )
+        return ToolOutcome(
+            _result(state, exit_code, duration, output, clipped),
+            state not in {"completed"},
+        )
+
+    def run_hook(
+        self,
+        argv: list[str],
+        timeout: int,
+        *,
+        hook_input: object = None,
+        read_back: Sequence[str] = (),
+    ) -> HookRun:
+        """Run a user hook in a snapshot without showing its output.
+
+        ``hook_input`` is written as JSON to a file named by the
+        ``LOUPE_HOOK_INPUT`` variable. The contents of ``read_back`` paths are
+        returned as they were when the hook finished.
+        """
+
+        if self.cancelled():
+            raise TaskCancelled("task stopped")
+        state, exit_code, output, clipped, _, files = self._execute(
+            argv, ".", timeout, quiet=True, hook_input=hook_input, read_back=read_back
+        )
+        if clipped:
+            output += "\n[output was capped or withheld]"
+        return HookRun(state, exit_code, output, files)
+
+    def _execute(
+        self,
+        argv: list[str],
+        relative_cwd: str,
+        timeout: int,
+        *,
+        quiet: bool,
+        hook_input: object = None,
+        read_back: Sequence[str] = (),
+    ) -> tuple[str, int | None, str, bool, float, dict[str, bytes | None]]:
+        emit = (lambda kind, payload: None) if quiet else self.emit
         run_id = new_id("command")
         run_directory = self.snapshot_root / run_id
         started = time.monotonic()
@@ -96,7 +154,8 @@ class CommandRunner:
         output = ""
         clipped = False
         state, exit_code = "error", None
-        self.emit(
+        files: dict[str, bytes | None] = {}
+        emit(
             "command.started",
             {
                 "run_id": run_id,
@@ -121,6 +180,11 @@ class CommandRunner:
                 raise ValueError(
                     f"{relative_cwd} is not a directory in the checkout snapshot"
                 )
+            env = self._environment(home)
+            if hook_input is not None:
+                input_file = home / "hook-input.json"
+                input_file.write_text(json.dumps(hook_input), encoding="utf-8")
+                env["LOUPE_HOOK_INPUT"] = str(input_file)
             policy = SandboxPolicy(
                 writable=(source, home),
                 protected=(self.root, *self.protected),
@@ -129,17 +193,19 @@ class CommandRunner:
             exit_code, output, clipped, stopped = supervised_run(
                 wrap(self.sandbox, policy, argv, cwd=directory),
                 cwd=directory,
-                env=self._environment(home),
+                env=env,
                 deadline=deadline,
                 remaining=_CAPTURE_BYTES,
                 cancelled=self.cancelled,
-                on_output=lambda text: self.emit(
+                on_output=lambda text: emit(
                     "command.output", {"run_id": run_id, "text": text}
                 ),
             )
             # "error" from the supervisor means output was withheld for secret
             # material; the command itself still ran to completion.
             state = "completed" if stopped is None or stopped == "error" else stopped
+            if state == "completed":
+                files = {path: _read_back(source, path) for path in read_back}
         except (OSError, ValueError, RuntimeError) as exc:
             state = "cancelled" if self.cancelled() else "error"
             output += f"\n{exc}"
@@ -147,7 +213,7 @@ class CommandRunner:
             with suppress(OSError):
                 shutil.rmtree(run_directory)
             duration = time.monotonic() - started
-            self.emit(
+            emit(
                 "command.finished",
                 {
                     "run_id": run_id,
@@ -159,10 +225,7 @@ class CommandRunner:
             )
         if self.cancelled():
             raise TaskCancelled("task stopped")
-        return ToolOutcome(
-            _result(state, exit_code, duration, output, clipped),
-            state not in {"completed"},
-        )
+        return state, exit_code, output, clipped, duration, files
 
     def _capture(self, target: Path) -> None:
         """Copy the checkout's source and apply pending edits on top."""
@@ -254,6 +317,23 @@ def cleanup_command_snapshots(snapshot_root: Path) -> None:
                 shutil.rmtree(entry)
 
 
+def _read_back(source: Path, relative: str) -> bytes | None:
+    """A snapshot file's contents, or None if the hook removed it.
+
+    Symlinks, directories, and oversized files raise ValueError, so the hook's
+    result for that path is not used.
+    """
+
+    target = candidate_target(source, relative)
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise ValueError(f"{relative} is no longer a regular file")
+    if not target.exists():
+        return None
+    if target.stat().st_size > _MAX_READ_BACK_BYTES:
+        raise ValueError(f"{relative} grew too large to read back")
+    return target.read_bytes()
+
+
 def _result(
     state: str, exit_code: int | None, duration: float, output: str, clipped: bool
 ) -> str:
@@ -283,5 +363,6 @@ __all__ = [
     "DEPENDENCY_PATHS",
     "CommandRunner",
     "CommandSettings",
+    "HookRun",
     "cleanup_command_snapshots",
 ]

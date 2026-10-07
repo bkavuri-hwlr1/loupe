@@ -240,6 +240,30 @@ them and how it treats what they return:
 Arguments the model passes to an MCP tool are sent to that server, and its
 output is sent to the configured model provider as tool output.
 
+### Hooks
+
+Hooks under `[[hooks.pre_tool]]` and `[[hooks.post_edit]]` are commands from
+the user's configuration. They run with the same governance as model-chosen
+commands, without per-run approval since the user configured them:
+
+- each run uses a disposable snapshot of the checkout with the task's pending
+  edits, inside the operating-system sandbox, with no network, a private home,
+  only `PATH` inherited, and no access to the real checkout or Loupe's state;
+- if no sandbox is available, hooks do not run and the conversation says so;
+- a `pre_tool` hook can only allow or block a call; a blocked call still
+  counts against the task's tool budget;
+- a `post_edit` hook's changes are read back only for the paths that triggered
+  it, only as regular files within the size limit, and are staged through the
+  same broker checks as the agent's edits (scope, secret screening, size), so
+  they are reviewed before they apply;
+- hook output is never streamed to the conversation; a blocking reason or a
+  failed formatter's output reaches the model as screened tool output, and
+  events record only the hook's name, the tool, the paths it changed, and a
+  reason category.
+
+Hooks apply to the agent's own calls in shared-workspace tasks; exploration
+helpers' reads do not run them.
+
 ## Plugins and optional native code
 
 External plugins are disabled by default. User-installed plugins must declare

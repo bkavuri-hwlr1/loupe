@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from llm_cli.agent.bounded_search import SearchBudget, SearchError, SearchSnapshot
+from llm_cli.agent.hooks import EDITED_PATH
 from llm_cli.agent.limits import ExecutionLimits
 from llm_cli.agent.source_policy import (
     contains_secret_material,
@@ -29,6 +30,7 @@ from llm_cli.agent.source_policy import (
 )
 from llm_cli.agent.tools import (
     ToolBroker,
+    ToolBudgetExhausted,
     ToolOutcome,
     _bounded_children,
     _display_path,
@@ -96,6 +98,63 @@ class SharedToolBroker(ToolBroker):
     _permissions: dict[str, int] = field(default_factory=dict, init=False)
 
     def invoke(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
+        # Hooks run outside the publication lock: a slow hook must not hold
+        # every other session's read barrier.
+        if self.hooks is not None and name in self.tool_names():
+            blocked = self.hooks.before_tool(name, arguments)
+            if blocked is not None:
+                return self._blocked_by_hook(*blocked)
+        outcome = self._invoke_unhooked(name, arguments)
+        if self.hooks is not None and not outcome.is_error and name in EDITED_PATH:
+            outcome = self._after_edit_hooks(name, arguments, outcome)
+        return outcome
+
+    def _blocked_by_hook(self, hook: str, reason: str) -> ToolOutcome:
+        # A blocked call still counts, so a model cannot retry it forever.
+        with self._budget_lock:
+            if self.usage.calls >= self.limits.max_tool_calls:
+                raise ToolBudgetExhausted(
+                    f"execution exceeded its {self.limits.max_tool_calls} "
+                    "tool-call budget"
+                )
+            self.usage.calls += 1
+        self.usage.denied += 1
+        return _error(f"a pre_tool hook ({hook}) blocked this call: {reason}")
+
+    def _after_edit_hooks(
+        self, name: str, arguments: Mapping[str, object], outcome: ToolOutcome
+    ) -> ToolOutcome:
+        assert self.hooks is not None
+        path = normalize_changed_path(_string(arguments, EDITED_PATH[name]))
+        notes = self.hooks.after_edit(
+            [path], current=self._pending_content, stage=self._stage_hook_edit
+        )
+        if not notes:
+            return outcome
+        return ToolOutcome("\n".join([outcome.content, *notes]), outcome.is_error)
+
+    def _pending_content(self, relative: str) -> bytes | None:
+        with self.publication_lock:
+            if relative in self._contents:
+                return self._contents[relative]
+            observed = self._observations.get(relative)
+            return observed.content if observed is not None else None
+
+    def _stage_hook_edit(self, relative: str, content: bytes) -> str | None:
+        """Stage a hook's rewrite of a file the agent just edited."""
+
+        with self.publication_lock:
+            if relative not in self._observations:
+                return "the file was not part of this task's edits"
+            try:
+                staged = self._stage(relative, content)
+            except LlmCoordError as exc:
+                return exc.message
+            return staged.content if staged.is_error else None
+
+    def _invoke_unhooked(
+        self, name: str, arguments: Mapping[str, object]
+    ) -> ToolOutcome:
         # An operator or an MCP server can take minutes to answer. These tools
         # have no shared checkout effect and must not hold every other
         # session's read barrier.

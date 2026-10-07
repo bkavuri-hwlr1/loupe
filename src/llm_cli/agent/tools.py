@@ -57,6 +57,7 @@ from llm_cli.git.environment import run_git
 from llm_cli.git.validate import collect_changed_paths
 
 if TYPE_CHECKING:
+    from llm_cli.agent.hooks import HookRunner
     from llm_cli.mcp.tools import McpToolset
 
 _SKIPPED_DIRECTORIES = frozenset({".git"})
@@ -135,6 +136,8 @@ class ToolBroker:
     explorer: Callable[[str, str], ToolOutcome] | None = None
     # This task's MCP servers; their tools are offered outside plan mode.
     mcp: McpToolset | None = None
+    # User hooks around tool calls; shared tasks run them in a sandbox.
+    hooks: HookRunner | None = None
     finish_gate: Callable[[], ToolOutcome | None] | None = None
     usage: ToolUsage = field(default_factory=ToolUsage)
     agent_mode: str = "auto"
