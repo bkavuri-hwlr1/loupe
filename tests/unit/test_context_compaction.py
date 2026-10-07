@@ -200,7 +200,11 @@ def test_provider_without_budget_never_summarizes(tmp_path: Path) -> None:
 def test_failed_summary_is_reported_and_the_task_continues(tmp_path: Path) -> None:
     provider = Compactable(
         [_tool_turn(90_000), _answer()],
-        summary=LlmCoordError(ErrorCode.PROVIDER_UNAVAILABLE, "provider offline"),
+        summary=LlmCoordError(
+            ErrorCode.PROVIDER_UNAVAILABLE,
+            "PRIVATE_PROVIDER_TEXT",
+            details={"status_code": 503},
+        ),
     )
 
     events, _, answer = _run(provider, tmp_path)
@@ -209,7 +213,9 @@ def test_failed_summary_is_reported_and_the_task_continues(tmp_path: Path) -> No
     failures = [
         payload for kind, payload in events if kind == "model.context.compaction_failed"
     ]
-    assert failures == [{"reason": "provider offline"}]
+    # Only the failure's classification is recorded, never provider text.
+    assert failures == [{"reason": "the model provider returned HTTP 503"}]
+    assert "PRIVATE_PROVIDER_TEXT" not in str(events)
     # Nothing was recorded for the summary, so the results went out as usual.
     assert isinstance(provider.calls[1], tuple)
     assert not any("summary above" in str(call) for call in provider.calls)
