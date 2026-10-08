@@ -398,12 +398,14 @@ class ToolBroker:
         if contains_secret_material(url):
             return _error("the URL contains recognized secret material; leave it out")
         try:
-            page = self.web.page(url, allowed=self._web_allowed)
+            page, downloaded = self.web.page(url, allowed=self._web_allowed)
         except WebFetchError as exc:
             return _error(f"web_fetch could not read that page: {exc}")
-        self.emit(
-            "web.fetched", {"domain": host_of(page.url), "characters": len(page.text)}
-        )
+        if downloaded:  # Reading on from the cache is not another fetch.
+            self.emit(
+                "web.fetched",
+                {"domain": host_of(page.url), "characters": len(page.text)},
+            )
         if offset > len(page.text):
             return _error(
                 f"offset is past the end of the page ({len(page.text)} characters)"

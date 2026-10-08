@@ -254,6 +254,7 @@ class _TextExtractor(HTMLParser):
         self.skipping = 0
         self.preformatted = 0
         self.link: str | None = None
+        self.anchor: int | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in _SKIPPED:
@@ -270,7 +271,9 @@ class _TextExtractor(HTMLParser):
                 self.preformatted += 1
         elif tag == "a":
             href = dict(attrs).get("href")
-            if href and not href.startswith(("#", "javascript:")):
+            if href and href.startswith("#"):
+                self.anchor = len(self.parts)
+            elif href and not href.startswith("javascript:"):
                 self.link = urljoin(self.base, href)
 
     def handle_endtag(self, tag: str) -> None:
@@ -286,6 +289,11 @@ class _TextExtractor(HTMLParser):
         elif tag == "a" and self.link:
             self.parts.append(f" ({self.link})")
             self.link = None
+        elif tag == "a" and self.anchor is not None:
+            # A heading's permalink marker, such as ¶ or #, is not text.
+            if not any(c.isalnum() for c in "".join(self.parts[self.anchor :])):
+                del self.parts[self.anchor :]
+            self.anchor = None
 
     def handle_data(self, data: str) -> None:
         if self.skipping:
