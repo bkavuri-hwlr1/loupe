@@ -516,7 +516,11 @@ caching, which places the breakpoint at the last block so system prompt,
 tools, and earlier turns are reused across the agent loop. Summary requests keep
 the same tools so they also hit the cache. OpenAI and Codex requests send a
 `prompt_cache_key` derived from the model and first conversation item, so a
-conversation's requests route to the same cache until it is summarized.
+conversation's requests route to the same cache until it is summarized. The
+Codex subscription endpoint also needs that key as a `session_id` header: with
+the key alone, a byte-stable six-turn conversation had 0–20% of its input
+served from cache, and with the header 92–99%. The live benchmark found this,
+because broad tasks reported a few percent of their prompt tokens cached.
 
 Live check, 2026-10-03, Codex `gpt-6-sol` at low effort: the endpoint accepted
 `prompt_cache_key` and tools-disabled summary requests. Summaries made no tool

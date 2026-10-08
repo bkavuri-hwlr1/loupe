@@ -458,20 +458,26 @@ def compare(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
         lines.append("! These runs used different task versions; compare with care.")
     previous = {task["id"]: task for task in old.get("tasks", [])}
     header = f"{'task':<20} {'passed':>11} {'wall s':>15} {'main calls':>13} "
-    lines.append(header + f"{'prompt tokens':>19} {'facts':>9}")
+    lines.append(header + f"{'prompt tokens':>19} {'cached':>17} {'facts':>9}")
     for task in new.get("tasks", []):
         before = previous.get(task["id"])
         if before is None:
             lines.append(f"{task['id']:<20} (new task)")
             continue
-        passed, wall, calls, tokens = (
+        passed, wall, calls, tokens, cached = (
             f"{before.get(key)} → {task.get(key)}"
-            for key in ("passed", "wall_seconds", "main_tool_calls", "prompt_tokens")
+            for key in (
+                "passed",
+                "wall_seconds",
+                "main_tool_calls",
+                "prompt_tokens",
+                "cached_tokens",
+            )
         )
         facts = f"{len(before['facts_found'])} → {len(task['facts_found'])}"
         lines.append(
             f"{task['id']:<20} {passed:>11} {wall:>15} {calls:>13} {tokens:>19} "
-            f"{facts:>9}"
+            f"{cached:>17} {facts:>9}"
         )
     return lines
 

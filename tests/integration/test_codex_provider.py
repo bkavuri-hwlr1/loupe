@@ -120,6 +120,9 @@ def test_subscription_sdk_request_is_pinned_and_checkpoint_has_no_credentials(
         requests.append(body)
         assert body["store"] is False and body["stream"] is True
         assert "max_output_tokens" not in body
+        # Each request of one conversation names the same cache session.
+        assert body["prompt_cache_key"].startswith("loupe-")
+        assert request.headers["session_id"] == body["prompt_cache_key"]
         if len(requests) == 1:
             output = [
                 {
@@ -170,6 +173,8 @@ def test_subscription_sdk_request_is_pinned_and_checkpoint_has_no_credentials(
     with pytest.raises(LlmCoordError, match="no ChatGPT login"):
         provider.session(system="test", tools=[]).send_user("must not fall back")
     assert len(requests) == 2
+    # A restored conversation keeps its cache session.
+    assert requests[0]["prompt_cache_key"] == requests[1]["prompt_cache_key"]
 
 
 def test_discovered_effort_survives_token_refresh_between_prompts(

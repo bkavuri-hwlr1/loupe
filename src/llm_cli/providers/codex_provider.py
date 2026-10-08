@@ -117,6 +117,13 @@ class _SubscriptionClient:
         }
         if credentials.residency:
             headers["x-openai-internal-codex-residency"] = credentials.residency
+        cache_key = arguments.get("prompt_cache_key")
+        if isinstance(cache_key, str):
+            # The subscription endpoint routes a conversation's requests to
+            # its prompt cache by session, not by prompt_cache_key alone:
+            # without this, a stable history was rarely served from cache.
+            # The key is a digest of the conversation's first item.
+            headers["session_id"] = cache_key
         try:
             with (
                 sdk.OpenAI(

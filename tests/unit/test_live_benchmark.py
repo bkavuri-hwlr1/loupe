@@ -306,21 +306,27 @@ def test_run_settings_are_checked_before_any_request(tmp_path: Path) -> None:
 
 
 def test_runs_are_compared_task_by_task() -> None:
-    def run(passed: bool, seconds: float, found: list[str]) -> dict[str, object]:
+    def run(
+        passed: bool, seconds: float, found: list[str], cached: int
+    ) -> dict[str, object]:
         task = {
             "id": "three-questions",
             "passed": passed,
             "wall_seconds": seconds,
             "main_tool_calls": 5,
             "prompt_tokens": 320_000,
+            "cached_tokens": cached,
             "facts_found": found,
         }
         return {"suite_version": 1, "tasks": [task]}
 
-    lines = benchmark.compare(run(False, 236.0, ["a"]), run(True, 145.0, ["a", "b"]))
+    lines = benchmark.compare(
+        run(False, 236.0, ["a"], 5_000), run(True, 145.0, ["a", "b"], 250_000)
+    )
 
     assert "False → True" in lines[1]
     assert "236.0 → 145.0" in lines[1]
+    assert "5000 → 250000" in lines[1]
     assert "1 → 2" in lines[1]
     different = benchmark.compare({"suite_version": 1}, {"suite_version": 2})
     assert "different task versions" in different[0]
