@@ -30,6 +30,12 @@ from llm_cli.workspace.identity import DIRECTORY_MODE, ObjectKind, read_identifi
 from llm_cli.workspace.workflow import TaskWorkflow, encode_files
 
 _OUTPUT_LIMIT = 10 * 1024 * 1024
+# Output still arriving this long after the supervisor exits comes from a
+# process that left the command's process group, and is not waited for.
+_DRAIN_SECONDS = 1.0
+# The supervisor's stop sequence takes a few seconds. A stopped run waits
+# this long for it before abandoning the supervisor.
+_STOP_SECONDS = 15.0
 
 
 def digest(value: str) -> str:
@@ -612,16 +618,28 @@ def supervised_run(
     remaining: int,
     cancelled: Callable[[], bool],
     on_output: Callable[[str], None],
+    reaper: bool = False,
 ) -> tuple[int, str, bool, str | None]:
     """Run argv under the process-group supervisor, screening its output.
 
     Returns the exit code, the screened output, whether output was clipped or
     withheld, and "cancelled", "timed_out", or "error" when the run stopped
-    early. Output after recognized secret material is withheld.
+    early. Output after recognized secret material is withheld. ``reaper``
+    passes the supervisor's descriptors to a sandbox that starts its own
+    reaper (see ``sandbox.uses_reaper``).
+
+    Output is read until the supervisor exits and briefly after, so a process
+    that left the command's group cannot hold the run open by keeping its
+    output pipe.
     """
 
     process = subprocess.Popen(
-        [sys.executable, str(Path(__file__).with_name("check_process.py")), *argv],
+        [
+            sys.executable,
+            str(Path(__file__).with_name("check_process.py")),
+            *(["--sandbox-reaper"] if reaper else []),
+            *argv,
+        ],
         cwd=cwd,
         env=env,
         stdin=subprocess.PIPE,
@@ -665,11 +683,26 @@ def supervised_run(
             if part.endswith("\n"):
                 screen_line()
 
+    drain_until: float | None = None
+    abandon_at: float | None = None
     try:
         while selector.get_map():
-            if stopped is None and (cancelled() or time.monotonic() >= deadline):
-                stopped = "cancelled" if cancelled() else "timed_out"
-                process.stdin.close()
+            now = time.monotonic()
+            if drain_until is None and process.poll() is not None:
+                # The command has ended. A process that left its group may
+                # still hold the output pipe, so only output already on its
+                # way is read.
+                drain_until = now + _DRAIN_SECONDS
+            if drain_until is None:
+                if stopped is None and (cancelled() or now >= deadline):
+                    stopped = "cancelled" if cancelled() else "timed_out"
+                    process.stdin.close()
+                    abandon_at = now + _STOP_SECONDS
+                elif abandon_at is not None and now >= abandon_at:
+                    process.kill()
+                    drain_until = now
+            elif now >= drain_until:
+                break
             for key, _ in selector.select(0.1):
                 block = os.read(key.fd, 4096)
                 if not block:

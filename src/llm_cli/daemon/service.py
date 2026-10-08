@@ -462,6 +462,23 @@ class DaemonService:
                 value["state"] = "stopping"
         return value
 
+    def _task_retry(self, task_id: str) -> dict[str, Any]:
+        task = self.store.get_task(task_id)
+        if task is None:
+            raise KeyError("task")
+        if task.session_id is not None:
+            # Nothing would launch a conversation task's next attempt. It
+            # would hide the retained proposal from apply and, while queued,
+            # refuse every later prompt in the conversation.
+            raise LlmCoordError(
+                ErrorCode.TASK_NOT_MUTABLE,
+                "conversation tasks cannot be retried; apply or discard the "
+                "retained proposal, or ask for the change again in the "
+                "conversation",
+                {"task_id": task_id},
+            )
+        return asdict(self.store.begin_new_attempt(task_id))
+
     async def _dispatch(self, request: Request) -> Any:
         method = request.method
         params = request.params
@@ -682,7 +699,7 @@ class DaemonService:
         if method == "task.events":
             return self._task_events(request)
         if method == "task.retry":
-            return asdict(self.store.begin_new_attempt(_string(params, "task_id")))
+            return self._task_retry(_string(params, "task_id"))
         if method == "task.discard":
             held = self.workflow.discard(_string(params, "task_id"))
             if held is not None:

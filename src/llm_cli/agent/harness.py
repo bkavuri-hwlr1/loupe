@@ -378,10 +378,20 @@ class CodingAgentHarness:
             if context_state is not None
             else None
         )
+        # A resumed task keeps its original deadline; helpers stop at it too.
+        deadline = (
+            _number(saved.get("deadline_at"), "saved conversation deadline")
+            if saved is not None
+            else self.clock() + self.limits.wall_clock_seconds
+        )
         explorer: Explorer | None = None
         if self.explorations and tools.explorer is None:
             explorer = Explorer(
-                self.provider, tools, effort_ceiling=self.explore_effort
+                self.provider,
+                tools,
+                effort_ceiling=self.explore_effort,
+                deadline=deadline,
+                clock=self.clock,
             )
             tools.explorer = explorer
         tool_names = tools.tool_names()
@@ -428,7 +438,6 @@ class CodingAgentHarness:
         if isinstance(session, StreamingSession):
             session.set_event_callback(live)
         if saved is None:
-            deadline = self.clock() + self.limits.wall_clock_seconds
             usage_total: dict[str, int] = {}
             idle_turns = 0
             phase = "opening"
@@ -451,7 +460,6 @@ class CodingAgentHarness:
                     {"paths": [file.path for file in instruction_files]},
                 )
         else:
-            deadline = _number(saved.get("deadline_at"), "saved conversation deadline")
             usage_total = _usage_from_checkpoint(saved.get("usage_total"))
             idle_turns = _non_negative(saved.get("idle_turns", 0), "saved idle turns")
             phase = _phase(saved.get("phase"))

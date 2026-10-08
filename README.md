@@ -597,7 +597,8 @@ the tool boundary is a guardrail and trusted validation is the guarantee.
 A task attempt is finished once its claim reaches a terminal state. Requesting
 another claim for it is refused rather than silently returning the dead one;
 `llm-coord task retry TASK_ID` opens a new attempt, and re-running then
-compare-and-swaps the task ref forward from its previous result.
+compare-and-swaps the task ref forward from its previous result. Conversation
+tasks cannot be retried this way: ask for the change again in the conversation.
 
 `run` returns once the daemon has durably scheduled the work; it does not hold
 the request open while the worker runs. Any local session can poll `task events`
@@ -690,7 +691,8 @@ the entire candidate batch and publishes none of its files. No-op and read-only
 tasks do not allocate a publication revision. Optimistic scheduling changes
 when private work can begin; publication still runs through the daemon's short
 barrier and rechecks every candidate base. A stale batch fails with its complete
-proposal preserved for inspection and retry. These shared guarantees currently
+proposal preserved for inspection; asking again in the conversation redoes it
+against the current files. These shared guarantees currently
 apply within one daemon profile.
 
 `llm-coord task watch TASK_ID --after SEQUENCE` follows any task from any

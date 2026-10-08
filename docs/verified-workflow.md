@@ -111,8 +111,9 @@ for review and release their work claim. The user can continue with another
 prompt. Use `loupe task discard TASK_ID` to discard a retained proposal.
 
 Check results are bound to the exact source baseline, copied runtime inputs, pending edits, and frozen
-configuration. A source or copied dependency change makes previous results stale. Retry the task to
-obtain fresh verification. To explicitly apply despite failed or missing checks:
+configuration. A source or copied dependency change makes previous results stale. To obtain fresh
+verification, ask for the change again in the conversation; `loupe task retry` does not apply to
+conversation tasks and refuses them. To explicitly apply despite failed or missing checks:
 
 ```console
 loupe task apply TASK_ID --allow-unverified
@@ -140,7 +141,10 @@ uses the existing 30-day retention window; unresolved proposals and recovery
 journals remain pinned.
 
 Interrupted checks are uncertain, never successful by inference. Subprocess
-supervision stops check process groups if the daemon disappears. File operations,
+supervision stops check process groups if the daemon disappears. On Linux it also
+stops processes a check detached from its group, such as daemons started with
+`setsid`; on macOS such a process can outlive the check, though the check still
+finishes on time. File operations,
 apply, and undo use the same publication journal and `loupe task recover`
 mechanism as ordinary shared edits. A stop arriving after publication begins
 cannot interrupt its filesystem journal.

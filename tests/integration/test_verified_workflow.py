@@ -23,7 +23,7 @@ from test_shared_agent_execution import (
 )
 
 from llm_cli.daemon.service import DaemonService
-from llm_cli.errors import LlmCoordError
+from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.execution.checks import digest, verification_status
 from llm_cli.providers.base import ModelTurn, ToolCallRequest, ToolCallResult
 from llm_cli.workspace.workflow import decode_files
@@ -541,6 +541,58 @@ def test_review_survives_closed_session_and_does_not_block_followup(
             "state"
         ] == "published"
         assert (root / "a.py").read_text() == "value = 2\n"
+
+    asyncio.run(scenario())
+
+
+def test_retry_refuses_a_conversation_task_and_keeps_its_proposal(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        provider = edit_provider(_finish(), _finish("no edits"))
+        creds = await setup(service, root, provider, review=True)
+        await await_task(service, root, creds)
+        before = service.store.get_task("task")
+
+        with pytest.raises(LlmCoordError, match="cannot be retried") as refused:
+            await service.handle(_request("task.retry", {"task_id": "task"}))
+
+        assert refused.value.code is ErrorCode.TASK_NOT_MUTABLE
+        assert service.store.get_task("task") == before
+        # The conversation still takes prompts, and the proposal still applies.
+        await await_task(service, root, creds, "followup")
+        _assert_completed(service, "followup")
+        applied = await service.handle(_request("task.apply", {"task_id": "task"}))
+        assert applied["state"] == "published"
+        assert (root / "a.py").read_text() == "value = 2\n"
+
+    asyncio.run(scenario())
+
+
+def test_retry_opens_a_new_attempt_for_a_task_outside_conversations(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(root)}))
+        registered = service.store.list_repositories()[0]
+        task = service.store.create_task(
+            repository_id=registered.repository_id, task_id="solo", title="solo"
+        )
+        claim = service.coordinator.request_claim(task.task_id, ["a.py"])
+        service.coordinator.release_claim(claim.claim_id, reason="finished")
+
+        retried = await service.handle(_request("task.retry", {"task_id": "solo"}))
+
+        assert retried["attempt"] == 2 and retried["state"] == "queued"
 
     asyncio.run(scenario())
 

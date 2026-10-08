@@ -167,22 +167,42 @@ bubblewrap on Linux), and never unsandboxed. Each command runs in a disposable
 copy of the checkout with the task's pending edits applied:
 
 - the network is off; only Unix sockets inside the command's own copy and home
-  can be used, so host sockets such as SSH agents and Docker are unreachable;
+  can be used, so host sockets such as SSH agents, Docker, and Git's credential
+  cache are unreachable (see the Linux limit below);
 - writes are limited to the copy and a private home, both deleted afterwards;
 - the real checkout, Loupe's configuration, data, state, and runtime
   directories, and common credential stores under the home directory (SSH,
-  GnuPG, cloud CLIs, `gh`, Docker, `.netrc`, package-registry tokens, Codex and
-  Claude credentials, keychains, browser profiles) are unreadable;
+  GnuPG, cloud CLIs, `gh`, Docker, `.netrc`, Git's credential cache, the
+  1Password agent, package-registry tokens, Codex and Claude credentials,
+  keychains and keyrings, and browser profiles on macOS and Linux, including
+  Snap and Flatpak installs) are unreadable;
 - ignored dependency folders (`.venv`, `venv`, `node_modules`, and configured
   `runtime_paths`) are readable in place but not writable;
 - the environment carries only `PATH` and fixed, non-secret settings;
 - arguments containing recognized secret material are refused, and output after
   recognized secret material is withheld;
-- each command has a timeout (at most 600 seconds) and stops with its task.
+- each command has a timeout (at most 600 seconds) and stops with its task, and
+  when it ends, so do processes it started, including ones that left its
+  process group; output is not awaited from such a process.
 
 Other files on disk remain readable, so this is weaker than a read allowlist:
 a command could read a credential stored somewhere this policy does not list,
 and the pattern screening of its output is not a complete secret scanner.
+
+On Linux a command's processes share a private process namespace that ends
+with it. Seatbelt has none, so on macOS a reaper inside the sandbox kills the
+command's remaining processes when it ends; signals cannot leave the sandbox,
+so nothing else is affected. A command that deliberately kills that reaper
+first can leave a process running, still sandboxed, with its copy and home
+deleted.
+
+Seatbelt checks every socket connection against the command's paths.
+Bubblewrap cannot, because a read-only mount does not stop a connection, so on
+Linux host sockets are hidden instead: `/tmp` and `/run` are private, the
+listed credential stores are hidden, and every other socket that is bound when
+the command starts is covered. A socket that a host process binds while the
+command runs, or one bound inside another network namespace such as a
+container, can still be reachable if its path is readable.
 
 Approval follows `agent.commands` in the user configuration. The default,
 `ask`, offers commands only in interactive sessions and asks the user before
@@ -205,8 +225,9 @@ that started it:
 - it keeps its own observations, so a file a helper read never counts as the
   task having read it before a full-file write;
 - its tool calls are reserved from the task's call budget before it starts,
-  always leaving the task some calls of its own, and its token usage is added
-  to the task's total;
+  always leaving the task some calls of its own, and every call counts,
+  including calls to tools it does not have; its token usage is added to the
+  task's total, and it starts no model request after the task's deadline;
 - its report is tool output for the task's model: screened for recognized
   secret material, bounded in size, and labelled so the task still reads a
   file itself before editing it.

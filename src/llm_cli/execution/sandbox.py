@@ -6,18 +6,26 @@ Linux uses bubblewrap. Under either, a command:
 - has no network access, except Unix sockets inside its writable paths;
 - can write only to its writable paths (a disposable snapshot and home);
 - can read the rest of the filesystem except protected paths, which hold
-  credentials, Loupe's own state, and the real checkout.
+  credentials, Loupe's own state, and the real checkout;
+- leaves no process running after it ends, even one that left its process
+  group.
 
 Reads outside protected paths remain possible, so this is a weaker guarantee
 than a full read allowlist; callers also screen command output for recognized
 secrets. Without a working sandbox the capability is unavailable: a
 model-chosen command never runs unsandboxed.
+
+Seatbelt decides each socket connection by path. Bubblewrap cannot: a
+read-only mount does not stop a Unix-socket connect, so host sockets are
+hidden instead. Private ``/tmp`` and ``/run`` hide the usual ones, and every
+other socket bound when the command starts is covered by an empty file.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -29,6 +37,11 @@ from pathlib import Path
 SEATBELT = "seatbelt"
 BUBBLEWRAP = "bubblewrap"
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+# Bound sockets in this network namespace, with the paths they were bound at.
+_NET_UNIX = Path("/proc/net/unix")
+# Directories bubblewrap replaces with private copies; host sockets there are
+# already out of reach.
+_PRIVATE_DIRECTORIES = (Path("/tmp"), Path("/run"), Path("/dev"), Path("/proc"))
 
 # Credential and secret stores under the home directory. Reading these is
 # never needed to build or test a project.
@@ -43,6 +56,10 @@ HOME_SECRET_PATHS = (
     ".docker",
     ".netrc",
     ".git-credentials",
+    # Git's credential cache and 1Password's SSH agent listen on sockets here.
+    ".git-credential-cache",
+    ".cache/git/credential",
+    ".1password",
     ".npmrc",
     ".pypirc",
     ".password-store",
@@ -50,11 +67,37 @@ HOME_SECRET_PATHS = (
     ".claude",
     ".cargo/credentials",
     ".cargo/credentials.toml",
+    # macOS keychains and browser profiles.
     "Library/Keychains",
     "Library/Cookies",
     "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Chromium",
+    "Library/Application Support/BraveSoftware",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Vivaldi",
+    "Library/Application Support/Arc",
     "Library/Application Support/Firefox",
     "Library/Safari",
+    "Library/Containers/com.apple.Safari",
+    # Linux keyrings and browser profiles, including Snap and Flatpak copies.
+    ".local/share/keyrings",
+    ".local/share/kwalletd",
+    ".mozilla",
+    ".config/google-chrome",
+    ".config/google-chrome-beta",
+    ".config/google-chrome-unstable",
+    ".config/chromium",
+    ".config/BraveSoftware",
+    ".config/microsoft-edge",
+    ".config/vivaldi",
+    ".config/opera",
+    "snap/firefox",
+    "snap/chromium",
+    ".var/app/org.mozilla.firefox",
+    ".var/app/org.chromium.Chromium",
+    ".var/app/com.google.Chrome",
+    ".var/app/com.brave.Browser",
+    ".var/app/com.microsoft.Edge",
 )
 
 _SEATBELT_BASE = """\
@@ -70,6 +113,26 @@ _SEATBELT_BASE = """\
 (allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))
 (allow file-read*)
 (allow file-write-data (literal "/dev/null"))
+"""
+
+# Seatbelt has no process namespace, so a process that leaves the command's
+# process group would outlive it. The command therefore starts under this
+# shell. Given descriptors 3 and 4 by the supervisor (see check_process.py),
+# the shell first starts a reaper that waits for 4 to close and then signals
+# every process it may. The profile confines signals to this sandbox, so only
+# the command's processes are killed. Only the reaper keeps 3; its closing
+# tells the supervisor it is done. The shell catches termination signals only
+# to outlive the command, keeping the supervisor's grace period. The command
+# gets neither descriptor and default signal handling, and starts through
+# exec so that a shell builtin never stands in for the program it names.
+_SEATBELT_LAUNCHER = """\
+trap : HUP INT TERM
+if { true <&4; } 2>/dev/null; then
+  (trap '' HUP INT TERM; exec </dev/null >/dev/null 2>&1
+   read -r ignored <&4; kill -KILL -1) &
+  exec 3>&- 4<&-
+fi
+(exec "$@")
 """
 
 _probe_lock = threading.Lock()
@@ -125,6 +188,12 @@ def wrap(
     raise ValueError(f"unsupported sandbox {kind!r}")
 
 
+def uses_reaper(kind: str) -> bool:
+    """Whether wrapped commands expect the supervisor's reaper descriptors."""
+
+    return kind == SEATBELT
+
+
 def protected_home_paths(home: Path) -> tuple[Path, ...]:
     return tuple(home / relative for relative in HOME_SECRET_PATHS)
 
@@ -176,7 +245,18 @@ def _seatbelt(policy: SandboxPolicy, argv: Sequence[str]) -> list[str]:
         )
         rules.append(f"(allow network-outbound (remote unix-socket {writable}))")
     profile = _SEATBELT_BASE + "\n".join(rules) + "\n"
-    return [_SANDBOX_EXEC, "-p", profile, *parameters, "--", *argv]
+    return [
+        _SANDBOX_EXEC,
+        "-p",
+        profile,
+        *parameters,
+        "--",
+        "/bin/sh",
+        "-c",
+        _SEATBELT_LAUNCHER,
+        "loupe-sandbox",
+        *argv,
+    ]
 
 
 def _bubblewrap(policy: SandboxPolicy, argv: Sequence[str], cwd: Path) -> list[str]:
@@ -199,6 +279,8 @@ def _bubblewrap(policy: SandboxPolicy, argv: Sequence[str], cwd: Path) -> list[s
         "--tmpfs",
         "/run",
     ]
+    # --die-with-parent and the private process namespace already stop
+    # everything the command started when bubblewrap is killed.
     # A protected directory becomes an empty tmpfs. If a writable path lies
     # inside it, only the directories leading to that mount point appear.
     for path in policy.protected:
@@ -210,10 +292,53 @@ def _bubblewrap(policy: SandboxPolicy, argv: Sequence[str], cwd: Path) -> list[s
     for path in policy.readable:
         if path.exists():
             command.extend(("--ro-bind", str(path), str(path)))
+    # Any other host socket the command could see is covered by an empty file.
+    for path in _host_sockets():
+        if _visible(path, policy):
+            command.extend(("--ro-bind", "/dev/null", str(path)))
     for path in policy.writable:
         command.extend(("--bind", str(path), str(path)))
     command.extend(("--chdir", str(cwd), "--", *argv))
     return command
+
+
+def _host_sockets() -> list[Path]:
+    """Sockets bound at absolute paths in this network namespace, resolved.
+
+    Sockets bound later, bound in another network namespace, or bound by a
+    relative path are not listed.
+    """
+
+    try:
+        table = _NET_UNIX.read_bytes()
+    except OSError:
+        return []
+    found: set[Path] = set()
+    for line in table.splitlines()[1:]:
+        # Num RefCount Protocol Flags Type St Inode [Path], where a path may
+        # contain spaces and an abstract name starts with "@".
+        fields = line.split(maxsplit=7)
+        if len(fields) < 8 or not fields[7].startswith(b"/"):
+            continue
+        path = Path(os.path.realpath(os.fsdecode(fields[7])))
+        try:
+            if stat.S_ISSOCK(path.lstat().st_mode):
+                found.add(path)
+        except OSError:
+            # An unreachable path is unreachable from the sandbox too.
+            continue
+    return sorted(found)
+
+
+def _visible(path: Path, policy: SandboxPolicy) -> bool:
+    """Whether a host path shows through the sandbox's mounts at its location."""
+
+    def under(roots: Sequence[Path]) -> bool:
+        return any(path.is_relative_to(root) for root in roots)
+
+    if under(_PRIVATE_DIRECTORIES) or under(policy.writable):
+        return False
+    return under(policy.readable) or not under(policy.protected)
 
 
 __all__ = [
@@ -224,5 +349,6 @@ __all__ = [
     "available_sandbox",
     "protected_home_paths",
     "sandbox_kind",
+    "uses_reaper",
     "wrap",
 ]
