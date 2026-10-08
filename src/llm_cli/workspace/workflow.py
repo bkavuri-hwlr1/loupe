@@ -477,8 +477,9 @@ class TaskWorkflow:
 
             if not verification_current(self.store, row, root, files):
                 raise ValueError(
-                    "Required checks are missing, failed, or stale. Retry th"
-                    "e task, or use --allow-unverified."
+                    "Required checks are missing, failed, or stale. Ask for th"
+                    "e change again in the conversation to rerun them, or use "
+                    "--allow-unverified."
                 )
         for f in files:
             identity, _ = read_identified_path(candidate_target(root, f.relative_path))

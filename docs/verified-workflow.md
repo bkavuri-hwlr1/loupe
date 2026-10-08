@@ -111,8 +111,9 @@ for review and release their work claim. The user can continue with another
 prompt. Use `loupe task discard TASK_ID` to discard a retained proposal.
 
 Check results are bound to the exact source baseline, copied runtime inputs, pending edits, and frozen
-configuration. A source or copied dependency change makes previous results stale. Retry the task to
-obtain fresh verification. To explicitly apply despite failed or missing checks:
+configuration. A source or copied dependency change makes previous results stale. To obtain fresh
+verification, ask for the change again in the conversation; `loupe task retry` does not apply to
+conversation tasks and refuses them. To explicitly apply despite failed or missing checks:
 
 ```console
 loupe task apply TASK_ID --allow-unverified
