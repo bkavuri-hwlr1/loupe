@@ -93,6 +93,31 @@ def test_home_secret_paths_cover_common_credential_stores() -> None:
         assert Path("/home/user") / relative in paths
 
 
+@pytest.mark.parametrize(
+    "relative",
+    [
+        # macOS
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/BraveSoftware",
+        "Library/Application Support/Firefox",
+        "Library/Safari",
+        # Linux, including Snap and Flatpak installs
+        ".mozilla",
+        ".config/google-chrome",
+        ".config/chromium",
+        ".config/BraveSoftware",
+        "snap/firefox",
+        ".var/app/org.mozilla.firefox",
+        ".local/share/keyrings",
+        # Sockets that hand out credentials
+        ".cache/git/credential",
+        ".1password",
+    ],
+)
+def test_home_secret_paths_cover_keyrings_and_browser_profiles(relative: str) -> None:
+    assert Path("/home/user") / relative in protected_home_paths(Path("/home/user"))
+
+
 def test_platform_selects_its_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
     monkeypatch.setattr(sandbox.shutil, "which", lambda name: None)

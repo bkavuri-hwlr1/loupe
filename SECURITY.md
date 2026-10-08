@@ -171,8 +171,10 @@ copy of the checkout with the task's pending edits applied:
 - writes are limited to the copy and a private home, both deleted afterwards;
 - the real checkout, Loupe's configuration, data, state, and runtime
   directories, and common credential stores under the home directory (SSH,
-  GnuPG, cloud CLIs, `gh`, Docker, `.netrc`, package-registry tokens, Codex and
-  Claude credentials, keychains, browser profiles) are unreadable;
+  GnuPG, cloud CLIs, `gh`, Docker, `.netrc`, Git's credential cache, the
+  1Password agent, package-registry tokens, Codex and Claude credentials,
+  keychains and keyrings, and browser profiles on macOS and Linux, including
+  Snap and Flatpak installs) are unreadable;
 - ignored dependency folders (`.venv`, `venv`, `node_modules`, and configured
   `runtime_paths`) are readable in place but not writable;
 - the environment carries only `PATH` and fixed, non-secret settings;
