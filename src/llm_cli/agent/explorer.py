@@ -9,8 +9,9 @@ through a view of the same broker, with the same source policy and pending
 edits, but keeps its own observations: what a helper read never counts as the
 main agent having read a file before writing it. Its tool calls come out of
 the task's budget, reserved before it starts, and its token usage is added to
-the task's total. It cannot edit, run commands or checks, ask the user, or
-start further helpers.
+the task's total. Every call counts, including calls to tools it does not
+have, and it starts no model request after the task's deadline. It cannot
+edit, run commands or checks, ask the user, or start further helpers.
 """
 
 from __future__ import annotations
@@ -76,6 +77,10 @@ _MAX_VISITED = 20
 _T = TypeVar("_T")
 
 
+class _OutOfTime(Exception):
+    """The task's deadline passed before the helper finished."""
+
+
 @dataclass(slots=True)
 class _Progress:
     used: int = 0
@@ -93,10 +98,15 @@ class Explorer:
         broker: ToolBroker,
         *,
         effort_ceiling: str | None = None,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._provider = provider
         self._broker = broker
+        # The task's wall-clock deadline on ``clock``; no request starts after it.
+        self._deadline = deadline
+        self._clock = clock
         self._sleep = sleep
         # Helpers think at most ``effort_ceiling`` hard, never more than the
         # task. None keeps the task's effort.
@@ -135,6 +145,8 @@ class Explorer:
         note: str | None = "it did not finish"
         try:
             report, state, note = self._explore(task, budget, progress)
+        except _OutOfTime:
+            state, note = "timed_out", "the task's time limit was reached"
         except LlmCoordError as exc:
             note = (
                 "it ran out of context; ask a narrower question"
@@ -195,15 +207,20 @@ class Explorer:
                     spent = True
                     results.append(ToolCallResult(call.call_id, _BUDGET_SPENT, True))
                     continue
+                # A refused call still counts, so a helper that keeps asking
+                # for tools it lacks runs out of budget like any other.
+                progress.used += 1
                 if call.name not in EXPLORER_TOOLS:
                     results.append(
                         ToolCallResult(
-                            call.call_id, f"unknown tool {call.name!r}", is_error=True
+                            call.call_id,
+                            f"unknown tool {call.name!r}; this helper can only "
+                            f"use {', '.join(EXPLORER_TOOLS)}",
+                            is_error=True,
                         )
                     )
                     continue
                 outcome = view.invoke(call.name, call.arguments)
-                progress.used += 1
                 content, is_error = outcome.content, outcome.is_error
                 place = _visited(call.name, call.arguments)
                 if not is_error and place and place not in progress.visited:
@@ -238,6 +255,8 @@ class Explorer:
         # payload can be sent again.
         while True:
             view.check_cancelled()
+            if self._deadline is not None and self._clock() >= self._deadline:
+                raise _OutOfTime
             try:
                 turn = send(payload)
             except LlmCoordError as exc:

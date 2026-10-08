@@ -207,8 +207,9 @@ that started it:
 - it keeps its own observations, so a file a helper read never counts as the
   task having read it before a full-file write;
 - its tool calls are reserved from the task's call budget before it starts,
-  always leaving the task some calls of its own, and its token usage is added
-  to the task's total;
+  always leaving the task some calls of its own, and every call counts,
+  including calls to tools it does not have; its token usage is added to the
+  task's total, and it starts no model request after the task's deadline;
 - its report is tool output for the task's model: screened for recognized
   secret material, bounded in size, and labelled so the task still reads a
   file itself before editing it.

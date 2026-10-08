@@ -305,6 +305,84 @@ def test_a_spent_budget_asks_for_the_report_and_then_stops(tmp_path: Path) -> No
     assert events[-1][1]["state"] == "incomplete"
 
 
+def test_calls_to_tools_a_helper_lacks_use_up_its_budget(tmp_path: Path) -> None:
+    explorer, broker, provider, events = _explorer(
+        tmp_path, [_calls(("write_file", {"path": "a.txt", "content": "x"}))] * 42
+    )
+
+    outcome = explorer("question")
+
+    assert outcome.is_error
+    assert "kept calling tools past its budget" in outcome.content
+    (helper,) = provider.helper_sessions()
+    refused = helper.sent[1][0]  # type: ignore[index]
+    assert refused.is_error
+    assert "can only use list_files, read_file, search_text, read_diff" in (
+        refused.content
+    )
+    # The question, 40 refused calls, and the turn told its budget was spent.
+    assert len(helper.sent) == 42
+    assert broker.usage.calls == 40
+    assert events[-1][1]["tool_calls"] == 40
+    assert not (tmp_path / "a.txt").exists()
+
+
+def test_a_helper_starts_no_request_after_the_deadline(tmp_path: Path) -> None:
+    now = [100.0]
+
+    def slow_listing() -> ModelTurn:
+        now[0] = 200.0
+        return _calls(("list_files", {}))
+
+    events: list[tuple[str, dict[str, object]]] = []
+    broker = ToolBroker(
+        tmp_path,
+        ("*",),
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+    provider = Provider([], {"question": [slow_listing, _text("never sent")]})
+    explorer = Explorer(provider, broker, deadline=150.0, clock=lambda: now[0])
+
+    outcome = explorer("question")
+
+    assert outcome.is_error
+    assert outcome.content == (
+        "[The exploration stopped early after 1 tool call: "
+        "the task's time limit was reached.]"
+    )
+    (helper,) = provider.helper_sessions()
+    assert len(helper.sent) == 1
+    assert broker.usage.calls == 1
+    assert events[-1][1]["state"] == "timed_out"
+
+
+def test_helpers_share_the_tasks_deadline(checkout: Path) -> None:
+    broker, events = _shared(checkout)
+    now = [0.0]
+
+    def slow_read() -> ModelTurn:
+        now[0] = 1000.0
+        return _calls(("read_file", {"path": "docs/guide.md"}))
+
+    provider = Provider(
+        [_calls(("explore", {"task": "question"}))],
+        {"question": [slow_read, _text("never sent")]},
+    )
+    harness = CodingAgentHarness(
+        provider,
+        limits=ExecutionLimits(wall_clock_seconds=600),
+        clock=lambda: now[0],
+    )
+
+    with pytest.raises(LlmCoordError, match="wall-clock"):
+        harness.run(_request(checkout), broker)
+
+    (helper,) = provider.helper_sessions()
+    assert len(helper.sent) == 1
+    finished = [payload for kind, payload in events if kind == "explore.finished"]
+    assert finished[-1]["state"] == "timed_out"
+
+
 def test_no_helper_starts_without_budget_for_the_agent_to_continue(
     tmp_path: Path,
 ) -> None:
