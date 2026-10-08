@@ -40,6 +40,7 @@ from llm_cli.agent.limits import (
     ExecutionLimits,
 )
 from llm_cli.agent.modes import validate_agent_mode
+from llm_cli.agent.repair import UNCHANGED_LIMIT, RepairTracker
 from llm_cli.agent.source_policy import (
     contains_secret_material,
     ensure_safe_content,
@@ -75,6 +76,18 @@ PLAN_STATUSES = ("pending", "in_progress", "completed")
 _MAX_PLAN_STEPS = 12
 _MAX_PLAN_STEP_CHARACTERS = 200
 _MAX_URL_CHARACTERS = 2_048
+# Tools that change the proposal or test it; refused once repair stops.
+_REPAIR_TOOLS = frozenset(
+    {
+        "write_file",
+        "apply_patch",
+        "create_directory",
+        "delete_file",
+        "rename_file",
+        "run_check",
+        "run_command",
+    }
+)
 
 
 class TaskCancelled(RuntimeError):
@@ -149,6 +162,8 @@ class ToolBroker:
     _partial_reads: set[str] = field(default_factory=set, init=False)
     _commands_approved: bool = field(default=False, init=False)
     _mcp_approved: set[str] = field(default_factory=set, init=False)
+    _repairs: RepairTracker = field(default_factory=RepairTracker, init=False)
+    _repair_notes: list[str] = field(default_factory=list, init=False)
     # Explorations run in parallel threads and share the call budget.
     _budget_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
@@ -190,6 +205,7 @@ class ToolBroker:
             "plan": [
                 {"step": step, "status": status} for step, status in self.usage.plan
             ],
+            "repairs": self._repairs.to_dict(),
         }
 
     def restore_usage(self, saved: Mapping[str, object]) -> None:
@@ -230,7 +246,9 @@ class ToolBroker:
         ):
             raise ValueError("saved partial file reads are malformed")
         plan = parse_plan(saved.get("plan", []))
+        repairs = RepairTracker.from_dict(saved.get("repairs"))
         self._partial_reads = set(partial_reads)
+        self._repairs = repairs
         self.usage = ToolUsage(
             calls=values["calls"],
             files_read=values["files_read"],
@@ -356,6 +374,9 @@ class ToolBroker:
                 "Plan mode is read-only; editing and running checks are unavailable. "
                 "Inspect the source and finish with a plan."
             )
+        if self._repairs.exhausted is not None and name in _REPAIR_TOOLS:
+            self.usage.denied += 1
+            return _error(self._repairs.refusal())
         if self.mcp is not None and name in self.mcp.names():
             return self._call_mcp(name, arguments)
         handler = _HANDLERS.get(name)
@@ -741,7 +762,43 @@ class ToolBroker:
         if self.check_runner is None:
             return _error("no checks configured")
         result = self.check_runner(_string(arguments, "name"))
-        return ToolOutcome(_ok(result.content, self.limits).content, result.is_error)
+        return self._with_repair_notes(result)
+
+    def record_check(self, name: str, state: str, output: str) -> None:
+        """Count one check run toward its repair limit.
+
+        The check runner reports every run, from run_check or the finish gate;
+        the note reaches the agent with that tool's result.
+        """
+
+        note = self._repairs.record(
+            name, state, output, attempts=self.limits.max_repair_attempts
+        )
+        if note is None:
+            return
+        self._repair_notes.append(note)
+        if self._repairs.exhausted == name:
+            self.emit(
+                "repair.exhausted",
+                {
+                    "check": name,
+                    "failures": self._repairs.failures[name],
+                    # Stopped because edits no longer changed the failure.
+                    "unchanged": self._repairs.unchanged[name] >= UNCHANGED_LIMIT,
+                },
+            )
+
+    def _with_repair_notes(self, result: ToolOutcome) -> ToolOutcome:
+        notes, self._repair_notes = self._repair_notes, []
+        limit = self.limits.max_tool_output_bytes
+        if not notes:
+            return ToolOutcome(_clipped(result.content, limit), result.is_error)
+        # The notes come last and are never clipped.
+        note = "\n".join(notes)
+        room = max(1, limit - len(note.encode("utf-8")) - 2)
+        return ToolOutcome(
+            f"{_clipped(result.content, room).rstrip()}\n\n{note}", result.is_error
+        )
 
     def _run_command(self, arguments: Mapping[str, object]) -> ToolOutcome:
         if self.command_runner is None:
@@ -887,18 +944,28 @@ class ToolBroker:
                 f"answer exceeds the {MAX_ANSWER_CHARACTERS}-character limit; "
                 "provide a shorter complete answer"
             )
-        if (
+        stopped = self._repairs.exhausted
+        if outcome == "completed" and stopped is not None:
+            # Edits stopped while a check still failed; the work is partial.
+            outcome = "partial"
+        elif (
             outcome == "completed"
             and self.finish_gate is not None
             and self.agent_mode != "plan"
         ):
             refused = self.finish_gate()
             if refused is not None:
-                return ToolOutcome(_ok(refused.content, self.limits).content, True)
+                return self._with_repair_notes(ToolOutcome(refused.content, True))
         self.usage.finished = True
         self.usage.summary = summary[:MAX_TASK_SUMMARY_CHARACTERS]
         self.usage.answer = answer
         self.usage.outcome = outcome
+        if stopped is not None and outcome == "partial":
+            return _ok(
+                f"task marked finished as partial: {stopped} still fails after "
+                "the repair limit",
+                self.limits,
+            )
         return _ok("task marked finished", self.limits)
 
     def _finish_task(self, arguments: Mapping[str, object]) -> ToolOutcome:
@@ -1404,12 +1471,15 @@ def _bounded_children(directory: Path, limit: int) -> tuple[list[Path], bool]:
 
 
 def _ok(content: str, limits: ExecutionLimits) -> ToolOutcome:
+    return ToolOutcome(content=_clipped(content, limits.max_tool_output_bytes))
+
+
+def _clipped(content: str, limit: int) -> str:
     encoded = content.encode("utf-8")
-    if len(encoded) <= limits.max_tool_output_bytes:
-        return ToolOutcome(content=content)
-    clipped = encoded[: limits.max_tool_output_bytes].decode("utf-8", "ignore")
-    note = _TRUNCATION_NOTE.format(limit=limits.max_tool_output_bytes)
-    return ToolOutcome(content=clipped + note)
+    if len(encoded) <= limit:
+        return content
+    clipped = encoded[:limit].decode("utf-8", "ignore")
+    return clipped + _TRUNCATION_NOTE.format(limit=limit)
 
 
 def _error(message: str) -> ToolOutcome:

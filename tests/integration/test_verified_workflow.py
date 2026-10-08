@@ -253,9 +253,7 @@ def test_cancel_running_check_preserves_checkout(
         proposal = workflow["proposal_json"]
         assert isinstance(proposal, str)
         assert (
-            verification_status(
-                service.store, workflow, root, decode_files(proposal)
-            )
+            verification_status(service.store, workflow, root, decode_files(proposal))
             == "interrupted"
         )
         config = json.loads(workflow["config_json"])
@@ -272,9 +270,7 @@ def test_cancel_running_check_preserves_checkout(
             )
         files = decode_files(proposal)
         assert (
-            verification_status(
-                service.store, multi_check_workflow, root, files
-            )
+            verification_status(service.store, multi_check_workflow, root, files)
             == "interrupted"
         )
         with service.store.connection() as connection:
@@ -282,9 +278,7 @@ def test_cancel_running_check_preserves_checkout(
                 "UPDATE check_runs SET state='failed' WHERE task_id=?", ("task",)
             )
         assert (
-            verification_status(
-                service.store, multi_check_workflow, root, files
-            )
+            verification_status(service.store, multi_check_workflow, root, files)
             == "failed"
         )
 
@@ -332,6 +326,9 @@ def test_required_check_failure_can_be_repaired(
 
         def repair(results: Sequence[ToolCallResult]) -> ModelTurn:
             assert results[0].is_error
+            assert results[0].content.endswith(
+                "[test failed. Fix the cause and run it again; 3 repair attempts left.]"
+            )
             return _tools(_call("write_file", path="a.py", content="value = 3\n"))
 
         provider = edit_provider(_finish(), repair, _finish())
@@ -351,6 +348,115 @@ def test_required_check_failure_can_be_repaired(
             "passed",
         ]
         assert (root / "a.py").read_text() == "value = 3\n"
+
+    asyncio.run(scenario())
+
+
+def _attempt(value: int, *expected: str) -> Callable[..., ModelTurn]:
+    """Check the last finish was refused with ``expected``, then edit and retry."""
+
+    def step(results: Sequence[ToolCallResult]) -> ModelTurn:
+        assert results[-1].is_error
+        for text in expected:
+            assert text in results[-1].content
+        return _tools(
+            _call("write_file", path="a.py", content=f"value = {value}\n"),
+            _call("finish_task", answer="fixed"),
+        )
+
+    return step
+
+
+def _settled_outcome(service: DaemonService) -> object:
+    (held,) = [
+        event
+        for event in service.store.list_task_events("task")
+        if event.event_type == "workflow.awaiting_review"
+    ]
+    return held.payload["completion_outcome"]
+
+
+@pytest.mark.parametrize(
+    ("code", "failures", "reason"),
+    [
+        # Each edit changes the output, so all three repair attempts are used.
+        (
+            "import pathlib, sys; v = pathlib.Path('a.py').read_text(); "
+            "print('got', v); sys.exit(v != 'value = 3\\n')",
+            4,
+            "after 3 repair attempts",
+        ),
+        # The edits never change the failure, so the repair stops sooner.
+        (
+            "assert __import__('pathlib').Path('a.py').read_text() == 'value = 3\\n'",
+            3,
+            "with the same failure the last 3 times",
+        ),
+    ],
+)
+def test_exhausted_repairs_finish_partial_with_edits_kept(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    code: str,
+    failures: int,
+    reason: str,
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        attempts = [
+            _attempt(4, "3 repair attempts left"),
+            _attempt(5, "Repair attempt 1 of 3 for test failed", "2 repair attempts"),
+            _attempt(6, "Repair attempt 2 of 3 for test failed", "1 repair attempt"),
+        ][: failures - 1]
+
+        def stopped(results: Sequence[ToolCallResult]) -> ModelTurn:
+            assert (
+                f"Repair limit reached: test failed {failures} times in a row, "
+                f"{reason}." in results[-1].content
+            )
+            return _tools(
+                _call("write_file", path="a.py", content="value = 3\n"),
+                ToolCallRequest("run_check:test", "run_check", {"name": "test"}),
+                _call("finish_task", answer="value is still wrong"),
+            )
+
+        def finished(results: Sequence[ToolCallResult]) -> ModelTurn:
+            raise AssertionError("finish_task should have ended the task")
+
+        provider = edit_provider(_finish(), *attempts, stopped, finished)
+        creds = await setup(service, root, provider, code=code)
+        await await_task(service, root, creds)
+
+        write, check, finish = provider.recorded_results[-1]
+        assert write.is_error and "repair limit for test was reached" in write.content
+        assert check.is_error and "repair limit" in check.content
+        assert not finish.is_error
+        assert finish.content == (
+            "task marked finished as partial: test still fails after the repair limit"
+        )
+        assert service._task_view("task")["state"] == "awaiting_review"
+        assert _settled_outcome(service) == "partial"
+        assert [run["state"] for run in service.workflow.checks("task")] == [
+            "failed"
+        ] * failures
+        (exhausted,) = [
+            event.payload
+            for event in service.store.list_task_events("task")
+            if event.event_type == "repair.exhausted"
+        ]
+        assert exhausted == {
+            "check": "test",
+            "failures": failures,
+            "unchanged": failures == 3,
+        }
+        # The checkout is untouched; the last edit before the limit is kept.
+        assert (root / "a.py").read_text() == "value = 1\n"
+        workflow = service.workflow.get("task")
+        assert workflow is not None
+        (kept,) = decode_files(workflow["proposal_json"])
+        assert kept.content == f"value = {6 if failures == 4 else 5}\n".encode()
 
     asyncio.run(scenario())
 

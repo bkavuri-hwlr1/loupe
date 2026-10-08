@@ -219,6 +219,7 @@ class SharedTaskExecutionRunner:
                 broker.emit,
                 self.publisher.lock,
                 deadline_at=deadline_at,
+                on_result=broker.record_check,
             )
             if checker.config.get("checks") and row["agent_mode"] != "plan":
                 broker.check_runner = checker.run

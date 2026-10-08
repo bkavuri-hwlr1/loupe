@@ -188,6 +188,9 @@ Call validate_changes before finish_task. It checks scope and stale bases, not
 program correctness. Use run_check with a configured check name to verify
 pending edits. Only claim checks ran when a tool returned their results.
 Required checks must pass before finishing; repair failures when possible.
+Repair attempts are limited. When a check result says the repair limit is
+reached, make no more edits and finish with outcome partial, explaining what
+you changed, what still fails, and what you would try next.
 Deliver the answer the user requested, not a report of having prepared it.
 Explanations and reviews do not require edits. Finish with a complete answer in
 ordinary response text, or call finish_task with that answer and an optional
