@@ -59,12 +59,15 @@ class WebAccess:
     def approve(self, host: str) -> None:
         self._approved.add(host)
 
-    def page(self, url: str, *, allowed: Callable[[str, str], str | None]) -> Page:
-        """Fetch ``url``, or reuse this task's earlier fetch of it."""
+    def page(
+        self, url: str, *, allowed: Callable[[str, str], str | None]
+    ) -> tuple[Page, bool]:
+        """Fetch ``url``, or reuse this task's earlier fetch of it; the flag
+        says whether it was downloaded now."""
 
         cached = self._pages.get(url)
         if cached is not None:
-            return cached
+            return cached, False
         page = fetch(
             url,
             max_bytes=self._max_bytes,
@@ -76,7 +79,7 @@ class WebAccess:
         if len(self._pages) >= _MAX_CACHED_PAGES:
             self._pages.pop(next(iter(self._pages)))
         self._pages[url] = page
-        return page
+        return page, True
 
 
 def host_of(url: str) -> str:

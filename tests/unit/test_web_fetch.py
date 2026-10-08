@@ -160,6 +160,15 @@ def test_html_becomes_readable_text() -> None:
         html_to_text('<h2>Title</h2><p>a <b>bold</b>\n word <a href="#top">top</a></p>')
         == "## Title\n\na bold word top"
     )
+    # Heading permalinks are dropped; in-page links with text are kept.
+    assert (
+        html_to_text(
+            '<h2>Usage<a class="headerlink" href="#usage">¶</a></h2>'
+            '<h3>More<a href="#more"><svg><path/></svg></a></h3>'
+            '<p>See note<a href="#fn1">1</a>.</p>'
+        )
+        == "## Usage\n\n### More\n\nSee note1."
+    )
 
 
 def test_domain_patterns_match_hosts_or_their_subdomains() -> None:
@@ -261,7 +270,7 @@ def test_urls_and_pages_with_secrets_are_refused(tmp_path: Path, server: int) ->
 def test_long_pages_are_read_in_parts(tmp_path: Path, server: int) -> None:
     from llm_cli.agent.limits import ExecutionLimits
 
-    broker, _, _ = _broker(
+    broker, _, events = _broker(
         tmp_path, "allow", limits=ExecutionLimits(max_tool_output_bytes=1_512)
     )
     url = f"http://docs.test:{server}/big"
@@ -274,6 +283,9 @@ def test_long_pages_are_read_in_parts(tmp_path: Path, server: int) -> None:
     assert last.content.endswith("x" * 1_000)
     past = broker.invoke("web_fetch", {"url": url, "offset": 5_000})
     assert past.is_error and "past the end" in past.content
+    # Later parts come from this task's cache, so only one fetch is reported.
+    fetched = [payload for kind, payload in events if kind == "web.fetched"]
+    assert fetched == [{"domain": "docs.test", "characters": 3_000}]
 
 
 def test_web_fetch_is_configured_strictly(tmp_path: Path) -> None:
