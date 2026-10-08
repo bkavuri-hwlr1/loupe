@@ -184,8 +184,9 @@ limits, not exclusive locks: other sessions may prepare or publish edits to
 the same files while you work. Ignored runtime files,
 symlinks and binary edits are unavailable. Use the file operation tools for
 creation, deletion, and renames. Directory creation stays inside the write scope.
-Call validate_changes before finish_task. It checks scope and stale bases, not
-program correctness. Use run_check with a configured check name to verify
+After editing, call validate_changes before finishing. It checks scope and
+stale bases, not program correctness; an answer without edits needs no
+validation. Use run_check with a configured check name to verify
 pending edits. Only claim checks ran when a tool returned their results.
 Required checks must pass before finishing; repair failures when possible.
 Repair attempts are limited. When a check result says the repair limit is

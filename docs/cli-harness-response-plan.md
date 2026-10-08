@@ -5,11 +5,12 @@ context management (phase 7, items 1–3), sandboxed commands (item 4), faster
 read tools (item 5), the task plan tool (item 6), stdio MCP tools (item 7),
 user hooks (item 8), exploration helpers (item 9), read-only web fetch
 (item 10), token usage display (item 11), and the live-model benchmark
-(item 12) implemented, as is bounded repair (phase 5); broader harness work
-remains.
+(item 12) implemented, as are bounded repair (phase 5) and the live behavior
+matrix (phase 6); broader harness work remains.
 Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03,
 items 4–6 and 9 completed 2026-10-04, items 7–8 and 11–12 completed
-2026-10-06, item 10 and bounded repair completed 2026-10-07
+2026-10-06, item 10 and bounded repair completed 2026-10-07, live behavior
+matrix completed 2026-10-08
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -60,8 +61,9 @@ conversation unchanged and runs no tools, so this is safe; the failed
 attempt's draft is dropped rather than kept as a partial response.
 Finalization requests are not retried this way, because their attempts are
 budgeted separately (see phase 2). Repair after a failing check is bounded
-(phase 5). The remaining roadmap includes response-only retry and the full
-deterministic/live-provider behavior matrix.
+(phase 5), and the live benchmark runs the phase 6 behavior scenarios. The
+remaining roadmap includes response-only retry and durable post-settlement
+finalization.
 
 Revalidation against `origin/main` on macOS/Python 3.14 on 2026-09-23 passes
 1,233 tests with 83% branch coverage, Ruff, strict mypy, whitespace checks,
@@ -404,6 +406,32 @@ tool/model calls, time to meaningful progress, final-answer latency, duplication
 and user interventions. Establish a baseline first; compare provider/model
 combinations on the same fixtures. Do not use a model judge as execution authority.
 
+*Implemented as the live-provider half of this gate in `scripts/live_benchmark.py`
+(task set version 2). Besides the original repository questions, it runs a
+repository summary, a direct question, a review with a planted bug and one of
+correct code, a plan request in auto mode, a fix that a required check
+verifies, a fix whose tests contradict each other, an ambiguous request that
+needs one question, a long guide, and an edit task that is cancelled, or whose
+service is killed and restarted, after its first edit. Edit and review tasks run
+in small fixture repositories (`scripts/benchmark_fixtures/`), so they are
+cheap and repeatable. Each task is scored on behavior, from its durable events:
+final task state, model outcome, whether it edited, what its checks reported,
+questions asked, answer length, model turns, and that every tool result and
+answer part was recorded exactly once and the run made one task. A missing
+answer after a finish intent, provider failures, conflicts, and two attached
+viewers remain covered by the deterministic suites, since a real model cannot
+be made to produce them on demand.*
+
+*The first full run with Codex (2026-10-08, 14 tasks, about 25 minutes and
+2.5M prompt tokens) passed 12 tasks and found two problems. A direct question
+in normal mode spent an extra model turn calling `validate_changes` with no
+edits, because the shared-workspace prompt asked for it before every finish;
+the prompt now asks for it only after editing, and that task dropped from four
+model turns to three. The contradictory-tests fix asked which test should win,
+a fair question that the benchmark could not yet answer; answers are now given
+through the daemon only when the agent asks, and the task finishes partial
+with its edit held and the failing check reported.*
+
 CI remains Linux/macOS × Python 3.12/3.14 with subprocess coverage. Include a
 restricted control-thread pool, split PTY writes, resize, 40/80/120-column screens,
 NO_COLOR, redirected output, and injected crashes at finalization boundaries.
@@ -689,22 +717,28 @@ cost: prices depend on the provider and plan, and ChatGPT subscriptions are
 not billed per token. The meter appears after the first turn of a visit or a
 `/usage`; it is not fetched when a session opens.
 
-**12. Live-model benchmark (implemented).** `scripts/live_benchmark.py` answers
-a small, versioned set of real repository questions
-(`scripts/live_benchmark.toml`) with a real model, to catch regressions when
-prompts, tools, or settings change. It is opt-in and billed, so it never runs in
-CI. It runs against a signed-in profile other than `default`, whose background
-service it restarts with a temporary configuration built from `--set` options,
-and answers each task in a clean clone of this repository at the task file's
-pinned revision. Each task records whether it completed, which expected facts
-the answer states (each fact lists acceptable wordings), whether it used
-`explore` when expected or avoided it when not, main-conversation turns and tool
-calls, peak context, prompt, output, cached, and helper tokens, and each
-exploration's state, calls, time, retries, and effort. Wall time is reported
-with the time the machine slept during the task, so slept runs are not compared
-as if they were slow. A token budget (default 3M) stops the run before the next
-task once spent. Results are JSON; `--compare OLD NEW` shows per-task changes.
-No model judges answers.
+**12. Live-model benchmark (implemented).** `scripts/live_benchmark.py` runs
+a small, versioned set of real tasks (`scripts/live_benchmark.toml`) with a real
+model, to catch regressions when prompts, tools, or settings change. It is
+opt-in and billed, so it never runs in CI. It runs against a signed-in profile
+other than `default`, whose background service it restarts with a temporary
+configuration built from `--set` options. Nobody is at the terminal, so that
+configuration runs sandboxed commands without asking and fetches no web pages
+unless `--set` says otherwise; a question left pending after the chat exits
+cancels the task instead of stalling the run. Repository questions run in a
+clean clone of this repository at the task file's pinned revision; edit, check,
+and review tasks run in fresh fixture repositories with their checks
+configured. Typed answers can follow the prompt, and a task can be cancelled or
+have its service killed and restarted after its first edit. Each task records
+the behavior checks described in phase 6, which expected facts the answer states
+(each fact lists acceptable wordings), whether it used `explore` when expected
+or avoided it when not, main-conversation turns and tool calls, peak context,
+prompt, output, cached, and helper tokens, and each exploration's state, calls,
+time, retries, and effort. Wall time is reported with the time the machine
+slept during the task, so slept runs are not compared as if they were slow. A
+token budget (default 3M) stops the run before the next task once spent.
+Results are JSON; `--compare OLD NEW` shows per-task changes. No model judges
+answers.
 
 **Exit criteria (items 1–3):** a conversation that exceeds the input budget
 continues after one summary without losing task constraints; restart after a
