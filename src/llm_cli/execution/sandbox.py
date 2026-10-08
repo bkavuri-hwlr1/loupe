@@ -14,12 +14,18 @@ Reads outside protected paths remain possible, so this is a weaker guarantee
 than a full read allowlist; callers also screen command output for recognized
 secrets. Without a working sandbox the capability is unavailable: a
 model-chosen command never runs unsandboxed.
+
+Seatbelt decides each socket connection by path. Bubblewrap cannot: a
+read-only mount does not stop a Unix-socket connect, so host sockets are
+hidden instead. Private ``/tmp`` and ``/run`` hide the usual ones, and every
+other socket bound when the command starts is covered by an empty file.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,6 +37,11 @@ from pathlib import Path
 SEATBELT = "seatbelt"
 BUBBLEWRAP = "bubblewrap"
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+# Bound sockets in this network namespace, with the paths they were bound at.
+_NET_UNIX = Path("/proc/net/unix")
+# Directories bubblewrap replaces with private copies; host sockets there are
+# already out of reach.
+_PRIVATE_DIRECTORIES = (Path("/tmp"), Path("/run"), Path("/dev"), Path("/proc"))
 
 # Credential and secret stores under the home directory. Reading these is
 # never needed to build or test a project.
@@ -281,10 +292,53 @@ def _bubblewrap(policy: SandboxPolicy, argv: Sequence[str], cwd: Path) -> list[s
     for path in policy.readable:
         if path.exists():
             command.extend(("--ro-bind", str(path), str(path)))
+    # Any other host socket the command could see is covered by an empty file.
+    for path in _host_sockets():
+        if _visible(path, policy):
+            command.extend(("--ro-bind", "/dev/null", str(path)))
     for path in policy.writable:
         command.extend(("--bind", str(path), str(path)))
     command.extend(("--chdir", str(cwd), "--", *argv))
     return command
+
+
+def _host_sockets() -> list[Path]:
+    """Sockets bound at absolute paths in this network namespace, resolved.
+
+    Sockets bound later, bound in another network namespace, or bound by a
+    relative path are not listed.
+    """
+
+    try:
+        table = _NET_UNIX.read_bytes()
+    except OSError:
+        return []
+    found: set[Path] = set()
+    for line in table.splitlines()[1:]:
+        # Num RefCount Protocol Flags Type St Inode [Path], where a path may
+        # contain spaces and an abstract name starts with "@".
+        fields = line.split(maxsplit=7)
+        if len(fields) < 8 or not fields[7].startswith(b"/"):
+            continue
+        path = Path(os.path.realpath(os.fsdecode(fields[7])))
+        try:
+            if stat.S_ISSOCK(path.lstat().st_mode):
+                found.add(path)
+        except OSError:
+            # An unreachable path is unreachable from the sandbox too.
+            continue
+    return sorted(found)
+
+
+def _visible(path: Path, policy: SandboxPolicy) -> bool:
+    """Whether a host path shows through the sandbox's mounts at its location."""
+
+    def under(roots: Sequence[Path]) -> bool:
+        return any(path.is_relative_to(root) for root in roots)
+
+    if under(_PRIVATE_DIRECTORIES) or under(policy.writable):
+        return False
+    return under(policy.readable) or not under(policy.protected)
 
 
 __all__ = [

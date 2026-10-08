@@ -167,7 +167,8 @@ bubblewrap on Linux), and never unsandboxed. Each command runs in a disposable
 copy of the checkout with the task's pending edits applied:
 
 - the network is off; only Unix sockets inside the command's own copy and home
-  can be used, so host sockets such as SSH agents and Docker are unreachable;
+  can be used, so host sockets such as SSH agents, Docker, and Git's credential
+  cache are unreachable (see the Linux limit below);
 - writes are limited to the copy and a private home, both deleted afterwards;
 - the real checkout, Loupe's configuration, data, state, and runtime
   directories, and common credential stores under the home directory (SSH,
@@ -194,6 +195,14 @@ command's remaining processes when it ends; signals cannot leave the sandbox,
 so nothing else is affected. A command that deliberately kills that reaper
 first can leave a process running, still sandboxed, with its copy and home
 deleted.
+
+Seatbelt checks every socket connection against the command's paths.
+Bubblewrap cannot, because a read-only mount does not stop a connection, so on
+Linux host sockets are hidden instead: `/tmp` and `/run` are private, the
+listed credential stores are hidden, and every other socket that is bound when
+the command starts is covered. A socket that a host process binds while the
+command runs, or one bound inside another network namespace such as a
+container, can still be reachable if its path is readable.
 
 Approval follows `agent.commands` in the user configuration. The default,
 `ask`, offers commands only in interactive sessions and asks the user before

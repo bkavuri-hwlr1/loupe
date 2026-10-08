@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -83,6 +86,79 @@ def test_bubblewrap_masks_protected_paths_before_exceptions_and_writes(
     bound = joined.index(f"--bind {snapshot} {snapshot}")
     assert masked < exposed < bound
     assert argv[-5:] == ["--chdir", str(snapshot), "--", "make", "test"]
+
+
+@pytest.fixture
+def visible_directory() -> Iterator[Path]:
+    """A directory outside the ones bubblewrap replaces, such as /tmp."""
+
+    directory = Path(tempfile.mkdtemp(prefix="loupe-sock-", dir="/var/tmp"))
+    try:
+        yield directory.resolve()
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _socket_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with socket.socket(socket.AF_UNIX) as bound:
+        bound.bind(str(path))
+
+
+def test_bubblewrap_covers_host_sockets_the_command_could_reach(
+    visible_directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = visible_directory
+    reachable = root / "agent.sock"
+    exposed = root / "secret" / "dependency" / "dev.sock"
+    hidden = root / "secret" / "key.sock"
+    private = root / "private" / "bus.sock"
+    own = root / "snapshot" / "own.sock"
+    for path in (reachable, exposed, hidden, private, own):
+        _socket_file(path)
+    bound = [
+        reachable,
+        exposed,
+        hidden,
+        private,
+        own,
+        root / "secret",  # not a socket
+        root / "missing.sock",
+        "@abstract",
+        "relative.sock",
+        reachable,  # one entry per connection
+    ]
+    table = root / "unix"
+    table.write_text(
+        "Num       RefCount Protocol Flags    Type St Inode Path\n"
+        + "".join(
+            f"0000000000000000: 00000002 00000000 00010000 0001 01 {inode} {path}\n"
+            for inode, path in enumerate(bound)
+        )
+        + "0000000000000000: 00000002 00000000 00000000 0002 01 99\n"
+    )
+    monkeypatch.setattr(sandbox, "_NET_UNIX", table)
+    monkeypatch.setattr(sandbox, "_PRIVATE_DIRECTORIES", (root / "private",))
+    snapshot = root / "snapshot"
+    policy = SandboxPolicy(
+        writable=(snapshot,),
+        protected=(root / "secret",),
+        readable=(exposed.parent,),
+    )
+
+    argv = wrap(sandbox.BUBBLEWRAP, policy, ["true"], cwd=snapshot)
+
+    covered = [
+        argv[index + 2]
+        for index, value in enumerate(argv)
+        if value == "--ro-bind" and argv[index + 1] == "/dev/null"
+    ]
+    assert covered == [str(reachable), str(exposed)]
+    joined = " ".join(argv)
+    # A cover sits on top of the exception that would expose the socket.
+    assert joined.index(f"--ro-bind {exposed.parent} {exposed.parent}") < (
+        joined.index(f"--ro-bind /dev/null {exposed}")
+    )
 
 
 def test_unknown_sandbox_is_refused(tmp_path: Path) -> None:
@@ -255,26 +331,42 @@ def test_real_sandbox_allows_unix_sockets_only_in_writable_paths(
     assert inside.stdout.strip() == "connected", inside.stderr
 
     # A host socket outside the sandbox's paths, like an SSH agent.
-    host = socket.socket(socket.AF_UNIX)
     path = Path("/tmp") / f"loupe-test-{os.getpid()}.sock"
     path.unlink(missing_ok=True)
-    host.bind(str(path))
-    host.listen(1)
     try:
-        reach = (
-            "import socket, sys\n"
-            "client = socket.socket(socket.AF_UNIX)\n"
-            "try:\n"
-            f"    client.connect({str(path)!r})\n"
-            "except OSError:\n"
-            "    print('blocked')\n"
-            "else:\n"
-            "    print('connected')\n"
-        )
-        outside = _run(
-            _policy(layout), [sys.executable, "-c", reach], layout["snapshot"]
-        )
+        outside = _connect_to_host_socket(layout, path)
     finally:
-        host.close()
         path.unlink(missing_ok=True)
     assert outside.stdout.strip() == "blocked", outside.stderr
+
+
+@needs_sandbox
+def test_real_sandbox_cannot_reach_host_sockets_in_readable_directories(
+    layout: dict[str, Path], visible_directory: Path
+) -> None:
+    # Like Git's credential cache under the home directory: readable, so only
+    # covering the socket keeps a connection out.
+    outside = _connect_to_host_socket(layout, visible_directory / "agent.sock")
+
+    assert outside.stdout.strip() == "blocked", outside.stderr
+
+
+def _connect_to_host_socket(
+    layout: dict[str, Path], path: Path
+) -> subprocess.CompletedProcess[str]:
+    """Listen on ``path`` outside the sandbox and try to connect from inside."""
+
+    reach = (
+        "import socket\n"
+        "client = socket.socket(socket.AF_UNIX)\n"
+        "try:\n"
+        f"    client.connect({str(path)!r})\n"
+        "except OSError:\n"
+        "    print('blocked')\n"
+        "else:\n"
+        "    print('connected')\n"
+    )
+    with socket.socket(socket.AF_UNIX) as host:
+        host.bind(str(path))
+        host.listen(1)
+        return _run(_policy(layout), [sys.executable, "-c", reach], layout["snapshot"])
