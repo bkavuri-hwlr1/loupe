@@ -1,4 +1,4 @@
-"""Answer real repository questions with a real model and measure the result.
+"""Run real tasks with a real model and check how the agent behaves.
 
 Run with `uv run --extra openai python scripts/live_benchmark.py --profile NAME`.
 
@@ -7,34 +7,63 @@ the test suite. NAME must be a profile you have already signed in to (`loupe
 --profile NAME`, then `/login`); the default profile is refused, because the
 benchmark restarts the profile's background service. For the run, that service
 gets its own configuration, built from `--set` options, so your configuration
-file is not used or changed. Each task is answered in a clone of this
-repository at the revision the task file names. Results are written as JSON;
-`--compare OLD NEW` prints how two runs differ.
+file is not used or changed.
+
+A task runs either in a clone of this repository at the revision the task file
+names, or in a fresh Git repository made from one of `benchmark_fixtures/`,
+with that task's checks configured. Each task is scored on what the agent did,
+not only on its answer: the task's final state, whether it edited files, what
+its checks reported, how many questions it asked, and whether every tool
+result and answer was recorded exactly once. A task can also be cancelled or
+have its background service killed and restarted after its first edit.
+Results are written as JSON; `--compare OLD NEW` prints how two runs differ.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import tomllib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from llm_cli.config.loader import load_settings
+from llm_cli.errors import LlmCoordError
 from llm_cli.paths import AppPaths
+from llm_cli.protocol.client import DaemonClient
 
 ROOT = Path(__file__).resolve().parents[1]
 TASKS = Path(__file__).with_name("live_benchmark.toml")
+FIXTURES = Path(__file__).with_name("benchmark_fixtures")
 _EXPLORE_EXPECTATIONS = {"any", "never", "expected"}
+_EDIT_EXPECTATIONS = {"any", "none", "some"}
+_INTERRUPTS = {"cancel", "crash"}
+_OUTCOMES = {"completed", "partial", "blocked"}
+# Task states a task stays in once it stops working.
+_SETTLED = frozenset(
+    {
+        "reviewing",
+        "completed",
+        "failed",
+        "cancelled",
+        "ready_for_integration",
+        "operator_attention",
+    }
+)
+_EDIT_TOOLS = frozenset(
+    {"write_file", "apply_patch", "create_directory", "delete_file", "rename_file"}
+)
 # Wall-clock time beyond the monotonic clock's means the machine slept; such a
 # run's timings are not comparable.
 _SUSPENSION_NOTICE_SECONDS = 5.0
@@ -48,6 +77,23 @@ class Task:
     explore: str = "any"
     facts: tuple[tuple[str, ...], ...] = ()
     min_facts: float = 1.0
+    # A directory in benchmark_fixtures/; otherwise the pinned clone.
+    fixture: str | None = None
+    # Configured checks, {name: {argv, ...}}; "{python}" in argv is replaced
+    # with this interpreter, which has pytest.
+    checks: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    # Expected task state once it stops, and the model outcomes allowed.
+    state: str = "completed"
+    outcomes: tuple[str, ...] = ()
+    edits: str = "any"
+    verification: str | None = None
+    questions: int | None = None
+    # Replies to the agent's questions, in order, given only when it asks.
+    answers: tuple[str, ...] = ()
+    min_answer_characters: int = 0
+    max_main_turns: int | None = None
+    # "cancel" or "crash", applied after the task's first edit.
+    interrupt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,18 +123,74 @@ def load_suite(path: Path = TASKS) -> Suite:
             explore=str(raw.get("explore", "any")),
             facts=tuple(tuple(fact) for fact in facts),
             min_facts=float(raw.get("min_facts", 1.0)),
+            fixture=raw.get("fixture"),
+            checks=raw.get("checks", {}),
+            state=str(raw.get("state", "completed")),
+            outcomes=tuple(raw.get("outcomes", ())),
+            edits=str(raw.get("edits", "any")),
+            verification=raw.get("verification"),
+            questions=raw.get("questions"),
+            answers=tuple(raw.get("answers", ())),
+            min_answer_characters=int(raw.get("min_answer_characters", 0)),
+            max_main_turns=raw.get("max_main_turns"),
+            interrupt=raw.get("interrupt"),
         )
-        if task.mode not in {"plan", "normal", "auto"}:
-            raise ValueError(f"task {task.id!r}: unknown mode {task.mode!r}")
-        if task.explore not in _EXPLORE_EXPECTATIONS:
-            raise ValueError(f"task {task.id!r}: unknown explore {task.explore!r}")
-        if not task.prompt or not 0 < task.min_facts <= 1:
-            raise ValueError(f"task {task.id!r}: needs a prompt and 0 < min_facts <= 1")
+        _validate(task)
         tasks.append(task)
     ids = [task.id for task in tasks]
     if not tasks or len(set(ids)) != len(ids):
         raise ValueError("the task file needs tasks with unique ids")
     return Suite(version, revision, tuple(tasks))
+
+
+def _validate(task: Task) -> None:
+    def refuse(problem: str) -> ValueError:
+        return ValueError(f"task {task.id!r}: {problem}")
+
+    if task.mode not in {"plan", "normal", "auto"}:
+        raise refuse(f"unknown mode {task.mode!r}")
+    if task.explore not in _EXPLORE_EXPECTATIONS:
+        raise refuse(f"unknown explore {task.explore!r}")
+    if not task.prompt or not 0 < task.min_facts <= 1:
+        raise refuse("needs a prompt and 0 < min_facts <= 1")
+    if task.fixture is not None and not (
+        isinstance(task.fixture, str)
+        and task.fixture.replace("-", "").isalnum()
+        and (FIXTURES / task.fixture).is_dir()
+    ):
+        raise refuse(f"no fixture named {task.fixture!r}")
+    if task.checks and task.fixture is None:
+        raise refuse("checks need a fixture")
+    if not isinstance(task.checks, Mapping) or not all(
+        isinstance(spec, Mapping)
+        and isinstance(spec.get("argv"), list)
+        and spec["argv"]
+        and all(isinstance(item, str) for item in spec["argv"])
+        for spec in task.checks.values()
+    ):
+        raise refuse("each check needs an argv list")
+    if task.state not in _SETTLED:
+        raise refuse(f"unknown state {task.state!r}")
+    if not set(task.outcomes) <= _OUTCOMES:
+        raise refuse(f"outcomes must be among {sorted(_OUTCOMES)}")
+    if task.edits not in _EDIT_EXPECTATIONS:
+        raise refuse(f"unknown edits {task.edits!r}")
+    if task.verification not in {None, "passed", "failed"}:
+        raise refuse(f"unknown verification {task.verification!r}")
+    if task.questions is not None and (
+        type(task.questions) is not int or task.questions < 0
+    ):
+        raise refuse("questions must be a count")
+    if not all(isinstance(answer, str) and answer for answer in task.answers):
+        raise refuse("answers must be nonblank lines")
+    if task.max_main_turns is not None and (
+        type(task.max_main_turns) is not int or task.max_main_turns < 1
+    ):
+        raise refuse("max_main_turns must be a positive count")
+    if task.interrupt is not None and task.interrupt not in _INTERRUPTS:
+        raise refuse(f"interrupt must be one of {sorted(_INTERRUPTS)}")
+    if task.interrupt is not None and task.mode == "plan":
+        raise refuse("an interrupt needs an edit, which plan mode cannot make")
 
 
 def fact_coverage(
@@ -113,6 +215,38 @@ class Metrics:
     peak_context_tokens: int = 0
     usage: dict[str, int] = field(default_factory=dict)
     explorations: list[dict[str, Any]] = field(default_factory=list)
+    questions: int = 0
+    # Edit tool calls that succeeded, and the files a held proposal kept.
+    edits: int = 0
+    files_kept: int | None = None
+    verification: str | None = None
+    # Tool results and answer parts recorded more than once.
+    repeated_results: int = 0
+    repeated_answers: int = 0
+    resumed: bool = False
+
+
+def awaiting_answer(events: Iterable[tuple[str, Mapping[str, Any]]]) -> bool:
+    """Whether the task is waiting on a question nobody has answered."""
+
+    pending = 0
+    for kind, _ in events:
+        if kind == "question.asked":
+            pending += 1
+        elif kind in {"question.answered", "question.unanswered"}:
+            pending -= 1
+    return pending > 0
+
+
+def edit_seen(events: Iterable[tuple[str, Mapping[str, Any]]]) -> bool:
+    """Whether an edit tool call has succeeded, so an interrupt can follow."""
+
+    return any(
+        kind == "model.tool_result"
+        and payload.get("tool") in _EDIT_TOOLS
+        and not payload.get("is_error")
+        for kind, payload in events
+    )
 
 
 def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics:
@@ -121,10 +255,19 @@ def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics
     metrics = Metrics()
     answer_parts: dict[int, str] = {}
     efforts: dict[object, object] = {}
+    # Long text is split into numbered parts of one event; a part seen twice
+    # was recorded twice.
+    results: set[tuple[object, object]] = set()
+    answers: set[tuple[object, object]] = set()
+    # A task that stops without an answer reports no total; add its turns.
+    turn_usage: dict[str, int] = {}
     for kind, payload in events:
         if kind == "model.turn.completed":
             metrics.main_turns += 1
             usage = payload.get("usage") or {}
+            for key, value in usage.items():
+                if type(value) is int:
+                    turn_usage[key] = turn_usage.get(key, 0) + value
             context = payload.get("context_tokens")
             if type(context) is not int:
                 context = usage.get("prompt_tokens", usage.get("input_tokens", 0))
@@ -132,6 +275,22 @@ def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics
         elif kind == "model.tool_call":
             tool = str(payload.get("tool"))
             metrics.main_tool_calls[tool] = metrics.main_tool_calls.get(tool, 0) + 1
+        elif kind == "model.tool_result":
+            key = (payload.get("call_id"), payload.get("part", 0))
+            metrics.repeated_results += key in results
+            results.add(key)
+            if payload.get("tool") in _EDIT_TOOLS and not payload.get("is_error"):
+                metrics.edits += 1
+        elif kind == "question.asked":
+            metrics.questions += 1
+        elif kind == "execution.resuming":
+            metrics.resumed = True
+        elif kind in {"workflow.awaiting_review", "workflow.cancelled"}:
+            metrics.verification = payload.get("verification")
+            count = payload.get("file_count")
+            metrics.files_kept = count if type(count) is int else None
+        elif kind == "workflow.verification":
+            metrics.verification = payload.get("status")
         elif kind == "explore.started":
             efforts[payload.get("exploration_id")] = payload.get("effort")
         elif kind == "explore.finished":
@@ -148,6 +307,9 @@ def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics
         elif kind == "model.finished":
             # A long answer arrives in numbered parts of one message.
             part = payload.get("part", 0)
+            key = (payload.get("message_id"), part)
+            metrics.repeated_answers += key in answers
+            answers.add(key)
             answer_parts[part if type(part) is int else 0] = str(
                 payload.get("answer", "")
             )
@@ -160,21 +322,56 @@ def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics
                     if type(value) is int
                 }
     metrics.answer = "".join(answer_parts[part] for part in sorted(answer_parts))
+    if not metrics.usage:
+        metrics.usage = turn_usage
     return metrics
 
 
-def checks(task: Task, state: str | None, metrics: Metrics) -> dict[str, bool]:
+def checks(
+    task: Task,
+    state: str | None,
+    metrics: Metrics,
+    tasks_created: int = 1,
+    interrupted: bool = False,
+) -> dict[str, bool]:
     """Pass/fail for each expectation; a task passes when all of them do."""
 
     found, _ = fact_coverage(metrics.answer, task.facts)
     explored = metrics.main_tool_calls.get("explore", 0) > 0
-    result = {"completed": state == "completed"}
+    result = {
+        "state": state == task.state,
+        # Every tool result and answer part is recorded once, even across a
+        # restart, and the run's lines all went to this one task.
+        "recorded_once": not metrics.repeated_results and not metrics.repeated_answers,
+        "one_task": tasks_created == 1,
+    }
     if task.facts:
         result["facts"] = len(found) >= task.min_facts * len(task.facts)
     if task.explore == "never":
         result["no_explore"] = not explored
     elif task.explore == "expected":
         result["explored"] = explored
+    if task.outcomes:
+        result["outcome"] = metrics.outcome in task.outcomes
+    if task.edits == "none":
+        result["no_edits"] = metrics.edits == 0
+    elif task.edits == "some":
+        result["edited"] = metrics.edits > 0
+    if task.verification is not None:
+        result["verification"] = metrics.verification == task.verification
+    if task.questions is not None:
+        result["questions"] = metrics.questions == task.questions
+    if task.min_answer_characters:
+        result["answer_length"] = len(metrics.answer) >= task.min_answer_characters
+    if task.max_main_turns is not None:
+        result["turns"] = metrics.main_turns <= task.max_main_turns
+    if task.interrupt is not None:
+        # The interrupt happened only if the task made an edit first.
+        result["interrupted"] = interrupted
+    if task.interrupt == "cancel":
+        result["edits_kept"] = bool(metrics.files_kept)
+    elif task.interrupt == "crash":
+        result["resumed"] = metrics.resumed
     return result
 
 
@@ -185,10 +382,12 @@ def task_result(
     metrics: Metrics,
     wall_seconds: float,
     suspended_seconds: float,
+    tasks_created: int = 1,
+    interrupted: bool = False,
 ) -> dict[str, Any]:
     found, missed = fact_coverage(metrics.answer, task.facts)
     usage = metrics.usage
-    passed = checks(task, state, metrics)
+    passed = checks(task, state, metrics, tasks_created, interrupted)
     return {
         "id": task.id,
         "passed": all(passed.values()),
@@ -211,13 +410,27 @@ def task_result(
         "helper_prompt_tokens": usage.get("explore_prompt_tokens", 0),
         "explorations": metrics.explorations,
         "answer_characters": len(metrics.answer),
+        "questions": metrics.questions,
+        "edits": metrics.edits,
+        "files_kept": metrics.files_kept,
+        "verification": metrics.verification,
+        "repeated_results": metrics.repeated_results,
+        "repeated_answers": metrics.repeated_answers,
+        "tasks_created": tasks_created,
+        "interrupt": task.interrupt,
     }
+
+
+# Nobody is at the terminal to approve a command or a web page, and a pending
+# approval would also count as a question. Sandboxed commands run without
+# asking, and pages are not fetched, so runs do not depend on the network.
+_DEFAULT_SETTINGS = {"commands": '"allow"', "web_fetch": '"off"'}
 
 
 def write_config(directory: Path, settings: Sequence[str], profile: str) -> Path:
     """Write the run's configuration, refusing settings Loupe would reject."""
 
-    lines = ["[agent]"]
+    values = dict(_DEFAULT_SETTINGS)
     for item in settings:
         key, separator, value = item.partition("=")
         if not separator or not key.strip():
@@ -228,7 +441,8 @@ def write_config(directory: Path, settings: Sequence[str], profile: str) -> Path
             literal = value.strip()
         else:
             literal = json.dumps(value.strip())
-        lines.append(f"{key.strip()} = {literal}")
+        values[key.strip()] = literal
+    lines = ["[agent]", *(f"{key} = {literal}" for key, literal in values.items())]
     path = directory / "llm-coord" / "config.toml"
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -291,21 +505,165 @@ def _clone(paths: AppPaths, revision: str) -> Path:
     return clone
 
 
-def _new_task(
-    database: Path, since_ms: int, log: Path
-) -> tuple[str, str | None, str | None]:
+def checks_toml(checks: Mapping[str, Mapping[str, Any]], python: str) -> str:
+    """A `loupe checks configure` file for a task's checks."""
+
+    lines: list[str] = []
+    for name, spec in checks.items():
+        argv = [python if item == "{python}" else item for item in spec["argv"]]
+        lines += [f"[checks.{json.dumps(name)}]", f"argv = {json.dumps(argv)}"]
+        lines += [
+            f"{key} = {json.dumps(spec[key])}"
+            for key in ("cwd", "timeout", "required")
+            if key in spec
+        ]
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _fixture(directory: Path, name: str) -> Path:
+    """A fresh Git repository holding a copy of the fixture."""
+
+    shutil.copytree(FIXTURES / name, directory)
+    for arguments in (
+        ["init", "--quiet", "--initial-branch", "main"],
+        ["add", "--all"],
+        [
+            "-c",
+            "user.name=Loupe benchmark",
+            "-c",
+            "user.email=benchmark@localhost",
+            "commit",
+            "--quiet",
+            "--message",
+            f"{name} fixture",
+        ],
+    ):
+        subprocess.run(["git", "-C", str(directory), *arguments], check=True)
+    return directory.resolve()
+
+
+def _tasks_since(database: Path, since_ms: int) -> list[tuple[str, str | None]]:
+    """Tasks created since the run started, oldest first."""
+
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
-        row = connection.execute(
-            "SELECT task_id, state, failure_code FROM tasks WHERE created_at >= ? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (since_ms,),
-        ).fetchone()
-        if row is None:
-            raise SystemExit(f"the run created no task; see {log}")
-        return str(row[0]), row[1], row[2]
+        return [
+            (str(task_id), state)
+            for task_id, state in connection.execute(
+                "SELECT task_id, state FROM tasks WHERE created_at >= ? "
+                "ORDER BY created_at, rowid",
+                (since_ms,),
+            )
+        ]
     finally:
         connection.close()
+
+
+def _settle(
+    database: Path,
+    task_id: str,
+    deadline: float,
+    *,
+    answers: Sequence[str],
+    reply: Callable[[str], None],
+    cancel: Callable[[], None],
+) -> tuple[str | None, str | None, bool]:
+    """Wait for a task to stop working, once its chat has left.
+
+    Each question the agent asks gets the task's next answer. A question with
+    no answer left can never be answered, so the task is cancelled rather than
+    left waiting. Returns the state, failure code, and whether that happened.
+    """
+
+    remaining = list(answers)
+    stranded = False
+    while True:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                "SELECT state, failure_code FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        state, failure = (row[0], row[1]) if row else (None, None)
+        if state in _SETTLED or time.time() >= deadline:
+            return state, failure, stranded
+        if not stranded and awaiting_answer(_events(database, task_id)):
+            if remaining:
+                reply(remaining.pop(0))
+            else:
+                stranded = True
+                cancel()
+        time.sleep(1)
+
+
+def _reply(client: DaemonClient, task_id: str, answer: str) -> None:
+    """Answer the task's pending question, as the chat would."""
+
+    try:
+        client.call("task.answer", {"task_id": task_id, "answer": answer})
+    except LlmCoordError as exc:
+        print(f"  could not answer {task_id}'s question: {exc.message}", flush=True)
+
+
+def _cancel(loupe: Sequence[str], environment: Mapping[str, str], task_id: str) -> None:
+    subprocess.run(
+        [*loupe, "task", "cancel", task_id],
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _crash(
+    paths: AppPaths, loupe: Sequence[str], environment: Mapping[str, str]
+) -> None:
+    """Kill the background service without warning, then start it again."""
+
+    pid = json.loads(paths.pid_file.read_text(encoding="utf-8"))["pid"]
+    os.kill(pid, signal.SIGKILL)
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    started = subprocess.run(
+        [*loupe, "daemon", "start"], env=environment, capture_output=True, check=False
+    )
+    # The chat may have started it first when its connection dropped.
+    status = subprocess.run(
+        [*loupe, "daemon", "status"], env=environment, capture_output=True, check=False
+    )
+    if started.returncode != 0 and status.returncode != 0:
+        raise SystemExit("the background service did not restart after the crash")
+
+
+def _interrupt(
+    kind: str,
+    process: subprocess.Popen[str],
+    paths: AppPaths,
+    loupe: Sequence[str],
+    environment: Mapping[str, str],
+    since_ms: int,
+    deadline: float,
+) -> bool:
+    """After the task's first edit, cancel it or crash the service.
+
+    Returns whether that happened before the chat finished on its own.
+    """
+
+    while process.poll() is None and time.time() < deadline:
+        created = _tasks_since(paths.control_db, since_ms)
+        if created and edit_seen(_events(paths.control_db, created[0][0])):
+            if kind == "cancel":
+                _cancel(loupe, environment, created[0][0])
+            else:
+                _crash(paths, loupe, environment)
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _events(database: Path, task_id: str) -> list[tuple[str, dict[str, Any]]]:
@@ -339,7 +697,13 @@ def run(arguments: argparse.Namespace) -> int:
         config_home = Path(temporary).resolve()
         write_config(config_home, arguments.set, profile)
         environment = {**os.environ, "LLM_COORD_CONFIG_HOME": str(config_home)}
-        clone = _clone(paths, suite.revision)
+        clone = (
+            _clone(paths, suite.revision)
+            if any(task.fixture is None for task in tasks)
+            else None
+        )
+        fixtures = paths.state_dir / "benchmark" / "fixtures"
+        shutil.rmtree(fixtures, ignore_errors=True)
         subprocess.run([*loupe, "daemon", "stop"], capture_output=True, check=False)
         started = subprocess.run(
             [*loupe, "daemon", "start"],
@@ -364,28 +728,93 @@ def run(arguments: argparse.Namespace) -> int:
                     print(f"Stopping before {task.id}: the token budget is spent.")
                     break
                 print(f"Running {task.id}…", flush=True)
+                repository = clone
+                if task.fixture is not None:
+                    repository = _fixture(fixtures / task.id, task.fixture)
+                    if task.checks:
+                        config = Path(temporary) / f"{task.id}-checks.toml"
+                        config.write_text(
+                            checks_toml(task.checks, sys.executable), encoding="utf-8"
+                        )
+                        for command in (
+                            ["repo", "add", str(repository)],
+                            [
+                                "checks",
+                                "configure",
+                                *("--repo", str(repository)),
+                                *("--file", str(config)),
+                            ],
+                        ):
+                            subprocess.run(
+                                [*loupe, *command],
+                                env=environment,
+                                capture_output=True,
+                                check=True,
+                            )
+                assert repository is not None
                 since = int(time.time() * 1000)
                 wall, monotonic = time.time(), time.monotonic()
+                deadline = wall + arguments.timeout
                 log_path = paths.state_dir / "benchmark" / f"{task.id}.log"
                 with open(log_path, "w") as log:
-                    subprocess.run(
-                        [*chat, "--mode", task.mode, "--repo", str(clone)],
-                        input=task.prompt + "\n",
-                        text=True,
+                    process = subprocess.Popen(
+                        [*chat, "--mode", task.mode, "--repo", str(repository)],
+                        stdin=subprocess.PIPE,
                         stdout=log,
                         stderr=subprocess.STDOUT,
+                        text=True,
                         env=environment,
-                        timeout=arguments.timeout,
-                        check=False,
                     )
+                    assert process.stdin is not None
+                    # Only the prompt is typed. A question finds no more input,
+                    # so the chat leaves it pending and exits, and the answer
+                    # is given below, only if the agent asked.
+                    process.stdin.write(task.prompt + "\n")
+                    process.stdin.close()
+                    interrupted = task.interrupt is not None and _interrupt(
+                        task.interrupt,
+                        process,
+                        paths,
+                        loupe,
+                        environment,
+                        since,
+                        deadline,
+                    )
+                    try:
+                        process.wait(timeout=max(1.0, deadline - time.time()))
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                created = _tasks_since(paths.control_db, since)
+                if not created:
+                    raise SystemExit(f"the run created no task; see {log_path}")
+                task_id = created[0][0]
+                # After a crash or a question, the chat can leave while the
+                # task still works.
+                state, failure, stranded = _settle(
+                    paths.control_db,
+                    task_id,
+                    deadline,
+                    answers=task.answers,
+                    reply=functools.partial(_reply, DaemonClient(paths), task_id),
+                    cancel=functools.partial(_cancel, loupe, environment, task_id),
+                )
                 wall_seconds = time.time() - wall
                 suspended = max(0.0, wall_seconds - (time.monotonic() - monotonic))
-                task_id, state, failure = _new_task(paths.control_db, since, log_path)
                 metrics = summarize_events(_events(paths.control_db, task_id))
                 result = task_result(
-                    task, state, failure, metrics, wall_seconds, suspended
+                    task,
+                    state,
+                    failure,
+                    metrics,
+                    wall_seconds,
+                    suspended,
+                    tasks_created=len(created),
+                    interrupted=interrupted,
                 )
                 result["task_id"] = task_id
+                # Left waiting on a question after its chat had gone.
+                result["stranded_question"] = stranded
                 results.append(result)
                 spent += result["prompt_tokens"] + result["output_tokens"]
                 print(_line(result), flush=True)
@@ -421,13 +850,14 @@ def _line(result: Mapping[str, Any]) -> str:
     status = "pass" if result["passed"] else "FAIL"
     failed = [name for name, ok in result["checks"].items() if not ok]
     line = (
-        f"  {status} {result['id']}: {result['wall_seconds']}s, "
+        f"  {status} {result['id']}: {result['state']}, {result['wall_seconds']}s, "
         f"{result['main_tool_calls']} main calls, "
         f"{len(result['explorations'])} explorations, "
-        f"{result['prompt_tokens']:,} prompt tokens, "
-        f"facts {len(result['facts_found'])}/"
-        f"{len(result['facts_found']) + len(result['facts_missed'])}"
+        f"{result['prompt_tokens']:,} prompt tokens"
     )
+    facts = len(result["facts_found"]) + len(result["facts_missed"])
+    if facts:
+        line += f", facts {len(result['facts_found'])}/{facts}"
     if failed:
         line += f" (failed: {', '.join(failed)})"
     if result["suspended_seconds"] > _SUSPENSION_NOTICE_SECONDS:

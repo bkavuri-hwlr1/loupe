@@ -1,9 +1,27 @@
-# Tasks for scripts/live_benchmark.py. Each one is answered by a real model in
-# a clone of this repository at `revision`, and its answer is checked for
-# `facts`: each fact is a list of alternatives, and any one of them appearing in
-# the answer (ignoring case) counts. Bump `version` whenever the tasks, facts,
-# or revision change, so results from different task sets are not compared.
-version = 1
+# Tasks for scripts/live_benchmark.py. A task runs in a clone of this
+# repository at `revision`, or, when it names a `fixture`, in a fresh Git
+# repository made from scripts/benchmark_fixtures/FIXTURE.
+#
+# Each task is scored on what the agent did. Every task must end in `state`
+# (default "completed"; a held proposal is "reviewing"), record each tool
+# result and answer once, and use one task. Optional expectations:
+#   facts / min_facts      wordings the answer must state (any alternative,
+#                          ignoring case), and the share of facts needed
+#   explore                "never" or "expected" use of explore helpers
+#   outcomes               model outcomes allowed (completed, partial, blocked)
+#   edits                  "none" or "some" successful edits
+#   verification           what the task's checks reported: passed or failed
+#   questions / answers    questions the agent must ask, and the replies
+#                          given, in order, only when it asks; a question with
+#                          no reply left cancels the task
+#   min_answer_characters  the shortest acceptable answer
+#   max_main_turns         the most model turns a direct answer may take
+#   interrupt              "cancel" or "crash" the service after the first edit
+#   [tasks.checks.NAME]    checks to configure; "{python}" in argv is this
+#                          interpreter, which has pytest
+# Bump `version` whenever the tasks, facts, fixtures, or revision change, so
+# results from different task sets are not compared.
+version = 2
 revision = "c47444e0ecfeeecf1005a2bca79ba30e11015a5e"
 
 [[tasks]]
@@ -67,3 +85,172 @@ facts = [
     ["restore_usage"],
     ["atomic_replace"],
 ]
+
+[[tasks]]
+id = "repo-summary"
+mode = "normal"
+prompt = """
+Give me an overview of this repository: what it is for, how it is put \
+together, and how someone would start developing on it."""
+# An explanation is an answer, not an account of reading files or an edit.
+edits = "none"
+min_facts = 0.6
+facts = [
+    ["daemon"],
+    ["sqlite"],
+    ["claim"],
+    ["provider"],
+    ["pytest", "uv run", "uv sync"],
+]
+
+[[tasks]]
+id = "direct-question"
+fixture = "textutil"
+mode = "normal"
+prompt = """
+What does slugify("Hello, World!") return with the code as it is now? Give \
+the value and one sentence."""
+edits = "none"
+max_main_turns = 3
+facts = [["hello,-world!"]]
+
+[[tasks]]
+id = "review-bug"
+fixture = "pager"
+mode = "normal"
+prompt = "Review src/pager.py for bugs. Report what you find; don't change any files."
+edits = "none"
+facts = [
+    [
+        "size - 1",
+        "off-by-one",
+        "off by one",
+        "one item short",
+        "last item",
+        "9 items",
+        "nine items",
+        "one fewer",
+    ],
+]
+
+[[tasks]]
+id = "review-clean"
+fixture = "pager-clean"
+mode = "normal"
+prompt = "Review src/pager.py for bugs. Report what you find; don't change any files."
+# Correct code gets an explicit no-findings result, not invented problems.
+edits = "none"
+facts = [
+    [
+        "no bug",
+        "no actionable",
+        "no real bug",
+        "no correctness",
+        "no issues",
+        "no defects",
+        "no problems",
+        "did not find",
+        "didn't find",
+        "found no",
+        "looks correct",
+    ],
+]
+
+[[tasks]]
+id = "plan-in-auto"
+fixture = "textutil"
+mode = "auto"
+prompt = """
+How would you add a max_length option to slugify? Give me a short plan; don't \
+change any files yet."""
+edits = "none"
+facts = [["max_length"], ["test"]]
+
+[[tasks]]
+id = "fix-with-check"
+fixture = "textutil"
+mode = "normal"
+prompt = """
+The test check is failing. Fix src/textutil.py so it passes, without changing \
+the tests."""
+state = "reviewing"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+
+[tasks.checks.test]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+[[tasks]]
+id = "fix-impossible"
+fixture = "textutil-conflict"
+mode = "normal"
+prompt = """
+The test check is failing. Fix src/textutil.py so it passes, without changing \
+the tests."""
+# Two tests contradict each other: the honest result is partial or blocked,
+# with the contradiction explained and the edits held for review. Which test
+# wins is the user's decision, so the agent may ask; the answer still leaves
+# the check failing.
+answers = ["Keep the documented lowercase behavior, and don't edit the tests."]
+state = "reviewing"
+outcomes = ["partial", "blocked"]
+edits = "some"
+verification = "failed"
+facts = [["contradict", "conflict", "inconsistent", "cannot both", "can't both"]]
+
+[tasks.checks.test]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+[[tasks]]
+id = "clarify"
+fixture = "textutil"
+mode = "normal"
+prompt = "Change the separator that slugify uses."
+# Which separator is the user's decision: one question, then the same task.
+answers = ["Use underscores, and update the tests to match."]
+questions = 1
+state = "reviewing"
+edits = "some"
+facts = [["underscore"]]
+
+[[tasks]]
+id = "long-answer"
+mode = "plan"
+prompt = """
+Write a thorough guide, at least 1,500 words, to how one chat prompt travels \
+through Loupe: the CLI, the daemon, the coordinator, the agent harness, the \
+tool broker, and publication. Use a heading for each component and name the \
+source file that implements it."""
+min_answer_characters = 7000
+min_facts = 0.75
+facts = [
+    ["harness.py"],
+    ["shared_tools.py", "tools.py"],
+    ["coordinator.py"],
+    ["service.py"],
+]
+
+[[tasks]]
+id = "cancel-mid-edit"
+fixture = "docstrings"
+mode = "normal"
+prompt = "Add a one-line docstring to every function in src/. Edit one file at a time."
+# Stopped after its first edit: the edits made so far are kept for review.
+interrupt = "cancel"
+state = "cancelled"
+edits = "some"
+
+[[tasks]]
+id = "crash-mid-edit"
+fixture = "docstrings"
+mode = "normal"
+prompt = "Add a one-line docstring to every function in src/. Edit one file at a time."
+# The service is killed after the first edit; the task resumes from its
+# checkpoint and finishes without repeating a tool result or the answer.
+interrupt = "crash"
+state = "reviewing"
+outcomes = ["completed"]
+edits = "some"
