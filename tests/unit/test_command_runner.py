@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
+import sys
 import threading
+import time
+import uuid
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -161,6 +167,77 @@ def test_timeout_stops_the_command(repository: Path, tmp_path: Path) -> None:
 
     assert result.is_error
     assert result.content.startswith("timed out after ")
+
+
+# Leaves the command's process group and keeps its output open. A unique token
+# among its arguments finds it from outside any process namespace.
+_DETACHED = "import os, time; os.setsid(); time.sleep(30)"
+
+
+def _detached_command(token: str, then: str = "") -> list[str]:
+    script = f'{sys.executable} -c "$0" {token} & echo started{then}'
+    return ["sh", "-c", script, _DETACHED]
+
+
+def _processes(token: str) -> list[int]:
+    listing = subprocess.run(
+        ["ps", "-A", "-o", "pid=,command="], capture_output=True, text=True, check=True
+    ).stdout
+    return [int(line.split()[0]) for line in listing.splitlines() if token in line]
+
+
+def _gone(token: str) -> bool:
+    deadline = time.monotonic() + 5
+    while _processes(token):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def _kill(token: str) -> None:
+    for pid in _processes(token):
+        with suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGKILL)
+
+
+@pytest.mark.usefixtures("unsandboxed")
+def test_a_detached_process_cannot_hold_a_command_open(
+    repository: Path, tmp_path: Path
+) -> None:
+    token = f"loupe-detached-{uuid.uuid4().hex}"
+    started = time.monotonic()
+    try:
+        result = _runner(repository, tmp_path).run(_detached_command(token), ".", 60)
+
+        assert time.monotonic() - started < 10
+        # Finishing is not a timeout, even if reading output ran past one.
+        assert result.content.startswith("exit 0 after "), result.content
+        assert "started" in result.content
+        if sys.platform.startswith("linux"):
+            # The supervisor adopts and stops it; macOS has no equivalent
+            # outside the sandbox.
+            assert _gone(token)
+    finally:
+        _kill(token)
+
+
+@needs_sandbox
+@pytest.mark.parametrize("finishes", [True, False])
+def test_sandboxed_command_leaves_no_detached_process(
+    repository: Path, tmp_path: Path, finishes: bool
+) -> None:
+    token = f"loupe-detached-{uuid.uuid4().hex}"
+    command = _detached_command(token, "" if finishes else "; sleep 30")
+    started = time.monotonic()
+    try:
+        result = _runner(repository, tmp_path).run(command, ".", 30 if finishes else 1)
+
+        assert time.monotonic() - started < 10
+        assert result.content.startswith("exit 0" if finishes else "timed out")
+        assert _gone(token)
+    finally:
+        _kill(token)
 
 
 @pytest.mark.usefixtures("unsandboxed")

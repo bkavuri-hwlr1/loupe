@@ -141,7 +141,10 @@ uses the existing 30-day retention window; unresolved proposals and recovery
 journals remain pinned.
 
 Interrupted checks are uncertain, never successful by inference. Subprocess
-supervision stops check process groups if the daemon disappears. File operations,
+supervision stops check process groups if the daemon disappears. On Linux it also
+stops processes a check detached from its group, such as daemons started with
+`setsid`; on macOS such a process can outlive the check, though the check still
+finishes on time. File operations,
 apply, and undo use the same publication journal and `loupe task recover`
 mechanism as ordinary shared edits. A stop arriving after publication begins
 cannot interrupt its filesystem journal.

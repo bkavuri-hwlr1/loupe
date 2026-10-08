@@ -6,7 +6,9 @@ Linux uses bubblewrap. Under either, a command:
 - has no network access, except Unix sockets inside its writable paths;
 - can write only to its writable paths (a disposable snapshot and home);
 - can read the rest of the filesystem except protected paths, which hold
-  credentials, Loupe's own state, and the real checkout.
+  credentials, Loupe's own state, and the real checkout;
+- leaves no process running after it ends, even one that left its process
+  group.
 
 Reads outside protected paths remain possible, so this is a weaker guarantee
 than a full read allowlist; callers also screen command output for recognized
@@ -102,6 +104,26 @@ _SEATBELT_BASE = """\
 (allow file-write-data (literal "/dev/null"))
 """
 
+# Seatbelt has no process namespace, so a process that leaves the command's
+# process group would outlive it. The command therefore starts under this
+# shell. Given descriptors 3 and 4 by the supervisor (see check_process.py),
+# the shell first starts a reaper that waits for 4 to close and then signals
+# every process it may. The profile confines signals to this sandbox, so only
+# the command's processes are killed. Only the reaper keeps 3; its closing
+# tells the supervisor it is done. The shell catches termination signals only
+# to outlive the command, keeping the supervisor's grace period. The command
+# gets neither descriptor and default signal handling, and starts through
+# exec so that a shell builtin never stands in for the program it names.
+_SEATBELT_LAUNCHER = """\
+trap : HUP INT TERM
+if { true <&4; } 2>/dev/null; then
+  (trap '' HUP INT TERM; exec </dev/null >/dev/null 2>&1
+   read -r ignored <&4; kill -KILL -1) &
+  exec 3>&- 4<&-
+fi
+(exec "$@")
+"""
+
 _probe_lock = threading.Lock()
 _probe_result: dict[str, str | None] = {}
 
@@ -155,6 +177,12 @@ def wrap(
     raise ValueError(f"unsupported sandbox {kind!r}")
 
 
+def uses_reaper(kind: str) -> bool:
+    """Whether wrapped commands expect the supervisor's reaper descriptors."""
+
+    return kind == SEATBELT
+
+
 def protected_home_paths(home: Path) -> tuple[Path, ...]:
     return tuple(home / relative for relative in HOME_SECRET_PATHS)
 
@@ -206,7 +234,18 @@ def _seatbelt(policy: SandboxPolicy, argv: Sequence[str]) -> list[str]:
         )
         rules.append(f"(allow network-outbound (remote unix-socket {writable}))")
     profile = _SEATBELT_BASE + "\n".join(rules) + "\n"
-    return [_SANDBOX_EXEC, "-p", profile, *parameters, "--", *argv]
+    return [
+        _SANDBOX_EXEC,
+        "-p",
+        profile,
+        *parameters,
+        "--",
+        "/bin/sh",
+        "-c",
+        _SEATBELT_LAUNCHER,
+        "loupe-sandbox",
+        *argv,
+    ]
 
 
 def _bubblewrap(policy: SandboxPolicy, argv: Sequence[str], cwd: Path) -> list[str]:
@@ -229,6 +268,8 @@ def _bubblewrap(policy: SandboxPolicy, argv: Sequence[str], cwd: Path) -> list[s
         "--tmpfs",
         "/run",
     ]
+    # --die-with-parent and the private process namespace already stop
+    # everything the command started when bubblewrap is killed.
     # A protected directory becomes an empty tmpfs. If a writable path lies
     # inside it, only the directories leading to that mount point appear.
     for path in policy.protected:
@@ -254,5 +295,6 @@ __all__ = [
     "available_sandbox",
     "protected_home_paths",
     "sandbox_kind",
+    "uses_reaper",
     "wrap",
 ]

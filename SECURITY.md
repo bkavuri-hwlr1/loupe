@@ -180,11 +180,20 @@ copy of the checkout with the task's pending edits applied:
 - the environment carries only `PATH` and fixed, non-secret settings;
 - arguments containing recognized secret material are refused, and output after
   recognized secret material is withheld;
-- each command has a timeout (at most 600 seconds) and stops with its task.
+- each command has a timeout (at most 600 seconds) and stops with its task, and
+  when it ends, so do processes it started, including ones that left its
+  process group; output is not awaited from such a process.
 
 Other files on disk remain readable, so this is weaker than a read allowlist:
 a command could read a credential stored somewhere this policy does not list,
 and the pattern screening of its output is not a complete secret scanner.
+
+On Linux a command's processes share a private process namespace that ends
+with it. Seatbelt has none, so on macOS a reaper inside the sandbox kills the
+command's remaining processes when it ends; signals cannot leave the sandbox,
+so nothing else is affected. A command that deliberately kills that reaper
+first can leave a process running, still sandboxed, with its copy and home
+deleted.
 
 Approval follows `agent.commands` in the user configuration. The default,
 `ask`, offers commands only in interactive sessions and asks the user before

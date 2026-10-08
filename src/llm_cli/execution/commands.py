@@ -25,7 +25,7 @@ from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
 from llm_cli.execution.checks import source_snapshot, supervised_run
-from llm_cli.execution.sandbox import SandboxPolicy, wrap
+from llm_cli.execution.sandbox import SandboxPolicy, uses_reaper, wrap
 from llm_cli.git.environment import run_git
 from llm_cli.ids import new_id
 from llm_cli.workspace.batches import BatchFile, candidate_target
@@ -200,6 +200,7 @@ class CommandRunner:
                 on_output=lambda text: emit(
                     "command.output", {"run_id": run_id, "text": text}
                 ),
+                reaper=uses_reaper(self.sandbox),
             )
             # "error" from the supervisor means output was withheld for secret
             # material; the command itself still ran to completion.

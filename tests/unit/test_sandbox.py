@@ -42,7 +42,11 @@ def test_seatbelt_profile_denies_by_default_and_passes_paths_as_parameters(
     assert deny < exception < writable
     assert "(allow network-outbound (remote unix-socket" in profile
     assert "network-outbound (remote ip" not in profile
-    assert argv[-3:] == ["--", "pytest", "-q"]
+    # The command starts under the shell that hosts the in-sandbox reaper.
+    assert argv[-7:-3] == ["--", "/bin/sh", "-c", sandbox._SEATBELT_LAUNCHER]
+    assert argv[-3:] == ["loupe-sandbox", "pytest", "-q"]
+    assert sandbox.uses_reaper(sandbox.SEATBELT)
+    assert not sandbox.uses_reaper(sandbox.BUBBLEWRAP)
 
 
 def test_bubblewrap_masks_protected_paths_before_exceptions_and_writes(
