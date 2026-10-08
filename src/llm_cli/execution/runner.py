@@ -49,6 +49,7 @@ from llm_cli.git.worktrees import (
     resume_managed_worktree,
 )
 from llm_cli.storage.control import ControlStore
+from llm_cli.web.access import WebAccess
 
 _MAX_FIXTURE_WRITES = 50
 _MAX_FIXTURE_CONTENT_BYTES = 1_048_576
@@ -128,6 +129,16 @@ class TaskExecutionRunner:
         self.boot_id = boot_id
         self.limits = limits
         self.renewal_interval_seconds = renewal_interval_seconds
+        # Read-only web_fetch policy; see Settings.agent_web_fetch.
+        self.web_fetch = "off"
+        self.web_domains: tuple[str, ...] = ()
+
+    def web_access(self) -> WebAccess | None:
+        """A fresh web policy for one task, or None when web_fetch is off."""
+
+        if self.web_fetch == "off":
+            return None
+        return WebAccess(self.web_fetch, self.web_domains)
 
     def execute(
         self,
@@ -249,6 +260,7 @@ class TaskExecutionRunner:
                 on_event=self._event_recorder(task, claim),
                 asker=asker,
                 cancelled=cancelled,
+                web=self.web_access(),
             )
             request = RunRequest(
                 task_id=task.task_id,

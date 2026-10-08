@@ -3,12 +3,12 @@
 Status: first response-and-delivery milestone implemented and locally validated;
 context management (phase 7, items 1–3), sandboxed commands (item 4), faster
 read tools (item 5), the task plan tool (item 6), stdio MCP tools (item 7),
-user hooks (item 8), exploration helpers (item 9), token usage display
-(item 11), and the live-model benchmark (item 12) implemented; broader harness
-work remains.
+user hooks (item 8), exploration helpers (item 9), read-only web fetch
+(item 10), token usage display (item 11), and the live-model benchmark
+(item 12) implemented; broader harness work remains.
 Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03,
 items 4–6 and 9 completed 2026-10-04, items 7–8 and 11–12 completed
-2026-10-06
+2026-10-06, item 10 completed 2026-10-07
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -421,7 +421,7 @@ existing authority model: repository and tool content never grants authority.
 | 7 | MCP client support | Implemented (stdio servers, tools) |
 | 8 | User hooks around tool calls and completion | Implemented (`pre_tool`, `post_edit`) |
 | 9 | Subagents for broad exploration | Implemented (`explore`) |
-| 10 | Read-only web fetch | Planned |
+| 10 | Read-only web fetch | Implemented (`web_fetch`) |
 | 11 | Token usage display (`/usage`, footer context meter) | Implemented; no cost estimates |
 | 12 | Live-model task benchmark | Implemented (`scripts/live_benchmark.py`) |
 
@@ -649,8 +649,21 @@ repository, found:
 
 Remaining gap: helpers cannot run sandboxed commands.
 
-**10. Web fetch.** A read-only fetch tool for documentation, with domain policy,
-size limits, and content treated as untrusted data.
+**10. Web fetch (implemented).** `web_fetch(url, offset)` reads one public page
+as text through the standard library's HTTP client (`llm_cli/web/`). Domain
+policy: `agent.web_fetch` is `ask` (default; approve each new domain once, for
+the rest of the task, or deny), `allow`, or `off`, and `agent.web_domains`
+lists hosts or `*.` subdomain patterns that need no approval. Only http(s)
+URLs without credentials or recognized secrets are fetched; every resolved
+address must be public, the connection is pinned to the checked address, and
+each of up to five redirects is checked and approved the same way. Requests
+are GET with no cookies, credentials, or proxies, a 20-second timeout, and a
+2 MiB download limit; only text types are read. HTML becomes readable text
+with headings and links kept; long pages are read in parts through `offset`
+from a per-task cache; output is labelled as external content and screened
+for secrets. It is offered in plan mode, since it reads, but not to
+exploration helpers. `web.fetched` events record the domain and size only.
+Remaining gaps: proxy support and fetching through exploration helpers.
 
 **11. Token usage display (implemented).** Adapters now report `prompt_tokens`
 with one meaning for every provider: all prompt tokens, cached or not

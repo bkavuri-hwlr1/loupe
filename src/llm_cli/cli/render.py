@@ -20,6 +20,7 @@ _MAX_DETAIL = 200
 _MAX_EXPLORATION_NAME = 60
 
 _TOOL_ACTIVITIES = {
+    "web_fetch": "Reading a web page…",
     "list_files": "Reviewing project files…",
     "read_file": "Reviewing project files…",
     "search_text": "Searching the codebase…",
@@ -105,6 +106,7 @@ _PUBLIC_EVENTS = frozenset(
         "hook.changed",
         "hook.failed",
         "hooks.unavailable",
+        "web.fetched",
         "model.turn.started",
         "model.turn.completed",
         "model.reasoning",
@@ -180,6 +182,7 @@ _LABELS: dict[str, str] = {
     "hook.changed": "a hook updated",
     "hook.failed": "a hook failed",
     "hooks.unavailable": "hooks are unavailable",
+    "web.fetched": "read a web page from",
 }
 
 _MARKERS: dict[str, str] = {
@@ -464,6 +467,14 @@ def _detail(kind: str, payload: dict[str, Any]) -> str:
     if kind == "model.finished":
         calls = payload.get("tool_calls")
         return f" ({calls} tool calls)" if isinstance(calls, int) else ""
+    if kind == "web.fetched":
+        characters = payload.get("characters")
+        size = (
+            f" ({max(1, round(characters / 1000))}k characters)"
+            if type(characters) is int and characters >= 1000
+            else ""
+        )
+        return f" {_clip(payload.get('domain', ''))}{size}"
     if kind in {"hook.blocked", "hook.changed", "hook.failed"}:
         hook = _clip(payload.get("hook", ""))
         if kind == "hook.blocked":

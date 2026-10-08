@@ -193,6 +193,7 @@ class SharedTaskExecutionRunner:
                 on_event=self.lifecycle._event_recorder(task, claim),
                 publication_lock=self.publisher.lock,
                 agent_mode=row["agent_mode"],
+                web=self.lifecycle.web_access(),
                 guard=functools.partial(self.ensure_available, workspace.workspace_id),
                 cancelled=lambda: (
                     self.workflow.stopped(task.task_id, task.attempt)

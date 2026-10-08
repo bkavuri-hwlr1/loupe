@@ -264,6 +264,35 @@ commands, without per-run approval since the user configured them:
 Hooks apply to the agent's own calls in shared-workspace tasks; exploration
 helpers' reads do not run them.
 
+### Web pages
+
+`web_fetch` reads one public page as text. It is a network request the model
+chooses, so:
+
+- `[agent] web_fetch = "ask"` (the default) asks the user before the first
+  fetch from each domain in a task, showing the full URL; domains listed in
+  `web_domains` and `web_fetch = "allow"` skip the question, and without
+  either and without someone to ask, the tool is not offered;
+- only `http` and `https` URLs without credentials are fetched, and URLs
+  containing recognized secret material are refused, so a recognized secret
+  cannot be sent in a query string;
+- every address a host resolves to must be public: loopback, private,
+  link-local (including cloud metadata endpoints), carrier-grade NAT, and
+  multicast addresses are refused, and the connection is pinned to the checked
+  address so DNS rebinding cannot redirect it; each redirect is checked and
+  approved the same way, up to five;
+- requests are GET only, with no cookies, credentials, or proxy settings, a
+  fixed user agent, a timeout, and a 2 MiB download limit; only text content
+  types are read;
+- pages are converted to text, bounded per call, withheld if they contain
+  recognized secret material, and labelled as external content rather than
+  instructions;
+- events record only the domain and the page's size, never the URL, whose
+  query string could carry data.
+
+A page's text is sent to the configured model provider as tool output.
+Exploration helpers cannot fetch pages.
+
 ## Plugins and optional native code
 
 External plugins are disabled by default. User-installed plugins must declare

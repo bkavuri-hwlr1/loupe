@@ -155,9 +155,9 @@ class SharedToolBroker(ToolBroker):
     def _invoke_unhooked(
         self, name: str, arguments: Mapping[str, object]
     ) -> ToolOutcome:
-        # An operator or an MCP server can take minutes to answer. These tools
-        # have no shared checkout effect and must not hold every other
-        # session's read barrier.
+        # An operator, an MCP server, or a web server can take minutes to
+        # answer. These tools have no shared checkout effect and must not hold
+        # every other session's read barrier.
         if name in {
             "ask_user",
             "run_check",
@@ -165,6 +165,7 @@ class SharedToolBroker(ToolBroker):
             "finish_task",
             "update_plan",
             "explore",
+            "web_fetch",
         } or name.startswith(MCP_PREFIX):
             return ToolBroker.invoke(self, name, arguments)
         before = self.usage.calls
