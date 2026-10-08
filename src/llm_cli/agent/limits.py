@@ -31,6 +31,8 @@ class ExecutionLimits:
     max_write_bytes: int = 2 * _MIB
     max_search_results: int = 200
     max_scanned_files: int = 5_000
+    # Failed runs of a check, after its first failure, before repair stops.
+    max_repair_attempts: int = 3
 
     def __post_init__(self) -> None:
         if (
@@ -43,6 +45,7 @@ class ExecutionLimits:
                 self.max_write_bytes,
                 self.max_search_results,
                 self.max_scanned_files,
+                self.max_repair_attempts,
             )
             <= 0
         ):

@@ -292,8 +292,11 @@ class CheckRunner:
         emit: Callable[[str, dict[str, object]], None],
         lock: RLock,
         deadline_at: float | None = None,
+        on_result: Callable[[str, str, str], None] | None = None,
     ) -> None:
         self.workflow, self.row, self.root = workflow, row, root
+        # Told (name, state, output) after every run, for repair limits.
+        self.on_result = on_result
         self.store = workflow.store
         self.managed_root, self.candidates, self.cancelled = (
             managed_root,
@@ -549,6 +552,8 @@ class CheckRunner:
             )
         if self.cancelled():
             raise TaskCancelled("task stopped")
+        if self.on_result is not None:
+            self.on_result(name, state, output)
         return ToolOutcome(
             f"{name}: {state} (exit {exit_code}, {duration:.1f}s)\n"
             + output[-60 * 1024 :],

@@ -5,10 +5,11 @@ context management (phase 7, items 1–3), sandboxed commands (item 4), faster
 read tools (item 5), the task plan tool (item 6), stdio MCP tools (item 7),
 user hooks (item 8), exploration helpers (item 9), read-only web fetch
 (item 10), token usage display (item 11), and the live-model benchmark
-(item 12) implemented; broader harness work remains.
+(item 12) implemented, as is bounded repair (phase 5); broader harness work
+remains.
 Date: 2026-09-20; phase 7 added 2026-10-02, items 1–3 completed 2026-10-03,
 items 4–6 and 9 completed 2026-10-04, items 7–8 and 11–12 completed
-2026-10-06, item 10 completed 2026-10-07
+2026-10-06, item 10 and bounded repair completed 2026-10-07
 Baseline: `b334466`.
 
 ## Implementation progress
@@ -58,9 +59,9 @@ response) is sent again up to three times, after 2, 6, and 15 seconds, and a
 conversation unchanged and runs no tools, so this is safe; the failed
 attempt's draft is dropped rather than kept as a partial response.
 Finalization requests are not retried this way, because their attempts are
-budgeted separately (see phase 2). The remaining roadmap
-includes bounded repair stages, response-only retry, the rest of phase 7, and
-the full deterministic/live-provider behavior matrix.
+budgeted separately (see phase 2). Repair after a failing check is bounded
+(phase 5). The remaining roadmap includes response-only retry and the full
+deterministic/live-provider behavior matrix.
 
 Revalidation against `origin/main` on macOS/Python 3.14 on 2026-09-23 passes
 1,233 tests with 83% branch coverage, Ruff, strict mypy, whitespace checks,
@@ -363,6 +364,12 @@ outcomes, and bounded command capabilities.
 - Bound automatic repair attempts and detect repeated no-progress failures.
   Ask only for missing decisions or information that tools cannot recover. Preserve
   partial work and explain the specific blocker when the bound is reached.
+  *Implemented: after a check first fails, three more failing runs of it, or the
+  same failure three times in a row (ignoring timings and run identifiers), stop
+  the repair. Edits, checks, and commands are then refused, the task finishes as
+  partial with its edits retained, and a `repair.exhausted` event says why. Each
+  check result tells the agent how many attempts remain. The counts are
+  checkpointed, so a restart keeps them.*
 - Run an additional diff review for complex/risky changes when justified, rather
   than imposing another model call on every question or trivial edit.
 

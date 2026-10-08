@@ -73,6 +73,15 @@ and `--publish auto` flags still select normal and auto.
 
 In normal and auto modes, required checks run before the agent finishes;
 failures are returned to it so it can repair the proposal.
+Repairs are bounded. After a check first fails, the agent has three repair
+attempts: the repair stops after three more failing runs of that check, or
+sooner if the same failure comes back three times in a row. Timings, temporary
+paths, and run identifiers are ignored when comparing failures. A passing run
+resets the count, and runs that could not start or were cancelled do not count.
+Once the repair stops, the agent can no longer edit files, run checks, or run
+commands. It finishes with a partial outcome that says what it changed and what
+still fails, and its edits are retained for review. The terminal shows, for
+example, `stopped repairing test after 4 failed runs`.
 Advisory checks run when requested by the agent and do not gate publication.
 Without configured required checks, publication remains available and is not
 a claim that the source was tested.

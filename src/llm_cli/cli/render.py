@@ -124,6 +124,7 @@ _PUBLIC_EVENTS = frozenset(
         "tool.completed",
         "check.started",
         "check.finished",
+        "repair.exhausted",
         "command.started",
         "command.finished",
         "plan.updated",
@@ -183,6 +184,7 @@ _LABELS: dict[str, str] = {
     "hook.failed": "a hook failed",
     "hooks.unavailable": "hooks are unavailable",
     "web.fetched": "read a web page from",
+    "repair.exhausted": "stopped repairing",
 }
 
 _MARKERS: dict[str, str] = {
@@ -202,6 +204,7 @@ _MARKERS: dict[str, str] = {
     "hook.failed": "!",
     "hooks.unavailable": "!",
     "model.retrying": "!",
+    "repair.exhausted": "!",
 }
 
 _STREAMED_OUTCOMES = {
@@ -475,6 +478,13 @@ def _detail(kind: str, payload: dict[str, Any]) -> str:
             else ""
         )
         return f" {_clip(payload.get('domain', ''))}{size}"
+    if kind == "repair.exhausted":
+        failures = payload.get("failures")
+        runs = (
+            f"{failures} failed runs" if type(failures) is int else "repeated failures"
+        )
+        same = " with no change in the failure" if payload.get("unchanged") else ""
+        return f" {_clip(payload.get('check', 'a check'))} after {runs}{same}"
     if kind in {"hook.blocked", "hook.changed", "hook.failed"}:
         hook = _clip(payload.get("hook", ""))
         if kind == "hook.blocked":
@@ -1019,6 +1029,7 @@ class EventRenderer:
                 "hook.failed",
                 "hooks.unavailable",
                 "model.retrying",
+                "repair.exhausted",
             }:
                 style = "warning"
             self.ui.notice(line, style=style)
