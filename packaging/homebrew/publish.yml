@@ -16,8 +16,8 @@ env:
   HOMEBREW_NO_AUTO_UPDATE: "1"
   HOMEBREW_NO_INSTALL_CLEANUP: "1"
   HOMEBREW_NO_ANALYTICS: "1"
-  TAP: magnifiosearchengine/tap
-  FORMULA: magnifiosearchengine/tap/loupe
+  TAP: bkavuri-hwlr1/tap
+  FORMULA: bkavuri-hwlr1/tap/loupe
 
 jobs:
   assets:
@@ -210,7 +210,7 @@ jobs:
           prerelease=false
           if [[ "$RELEASE_TAG" =~ (a|b|rc)[0-9]+$ ]]; then prerelease=true; fi
           cat > "$RUNNER_TEMP/release-notes.md" <<'MARKDOWN'
-          Install: `brew install magnifiosearchengine/tap/loupe`, then run
+          Install: `brew install bkavuri-hwlr1/tap/loupe`, then run
           `loupe` and `/login`. Requires macOS 15 or newer. Includes Python
           dependencies and both provider SDKs. Apple Silicon and Intel bottles
           passed installation and daemon smoke tests.

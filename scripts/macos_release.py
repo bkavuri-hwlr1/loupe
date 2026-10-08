@@ -24,7 +24,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-TAP = "MagnifioSearchEngine/homebrew-tap"
+TAP = "bkavuri-hwlr1/homebrew-tap"
 ARCHITECTURES = ("arm64", "x86_64")
 VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[0-9]+)?")
 
