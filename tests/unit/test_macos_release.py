@@ -108,6 +108,8 @@ def test_prepare_requires_both_verified_architectures(tmp_path: Path) -> None:
     assert f'version "{version}"' in formula
     assert "@ARM64_SHA256@" not in formula
     assert "@X86_64_SHA256@" not in formula
+    # brew test's own git shim fails outside brew, so the test uses real git.
+    assert 'ENV.prepend_path "PATH", formula_opt_bin("git")' in formula
     # Downloads come from the tap's own releases.
     assert (
         f"https://github.com/bkavuri-hwlr1/homebrew-tap/releases/download/v{version}/"

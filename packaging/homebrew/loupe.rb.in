@@ -48,6 +48,9 @@ class Loupe < Formula
   end
 
   test do
+    # brew test puts Homebrew's internal shims first on PATH, and their git
+    # runs only inside brew. Find the real git first, as a user's shell does.
+    ENV.prepend_path "PATH", formula_opt_bin("git")
     system libexec/"bin/python", pkgshare/"smoke_test.py", bin, version.to_s
   end
 end
