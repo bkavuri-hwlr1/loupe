@@ -659,10 +659,18 @@ class CodingAgentHarness:
                 answer=tools.usage.answer,
                 outcome=outcome,
             )
-        if phase == "awaiting_settlement":
+        if phase in {"awaiting_settlement", "finalization_pending", "finalizing"}:
+            # The repository work is done; only the response remains. Return
+            # the draft so the runner can settle and finish the response from
+            # its bound facts, without resuming any tool work.
             assert saved is not None
             state = checkpoint_finalization(saved)
-            if state is None or state.status != "prepared":
+            expected = {
+                "awaiting_settlement": "prepared",
+                "finalization_pending": "pending",
+                "finalizing": "in_flight",
+            }[phase]
+            if state is None or state.status != expected:
                 raise ValueError("settlement draft has invalid finalization state")
             return RunResult(
                 summary=tools.usage.summary,
@@ -670,12 +678,6 @@ class CodingAgentHarness:
                 usage=usage_total,
                 answer=tools.usage.answer,
                 outcome=tools.usage.outcome,
-            )
-        if phase in {"finalization_pending", "finalizing"}:
-            raise LlmCoordError(
-                ErrorCode.PROVIDER_AMBIGUOUS,
-                "the task is awaiting its post-settlement response path and cannot "
-                "resume repository work",
             )
 
         while True:
@@ -1027,9 +1029,12 @@ class CodingAgentHarness:
             )
         if state.status not in {"prepared", "pending"}:
             raise ValueError("saved harness finalization state is invalid")
+        if state.facts is not None and state.facts != request.facts:
+            raise ValueError(
+                "finalization settlement facts do not match the checkpoint"
+            )
         if not request.use_model:
-            if state.status != "prepared":
-                raise ValueError("only a prepared no-change draft can skip the model")
+            # The settled outcome is what the draft already describes.
             return self._accept_settled_answer(
                 request,
                 saved,
@@ -1040,11 +1045,6 @@ class CodingAgentHarness:
                 native=_mapping(saved.get("session"), "saved provider conversation"),
                 usage=_usage_from_checkpoint(saved.get("usage_total")),
             )
-        if state.facts != request.facts:
-            raise ValueError(
-                "finalization settlement facts do not match the checkpoint"
-            )
-
         in_flight = dict(saved)
         in_flight.update(
             version=3,

@@ -5,13 +5,22 @@ from __future__ import annotations
 import functools
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 
 from llm_cli.agent.driver import (
     AgentDriver,
     CoordinationUpdate,
     DriverCapabilities,
+    FinalizationRequest,
     RunRequest,
+    RunResult,
+    SettlementFinalizer,
+)
+from llm_cli.agent.finalization import (
+    SettlementFacts,
+    checkpoint_finalization,
+    settlement_surprises,
 )
 from llm_cli.agent.hooks import HookRunner
 from llm_cli.agent.shared_tools import SharedToolBroker
@@ -322,6 +331,11 @@ class SharedTaskExecutionRunner:
                 workspace_mode="shared",
                 agent_mode=row["agent_mode"],
                 refresh_coordination=refresh_coordination,
+                # An edit task's answer stays a draft until settlement, so
+                # it can describe what was actually published or held.
+                publication_aware_finalization=isinstance(
+                    driver, SettlementFinalizer
+                ),
             )
             # Starting servers can take longer than a lease, so it is renewed.
             with self.lifecycle._renewing_lease(task=task, claim=claim):
@@ -369,7 +383,7 @@ class SharedTaskExecutionRunner:
                     result = self.store.get_execution(task.task_id, task.attempt)
                     assert result is not None
                     return result
-                if stopped or incomplete or (
+                hold = stopped or incomplete or bool(
                     files
                     and (
                         row["publish_mode"] == "review"
@@ -377,10 +391,54 @@ class SharedTaskExecutionRunner:
                             self.store, row, broker.worktree, files
                         )
                     )
-                ):
-                    verification = verification_status(
-                        self.store, row, broker.worktree, files
+                )
+                verification = verification_status(
+                    self.store, row, broker.worktree, files
+                )
+                outcome = "held_for_review"
+                if not hold:
+                    broker.emit("workflow.verification", {"status": verification})
+                    self.coordinator.reserve_shared_publication(
+                        execution.execution_id,
+                        fencing_token=claim.fencing_token,
+                        changed_paths=(file.relative_path for file in files),
                     )
+                    if not files:
+                        outcome = "no_changes"
+                    else:
+                        publication = self.publisher.publish(
+                            execution.execution_id,
+                            session.session_id,
+                            files,
+                            claim.scopes,
+                            case_insensitive_filesystem=(
+                                repository.path_case_insensitive
+                            ),
+                        )
+                        outcome = publication.state
+            # The files are settled. Finish the response before the task
+            # becomes terminal, outside the lock: a model call must never
+            # block other sessions' reads.
+            self._finalize_response(
+                driver=driver,
+                task=task,
+                claim=claim,
+                execution=execution,
+                broker=broker,
+                instructions=instructions,
+                run=run,
+                publish_mode=row["publish_mode"],
+                facts=SettlementFacts(
+                    publication=outcome,
+                    verification=verification,
+                    completion="cancelled" if stopped else run.outcome,
+                    changed_paths=tuple(
+                        sorted(file.relative_path for file in files)
+                    ),
+                ),
+            )
+            with self.publisher.lock:
+                if hold:
                     self.workflow.hold(
                         task.task_id,
                         task.attempt,
@@ -395,30 +453,6 @@ class SharedTaskExecutionRunner:
                     result = self.store.get_execution(task.task_id, task.attempt)
                     assert result is not None
                     return result
-                broker.emit(
-                    "workflow.verification",
-                    {
-                        "status": verification_status(
-                            self.store, row, broker.worktree, files
-                        )
-                    },
-                )
-                self.coordinator.reserve_shared_publication(
-                    execution.execution_id,
-                    fencing_token=claim.fencing_token,
-                    changed_paths=(file.relative_path for file in files),
-                )
-                if not files:
-                    outcome = "no_changes"
-                else:
-                    publication = self.publisher.publish(
-                        execution.execution_id,
-                        session.session_id,
-                        files,
-                        claim.scopes,
-                        case_insensitive_filesystem=repository.path_case_insensitive,
-                    )
-                    outcome = publication.state
                 if outcome == "operator_attention":
                     raise LlmCoordError(
                         ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
@@ -504,6 +538,69 @@ class SharedTaskExecutionRunner:
         result = self.store.get_execution(task.task_id, task.attempt)
         assert result is not None
         return result
+
+    def _finalize_response(
+        self,
+        *,
+        driver: AgentDriver,
+        task: TaskRecord,
+        claim: ClaimRecord,
+        execution: ExecutionRecord,
+        broker: SharedToolBroker,
+        instructions: str,
+        run: RunResult,
+        publish_mode: str,
+        facts: SettlementFacts,
+    ) -> None:
+        """Turn a held draft into the accepted answer, from settlement facts.
+
+        Only a task whose harness held its answer as a draft has anything to
+        do. The draft stands when settlement is what the agent expected;
+        otherwise one tools-disabled model turn rewrites it. Facts bound by
+        an earlier attempt stay authoritative, so a restart cannot change
+        what the answer may claim.
+        """
+
+        if not isinstance(driver, SettlementFinalizer):
+            return
+        saved = self.store.get_execution_checkpoint(execution.execution_id)
+        state = checkpoint_finalization(saved.checkpoint) if saved else None
+        if saved is None or state is None or state.status in {
+            "completed",
+            "interrupted",
+        }:
+            return
+        bound = state.facts or facts
+        request = FinalizationRequest(
+            task_id=task.task_id,
+            attempt=task.attempt,
+            instructions=instructions,
+            draft=run.answer,
+            summary=run.summary,
+            facts=bound,
+            resume_state=saved.checkpoint,
+            checkpoint=functools.partial(
+                self.lifecycle._checkpoint_execution,
+                execution_id=execution.execution_id,
+                driver=driver.name,
+            ),
+            use_model=settlement_surprises(bound, publish_mode=publish_mode),
+            on_event=broker.emit,
+            cancelled=self.is_shutting_down,
+        )
+        try:
+            if state.status == "prepared":
+                request = replace(
+                    request, resume_state=driver.prepare_finalization(request)
+                )
+            with self.lifecycle._renewing_lease(task=task, claim=claim):
+                driver.finalize(request)
+        except Exception as exc:
+            # Settlement must still complete; the task keeps its files and
+            # states that its answer is missing rather than inventing one.
+            broker.emit(
+                "model.finalization_failed", {"error": type(exc).__name__}
+            )
 
     def recover(
         self,

@@ -42,11 +42,24 @@ The first milestone in this plan is implemented and locally validated:
   split answer chunks, and a live terminal resize with persistent footer
   geometry.
 
-The durable post-settlement finalization state machine is scaffolded behind a
-disabled capability gate. Enabling it still requires the runner/coordinator
-transaction that records trusted settlement facts, releases file claims while
-keeping the session task reserved, consumes the one model attempt durably, then
-commits the answer, promoted conversation, and terminal task state together.
+Post-settlement finalization is enabled for shared edit tasks. The harness
+holds an edit task's answer as a draft. After the runner has published or held
+the files, it binds trusted settlement facts (publication, verification,
+completion, changed paths) to that draft. The draft stands when settlement is
+what the agent expected: held for review in normal mode, published in auto mode.
+Otherwise one tools-disabled model turn rewrites it from the facts. That covers
+auto mode held by stale or failing checks, a diverged checkout, or a
+publication that needs recovery. If that turn fails, the answer states only the
+facts. The runner finishes the response outside the publication lock but
+before the settle transaction, so the answer, the promoted conversation, and
+the terminal task state still commit together, and a follower never sees a
+settled task without its answer. Unlike the original design, file claims stay
+held through this step. It runs only on a surprise and takes seconds, which
+keeps claim release in its existing single transaction. A task relaunched after
+its facts were bound finishes from those facts without resuming tool work. A
+crash after publication but before the answer settles from the publication
+journal and leaves the answer missing rather than inventing one. Response-only
+retry is the remaining piece for that case.
 
 Repository-instruction discovery, context compaction (automatic, after an
 oversized-prompt rejection, and through `/compact`), and provider prompt caching
@@ -62,8 +75,7 @@ attempt's draft is dropped rather than kept as a partial response.
 Finalization requests are not retried this way, because their attempts are
 budgeted separately (see phase 2). Repair after a failing check is bounded
 (phase 5), and the live benchmark runs the phase 6 behavior scenarios. The
-remaining roadmap includes response-only retry and durable post-settlement
-finalization.
+remaining roadmap includes response-only retry.
 
 Revalidation against `origin/main` on macOS/Python 3.14 on 2026-09-23 passes
 1,233 tests with 83% branch coverage, Ruff, strict mypy, whitespace checks,

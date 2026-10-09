@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from test_agent_loop import (
     ScriptedProvider,
     _broker,
@@ -120,9 +121,9 @@ def test_settled_mutation_gets_one_tools_disabled_final_turn(worktree: Path) -> 
     assert finished["phase"] == "finished"
     # The next task inherits the size including the settled reply.
     assert finished["context_tokens"] == 23
-    assert finished["finalization"] == FinalizationState(
-        "completed", 1, facts
-    ).to_dict()
+    assert (
+        finished["finalization"] == FinalizationState("completed", 1, facts).to_dict()
+    )
     accepted = finished["accepted_answer"]
     assert isinstance(accepted, Mapping)
     assert accepted["text"] == result.answer
@@ -155,9 +156,10 @@ def test_trusted_no_change_accepts_draft_without_another_model_call(
     assert result.answer == draft.answer
     assert result.outcome == "completed"
     assert len(provider.user_messages) == before
-    assert snapshots[-1]["finalization"] == FinalizationState(
-        "completed", 0, facts
-    ).to_dict()
+    assert (
+        snapshots[-1]["finalization"]
+        == FinalizationState("completed", 0, facts).to_dict()
+    )
 
 
 def test_in_flight_recovery_never_reissues_the_provider_request(
@@ -192,9 +194,10 @@ def test_in_flight_recovery_never_reissues_the_provider_request(
     assert unsafe_draft not in result.answer
     assert "retained for review" in result.answer
     assert "Required verification failed" in result.answer
-    assert snapshots[-1]["finalization"] == FinalizationState(
-        "interrupted", 1, facts
-    ).to_dict()
+    assert (
+        snapshots[-1]["finalization"]
+        == FinalizationState("interrupted", 1, facts).to_dict()
+    )
 
 
 def test_cancellation_after_settlement_consumes_attempt_without_dispatch(
@@ -250,6 +253,70 @@ def test_expired_absolute_deadline_prevents_final_response_dispatch(
     assert result.outcome == "partial"
     assert len(provider.user_messages) == before
     assert "published to the shared checkout" in result.answer
-    assert snapshots[-1]["finalization"] == FinalizationState(
-        "interrupted", 1, facts
-    ).to_dict()
+    assert (
+        snapshots[-1]["finalization"]
+        == FinalizationState("interrupted", 1, facts).to_dict()
+    )
+
+
+def test_a_bound_draft_is_kept_without_a_model_call(worktree: Path) -> None:
+    facts = SettlementFacts(
+        publication="held_for_review",
+        verification="passed",
+        completion="completed",
+        changed_paths=("docs/guide.md",),
+    )
+    harness, provider, draft, snapshots, persist = _prepare_draft(worktree)
+    request = _request_finalization(
+        draft, snapshots[-1], persist, facts, use_model=False
+    )
+    pending = harness.prepare_finalization(request)
+    before = len(provider.user_messages)
+
+    result = harness.finalize(replace(request, resume_state=pending))
+
+    assert result.answer == draft.answer
+    assert len(provider.user_messages) == before
+    assert (
+        snapshots[-1]["finalization"]
+        == FinalizationState("completed", 0, facts).to_dict()
+    )
+    # Facts bound earlier stay authoritative.
+    other = replace(facts, verification="stale")
+    with pytest.raises(ValueError, match="do not match"):
+        harness.finalize(replace(request, resume_state=pending, facts=other))
+
+
+@pytest.mark.parametrize("status", ["pending", "in_flight"])
+def test_a_relaunch_after_settlement_returns_the_draft_without_tool_work(
+    worktree: Path, status: str
+) -> None:
+    facts = SettlementFacts(
+        publication="held_for_review",
+        verification="passed",
+        completion="completed",
+        changed_paths=("docs/guide.md",),
+    )
+    harness, provider, draft, snapshots, persist = _prepare_draft(worktree)
+    request = _request_finalization(draft, snapshots[-1], persist, facts)
+    saved = dict(harness.prepare_finalization(request))
+    if status == "in_flight":
+        saved.update(
+            phase="finalizing",
+            finalization=FinalizationState("in_flight", 1, facts).to_dict(),
+        )
+    before = len(provider.user_messages)
+
+    resumed = harness.run(
+        replace(
+            _request(worktree),
+            workspace_mode="shared",
+            publication_aware_finalization=True,
+            checkpoint=persist,
+            resume_state=saved,
+        ),
+        _broker(worktree, events=[]),
+    )
+
+    assert resumed.answer == draft.answer
+    assert len(provider.user_messages) == before
