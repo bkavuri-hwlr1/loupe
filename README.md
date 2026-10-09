@@ -16,7 +16,7 @@ messages and a single “Done” after a task completes.
 On macOS 15 or newer, with [Homebrew](https://brew.sh) installed:
 
 ```sh
-brew install magnifiosearchengine/tap/loupe
+brew install bkavuri-hwlr1/tap/loupe
 loupe
 ```
 

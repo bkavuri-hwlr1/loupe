@@ -4,7 +4,7 @@ Loupe is a coding agent for your terminal. Install on macOS 15 or newer
 (Apple Silicon or Intel) with [Homebrew](https://brew.sh):
 
 ```sh
-brew install magnifiosearchengine/tap/loupe
+brew install bkavuri-hwlr1/tap/loupe
 loupe
 ```
 
@@ -39,6 +39,23 @@ brew uninstall loupe
 
 Uninstalling keeps your local profiles, credentials, and sessions.
 
+## Move from the MagnifioSearchEngine tap
+
+Loupe used to be published from `magnifiosearchengine/tap`, which is no longer
+maintained. Finish active tasks, exit open Loupe terminals, and stop each
+profile's daemon before switching taps:
+
+```sh
+loupe daemon stop
+brew uninstall loupe
+brew untap magnifiosearchengine/tap
+brew install bkavuri-hwlr1/tap/loupe
+hash -r
+loupe --version
+```
+
+Profiles, logins, and saved sessions are preserved.
+
 ## Move from the Magnifio Homebrew formula
 
 Finish active tasks and exit open Magnifio terminals. Stop the daemon for each
@@ -47,7 +64,7 @@ profile before removing the old formula:
 ```sh
 magnifio daemon stop
 brew uninstall magnifio
-brew install magnifiosearchengine/tap/loupe
+brew install bkavuri-hwlr1/tap/loupe
 hash -r
 loupe --version
 ```
@@ -66,7 +83,7 @@ Finish active tasks and exit open terminals. Stop each profile's daemon with
 
 ```sh
 uv tool uninstall llm-coord
-brew install magnifiosearchengine/tap/loupe
+brew install bkavuri-hwlr1/tap/loupe
 hash -r
 command -v loupe
 loupe --version
@@ -80,9 +97,9 @@ custom shell aliases that still run the checkout. Existing state is reused.
 
 Run `loupe doctor` to check Python, Git, SQLite, and local state. Report
 installation problems at
-https://github.com/MagnifioSearchEngine/homebrew-tap/issues.
+https://github.com/bkavuri-hwlr1/loupe/issues.
 
-The public distribution includes readable Python application code. Development
-history and internal project documents are maintained separately. No project
+The public distribution includes readable Python application code; its source
+is at https://github.com/bkavuri-hwlr1/loupe. No project
 license has been selected; availability of a download does not itself grant
 redistribution rights. Bundled dependencies retain their own license notices.

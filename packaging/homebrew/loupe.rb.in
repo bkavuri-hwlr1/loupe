@@ -2,7 +2,7 @@ class Loupe < Formula
   include Language::Python::Virtualenv
 
   desc "Terminal coding agent with coordinated sessions"
-  homepage "https://github.com/MagnifioSearchEngine/homebrew-tap"
+  homepage "https://github.com/bkavuri-hwlr1/loupe"
   version "@VERSION@"
 
   depends_on "git"

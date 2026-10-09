@@ -1,18 +1,20 @@
 # macOS releases
 
-The public install command is `brew install magnifiosearchengine/tap/loupe`.
-Development remains in the private `MagnifioSearchEngine/loupe` repository.
-This public repository is a source snapshot with its own fresh Git history.
-The public `MagnifioSearchEngine/homebrew-tap` repository contains the formula,
-installation guide, release bundles, and Homebrew bottles. Its Actions workflows
-never have credentials for the private development repository.
+The public install command is `brew install bkavuri-hwlr1/tap/loupe`.
+Development happens in the public `bkavuri-hwlr1/loupe` repository, which holds
+the only release credential. The public `bkavuri-hwlr1/homebrew-tap` repository
+contains the formula, installation guide, release bundles, and Homebrew bottles.
+Its Actions workflows never have credentials for the development repository.
+Loupe was previously published from `magnifiosearchengine/tap`, which is no
+longer associated with this project; `packaging/README.md` explains how users
+move to the new tap.
 
 ## Release pipeline
 
 1. Update both `project.version` in `pyproject.toml` and `__version__` in
    `src/llm_cli/__init__.py`; refresh `uv.lock` with `uv lock` and commit. Versions
    use `X.Y.Z` or `X.Y.ZaN`, `X.Y.ZbN`, or `X.Y.ZrcN`.
-2. Push a matching `vX.Y.Z` tag on the reviewed commit. The private release
+2. Push a matching `vX.Y.Z` tag on the reviewed commit. The release
    workflow runs the full CI matrix and builds on native Apple Silicon and
    Intel macOS 15 runners using Python 3.14.
 3. The builder uses `uv build --wheel --no-sources` and verifies an allowlist of
@@ -24,9 +26,9 @@ never have credentials for the private development repository.
    a checksummed manifest, and the installed-package smoke test. An isolated
    install outside the checkout must pass before handing off either archive.
 5. A repository-scoped SSH deploy key pushes the public inputs to a temporary
-   `release/vX.Y.Z` branch in the tap. The handoff includes no private Git history,
-   internal documentation, credentials, or developer paths. These inputs become
-   publicly readable at this point, including the Python application code.
+   `release/vX.Y.Z` branch in the tap. The handoff includes only the bundles,
+   formula, installation guide, and publish workflow: no Git history,
+   development documentation, credentials, or developer paths.
 6. The public workflow uploads candidate downloads as a prerelease, then builds,
    tests, bottles, uninstalls, reinstalls, and tests on both Mac architectures.
    After both pass it uploads bottles, merges their checksums, and updates the
@@ -40,21 +42,28 @@ No `brew services` registration is installed; the existing CLI starts the daemon
 
 ## Initial tap setup
 
-Create a public `MagnifioSearchEngine/homebrew-tap` repository. Seed its `main`
+Create a public `bkavuri-hwlr1/homebrew-tap` repository. Seed its `main`
 branch with `packaging/README.md`, an empty `Formula/` directory (with `.gitkeep`),
 and `packaging/homebrew/publish.yml` at `.github/workflows/publish.yml`.
 
 Generate a dedicated Ed25519 SSH key. Add its public half to the tap as a deploy
 key with write access. Store its private half as the Actions secret
-`HOMEBREW_TAP_DEPLOY_KEY` in the **private development repository only**. Delete the local
-private key after setup. This key can write only the public tap, not other
+`HOMEBREW_TAP_DEPLOY_KEY` in the **development repository only**. Delete the
+local private key after setup. This key can write only the public tap, not other
 repositories. The public workflow uses its own repository's `GITHUB_TOKEN` to
 upload release assets and advance its main branch. Allow Actions contents-write
 permissions in the public tap. Never copy a maintainer's general GitHub token
 into either repository.
 
-Keep the private development repository and release credentials separate from this
-public snapshot. Publish source snapshots with fresh Git history.
+```sh
+ssh-keygen -t ed25519 -N "" -C "loupe homebrew-tap deploy key" -f loupe-tap-key
+gh repo deploy-key add loupe-tap-key.pub --repo bkavuri-hwlr1/homebrew-tap \
+  --allow-write --title "Loupe releases"
+gh secret set HOMEBREW_TAP_DEPLOY_KEY --repo bkavuri-hwlr1/loupe < loupe-tap-key
+rm loupe-tap-key loupe-tap-key.pub
+gh api --method PUT repos/bkavuri-hwlr1/homebrew-tap/actions/permissions/workflow \
+  -f default_workflow_permissions=write
+```
 
 ## Local verification
 
@@ -74,7 +83,7 @@ uv run --locked python scripts/macos_release.py prepare \
   --tag v0.1.0a0 --assets dist/macos --tap /path/to/tap-checkout
 ```
 
-`brew test magnifiosearchengine/tap/loupe` exercises version/help, all four
+`brew test bkavuri-hwlr1/tap/loupe` exercises version/help, all four
 entry points, the unconfigured conversation, provider imports, doctor, daemon
 start/restart/stop, and profile preservation. It uses temporary HOME/state paths,
 removes account environment variables, and runs outside the source checkout.
@@ -87,7 +96,7 @@ is unsupported.
 
 ## Failures and retries
 
-- A failed private build publishes nothing. Re-run the failed workflow after
+- A failed release build publishes nothing. Re-run the failed workflow after
   resolving infrastructure failures; change code in a new version/tag.
 - If the public bottle job fails, the previous formula remains available. Use
   Actions **Re-run failed jobs**, or dispatch the public workflow on the same

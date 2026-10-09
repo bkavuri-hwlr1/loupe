@@ -108,7 +108,11 @@ def test_prepare_requires_both_verified_architectures(tmp_path: Path) -> None:
     assert f'version "{version}"' in formula
     assert "@ARM64_SHA256@" not in formula
     assert "@X86_64_SHA256@" not in formula
-    assert "MagnifioSearchEngine/loupe" not in formula
+    # Downloads come from the tap's own releases.
+    assert (
+        f"https://github.com/bkavuri-hwlr1/homebrew-tap/releases/download/v{version}/"
+        in formula
+    )
     assert not (tap / "src").exists()
     (assets / "SHA256SUMS-arm64").write_text("tampered")
     with pytest.raises(ValueError, match="Checksum mismatch"):
