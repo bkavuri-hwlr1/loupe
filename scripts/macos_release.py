@@ -227,13 +227,43 @@ def build(tag: str, output: Path) -> None:
         print(destination)
 
 
-def prepare(tag: str, assets: Path, tap: Path) -> None:
+def render_formula(tag: str, checksums: dict[str, str]) -> str:
+    """The tap's formula for ``tag``, given each architecture's bundle SHA-256."""
+
     version = release_version(tag)
     template = (ROOT / "packaging/homebrew/loupe.rb.in").read_text()
     values = {
         "VERSION": version,
         "ROOT_URL": f"https://github.com/{TAP}/releases/download/{tag}",
+        **{
+            f"{architecture.upper()}_SHA256": checksums[architecture]
+            for architecture in ARCHITECTURES
+        },
     }
+    for key, value in values.items():
+        template = template.replace(f"@{key}@", value)
+    if re.search(r"@[A-Z0-9_]+@", template):
+        raise ValueError("Unfilled formula template")
+    return template
+
+
+def preview_formula(output: Path, root: Path = ROOT) -> None:
+    """Write the current version's formula with placeholder checksums.
+
+    CI runs `brew style` on it, the check the tap's publish workflow runs
+    before any install, so a formula offense fails a pull request rather
+    than a release.
+    """
+
+    version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    placeholder = {architecture: "0" * 64 for architecture in ARCHITECTURES}
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_formula(f"v{version}", placeholder))
+
+
+def prepare(tag: str, assets: Path, tap: Path) -> None:
+    version = release_version(tag)
+    checksums: dict[str, str] = {}
     for architecture in ARCHITECTURES:
         asset = assets / f"loupe-{version}-macos-{architecture}.tar.gz"
         checksum = sha256(asset)
@@ -247,11 +277,8 @@ def prepare(tag: str, assets: Path, tap: Path) -> None:
             manifest = json.load(manifest_file)
         if manifest["version"] != version or manifest["architecture"] != architecture:
             raise ValueError(f"Bundle does not match release: {asset.name}")
-        values[f"{architecture.upper()}_SHA256"] = checksum
-    for key, value in values.items():
-        template = template.replace(f"@{key}@", value)
-    if re.search(r"@[A-Z0-9_]+@", template):
-        raise ValueError("Unfilled formula template")
+        checksums[architecture] = checksum
+    template = render_formula(tag, checksums)
     (tap / "Formula").mkdir(parents=True, exist_ok=True)
     (tap / "Formula/loupe.rb").write_text(template)
     (tap / "release-assets").mkdir(parents=True, exist_ok=True)
@@ -279,9 +306,15 @@ def main() -> None:
     preparer.add_argument("--tag", required=True)
     preparer.add_argument("--assets", required=True, type=Path)
     preparer.add_argument("--tap", required=True, type=Path)
+    previewer = commands.add_parser(
+        "formula", help="write the current formula with placeholder checksums"
+    )
+    previewer.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
     if arguments.command == "build":
         build(arguments.tag, arguments.output.resolve())
+    elif arguments.command == "formula":
+        preview_formula(arguments.output.resolve())
     else:
         prepare(arguments.tag, arguments.assets.resolve(), arguments.tap.resolve())
 
