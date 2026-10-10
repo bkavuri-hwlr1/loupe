@@ -83,6 +83,19 @@ uv run --locked python scripts/macos_release.py prepare \
   --tag v0.1.0a0 --assets dist/macos --tap /path/to/tap-checkout
 ```
 
+The tap's publish workflow runs `brew style` on the formula before installing
+it. CI's `formula` job runs the same check on every pull request, against the
+template rendered for the current version with placeholder checksums. To run
+it locally (the first run installs Homebrew's style gems):
+
+```sh
+brew tap-new --no-git loupe/local
+uv run --locked python scripts/macos_release.py formula \
+  --output "$(brew --repo loupe/local)/Formula/loupe.rb"
+brew style loupe/local/loupe
+brew untap loupe/local
+```
+
 `brew test bkavuri-hwlr1/tap/loupe` exercises version/help, all four
 entry points, the unconfigured conversation, provider imports, doctor, daemon
 start/restart/stop, and profile preservation. It uses temporary HOME/state paths,
@@ -102,6 +115,13 @@ is unsupported.
   Actions **Re-run failed jobs**, or dispatch the public workflow on the same
   `release/vX.Y.Z` branch. Repeating a release verifies existing asset bytes;
   released URLs are never overwritten with different contents.
+- If the tap fails only because of the formula (its style check or install
+  test), fix `packaging/homebrew/loupe.rb.in` here, and apply the same change to
+  `Formula/loupe.rb` on the tap's `release/vX.Y.Z` branch. Pushing that branch
+  reruns the publish workflow, which verifies the already-published bundles are
+  unchanged, so no new version is needed. Any change to a bundle needs a new
+  version. 0.1.0a1 was finished this way: `brew test` puts Homebrew's internal
+  shims first on `PATH`, so its test now puts the real `git` ahead of them.
 - If the handoff already pushed its branch, retry the public workflow rather
   than overwriting that branch. Failed or partially published releases retain
   their candidate branch for diagnosis.
