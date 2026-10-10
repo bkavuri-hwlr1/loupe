@@ -2232,6 +2232,155 @@ class ControlStore:
                 created_at=int(row["created_at"]),
             )
 
+    def latest_session_execution(self, session_id: str) -> ExecutionRecord | None:
+        """Return the execution of a session's most recent task, if it ran."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """SELECT e.* FROM (
+                        SELECT task_id, attempt FROM tasks WHERE session_id = ?
+                        ORDER BY created_at DESC, rowid DESC LIMIT 1
+                    ) t JOIN task_executions e
+                    ON e.task_id = t.task_id AND e.task_attempt = t.attempt""",
+                (session_id,),
+            ).fetchone()
+            return self.execution_from_row(row) if row is not None else None
+
+    def answer_revisions(self, execution_id: str) -> int:
+        """Count an execution's rewritten answers after its accepted one."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM execution_answer_revisions "
+                "WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            return int(row[0])
+
+    def save_answer_revision(
+        self,
+        execution_id: str,
+        *,
+        text: str,
+        usage: Mapping[str, int],
+        session: Mapping[str, object],
+        replaces: Mapping[str, object],
+        context_tokens: int | None,
+        now: int | None = None,
+    ) -> tuple[int, bool]:
+        """Record a rewritten answer and its replay events in one transaction.
+
+        An answer is written again at most once, as revision 2; the accepted
+        answer stays as it was. The rewrite's provider-native ``session`` joins
+        the session's saved conversation only while that conversation is still
+        ``replaces`` -- the task's own -- and no task is running, so it never
+        overwrites a later turn, a summary, or a task that was not promoted.
+        Returns the first replay event's sequence and whether the conversation
+        changed.
+        """
+
+        if not text.strip() or len(text) > MAX_ANSWER_CHARACTERS:
+            raise ValueError("a rewritten answer requires bounded nonblank text")
+        if any(type(count) is not int or count < 0 for count in usage.values()):
+            raise ValueError("rewritten answer usage is invalid")
+        timestamp = self._now(now)
+        with self.connection() as connection, immediate_transaction(connection):
+            execution = connection.execute(
+                "SELECT * FROM task_executions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            accepted = connection.execute(
+                "SELECT payload_json FROM execution_answers WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            if execution is None or accepted is None:
+                raise ValueError("only an accepted answer can be written again")
+            if connection.execute(
+                "SELECT 1 FROM execution_answer_revisions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone():
+                raise ValueError("this answer was already written again")
+            original = json.loads(str(accepted["payload_json"]))
+            revision = 2
+            answer_id = f"{original['answer_id']}:r{revision}"
+            payload = {
+                **original,
+                "answer_id": answer_id,
+                "message_id": answer_id,
+                "answer": text,
+                "outcome": "completed",
+                "usage": dict(usage),
+                "revision": revision,
+                "revises": original["answer_id"],
+            }
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            sequences = self._append_answer_events(
+                connection, execution=execution, payload=payload, now=timestamp
+            )
+            connection.execute(
+                """INSERT INTO execution_answer_revisions(
+                    execution_id, revision, answer_id, payload_json, content_sha256,
+                    first_event_sequence, last_event_sequence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    execution_id,
+                    revision,
+                    answer_id,
+                    encoded,
+                    hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+                    sequences[0],
+                    sequences[-1],
+                    timestamp,
+                ),
+            )
+            # The rewrite is part of the task's cost.
+            spent = _decoded_usage(execution["usage_json"])
+            for key, count in usage.items():
+                spent[key] = spent.get(key, 0) + count
+            connection.execute(
+                """UPDATE task_executions SET usage_json = ?, updated_at = ?
+                    WHERE execution_id = ?""",
+                (json.dumps(spent, sort_keys=True), timestamp, execution_id),
+            )
+            owner = connection.execute(
+                """SELECT s.session_id, s.conversation_json FROM tasks t
+                    JOIN sessions s ON s.session_id = t.session_id
+                    WHERE t.task_id = ?""",
+                (execution["task_id"],),
+            ).fetchone()
+            current = (
+                json.loads(str(owner["conversation_json"]))
+                if owner is not None and owner["conversation_json"] is not None
+                else None
+            )
+            promoted = (
+                owner is not None
+                and isinstance(current, dict)
+                and current.get("session") == replaces
+                and connection.execute(
+                    _LIVE_SESSION_TASK, (owner["session_id"],)
+                ).fetchone()
+                is None
+            )
+            if promoted:
+                assert owner is not None and isinstance(current, dict)
+                conversation = {
+                    **current,
+                    "session": dict(session),
+                    "context_tokens": context_tokens,
+                }
+                connection.execute(
+                    """UPDATE sessions SET conversation_json = ?,
+                        conversation_revision = conversation_revision + 1,
+                        updated_at = ? WHERE session_id = ?""",
+                    (
+                        json.dumps(conversation, sort_keys=True),
+                        timestamp,
+                        owner["session_id"],
+                    ),
+                )
+            return sequences[0], promoted
+
     def save_execution_checkpoint(
         self,
         *,
@@ -2341,6 +2490,36 @@ class ControlStore:
             if existing["payload_json"] != encoded:
                 raise ValueError("an execution's accepted answer is immutable")
             return
+        sequences = self._append_answer_events(
+            connection, execution=execution, payload=payload, now=now
+        )
+        connection.execute(
+            """INSERT INTO execution_answers(
+                execution_id, answer_id, version, payload_json, content_sha256,
+                first_event_sequence, last_event_sequence, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                execution_id,
+                payload["answer_id"],
+                payload["version"],
+                encoded,
+                hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+                sequences[0],
+                sequences[-1],
+                now,
+            ),
+        )
+
+    def _append_answer_events(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        execution: sqlite3.Row,
+        payload: Mapping[str, object],
+        now: int,
+    ) -> list[int]:
+        """Append an answer's replay events, chunked, and return their sequences."""
+
         text = str(payload["answer"])
         chunks = max(1, (len(text) - 1) // _ANSWER_CHUNK_CHARACTERS + 1)
         sequences: list[int] = []
@@ -2365,22 +2544,7 @@ class ControlStore:
             ).fetchone()
             assert row is not None
             sequences.append(int(row["sequence"]))
-        connection.execute(
-            """INSERT INTO execution_answers(
-                execution_id, answer_id, version, payload_json, content_sha256,
-                first_event_sequence, last_event_sequence, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                execution_id,
-                payload["answer_id"],
-                payload["version"],
-                encoded,
-                hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
-                sequences[0],
-                sequences[-1],
-                now,
-            ),
-        )
+        return sequences
 
     @staticmethod
     def promote_shared_conversation(

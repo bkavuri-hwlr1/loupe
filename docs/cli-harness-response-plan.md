@@ -63,8 +63,20 @@ journal, without a model request. It takes the facts from the journal and the
 checkpoint. Publication requires passing required checks, so a journaled batch
 was verified exactly when checks are required. A draft that assumed that
 outcome stands, as it would have live. Otherwise the answer states only the
-facts and is marked interrupted. That interrupted answer is the case
-response-only retry, still to come, will cover.
+facts and is marked interrupted.
+
+An interrupted answer keeps its draft with the task and points to
+`/retry-answer`. That command is the response-only retry: one tools-disabled
+request from the same conversation, draft, and settlement facts. It never
+reruns edits or reacquires publication authority. The accepted answer stays
+immutable. The rewrite is saved once as revision 2, with its own
+`model.finished` replay events on the task's stream, and its tokens count
+toward the task. It joins the saved conversation only while that conversation
+is still the task's own and no task is running, so it never overwrites a later
+turn, a `/compact` summary, or a task whose conversation was not promoted.
+Each attempt is recorded (`model.answer_retrying`), a failed one
+(`model.answer_retry_failed`) can be tried again, and the CLI shows the rewrite
+by replaying the task's stream from just before it.
 
 Repository-instruction discovery, context compaction (automatic, after an
 oversized-prompt rejection, and through `/compact`), and provider prompt caching
@@ -79,8 +91,7 @@ conversation unchanged and runs no tools, so this is safe; the failed
 attempt's draft is dropped rather than kept as a partial response.
 Finalization requests are not retried this way, because their attempts are
 budgeted separately (see phase 2). Repair after a failing check is bounded
-(phase 5), and the live benchmark runs the phase 6 behavior scenarios. The
-remaining roadmap includes response-only retry.
+(phase 5), and the live benchmark runs the phase 6 behavior scenarios.
 
 Revalidation against `origin/main` on macOS/Python 3.14 on 2026-09-23 passes
 1,233 tests with 83% branch coverage, Ruff, strict mypy, whitespace checks,

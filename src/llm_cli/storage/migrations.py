@@ -895,6 +895,28 @@ CREATE TABLE execution_answers (
 );
 """,
     ),
+    Migration(
+        19,
+        "execution_answer_revisions",
+        """
+-- An explicit response-only retry writes an interrupted answer again. The
+-- accepted answer stays immutable; each rewrite is a later revision with its
+-- own replay events.
+CREATE TABLE execution_answer_revisions (
+    execution_id TEXT NOT NULL
+        REFERENCES execution_answers(execution_id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision >= 2),
+    answer_id TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    first_event_sequence INTEGER NOT NULL CHECK (first_event_sequence > 0),
+    last_event_sequence INTEGER NOT NULL
+        CHECK (last_event_sequence >= first_event_sequence),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (execution_id, revision)
+);
+""",
+    ),
 )
 
 

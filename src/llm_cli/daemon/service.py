@@ -21,6 +21,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 from llm_cli import PROTOCOL_VERSION, __version__
 from llm_cli.agent.driver import AgentDriver
+from llm_cli.agent.finalization import checkpoint_finalization
 from llm_cli.agent.harness import CodingAgentHarness
 from llm_cli.agent.modes import resolve_agent_mode, validate_agent_mode
 from llm_cli.agent.registry import DriverRegistry
@@ -244,6 +245,8 @@ class DaemonService:
         self.startup_recovery: RecoveryReport | None = None
         self._authority_lock = asyncio.Lock()
         self._background_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
+        # Executions whose answer is being written again right now.
+        self._answer_rewrites: set[str] = set()
         # Model calls may block on network or user input for minutes. Keep
         # them off the default pool used by RPC, event streams and renewal.
         self._execution_pool = ThreadPoolExecutor(
@@ -424,6 +427,9 @@ class DaemonService:
                 # The summary is a model request. Hold the authority lock only
                 # to read and to save, never while the provider responds.
                 return await self._session_compact(request.params)
+            if request.method == "session.retry_answer":
+                # Likewise a model request, locked only to read and to save.
+                return await self._session_retry_answer(request.params)
             async with self._authority_lock:
                 return await self._dispatch(request)
         except LlmCoordError:
@@ -2160,6 +2166,107 @@ class DaemonService:
             "context_tokens": before,
             "summary_tokens": after,
             "context_budget": self._context_budget(session),
+        }
+
+    async def _session_retry_answer(
+        self, params: Mapping[str, Any]
+    ) -> dict[str, object]:
+        """Write the last task's interrupted answer again, without its tools.
+
+        This is the explicit response-only retry: one tools-disabled request
+        from the conversation, draft, and settlement facts the interrupted
+        answer had. It never reruns edits or reacquires publication authority.
+        """
+
+        async with self._authority_lock:
+            session = self._authenticated_session(params, require_active=True)
+            if self.store.session_has_active_task(session.session_id):
+                raise LlmCoordError(
+                    ErrorCode.TASK_NOT_MUTABLE,
+                    "a task is still running in this conversation; let it finish "
+                    "before writing an answer again",
+                )
+            execution = self.store.latest_session_execution(session.session_id)
+            saved = (
+                self.store.get_execution_checkpoint(execution.execution_id)
+                if execution is not None
+                else None
+            )
+            state = checkpoint_finalization(saved.checkpoint) if saved else None
+            if (
+                execution is None
+                or saved is None
+                or state is None
+                or state.status != "interrupted"
+                or not saved.terminal_event_persisted
+            ):
+                return {"retried": False, "reason": "complete"}
+            native = saved.checkpoint.get("session")
+            if not isinstance(native, Mapping):
+                raise ValueError("an interrupted answer has no saved conversation")
+            if execution.execution_id in self._answer_rewrites:
+                return {"retried": False, "reason": "in_progress"}
+            if self.store.answer_revisions(execution.execution_id):
+                return {"retried": False, "reason": "rewritten"}
+            launch = self.store.get_execution_launch(
+                execution.task_id, execution.task_attempt
+            )
+            if launch is None:
+                raise KeyError("execution launch")
+            driver = self._driver_for_launch(launch)
+            if not isinstance(driver, CodingAgentHarness):
+                raise LlmCoordError(
+                    ErrorCode.PROTOCOL_MISMATCH,
+                    "this task's driver cannot write its answer again",
+                )
+            self._answer_rewrites.add(execution.execution_id)
+            # Recorded before the request, so every paid attempt is visible.
+            self.store.record_task_event(
+                task_id=execution.task_id,
+                claim_id=execution.claim_id,
+                event_type="model.answer_retrying",
+                payload={"attempt": "retry"},
+            )
+        try:
+            rewritten = await asyncio.to_thread(
+                driver.rewrite_answer,
+                saved.checkpoint,
+                instructions=launch.instructions,
+            )
+        except Exception as exc:
+            async with self._authority_lock:
+                self._answer_rewrites.discard(execution.execution_id)
+                self.store.record_task_event(
+                    task_id=execution.task_id,
+                    claim_id=execution.claim_id,
+                    event_type="model.answer_retry_failed",
+                    payload={"error": type(exc).__name__},
+                )
+            if isinstance(exc, LlmCoordError):
+                raise
+            raise LlmCoordError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "the answer could not be written again; run /retry-answer to try "
+                "once more",
+            ) from exc
+        async with self._authority_lock:
+            try:
+                after, promoted = self.store.save_answer_revision(
+                    execution.execution_id,
+                    text=rewritten.text,
+                    usage=rewritten.usage,
+                    session=rewritten.session,
+                    replaces=native,
+                    context_tokens=rewritten.context_tokens,
+                )
+            finally:
+                self._answer_rewrites.discard(execution.execution_id)
+        return {
+            "retried": True,
+            "task_id": execution.task_id,
+            # The rewrite's events follow this sequence on the task's stream.
+            "after": after - 1,
+            "conversation_updated": promoted,
         }
 
     def _save_completed_session_conversation(

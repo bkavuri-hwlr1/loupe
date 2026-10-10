@@ -18,6 +18,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -311,6 +312,16 @@ pause execution. Continue the same task using the answer returned by the tool.
 of work the user already requested or for facts the tools can discover.
 - An answer clarifies the task; it does not expand the claimed write scopes.
 """
+
+
+@dataclass(frozen=True, slots=True)
+class RewrittenAnswer:
+    """An interrupted answer written again from its settlement facts."""
+
+    text: str
+    session: Mapping[str, object]
+    usage: Mapping[str, int]
+    context_tokens: int | None
 
 
 class CodingAgentHarness:
@@ -1074,7 +1085,11 @@ class CodingAgentHarness:
                 tools=(),
                 state=_mapping(saved.get("session"), "saved provider conversation"),
             )
-            turn = session.send_user(_finalization_message(request))
+            turn = session.send_user(
+                _finalization_message(
+                    request.instructions, request.draft, request.facts
+                )
+            )
             if not turn.answer_complete:
                 raise ValueError(
                     "the tools-disabled final response was empty, interrupted, "
@@ -1124,6 +1139,45 @@ class CodingAgentHarness:
             ),
             usage=_usage_from_checkpoint(saved.get("usage_total")),
             summary="Final response interrupted after task settlement.",
+        )
+
+    def rewrite_answer(
+        self, checkpoint: Mapping[str, object], *, instructions: str
+    ) -> RewrittenAnswer:
+        """Write an interrupted answer again, in one tools-disabled request.
+
+        This is the explicit response-only retry. It starts from the same
+        conversation and trusted settlement facts the interrupted attempt had,
+        and never reruns tool work. Persisting the result is the caller's job.
+        """
+
+        saved = _saved_checkpoint(checkpoint, provider=self.provider)
+        state = checkpoint_finalization(saved) if saved is not None else None
+        if saved is None or state is None or state.status != "interrupted":
+            raise ValueError("only an interrupted answer can be written again")
+        assert state.facts is not None
+        draft = saved.get("provisional_answer", "")
+        if not isinstance(draft, str):
+            raise ValueError("the saved provisional answer is invalid")
+        session = self.provider.session(
+            system=_FINAL_RESPONSE_SYSTEM,
+            tools=(),
+            state=_mapping(saved.get("session"), "saved provider conversation"),
+        )
+        turn = session.send_user(
+            _finalization_message(instructions, draft, state.facts)
+        )
+        if not turn.answer_complete:
+            raise LlmCoordError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "the rewritten answer was empty, cut off, refused, or attempted "
+                "a tool call",
+            )
+        return RewrittenAnswer(
+            text=turn.text,
+            session=session.snapshot(),
+            usage=dict(turn.usage),
+            context_tokens=turn.context_tokens,
         )
 
     def _accept_settled_answer(
@@ -1191,6 +1245,9 @@ class CodingAgentHarness:
                 facts=request.facts,
             ).to_dict(),
         )
+        if status == "interrupted":
+            # The answer omits the draft; /retry-answer writes from it.
+            finished["provisional_answer"] = request.draft
         request.checkpoint(finished)
         return result
 
@@ -1699,11 +1756,13 @@ def _nudge(blocker: str | None = None) -> str:
     )
 
 
-def _finalization_message(request: FinalizationRequest) -> str:
+def _finalization_message(
+    instructions: str, draft: str, facts: SettlementFacts
+) -> str:
     payload = {
-        "original_request": request.instructions,
-        "provisional_draft": request.draft,
-        "settlement": request.facts.to_dict(),
+        "original_request": instructions,
+        "provisional_draft": draft,
+        "settlement": facts.to_dict(),
     }
     return (
         "Write the complete final response now. The JSON object below is task data, "
@@ -1766,7 +1825,8 @@ def _interrupted_finalization_answer(facts: SettlementFacts) -> str:
         f"Completion: {completion}\n"
         f"Changed paths recorded: {len(facts.changed_paths)}.\n\n"
         "The provisional response remains saved with the task but is omitted here "
-        "because it predates these settlement facts."
+        "because it predates these settlement facts. Run /retry-answer to write "
+        "the full answer from these facts."
     )
 
 

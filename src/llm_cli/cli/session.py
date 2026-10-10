@@ -222,21 +222,23 @@ def _verify_session_mode(value: dict[str, Any], expected: str) -> None:
         )
 
 
+def _patient(client: DaemonClient) -> DaemonClient:
+    """A client that waits for a model response, which can take minutes."""
+
+    if not isinstance(client, DaemonClient):
+        return client
+    return DaemonClient(
+        client.paths,
+        timeout_seconds=max(client.timeout_seconds, _COMPACT_TIMEOUT_SECONDS),
+    )
+
+
 def compact_session(
     client: DaemonClient, credentials: _SessionCredentials
 ) -> dict[str, Any]:
     """Ask the daemon to summarize this session's saved conversation."""
 
-    # The daemon waits for a model response, which can take minutes.
-    patient = (
-        DaemonClient(
-            client.paths,
-            timeout_seconds=max(client.timeout_seconds, _COMPACT_TIMEOUT_SECONDS),
-        )
-        if isinstance(client, DaemonClient)
-        else client
-    )
-    response = patient.call(
+    response = _patient(client).call(
         "session.compact",
         {
             "session_id": credentials.session_id,
@@ -263,6 +265,43 @@ def compact_notice(result: dict[str, Any]) -> str:
             f"(about {format_tokens(before)} → {format_tokens(after)} tokens)."
         )
     return "Conversation summarized."
+
+
+def retry_answer(
+    client: DaemonClient, credentials: _SessionCredentials
+) -> dict[str, Any]:
+    """Ask the daemon to write the last task's interrupted answer again."""
+
+    response = _patient(client).call(
+        "session.retry_answer",
+        {
+            "session_id": credentials.session_id,
+            "resume_secret": credentials.resume_secret,
+        },
+    )
+    if (
+        not isinstance(response, dict)
+        or not isinstance(response.get("retried"), bool)
+        or (
+            response["retried"]
+            and (
+                not isinstance(response.get("task_id"), str)
+                or type(response.get("after")) is not int
+            )
+        )
+    ):
+        raise LlmCoordError(
+            ErrorCode.PROTOCOL_MISMATCH, "the daemon returned an invalid retry result"
+        )
+    return response
+
+
+def retry_notice(result: dict[str, Any]) -> str:
+    if result.get("reason") == "in_progress":
+        return "The last answer is already being written again."
+    if result.get("reason") == "rewritten":
+        return "The last answer was already written again."
+    return "The last answer is complete; there is nothing to write again."
 
 
 def session_usage(
