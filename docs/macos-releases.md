@@ -96,7 +96,14 @@ brew style loupe/local/loupe
 brew untap loupe/local
 ```
 
-`brew test bkavuri-hwlr1/tap/loupe` exercises version/help, all four
+On a Mac, `brew test` runs the formula's test in Homebrew's sandbox, which
+blocks the Unix socket Loupe's background service listens on. The formula's test
+therefore sets `LOUPE_SMOKE_NO_SERVICE=1` and checks everything that needs no
+service: the version, help, demo, an unconfigured chat, and the provider imports.
+The tap's publish workflow runs the full smoke test outside the sandbox, after
+`brew test`, so the service checks below still run for every release.
+
+The full smoke test (`smoke_test.py` without that variable) exercises version/help, all four
 entry points, the unconfigured conversation, provider imports, doctor, daemon
 start/restart/stop, and profile preservation. It uses temporary HOME/state paths,
 removes account environment variables, and runs outside the source checkout.
