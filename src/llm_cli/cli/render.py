@@ -99,6 +99,9 @@ _PUBLIC_EVENTS = frozenset(
         "model.context.compacted",
         "model.context.compaction_failed",
         "model.retrying",
+        "model.finalizing",
+        "model.finalization_interrupted",
+        "model.finalization_failed",
         "model.tool_interrupted",
         "mcp.server.started",
         "mcp.server.failed",
@@ -175,6 +178,11 @@ _LABELS: dict[str, str] = {
     "model.context.compacted": "summarized earlier conversation to stay in context",
     "model.context.compaction_failed": "could not summarize earlier conversation",
     "model.retrying": "retrying the model request",
+    "model.finalizing": "updating the answer to match what happened",
+    "model.finalization_interrupted": (
+        "could not update the answer; it states only the settled result"
+    ),
+    "model.finalization_failed": "the final answer could not be saved",
     "model.refused": "the model declined this task",
     "model.finished": "done",
     "mcp.server.started": "using MCP server",
@@ -204,6 +212,8 @@ _MARKERS: dict[str, str] = {
     "hook.failed": "!",
     "hooks.unavailable": "!",
     "model.retrying": "!",
+    "model.finalization_interrupted": "!",
+    "model.finalization_failed": "!",
     "repair.exhausted": "!",
 }
 
@@ -1000,6 +1010,11 @@ class EventRenderer:
         if kind == "model.retrying":
             # The failed attempt's draft is not an answer; the retry redraws.
             self._clear_preview()
+        if kind == "model.finalizing":
+            # The draft may claim an outcome that settlement did not produce.
+            self._clear_preview()
+            self.ui.activity("Updating the answer to match what happened…")
+            return
         line = render_event({**event, "payload": payload})
         if line is not None:
             self.ui.activity(None)
@@ -1029,6 +1044,8 @@ class EventRenderer:
                 "hook.failed",
                 "hooks.unavailable",
                 "model.retrying",
+                "model.finalization_interrupted",
+                "model.finalization_failed",
                 "repair.exhausted",
             }:
                 style = "warning"

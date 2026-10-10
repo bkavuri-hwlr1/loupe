@@ -413,6 +413,28 @@ def test_openai_sessions_prepare_overlapping_edits_and_preserve_the_losing_batch
 
             return complete
 
+        def settled(request: dict[str, Any]) -> list[dict[str, Any]]:
+            # The loser's draft claimed success; one tools-disabled turn
+            # rewrites it from the runner's facts.
+            assert request["tools"] == []
+            assert '"publication": "diverged"' in request["input"][-1]["content"]
+            return [
+                {
+                    "type": "message",
+                    "id": "msg_settled",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Another session changed docs/shared.md first, "
+                            "so nothing was published.",
+                            "annotations": [],
+                        }
+                    ],
+                }
+            ]
+
         clients = [
             ResponsesClient(
                 [
@@ -434,6 +456,7 @@ def test_openai_sessions_prepare_overlapping_edits_and_preserve_the_losing_batch
                         ),
                     ],
                     pause(index),
+                    *([settled] if name == "second" else []),
                 ]
             )
             for index, name in enumerate(("first", "second"))
@@ -480,7 +503,17 @@ def test_openai_sessions_prepare_overlapping_edits_and_preserve_the_losing_batch
             assert (repository / "docs/shared.md").read_text() == "first\n"
             assert (repository / "docs/first.md").read_text() == "first\n"
             assert (repository / "docs/second.md").read_text() == "base\n"
-            assert all(len(client.requests) == 2 for client in clients)
+            # The winner's publication was expected, so its draft stood.
+            assert [len(client.requests) for client in clients] == [2, 3]
+            answers = [
+                event.payload["answer"]
+                for event in service.store.list_task_events("second")
+                if event.event_type == "model.finished"
+            ]
+            assert answers == [
+                "Another session changed docs/shared.md first, so nothing was "
+                "published."
+            ]
         finally:
             for signal in release:
                 signal.set()

@@ -778,3 +778,34 @@ def test_context_and_instruction_events_render_as_short_notices() -> None:
         )
         == "  ! could not summarize earlier conversation (provider offline)"
     )
+
+
+def test_finalizing_replaces_the_draft_preview_with_an_activity() -> None:
+    output = io.StringIO()
+    renderer = EventRenderer(output, plain=True)
+    previews: list[str | None] = []
+    activity: list[str | None] = []
+    renderer.ui.preview = previews.append  # type: ignore[method-assign,assignment]
+    renderer.ui.activity = activity.append  # type: ignore[method-assign,assignment]
+    renderer.render(_event("model.turn.started", turn_id="t"))
+    renderer.render(_event("model.tool_call", tool="write_file", call_id="w"))
+    renderer.render(
+        _event(
+            "model.tool.delta",
+            tool="finish_task",
+            call_id="f",
+            arguments_delta='{"answer": "Published the fix.',
+        )
+    )
+    assert previews[-1] == "Published the fix."
+    renderer.render(_event("model.finalizing", attempt=1, publication="diverged"))
+    assert previews[-1] is None
+    assert activity[-1] == "Updating the answer to match what happened…"
+    renderer.render(
+        _event("model.finalization_interrupted", publication="diverged", error="X")
+    )
+    renderer.finish()
+    assert (
+        "! could not update the answer; it states only the settled result"
+        in output.getvalue()
+    )

@@ -168,6 +168,23 @@ class FinalizationState:
         )
 
 
+def settlement_surprises(facts: SettlementFacts, *, publish_mode: str) -> bool:
+    """Whether settlement differs from what the agent's draft could assume.
+
+    A review-mode task expects its edits to be held, and an auto-mode task
+    expects them published. Anything else -- auto mode held by stale or
+    failing checks, a diverged checkout, or a publication needing recovery --
+    means the draft may claim an outcome that did not happen. A stopped task
+    keeps its draft: the stop notice already says what happened.
+    """
+
+    if facts.completion != "completed":
+        return False
+    if facts.publication == "held_for_review":
+        return publish_mode != "review"
+    return facts.publication not in {"published", "no_changes", "not_applicable"}
+
+
 def checkpoint_finalization(
     checkpoint: Mapping[str, object],
 ) -> FinalizationState | None:
@@ -211,7 +228,7 @@ def validate_finalization_transition(
         raise ValueError("a checkpoint cannot discard finalization state")
     allowed = {
         "prepared": {"prepared", "pending", "completed"},
-        "pending": {"pending", "in_flight"},
+        "pending": {"pending", "in_flight", "completed"},
         "in_flight": {"in_flight", "completed", "interrupted"},
         "completed": {"completed"},
         "interrupted": {"interrupted"},
@@ -228,5 +245,6 @@ __all__ = [
     "FinalizationState",
     "SettlementFacts",
     "checkpoint_finalization",
+    "settlement_surprises",
     "validate_finalization_transition",
 ]
