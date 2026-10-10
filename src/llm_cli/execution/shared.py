@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from llm_cli.coordination.models import (
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.execution.checks import (
     CheckRunner,
+    published_verification,
     verification_current,
     verification_status,
 )
@@ -516,6 +518,12 @@ class SharedTaskExecutionRunner:
             if fresh is not None and fresh.state not in {"published", "failed"}:
                 batch = self.publisher.get(execution.execution_id)
                 if batch is not None and batch.state in {"published", "diverged"}:
+                    # A diverged batch settles without an answer, so a
+                    # response that cannot be finished must not block it.
+                    with suppress(ValueError, LlmCoordError):
+                        self._finish_interrupted_response(
+                            fresh, batch.state, driver
+                        )
                     self.coordinator.settle_shared_execution(
                         execution.execution_id, outcome=batch.state
                     )
@@ -607,11 +615,14 @@ class SharedTaskExecutionRunner:
         capabilities: Callable[[str], DriverCapabilities | None],
         *,
         can_launch: Callable[[ExecutionLaunchRecord], bool] | None = None,
+        driver_for: Callable[[ExecutionLaunchRecord], AgentDriver] | None = None,
     ) -> tuple[RecoveryOutcome, ...]:
         """Recover journaled effects first, then adopt private checkpoints.
 
         The caller holds the publication lock and has recovered filesystem
         journals before this method. A shared checkout is never a cleanup path.
+        ``driver_for`` rebuilds a task's driver so a response interrupted after
+        publication can be finished, without a model request, before settling.
         """
 
         with self.store.connection() as connection:
@@ -633,6 +644,11 @@ class SharedTaskExecutionRunner:
             try:
                 batch = self.publisher.get(execution.execution_id)
                 if batch is not None and batch.state in {"published", "diverged"}:
+                    self._finish_interrupted_response(
+                        execution,
+                        batch.state,
+                        self._recovery_driver(execution, driver_for),
+                    )
                     self.coordinator.settle_shared_execution(
                         execution.execution_id, outcome=batch.state
                     )
@@ -707,26 +723,105 @@ class SharedTaskExecutionRunner:
             )
         return tuple(outcomes)
 
-    def _retain_checkpoint_candidates(self, execution: ExecutionRecord) -> None:
-        # Cancellation may be persisted while a provider call is in flight.
-        # Preserve its last durable overlay before terminalizing the attempt,
-        # since settled workflows no longer expose their running checkpoint.
-        saved = self.store.get_execution_checkpoint(execution.execution_id)
-        if saved is None:
+    def _recovery_driver(
+        self,
+        execution: ExecutionRecord,
+        driver_for: Callable[[ExecutionLaunchRecord], AgentDriver] | None,
+    ) -> AgentDriver | None:
+        launch = self.store.get_execution_launch(
+            execution.task_id, execution.task_attempt
+        )
+        if driver_for is None or launch is None:
+            return None
+        try:
+            return driver_for(launch)
+        except Exception:
+            # Factories are extension code. Without the driver, a published
+            # batch stays for operator attention; a diverged one settles.
+            return None
+
+    def _finish_interrupted_response(
+        self,
+        execution: ExecutionRecord,
+        publication: str,
+        driver: AgentDriver | None,
+    ) -> None:
+        """Finish a response that stopped after its batch was journaled.
+
+        Settlement promotes only a finished conversation, so the response is
+        finished first, from facts the journal and checkpoint establish. It
+        never sends a model request: a draft that assumed this outcome stands,
+        as it would have live, and otherwise the answer states only the facts
+        and is marked interrupted.
+        """
+
+        if not isinstance(driver, SettlementFinalizer):
             return
+        saved = self.store.get_execution_checkpoint(execution.execution_id)
+        state = checkpoint_finalization(saved.checkpoint) if saved else None
+        if saved is None or state is None or state.status in {
+            "completed",
+            "interrupted",
+        }:
+            return
+        workflow = self.workflow.get(execution.task_id, execution.task_attempt)
+        launch = self.store.get_execution_launch(
+            execution.task_id, execution.task_attempt
+        )
+        if workflow is None or launch is None:
+            raise ValueError("an interrupted response has no task recipe")
+        broker = self._checkpoint_broker(execution, saved.checkpoint)
+        facts = state.facts or SettlementFacts(
+            publication=publication,
+            verification=published_verification(workflow),
+            completion=broker.usage.outcome,
+            changed_paths=tuple(
+                sorted(file.relative_path for file in broker.candidates())
+            ),
+        )
+        request = FinalizationRequest(
+            task_id=execution.task_id,
+            attempt=execution.task_attempt,
+            instructions=launch.instructions,
+            draft=broker.usage.answer,
+            summary=broker.usage.summary,
+            facts=facts,
+            resume_state=saved.checkpoint,
+            checkpoint=functools.partial(
+                self.lifecycle._checkpoint_execution,
+                execution_id=execution.execution_id,
+                driver=execution.driver,
+            ),
+            use_model=settlement_surprises(
+                facts, publish_mode=workflow["publish_mode"]
+            ),
+            # A rewrite the outcome calls for is recorded as interrupted
+            # rather than sent.
+            cancelled=lambda: True,
+        )
+        if state.status == "prepared":
+            request = replace(
+                request, resume_state=driver.prepare_finalization(request)
+            )
+        driver.finalize(request)
+
+    def _checkpoint_broker(
+        self, execution: ExecutionRecord, checkpoint: Mapping[str, object]
+    ) -> SharedToolBroker:
+        """Rebuild a task's tool state, including its edits, from a checkpoint."""
+
         claim = self.store.get_claim(execution.claim_id)
         task = self.store.get_task(execution.task_id)
         repository = self.store.get_repository(task.repository_id) if task else None
-        usage = saved.checkpoint.get("tool_usage")
+        usage = checkpoint.get("tool_usage")
         if (
-            saved.driver != execution.driver
-            or claim is None
+            claim is None
             or repository is None
             or claim.task_id != execution.task_id
             or claim.task_attempt != execution.task_attempt
             or not isinstance(usage, dict)
         ):
-            raise ValueError("invalid shared checkpoint for retained proposal")
+            raise ValueError("invalid shared checkpoint for this task")
         workflow = self.workflow.get(execution.task_id, execution.task_attempt)
         broker = SharedToolBroker(
             worktree=Path(execution.worktree_path),
@@ -737,6 +832,18 @@ class SharedTaskExecutionRunner:
             agent_mode=workflow["agent_mode"] if workflow else "auto",
         )
         broker.restore_usage(usage)
+        return broker
+
+    def _retain_checkpoint_candidates(self, execution: ExecutionRecord) -> None:
+        # Cancellation may be persisted while a provider call is in flight.
+        # Preserve its last durable overlay before terminalizing the attempt,
+        # since settled workflows no longer expose their running checkpoint.
+        saved = self.store.get_execution_checkpoint(execution.execution_id)
+        if saved is None:
+            return
+        if saved.driver != execution.driver:
+            raise ValueError("invalid shared checkpoint for retained proposal")
+        broker = self._checkpoint_broker(execution, saved.checkpoint)
         self.workflow.retain(
             execution.task_id,
             execution.task_attempt,

@@ -234,6 +234,131 @@ def test_a_failed_final_turn_states_the_settled_facts(
     asyncio.run(scenario())
 
 
+class _Crash(BaseException):
+    """Stops the worker the way a killed daemon would: no cleanup runs."""
+
+
+def _crash(*args: Any, **kwargs: Any) -> None:
+    raise _Crash
+
+
+@pytest.mark.parametrize(
+    ("check", "verification"), [(None, "not_applicable"), ("pass", "passed")]
+)
+def test_a_crash_after_publication_settles_with_the_draft(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+    check: str | None,
+    verification: str,
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        provider = _edit(_finish(DRAFT))
+        creds = await setup(service, root, provider, code=check)
+        # The files are published, then the daemon dies before the answer.
+        monkeypatch.setattr(service.shared_runner, "_finalize_response", _crash)
+        with pytest.raises(_Crash):
+            await await_task(service, root, creds)
+        assert (root / "a.py").read_text() == "value = 2\n"
+        requests = len(provider.user_messages)
+
+        (outcome,) = service._recover_shared_executions()
+
+        assert outcome.resolution == "confirmed"
+        assert service._task_view("task")["state"] == "completed"
+        # Publication was what the draft assumed, so it stands, as it would
+        # have live, and recovery sent no model request.
+        assert _answer(service) == {"text": DRAFT, "outcome": "completed", "count": 1}
+        assert len(provider.user_messages) == requests
+        state = _finalization(service)
+        assert (state["status"], state["attempts"]) == ("completed", 0)
+        assert state["facts"] == {
+            "version": 1,
+            "publication": "published",
+            "verification": verification,
+            "completion": "completed",
+            "changed_paths": ["a.py"],
+        }
+        assert service.store.session_conversation("workflow-session") is not None
+        assert service._recover_shared_executions() == ()
+
+    asyncio.run(scenario())
+
+
+def test_a_crash_during_the_rewrite_settles_without_resending_it(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+
+        def finish(results: Sequence[ToolCallResult]) -> ModelTurn:
+            (root / "a.py").write_text("value = 9\n")
+            return _finish(DRAFT)
+
+        def killed(results: Sequence[ToolCallResult]) -> ModelTurn:
+            raise _Crash
+
+        provider = _edit(finish, killed)
+        creds = await setup(service, root, provider)
+        with pytest.raises(_Crash):
+            await await_task(service, root, creds)
+        requests = len(provider.user_messages)
+
+        (outcome,) = service._recover_shared_executions()
+
+        assert outcome.resolution == "failed_safe"
+        assert len(provider.user_messages) == requests
+        answer = _answer(service)
+        assert answer["outcome"] == "partial"
+        assert "the shared checkout had diverged" in answer["text"]
+        assert DRAFT not in answer["text"]
+        state = _finalization(service)
+        assert (state["status"], state["attempts"]) == ("interrupted", 1)
+        execution = service.store.get_execution("task", 1)
+        assert execution is not None
+        assert execution.failure_code == "PATH_BASE_MISMATCH"
+
+    asyncio.run(scenario())
+
+
+def test_a_failure_while_finishing_still_settles_a_publication(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_cli.agent.harness import CodingAgentHarness
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        creds = await setup(service, root, _edit(_finish(DRAFT)))
+        finalize = CodingAgentHarness.finalize
+        calls: list[str] = []
+
+        def fail_once(self: CodingAgentHarness, request: Any) -> Any:
+            calls.append(request.facts.publication)
+            if len(calls) == 1:
+                raise RuntimeError("the answer could not be saved")
+            return finalize(self, request)
+
+        monkeypatch.setattr(CodingAgentHarness, "finalize", fail_once)
+        await await_task(service, root, creds)
+
+        assert calls == ["published", "published"]
+        assert service._task_view("task")["state"] == "completed"
+        assert _answer(service)["text"] == DRAFT
+        assert service.store.session_conversation("workflow-session") is not None
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     ("publication", "publish_mode", "surprising"),
     [

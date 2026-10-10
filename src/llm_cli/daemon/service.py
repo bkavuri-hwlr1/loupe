@@ -291,7 +291,9 @@ class DaemonService:
             self._recover_shared_workspace_publications()
             self.workspace_batches.recover()
             return self.shared_runner.recover(
-                self.drivers.capabilities, can_launch=self._can_reconstruct_launch
+                self.drivers.capabilities,
+                can_launch=self._can_reconstruct_launch,
+                driver_for=self._driver_for_launch,
             )
 
     def _recover_shared_workspace_publications(self) -> None:
