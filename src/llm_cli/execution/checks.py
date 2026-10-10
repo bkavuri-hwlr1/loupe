@@ -216,6 +216,20 @@ def verification_current(
     return True
 
 
+def published_verification(workflow: dict[str, Any]) -> str:
+    """The verification status implied by an attempted publication.
+
+    Publication requires current passing evidence for every required check
+    (:func:`verification_current`), so a journaled batch was verified exactly
+    when its workflow requires checks. Recovery uses this after the checkout
+    has changed, when recomputing the evidence would wrongly call it stale.
+    """
+
+    config = json.loads(workflow["config_json"])
+    required = any(check["required"] for check in config.get("checks", {}).values())
+    return "passed" if required else "not_applicable"
+
+
 def verification_status(
     store: ControlStore,
     workflow: dict[str, Any],

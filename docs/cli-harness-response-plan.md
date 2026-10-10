@@ -56,10 +56,15 @@ the terminal task state still commit together, and a follower never sees a
 settled task without its answer. Unlike the original design, file claims stay
 held through this step. It runs only on a surprise and takes seconds, which
 keeps claim release in its existing single transaction. A task relaunched after
-its facts were bound finishes from those facts without resuming tool work. A
-crash after publication but before the answer settles from the publication
-journal and leaves the answer missing rather than inventing one. Response-only
-retry is the remaining piece for that case.
+its facts were bound finishes from those facts without resuming tool work. If
+the daemon stops after the files were published but before the answer was
+saved, recovery finishes the answer before settling from the publication
+journal, without a model request. It takes the facts from the journal and the
+checkpoint. Publication requires passing required checks, so a journaled batch
+was verified exactly when checks are required. A draft that assumed that
+outcome stands, as it would have live. Otherwise the answer states only the
+facts and is marked interrupted. That interrupted answer is the case
+response-only retry, still to come, will cover.
 
 Repository-instruction discovery, context compaction (automatic, after an
 oversized-prompt rejection, and through `/compact`), and provider prompt caching
