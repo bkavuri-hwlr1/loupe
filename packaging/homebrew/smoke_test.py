@@ -80,6 +80,11 @@ def main() -> None:
                 check=True,
                 timeout=30,
             )
+            if os.environ.get("LOUPE_SMOKE_NO_SERVICE") == "1":
+                # Homebrew's test sandbox blocks the Unix socket the background
+                # service listens on. The release workflow runs the rest.
+                print(f"Loupe {version}: smoke test passed without the service")
+                return
             assert rpc("init")["initialized"] is True
             assert rpc("daemon", "status")["version"] == version
             health = rpc("doctor")

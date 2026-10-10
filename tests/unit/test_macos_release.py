@@ -110,6 +110,7 @@ def test_prepare_requires_both_verified_architectures(tmp_path: Path) -> None:
     assert "@X86_64_SHA256@" not in formula
     # brew test's own git shim fails outside brew, so the test uses real git.
     assert 'ENV.prepend_path "PATH", formula_opt_bin("git")' in formula
+    assert 'ENV["LOUPE_SMOKE_NO_SERVICE"] = "1"' in formula
     # Downloads come from the tap's own releases.
     assert (
         f"https://github.com/bkavuri-hwlr1/homebrew-tap/releases/download/v{version}/"
@@ -119,3 +120,19 @@ def test_prepare_requires_both_verified_architectures(tmp_path: Path) -> None:
     (assets / "SHA256SUMS-arm64").write_text("tampered")
     with pytest.raises(ValueError, match="Checksum mismatch"):
         release.prepare(f"v{version}", assets, tap)
+
+
+def test_the_formula_preview_renders_the_current_version(tmp_path: Path) -> None:
+    output = tmp_path / "Formula/loupe.rb"
+
+    release.preview_formula(output)
+
+    formula = output.read_text()
+    version = tomllib.loads((release.ROOT / "pyproject.toml").read_text())["project"][
+        "version"
+    ]
+    assert f'version "{version}"' in formula
+    assert "@" + "VERSION@" not in formula
+    assert formula.count('sha256 "' + "0" * 64 + '"') == 2
+    assert 'ENV.prepend_path "PATH", formula_opt_bin("git")' in formula
+    assert 'ENV["LOUPE_SMOKE_NO_SERVICE"] = "1"' in formula
