@@ -22,7 +22,11 @@ from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
 from llm_cli.git.environment import run_git
-from llm_cli.git.worktrees import create_managed_worktree, remove_managed_worktree
+from llm_cli.git.worktrees import (
+    ManagedWorktree,
+    create_managed_worktree,
+    remove_managed_worktree,
+)
 from llm_cli.ids import new_id
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.batches import BatchFile, candidate_target
@@ -30,6 +34,8 @@ from llm_cli.workspace.identity import DIRECTORY_MODE, ObjectKind, read_identifi
 from llm_cli.workspace.workflow import TaskWorkflow, encode_files
 
 _OUTPUT_LIMIT = 10 * 1024 * 1024
+# Attempts at building a check's snapshot when Git fails while doing so.
+_PREPARE_ATTEMPTS = 3
 # Output still arriving this long after the supervisor exits comes from a
 # process that left the command's process group, and is not waited for.
 _DRAIN_SECONDS = 1.0
@@ -414,78 +420,18 @@ class CheckRunner:
             )
         self.emit("check.started", {"run_id": run_id, "name": name})
         try:
-            runtime = runtime_identity(self.root, self.config.get("runtime_paths", []))
-            for _ in range(3):
-                with self.lock:
-                    source, bodies = source_snapshot(self.root, contents=True)
-                    modes = {
-                        p: read_identified_path(candidate_target(self.root, p))[0].mode
-                        for p in bodies
-                    }
-                if source_snapshot(self.root)[0] == source:
+            for attempt in range(_PREPARE_ATTEMPTS):
+                try:
+                    worktree, source = self._prepare(run_id, files)
                     break
-            else:
-                raise ValueError(
-                    "Checkout kept changing during snapshot capture; retry the check."
-                )
-            for f in files:
-                current, _ = read_identified_path(
-                    candidate_target(self.root, f.relative_path)
-                )
-                if current != f.base:
-                    raise ValueError(
-                        f"Candidate base changed at {f.relative_path}; retry the task."
-                    )
-            head = run_git(self.root, ["rev-parse", "HEAD"])
-            assert isinstance(head.stdout, str)
-            worktree = create_managed_worktree(
-                self.root,
-                managed_root=self.managed_root,
-                task_id=run_id,
-                base_oid=head.stdout.strip(),
-            )
+                except LlmCoordError:
+                    # Git can fail transiently while another task's check
+                    # creates or removes its snapshot in the same repository.
+                    # A failed preparation leaves nothing behind.
+                    if attempt + 1 == _PREPARE_ATTEMPTS:
+                        raise
+            assert worktree is not None
             snapshot = worktree.path
-            # Remove tracked files absent from the captured checkout, then
-            # overlay exact dirty/untracked bytes rather than Git-filter output.
-            listed = run_git(snapshot, ["ls-files", "-z"])
-            assert isinstance(listed.stdout, str)
-            for path in filter(None, listed.stdout.split("\0")):
-                target = candidate_target(snapshot, path)
-                if target.is_symlink() or (path not in bodies and target.is_file()):
-                    target.unlink()
-            for path, body in bodies.items():
-                target = candidate_target(snapshot, path)
-                if body is None:
-                    target.unlink(missing_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(body)
-                    target.chmod(0o755 if modes[path] == "100755" else 0o644)
-            for f in sorted(
-                files,
-                key=lambda f: (0 if f.mode == DIRECTORY_MODE else 1, f.relative_path),
-            ):
-                target = candidate_target(snapshot, f.relative_path)
-                if f.mode == DIRECTORY_MODE:
-                    target.mkdir(parents=True, exist_ok=True)
-                elif f.content is None:
-                    target.unlink(missing_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(f.content)
-                    target.chmod(0o755 if f.mode == "100755" else 0o644)
-            for path in self.config.get("runtime_paths", []):
-                self._copy_runtime(path, snapshot)
-            if (
-                runtime_identity(self.root, self.config.get("runtime_paths", []))
-                != runtime
-                or runtime_identity(snapshot, self.config.get("runtime_paths", []))
-                != runtime
-            ):
-                raise ValueError(
-                    "Runtime dependencies changed during snapshot capture."
-                )
-            source = digest(source + runtime)
             private = snapshot.parent / (run_id + "-runtime")
             private.mkdir(mode=0o700)
             env = {
@@ -527,7 +473,7 @@ class CheckRunner:
             if source_snapshot(snapshot)[0] != before:
                 state = "source_mutated"
                 output += "\nCheck/setup modified source; those changes were discarded."
-        except (OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError, LlmCoordError) as exc:
             state = "cancelled" if self.cancelled() else "error"
             output += "\n" + str(exc)
         finally:
@@ -579,6 +525,98 @@ class CheckRunner:
             + output[-60 * 1024 :],
             state != "passed",
         )
+
+    def _prepare(
+        self, run_id: str, files: tuple[BatchFile, ...]
+    ) -> tuple[ManagedWorktree, str]:
+        """Capture the checkout and build the check's snapshot worktree from it.
+
+        Returns the worktree and the digest of the source it holds. On failure
+        nothing is left behind: a worktree it created is removed again.
+        """
+
+        runtime = runtime_identity(self.root, self.config.get("runtime_paths", []))
+        for _ in range(3):
+            with self.lock:
+                source, bodies = source_snapshot(self.root, contents=True)
+                modes = {
+                    p: read_identified_path(candidate_target(self.root, p))[0].mode
+                    for p in bodies
+                }
+            if source_snapshot(self.root)[0] == source:
+                break
+        else:
+            raise ValueError(
+                "Checkout kept changing during snapshot capture; retry the check."
+            )
+        for f in files:
+            current, _ = read_identified_path(
+                candidate_target(self.root, f.relative_path)
+            )
+            if current != f.base:
+                raise ValueError(
+                    f"Candidate base changed at {f.relative_path}; retry the task."
+                )
+        head = run_git(self.root, ["rev-parse", "HEAD"])
+        assert isinstance(head.stdout, str)
+        worktree = create_managed_worktree(
+            self.root,
+            managed_root=self.managed_root,
+            task_id=run_id,
+            base_oid=head.stdout.strip(),
+        )
+        try:
+            snapshot = worktree.path
+            # Remove tracked files absent from the captured checkout, then
+            # overlay exact dirty/untracked bytes rather than Git-filter output.
+            listed = run_git(snapshot, ["ls-files", "-z"])
+            assert isinstance(listed.stdout, str)
+            for path in filter(None, listed.stdout.split("\0")):
+                target = candidate_target(snapshot, path)
+                if target.is_symlink() or (path not in bodies and target.is_file()):
+                    target.unlink()
+            for path, body in bodies.items():
+                target = candidate_target(snapshot, path)
+                if body is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(body)
+                    target.chmod(0o755 if modes[path] == "100755" else 0o644)
+            for f in sorted(
+                files,
+                key=lambda f: (0 if f.mode == DIRECTORY_MODE else 1, f.relative_path),
+            ):
+                target = candidate_target(snapshot, f.relative_path)
+                if f.mode == DIRECTORY_MODE:
+                    target.mkdir(parents=True, exist_ok=True)
+                elif f.content is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(f.content)
+                    target.chmod(0o755 if f.mode == "100755" else 0o644)
+            for path in self.config.get("runtime_paths", []):
+                self._copy_runtime(path, snapshot)
+            if (
+                runtime_identity(self.root, self.config.get("runtime_paths", []))
+                != runtime
+                or runtime_identity(snapshot, self.config.get("runtime_paths", []))
+                != runtime
+            ):
+                raise ValueError(
+                    "Runtime dependencies changed during snapshot capture."
+                )
+        except BaseException:
+            with suppress(Exception):
+                remove_managed_worktree(
+                    self.root,
+                    managed_root=self.managed_root,
+                    registered_path=worktree.path,
+                    force=True,
+                )
+            raise
+        return worktree, digest(source + runtime)
 
     def _copy_runtime(self, path: str, snapshot: Path) -> None:
         source = candidate_target(self.root, path)
