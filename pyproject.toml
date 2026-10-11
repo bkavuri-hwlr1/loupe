@@ -1,6 +1,6 @@
 [project]
 name = "llm-coord"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Loupe: a terminal coding agent with cross-session coordination"
 readme = "packaging/README.md"
 requires-python = ">=3.12,<3.15"
