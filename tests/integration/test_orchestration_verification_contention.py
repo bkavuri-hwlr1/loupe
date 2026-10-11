@@ -277,7 +277,7 @@ def test_simultaneous_review_applies_publish_whole_batches(
             if required_checks:
                 assert all(
                     service.workflow.checks(n)[0]["state"] == "passed" for n in names
-                )
+                ), {n: service.workflow.checks(n) for n in names}
             assert {path: (root / path).read_text() for path in initial} == initial
             results = await asyncio.gather(
                 *(

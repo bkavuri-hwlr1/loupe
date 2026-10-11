@@ -176,6 +176,84 @@ def test_review_can_apply_and_undo_refuses_external_changes(
     asyncio.run(scenario())
 
 
+def _failing_worktrees(
+    monkeypatch: pytest.MonkeyPatch, failures: int
+) -> list[str]:
+    """Make building a check's snapshot fail in Git, ``failures`` times."""
+
+    from llm_cli.execution import checks
+
+    create = checks.create_managed_worktree
+    calls: list[str] = []
+
+    def flaky(*args: Any, **kwargs: Any) -> Any:
+        calls.append(str(kwargs["task_id"]))
+        if len(calls) <= failures:
+            raise LlmCoordError(
+                ErrorCode.REPOSITORY_UNSAFE, "fatal: Unable to create a lock file"
+            )
+        return create(*args, **kwargs)
+
+    monkeypatch.setattr(checks, "create_managed_worktree", flaky)
+    return calls
+
+
+def test_a_check_survives_a_transient_git_failure(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        creds = await setup(service, root, edit_provider(_finish()), code="pass")
+        calls = _failing_worktrees(monkeypatch, failures=1)
+        await await_task(service, root, creds)
+
+        # The snapshot is rebuilt within the same run, which then passes.
+        (run,) = service.workflow.checks("task")
+        assert run["state"] == "passed"
+        assert calls == [run["run_id"], run["run_id"]]
+        assert service._task_view("task")["state"] == "completed"
+        assert (root / "a.py").read_text() == "value = 2\n"
+
+    asyncio.run(scenario())
+
+
+def test_a_check_that_cannot_be_prepared_reports_why(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        provider = edit_provider(_finish())
+        creds = await setup(service, root, provider, code="pass")
+        calls = _failing_worktrees(monkeypatch, failures=10)
+        await await_task(service, root, creds)
+
+        (run,) = service.workflow.checks("task")
+        assert run["state"] == "error"
+        assert len(calls) == 3
+        with service.store.connection() as connection:
+            (output,) = connection.execute(
+                "SELECT output FROM check_runs WHERE run_id = ?", (run["run_id"],)
+            ).fetchone()
+        assert "Unable to create a lock file" in output
+        # The model is told its required check did not pass, not that the
+        # repository refused the finish.
+        refusal = provider.results[-1][0].content
+        assert "Required checks did not pass" in refusal
+        assert "Unable to create a lock file" in refusal
+        assert service._task_view("task")["state"] == "awaiting_review"
+        assert (root / "a.py").read_text() == "value = 1\n"
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "code,expected",
     [
