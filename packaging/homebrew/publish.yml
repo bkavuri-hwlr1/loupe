@@ -86,11 +86,16 @@ jobs:
           cp Formula/loupe.rb "$(brew --repo "$TAP")/Formula/loupe.rb"
           brew style "$FORMULA"
           if test -n "$previous" && test "$previous" != "${RELEASE_TAG#v}"; then
-            brew upgrade --build-bottle "$FORMULA"
-          else
-            if test -n "$previous"; then brew uninstall "$FORMULA"; fi
-            brew install --build-bottle "$FORMULA"
+            # Upgrade the way users will, keeping the retained profile.
+            brew upgrade "$FORMULA"
+            "$(brew --prefix "$FORMULA")/libexec/bin/python" \
+              "$(brew --prefix "$FORMULA")/share/loupe/smoke_test.py" \
+              "$(brew --prefix "$FORMULA")/bin" "${RELEASE_TAG#v}" "$RUNNER_TEMP/retained-profile"
           fi
+          # Only `brew install` accepts --build-bottle, so the bottle comes
+          # from a fresh install. --force removes every installed version.
+          if test -n "$previous"; then brew uninstall --force "$FORMULA"; fi
+          brew install --build-bottle "$FORMULA"
           brew test "$FORMULA"
           "$(brew --prefix "$FORMULA")/libexec/bin/python" \
             "$(brew --prefix "$FORMULA")/share/loupe/smoke_test.py" \

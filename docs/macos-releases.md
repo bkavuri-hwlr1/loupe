@@ -29,8 +29,10 @@ move to the new tap.
    `release/vX.Y.Z` branch in the tap. The handoff includes only the bundles,
    formula, installation guide, and publish workflow: no Git history,
    development documentation, credentials, or developer paths.
-6. The public workflow uploads candidate downloads as a prerelease, then builds,
-   tests, bottles, uninstalls, reinstalls, and tests on both Mac architectures.
+6. The public workflow uploads candidate downloads as a prerelease. On both Mac
+   architectures it upgrades from the published formula (when there is one)
+   and smoke-tests the upgrade, then builds, tests, bottles, uninstalls,
+   reinstalls, and tests.
    After both pass it uploads bottles, merges their checksums, and updates the
    main formula. The candidate branch is deleted; archives are not added to the
    main branch's history. Alpha/beta/RC releases retain their prerelease label.
@@ -123,12 +125,17 @@ is unsupported.
   `release/vX.Y.Z` branch. Repeating a release verifies existing asset bytes;
   released URLs are never overwritten with different contents.
 - If the tap fails only because of the formula (its style check or install
-  test), fix `packaging/homebrew/loupe.rb.in` here, and apply the same change to
-  `Formula/loupe.rb` on the tap's `release/vX.Y.Z` branch. Pushing that branch
+  test) or its publish workflow, fix `packaging/homebrew/loupe.rb.in` or
+  `packaging/homebrew/publish.yml` here, and apply the same change to
+  `Formula/loupe.rb` or `.github/workflows/publish.yml` on the tap's
+  `release/vX.Y.Z` branch. Pushing that branch
   reruns the publish workflow, which verifies the already-published bundles are
   unchanged, so no new version is needed. Any change to a bundle needs a new
   version. 0.1.0a1 was finished this way: `brew test` puts Homebrew's internal
   shims first on `PATH`, so its test now puts the real `git` ahead of them.
+  0.1.0a2, the first release with a published version to upgrade from, was
+  finished the same way: `brew upgrade` no longer accepts `--build-bottle`, so
+  the workflow upgrades as users do and bottles from a fresh install.
 - If the handoff already pushed its branch, retry the public workflow rather
   than overwriting that branch. Failed or partially published releases retain
   their candidate branch for diagnosis.
