@@ -2808,6 +2808,31 @@ class ControlStore:
             assert row is not None
             return self.execution_from_row(row)
 
+    def record_execution_usage(
+        self, execution_id: str, usage: Mapping[str, int], *, now: int | None = None
+    ) -> None:
+        """Replace an execution's token totals, keeping its state.
+
+        A task's final response can be written after its run was recorded, so
+        its totals are updated once that response is saved.
+        """
+
+        if any(
+            not isinstance(key, str) or type(count) is not int or count < 0
+            for key, count in usage.items()
+        ):
+            raise ValueError("execution usage must be non-negative token counts")
+        with self.connection() as connection, immediate_transaction(connection):
+            connection.execute(
+                """UPDATE task_executions SET usage_json = ?, updated_at = ?
+                    WHERE execution_id = ?""",
+                (
+                    json.dumps(dict(usage), sort_keys=True),
+                    self._now(now),
+                    execution_id,
+                ),
+            )
+
     def update_execution(
         self,
         execution_id: str,

@@ -602,13 +602,16 @@ class SharedTaskExecutionRunner:
                     request, resume_state=driver.prepare_finalization(request)
                 )
             with self.lifecycle._renewing_lease(task=task, claim=claim):
-                driver.finalize(request)
+                finished = driver.finalize(request)
         except Exception as exc:
             # Settlement must still complete; the task keeps its files and
             # states that its answer is missing rather than inventing one.
             broker.emit(
                 "model.finalization_failed", {"error": type(exc).__name__}
             )
+            return
+        # The run was recorded before settlement; a rewrite adds tokens.
+        self.store.record_execution_usage(execution.execution_id, finished.usage)
 
     def recover(
         self,

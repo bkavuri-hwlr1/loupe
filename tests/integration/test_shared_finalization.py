@@ -177,6 +177,38 @@ def test_a_stale_check_in_auto_mode_rewrites_the_answer_once(
     asyncio.run(scenario())
 
 
+def test_the_rewrite_counts_toward_the_tasks_usage(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(
+            tmp_path, {"a.py": "value = 1\n", "dependency.py": "base\n"}
+        )
+        service = service_factory(tmp_path)
+
+        def rewrite(results: Sequence[ToolCallResult]) -> ModelTurn:
+            return ModelTurn(
+                text="The change is held for review: its check is stale.",
+                stop_reason="end_turn",
+                usage={"input_tokens": 40, "output_tokens": 9},
+            )
+
+        provider = _edit(_finish(DRAFT), rewrite)
+        creds = await setup(service, root, provider, code=_stale_check(root))
+        await await_task(service, root, creds)
+
+        assert _finalization(service)["attempts"] == 1
+        execution = service.store.get_execution("task", 1)
+        assert execution is not None
+        assert execution.usage == {"input_tokens": 40, "output_tokens": 9}
+        usage = await service.handle(_request("session.usage", creds))
+        assert usage["usage"]["output_tokens"] == 9
+
+    asyncio.run(scenario())
+
+
 def test_a_diverged_checkout_rewrites_the_answer_before_the_failure(
     tmp_path: Path,
     repository_factory: Callable[..., Path],
