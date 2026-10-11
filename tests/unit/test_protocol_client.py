@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import signal
+import threading
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
@@ -75,9 +80,18 @@ def test_ambiguous_response_after_startup_is_normalized_without_another_retry(
     assert once.await_args_list[0].args[0] is once.await_args_list[1].args[0]
 
 
-def test_interrupt_cancels_stream_read_before_closing_socket(
+def test_ctrl_c_cancels_a_stream_read_between_loop_steps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Ctrl+C must not raise inside the event loop.
+
+    Raised mid-step, it could leave the loop unable to finish the cancelled
+    read, and detaching from a task hung. The interrupt instead cancels the
+    read at its next await, then surfaces once the socket is closed.
+    """
+
+    if signal.getsignal(signal.SIGINT) is not signal.default_int_handler:
+        pytest.skip("this process does not receive Ctrl+C as KeyboardInterrupt")
     client = _client(tmp_path)
     settled = []
     writer = Mock(wait_closed=AsyncMock())
@@ -86,17 +100,35 @@ def test_interrupt_cancels_stream_read_before_closing_socket(
         client, "_open_stream", AsyncMock(return_value=(object(), writer))
     )
 
-    def interrupt() -> None:
-        raise KeyboardInterrupt
+    loops: list[asyncio.AbstractEventLoop] = []
+    finished = threading.Event()
+
+    def watchdog() -> None:
+        # Fail instead of hanging if the interrupt strands the event loop.
+        while not finished.wait(5):
+            for loop in loops:
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(loop.stop)
 
     async def read_forever(reader: object) -> None:
-        asyncio.get_running_loop().call_soon(interrupt)
+        loops.append(asyncio.get_running_loop())
+        os.kill(os.getpid(), signal.SIGINT)
+        # Python runs signal handlers between bytecodes, so an interrupt
+        # raised here would cut this step short.
+        deadline = time.monotonic() + 0.05
+        while time.monotonic() < deadline:
+            pass
+        settled.append("step finished")
         try:
             await asyncio.Future()
         finally:
             settled.append("read cancelled")
 
     monkeypatch.setattr(client_module, "read_frame", read_forever)
-    with pytest.raises(KeyboardInterrupt):
-        next(client.stream("task.attach", {"task_id": "running"}))
-    assert settled == ["read cancelled", "socket closed"]
+    threading.Thread(target=watchdog, daemon=True).start()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            next(client.stream("task.attach", {"task_id": "running"}))
+    finally:
+        finished.set()
+    assert settled == ["step finished", "read cancelled", "socket closed"]
