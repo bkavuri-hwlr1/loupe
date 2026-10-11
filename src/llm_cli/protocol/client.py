@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Coroutine, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -18,21 +18,6 @@ from llm_cli.ids import new_id
 from llm_cli.paths import AppPaths, make_private_file
 from llm_cli.protocol.envelopes import Request, Response
 from llm_cli.protocol.framing import read_frame, write_frame
-
-
-def _stream_step[T](
-    loop: asyncio.AbstractEventLoop, operation: Coroutine[Any, Any, T]
-) -> T:
-    task = loop.create_task(operation)
-    try:
-        return loop.run_until_complete(task)
-    except BaseException:
-        # run_until_complete leaves its task alive when a signal interrupts
-        # the loop. Settle it before closing the socket or losing the handle.
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            loop.run_until_complete(task)
-        raise
 
 
 class DaemonClient:
@@ -105,7 +90,11 @@ class DaemonClient:
 
         The loop is driven one frame at a time rather than with ``asyncio.run``
         so this stays an ordinary generator: the caller renders each event as
-        it arrives without the CLI having to become async throughout.
+        it arrives without the CLI having to become async throughout. Each step
+        runs through an ``asyncio.Runner``, which turns Ctrl+C into cancelling
+        that step and then raising ``KeyboardInterrupt``. A ``KeyboardInterrupt``
+        raised inside the loop itself can leave it unable to finish the
+        cancelled read, which hung detaching from a task.
         """
 
         request = Request.create(
@@ -114,12 +103,12 @@ class DaemonClient:
             params=params,
             profile_id=self.paths.profile_id,
         )
-        loop = asyncio.new_event_loop()
+        runner = asyncio.Runner()
         try:
-            reader, writer = _stream_step(loop, self._open_stream(request))
+            reader, writer = runner.run(self._open_stream(request))
             try:
                 while True:
-                    frame = _stream_step(loop, read_frame(reader))
+                    frame = runner.run(read_frame(reader))
                     if frame.get("stream"):
                         event = frame.get("event")
                         if isinstance(event, dict):
@@ -136,7 +125,7 @@ class DaemonClient:
             finally:
                 writer.close()
                 with contextlib.suppress(Exception):
-                    _stream_step(loop, writer.wait_closed())
+                    runner.run(writer.wait_closed())
         except (FileNotFoundError, ConnectionRefusedError) as exc:
             raise LlmCoordError(
                 ErrorCode.DAEMON_UNAVAILABLE, "the local daemon is not running"
@@ -148,7 +137,7 @@ class DaemonClient:
                 "attach again to resume the task's output",
             ) from exc
         finally:
-            loop.close()
+            runner.close()
 
     async def _open_stream(
         self, request: Request
