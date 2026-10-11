@@ -102,6 +102,8 @@ _PUBLIC_EVENTS = frozenset(
         "model.finalizing",
         "model.finalization_interrupted",
         "model.finalization_failed",
+        "model.answer_retrying",
+        "model.answer_retry_failed",
         "model.tool_interrupted",
         "mcp.server.started",
         "mcp.server.failed",
@@ -183,6 +185,8 @@ _LABELS: dict[str, str] = {
         "could not update the answer; it states only the settled result"
     ),
     "model.finalization_failed": "the final answer could not be saved",
+    "model.answer_retrying": "writing the answer again from what happened",
+    "model.answer_retry_failed": "could not write the answer again",
     "model.refused": "the model declined this task",
     "model.finished": "done",
     "mcp.server.started": "using MCP server",
@@ -214,6 +218,7 @@ _MARKERS: dict[str, str] = {
     "model.retrying": "!",
     "model.finalization_interrupted": "!",
     "model.finalization_failed": "!",
+    "model.answer_retry_failed": "!",
     "repair.exhausted": "!",
 }
 
@@ -985,7 +990,10 @@ class EventRenderer:
                         "blocked": "Loupe — blocked",
                         "partial": "Loupe — incomplete",
                     }.get(
-                        outcome, "Loupe — revised answer" if self._revising else "Loupe"
+                        outcome,
+                        "Loupe — revised answer"
+                        if self._revising or payload.get("revision")
+                        else "Loupe",
                     )
                     self._complete_text(turn, "text", answer, heading=heading)
                 elif outcome in _STREAMED_OUTCOMES:
@@ -1046,6 +1054,7 @@ class EventRenderer:
                 "model.retrying",
                 "model.finalization_interrupted",
                 "model.finalization_failed",
+                "model.answer_retry_failed",
                 "repair.exhausted",
             }:
                 style = "warning"

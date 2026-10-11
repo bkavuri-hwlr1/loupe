@@ -13,11 +13,13 @@ from test_shared_agent_execution import (
     ScriptedProvider,
     _call,
     _finish,
+    _request,
     _tools,
 )
 from test_verified_workflow import await_task, edit_provider, setup
 
 from llm_cli.daemon.service import DaemonService
+from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.providers.base import ModelTurn, ToolCallResult
 
 DRAFT = "Changed value to 2 and published it."
@@ -230,6 +232,110 @@ def test_a_failed_final_turn_states_the_settled_facts(
         assert DRAFT not in answer["text"]
         state = _finalization(service)
         assert (state["status"], state["attempts"]) == ("interrupted", 1)
+
+    asyncio.run(scenario())
+
+
+def _broken(results: Sequence[ToolCallResult]) -> ModelTurn:
+    raise RuntimeError("the provider dropped the final response")
+
+
+async def _retry(service: DaemonService, creds: dict[str, str]) -> dict[str, Any]:
+    result = await service.handle(_request("session.retry_answer", creds))
+    assert isinstance(result, dict)
+    return result
+
+
+def test_retry_answer_writes_an_interrupted_answer_again(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(
+            tmp_path, {"a.py": "value = 1\n", "dependency.py": "base\n"}
+        )
+        service = service_factory(tmp_path)
+        rewritten = "a.py now sets value = 2; the change is held for review."
+
+        def rewrite(results: Sequence[ToolCallResult]) -> ModelTurn:
+            assert not results
+            return ModelTurn(
+                text=rewritten, stop_reason="end_turn", usage={"output_tokens": 7}
+            )
+
+        provider = _edit(_finish(DRAFT), _broken, _broken, rewrite)
+        creds = await setup(service, root, provider, code=_stale_check(root))
+        await await_task(service, root, creds)
+        interrupted = _answer(service)
+        assert interrupted["outcome"] == "partial"
+        assert "/retry-answer" in interrupted["text"]
+        execution = service.store.get_execution("task", 1)
+        assert execution is not None
+        spent = dict(execution.usage)
+
+        # A failed retry is recorded and can be tried again.
+        with pytest.raises(LlmCoordError) as failed:
+            await _retry(service, creds)
+        assert failed.value.code is ErrorCode.PROVIDER_UNAVAILABLE
+        result = await _retry(service, creds)
+
+        assert result["retried"] is True and result["task_id"] == "task"
+        assert result["conversation_updated"] is True
+        # One tools-disabled request from the same draft and facts.
+        assert provider.sessions[-1] == ()
+        request = json.loads(provider.user_messages[-1].split("\n\n", 1)[1])
+        assert request["provisional_draft"] == DRAFT
+        assert request["settlement"]["publication"] == "held_for_review"
+        assert request["settlement"]["verification"] == "stale"
+        replay = service.store.list_task_events("task", after_sequence=result["after"])
+        finished = [e.payload for e in replay if e.event_type == "model.finished"]
+        assert [(p["answer"], p["outcome"], p["revision"]) for p in finished] == [
+            (rewritten, "completed", 2)
+        ]
+        events = [e.event_type for e in service.store.list_task_events("task")]
+        assert events.count("model.answer_retrying") == 2
+        assert events.count("model.answer_retry_failed") == 1
+        # The rewrite is what the next prompt continues from, and the task is
+        # still held for review: no edits ran again.
+        saved = service.store.session_conversation("workflow-session")
+        assert saved is not None
+        messages = saved[2]["session"]["messages"]
+        assert messages[-1]["content"] == provider.user_messages[-1]
+        assert service._task_view("task")["state"] == "awaiting_review"
+        assert (root / "a.py").read_text() == "value = 1\n"
+        execution = service.store.get_execution("task", 1)
+        assert execution is not None
+        assert execution.usage == {
+            **spent,
+            "output_tokens": spent.get("output_tokens", 0) + 7,
+        }
+
+        assert await _retry(service, creds) == {
+            "retried": False,
+            "reason": "rewritten",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_retry_answer_leaves_a_complete_answer_alone(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        provider = _edit(_finish(DRAFT))
+        creds = await setup(service, root, provider)
+        await await_task(service, root, creds)
+
+        assert await _retry(service, creds) == {
+            "retried": False,
+            "reason": "complete",
+        }
+        assert not provider.steps
 
     asyncio.run(scenario())
 

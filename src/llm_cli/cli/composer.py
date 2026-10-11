@@ -58,6 +58,7 @@ _COMMANDS = {
     "/models": "Browse this account's available models",
     "/effort": "Choose thinking effort for the current model",
     "/compact": "Summarize the conversation to free context",
+    "/retry-answer": "Write an interrupted answer again, without edits",
     "/usage": "Show token usage and how full the context is",
     "/clear": "Clear the screen; keep the conversation",
     "/detach": "Leave this conversation available to resume",

@@ -663,6 +663,28 @@ class ChatShell:
                 self.composer.note_context(
                     result.get("summary_tokens"), result.get("context_budget")
                 )
+        elif command == "/retry-answer":
+            if args:
+                raise ValueError("Usage: /retry-answer")
+            if self.credentials is None:
+                self.ui.notice("No answer to write again yet.")
+                return True
+            self._require_idle()
+            self.ui.notice("Writing the last answer again from what happened…")
+            result = session.retry_answer(self.client, self.credentials)
+            if not result["retried"]:
+                self.ui.notice(session.retry_notice(result), style="muted")
+                return True
+            # Replay the rewrite from the task's stream, as /attach would.
+            session._follow(
+                self.client,
+                task_id=result["task_id"],
+                stream=self.stream,
+                input_stream=self.stdin,
+                plain=self.plain,
+                composer=self.composer,
+                after=result["after"],
+            )
         elif command == "/usage":
             if args:
                 raise ValueError("Usage: /usage")

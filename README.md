@@ -6,7 +6,9 @@ assistant messages and results. Answers to questions appear while the model
 writes them, with Markdown and syntax-colored code shown as complete blocks
 arrive. When a task has edited files, its answer is previewed below the
 conversation until Loupe accepts it, so a draft rejected by required checks
-never enters your scrollback. Routine
+never enters your scrollback. If writing that answer is interrupted after the
+files settle, the answer states only what happened; `/retry-answer` writes it
+again without rerunning any edits. Routine
 file reads, tool payloads, and reasoning text stay out of the conversation.
 Answers remain in your terminal scrollback, with labeled dividers between
 messages and a single “Done” after a task completes.

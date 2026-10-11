@@ -26,6 +26,9 @@ class Client:
         self.sessions: dict[str, dict[str, Any]] = {}
         self.repository_error: LlmCoordError | None = None
         self.compact_result: dict[str, Any] = {"compacted": False}
+        self.retry_result: dict[str, Any] = {"retried": False, "reason": "complete"}
+        self.streams: list[dict[str, Any]] = []
+        self.events: list[dict[str, Any]] = []
         self.usage_result: dict[str, Any] = {"task_runs": 0, "usage": {}}
         identity = code_identity()
         self.daemon_identity: dict[str, Any] = {
@@ -68,6 +71,8 @@ class Client:
             return []
         if method == "session.compact":
             return self.compact_result
+        if method == "session.retry_answer":
+            return self.retry_result
         if method == "session.usage":
             return self.usage_result
         if method in {"repo.add", "session.set_intent", "session.close"}:
@@ -76,7 +81,8 @@ class Client:
 
     def stream(self, method: str, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
         assert method == "task.attach"
-        return iter(())
+        self.streams.append(params)
+        return iter(self.events)
 
 
 class Menu:
@@ -803,6 +809,81 @@ def test_compact_updates_the_context_meter(client: Client, menu: Menu) -> None:
     chat._command("/compact")
 
     assert chat.composer.context_percent == 2
+
+
+def test_retry_answer_without_a_conversation_needs_no_daemon_call(
+    client: Client, menu: Menu
+) -> None:
+    chat = start(client)
+
+    assert chat._command("/retry-answer")
+
+    assert "No answer to write again yet." in output(chat)
+    assert calls(client, "session.retry_answer") == []
+
+
+@pytest.mark.parametrize(
+    ("reason", "notice"),
+    [
+        ("complete", "The last answer is complete; there is nothing to write again."),
+        ("rewritten", "The last answer was already written again."),
+        ("in_progress", "The last answer is already being written again."),
+    ],
+)
+def test_retry_answer_explains_when_there_is_nothing_to_write(
+    client: Client, menu: Menu, reason: str, notice: str
+) -> None:
+    menu.ready.add("codex")
+    chat = start(client, provider="codex", model="first-model")
+    assert chat._ensure_session()
+    client.retry_result = {"retried": False, "reason": reason}
+
+    assert chat._command("/retry-answer")
+
+    assert notice in output(chat)
+    assert client.streams == []
+
+
+def test_retry_answer_shows_the_rewrite_from_the_task_stream(
+    client: Client, menu: Menu
+) -> None:
+    menu.ready.add("codex")
+    chat = start(client, provider="codex", model="first-model")
+    assert chat._ensure_session()
+    assert chat.credentials is not None
+    client.tasks.append({"task_id": "chat_1", "state": "awaiting_review"})
+    client.retry_result = {"retried": True, "task_id": "chat_1", "after": 41}
+    client.events = [
+        {
+            "event_type": "model.finished",
+            "task_id": "chat_1",
+            "sequence": 42,
+            "payload": {
+                "answer": "The edit to a.py is held for review.",
+                "outcome": "completed",
+                "message_id": "answer:abc:r2",
+                "revision": 2,
+            },
+        }
+    ]
+
+    assert chat._command("/retry-answer")
+
+    assert calls(client, "session.retry_answer") == [
+        {
+            "session_id": chat.credentials.session_id,
+            "resume_secret": chat.credentials.resume_secret,
+        }
+    ]
+    assert client.streams == [{"task_id": "chat_1", "after": 41}]
+    text = output(chat)
+    assert "revised answer" in text
+    assert "The edit to a.py is held for review." in text
+
+
+def test_retry_answer_rejects_arguments(client: Client, menu: Menu) -> None:
+    with pytest.raises(ValueError, match="Usage: /retry-answer"):
+        start(client)._command("/retry-answer now")
 
 
 def test_usage_without_a_conversation_needs_no_daemon_call(

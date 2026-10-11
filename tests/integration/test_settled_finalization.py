@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from test_agent_loop import (
@@ -20,6 +22,7 @@ from test_agent_loop import worktree as worktree
 from llm_cli.agent.driver import FinalizationRequest, RunResult
 from llm_cli.agent.finalization import FinalizationState, SettlementFacts
 from llm_cli.agent.harness import CodingAgentHarness
+from llm_cli.errors import LlmCoordError
 from llm_cli.providers.base import ModelTurn
 
 
@@ -320,3 +323,68 @@ def test_a_relaunch_after_settlement_returns_the_draft_without_tool_work(
 
     assert resumed.answer == draft.answer
     assert len(provider.user_messages) == before
+
+
+def _interrupted(
+    worktree: Path, final_turn: ModelTurn
+) -> tuple[CodingAgentHarness, Any, RunResult, Mapping[str, object]]:
+    """An answer whose rewrite was dispatched but never came back."""
+
+    facts = SettlementFacts(
+        publication="diverged",
+        verification="passed",
+        completion="completed",
+        changed_paths=("docs/guide.md",),
+    )
+    harness, provider, draft, snapshots, persist = _prepare_draft(
+        worktree, final_turn=final_turn
+    )
+    request = _request_finalization(draft, snapshots[-1], persist, facts)
+    pending = harness.prepare_finalization(request)
+    in_flight = {
+        **pending,
+        "phase": "finalizing",
+        "finalization": FinalizationState("in_flight", 1, facts).to_dict(),
+    }
+    persist(in_flight)
+    harness.finalize(replace(request, resume_state=in_flight))
+    return harness, provider, draft, snapshots[-1]
+
+
+def test_an_interrupted_answer_can_be_written_again_from_its_draft(
+    worktree: Path,
+) -> None:
+    rewritten = "Nothing was published: docs/guide.md changed underneath."
+    harness, provider, draft, saved = _interrupted(
+        worktree, ModelTurn(text=rewritten, stop_reason="end_turn")
+    )
+    assert saved["provisional_answer"] == draft.answer
+    assert "/retry-answer" in str(saved["tool_usage"]["answer"])  # type: ignore[index]
+
+    result = harness.rewrite_answer(saved, instructions="update the guide")
+
+    assert result.text == rewritten
+    assert provider.offered_tools == ()
+    request = json.loads(provider.user_messages[-1].split("\n\n", 1)[1])
+    assert request["provisional_draft"] == draft.answer
+    assert request["settlement"]["publication"] == "diverged"
+    assert request["original_request"] == "update the guide"
+
+
+def test_a_rewrite_must_be_a_complete_answer_to_an_interrupted_one(
+    worktree: Path,
+) -> None:
+    harness, _provider, _draft, saved = _interrupted(
+        worktree, ModelTurn(text="cut off", stop_reason="max_tokens")
+    )
+    with pytest.raises(LlmCoordError, match="cut off"):
+        harness.rewrite_answer(saved, instructions="update the guide")
+    completed = {
+        **saved,
+        "finalization": {
+            **saved["finalization"],  # type: ignore[dict-item]
+            "status": "completed",
+        },
+    }
+    with pytest.raises(ValueError, match="only an interrupted answer"):
+        harness.rewrite_answer(completed, instructions="update the guide")
