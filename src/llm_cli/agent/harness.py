@@ -40,6 +40,7 @@ from llm_cli.agent.limits import COMPACT_AT_FRACTION, DEFAULT_LIMITS, ExecutionL
 from llm_cli.agent.modes import validate_agent_mode
 from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
 from llm_cli.agent.tools import (
+    BATCHED_READS,
     ToolBroker,
     ToolBudgetExhausted,
     ToolOutcome,
@@ -68,8 +69,11 @@ _MAX_IDLE_TURNS = 2
 # runs again.
 _PARALLEL_TOOLS = frozenset({"explore"})
 _MAX_PARALLEL_CALLS = 4
+# Consecutive reads are answered together (ToolBroker.invoke_reads).
+_MAX_READ_BATCH = 16
 # Tools whose interrupted calls run again instead of being reported unknown.
-_REPEATABLE_TOOLS = frozenset({"ask_user", *_PARALLEL_TOOLS})
+# Reads change no files, and their budget is restored with the checkpoint.
+_REPEATABLE_TOOLS = frozenset({"ask_user", *_PARALLEL_TOOLS, *BATCHED_READS})
 _MAX_COORDINATION_BYTES = 16 * 1024
 _TRANSCRIPT_CHUNK_CHARS = 4096
 _STREAM_FLUSH_SECONDS = 0.08
@@ -1309,11 +1313,16 @@ class CodingAgentHarness:
         index = len(results)
         while index < len(turn.tool_calls):
             group = [turn.tool_calls[index]]
+            kind, limit = (
+                (_PARALLEL_TOOLS, _MAX_PARALLEL_CALLS)
+                if group[0].name in _PARALLEL_TOOLS
+                else (BATCHED_READS, _MAX_READ_BATCH)
+            )
             while (
-                group[0].name in _PARALLEL_TOOLS
-                and len(group) < _MAX_PARALLEL_CALLS
+                group[0].name in kind
+                and len(group) < limit
                 and index + len(group) < len(turn.tool_calls)
-                and turn.tool_calls[index + len(group)].name in _PARALLEL_TOOLS
+                and turn.tool_calls[index + len(group)].name in kind
             ):
                 group.append(turn.tool_calls[index + len(group)])
             # A group's results are recorded together. If the daemon stops
@@ -1521,6 +1530,8 @@ def _invoke_all(
 
     if len(calls) == 1:
         return [tools.invoke(calls[0].name, calls[0].arguments)]
+    if calls[0].name in BATCHED_READS:
+        return tools.invoke_reads([(call.name, call.arguments) for call in calls])
     with ThreadPoolExecutor(
         max_workers=len(calls), thread_name_prefix="loupe-explore"
     ) as pool:

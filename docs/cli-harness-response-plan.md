@@ -479,7 +479,7 @@ existing authority model: repository and tool content never grants authority.
 | 2 | Provider prompt caching | Implemented |
 | 3 | Repository instruction files (`AGENTS.md`, `LOUPE.md`) | Implemented |
 | 4 | Governed shell execution with an OS sandbox | Implemented (`run_command`, shared tasks) |
-| 5 | Faster read-only tools | Implemented; concurrent execution deferred |
+| 5 | Faster read-only tools | Implemented, including batched reads |
 | 6 | Visible task plan tool | Implemented (`update_plan`) |
 | 7 | MCP client support | Implemented (stdio servers, tools) |
 | 8 | User hooks around tool calls and completion | Implemented (`pre_tool`, `post_edit`) |
@@ -591,7 +591,7 @@ write into dependency folders fail; editable installs that point at the real
 checkout cannot be imported from it; each command copies the whole source tree.
 CI installs bubblewrap so the real Linux sandbox is tested.
 
-**5. Faster read-only tools (implemented; concurrency deferred).** The
+**5. Faster read-only tools (implemented, including batched reads).** The
 original plan was to run a turn's reads, searches and listings concurrently.
 Profiling the shared-checkout path showed that this would not help yet: every
 shared read holds the daemon-wide publication lock, so threaded reads took as
@@ -614,9 +614,42 @@ checks are now cheaper:
 On this repository, a shared `search_text` dropped from about 750 ms to about
 150 ms, `read_file` from about 45 ms to 20 ms, and `list_files` from about
 38 ms to 25 ms.
-Concurrent execution remains worthwhile for slow tools: it now applies to
-`explore` helpers (item 9) and should extend to web fetch and MCP tools
-(items 10 and 7), or to shared reads if they move to a shared/exclusive lock. Isolated tasks still check exclusions per directory during a search.
+Consecutive `read_file`, `list_files`, `search_text` and `read_diff` calls
+in one turn are now answered as a batch (`ToolBroker.invoke_reads`), with
+results identical to the same calls made one after another:
+
+- Holding the read barrier once, the batch does all of its disk reads in
+  parallel threads. Listings and diffs are answered whole, since nothing
+  another read does can change them. Searches take their snapshots. File reads
+  are checked for exclusions in one pass, and in the shared checkout the files
+  that are not excluded are read. An excluded file is never read.
+- With the barrier released, searches match their patterns in parallel, each
+  in its own worker process as before, so a slow pattern never blocks another
+  session's reads or publication. Time a search spends waiting for the rest of
+  the batch does not count against its five-second limit.
+- Every call then runs through the normal `invoke` in order, receiving its
+  prepared answer. Budgets, read observations, partial-read tracking, events
+  and errors are therefore exactly those of sequential calls. All disk reads
+  happened under one barrier, so the batch sees one state of the checkout, as
+  if its calls ran back to back with nothing published in between.
+- Searches in one batch share their source-tree listing and, per file, the
+  read, the secret scan and the decoded text. Regex matching stays per search.
+- Batching is skipped when a `pre_tool` hook guards a read tool, since the hook
+  could change files before the read it guards. Reads now run again on
+  resume, like `explore`, because they change no files.
+
+A differential test runs randomized batches against two identical brokers,
+shared and isolated: one sequentially, one batched. Batches mix pending edits,
+ignored, private, secret and binary files, repeated reads and budgets that run
+out mid-batch. Every outcome, the broker state afterwards, and every event
+must match. Planting either of two plausible bugs made it fail: answering file
+reads in parallel too, and a wrong exclusion cache. On this repository, four
+file reads dropped from about 65 ms to 30 ms (shared) and 57 ms to 20 ms
+(isolated). Two listings and two searches went from 278 ms to 158 ms. A batch
+takes about as long as its slowest search: walking the tree, scanning files
+for secrets and decoding them run in the daemon's Python, where threads do not
+run in parallel, and each search starts a regex worker process. Isolated tasks
+still check exclusions per directory during a search.
 
 **6. Task plan tool (implemented).** `update_plan` records an ordered checklist
 of at most 12 steps, each pending, in progress (at most one), or completed. The

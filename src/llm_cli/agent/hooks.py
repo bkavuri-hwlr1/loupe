@@ -68,6 +68,13 @@ class HookRunner:
         self._run_hook = run_hook
         self._emit = emit
 
+    def guards(self, name: str) -> bool:
+        """Whether a pre_tool hook runs before this tool."""
+
+        return any(
+            fnmatchcase(name, pattern) for hook in self._pre for pattern in hook.match
+        )
+
     def before_tool(
         self, name: str, arguments: Mapping[str, object]
     ) -> tuple[str, str] | None:
