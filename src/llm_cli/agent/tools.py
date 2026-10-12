@@ -22,6 +22,8 @@ import shlex
 import threading
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -45,7 +47,9 @@ from llm_cli.agent.source_policy import (
     contains_secret_material,
     ensure_safe_content,
     excluded_paths,
+    exclusion_answers,
     exclusion_scope,
+    known_exclusions,
 )
 from llm_cli.coordination.scopes import (
     ScopeValidationError,
@@ -70,6 +74,24 @@ _COMPLETION_OUTCOMES = {"completed", "blocked", "partial"}
 _MAX_QUESTION_OPTIONS = 5
 _MAX_OPTION_CHARACTERS = 200
 _MAX_INSPECTION_FILE_BYTES = 8 * 1024 * 1024
+# Read-only tools whose consecutive calls are answered together.
+BATCHED_READS = frozenset({"read_file", "list_files", "search_text", "read_diff"})
+# Of those, the ones whose answer depends on no other read in the batch.
+_WHOLE_READS = frozenset({"list_files", "search_text", "read_diff"})
+_MAX_READ_WORKERS = 8
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchPrepared:
+    """A search's snapshot, taken under the read barrier, awaiting its matching."""
+
+    budget: SearchBudget
+    snapshot: SearchSnapshot
+
+
+# A batched read's prepared answer: an outcome, the error its call raises, a
+# search awaiting matching, or nothing to prepare (file reads).
+type _Prepared = ToolOutcome | Exception | _SearchPrepared | None
 MAX_EXPLORE_TASK_CHARACTERS = 4_000
 MAX_EXPLORE_LABEL_CHARACTERS = 80
 PLAN_STATUSES = ("pending", "in_progress", "completed")
@@ -167,6 +189,10 @@ class ToolBroker:
     # Explorations run in parallel threads and share the call budget.
     _budget_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
+    # The next call's answer, already computed by invoke_reads.
+    _ready: ToolOutcome | Exception | None = field(
+        default=None, init=False, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
@@ -388,6 +414,11 @@ class ToolBroker:
             bound_handler: Callable[[Mapping[str, object]], ToolOutcome] = getattr(
                 self, handler.__name__
             )
+            ready, self._ready = self._ready, None
+            if isinstance(ready, Exception):
+                raise ready
+            if ready is not None:
+                return ready
             with exclusion_scope():
                 return bound_handler(arguments)
         except ScopeValidationError as exc:
@@ -399,6 +430,192 @@ class ToolBroker:
             return _error(
                 f"the filesystem refused that operation: {exc.strerror or exc}"
             )
+
+    def invoke_reads(
+        self, calls: Sequence[tuple[str, Mapping[str, object]]]
+    ) -> list[ToolOutcome]:
+        """Answer consecutive read-only calls exactly as one after another.
+
+        First, holding the read barrier once, every disk read the batch needs
+        runs in parallel: listings and diffs are answered whole, searches take
+        their snapshots, and each file read's exclusion check is done in one
+        pass. With the barrier released, searches match their patterns in
+        parallel. Then every call runs through ``invoke`` in order, receiving
+        its prepared answer, so budgets, observations, events and errors are
+        exactly those of sequential calls. All of the batch's disk reads happen
+        under one barrier, so it sees one state of the checkout.
+        """
+
+        if not self._batchable(calls):
+            return [self.invoke(name, arguments) for name, arguments in calls]
+        with self._read_scope():
+            with self._read_barrier():
+                prepared, answers = self._prepare_reads(calls)
+            ready = self._match_searches(calls, prepared)
+            outcomes: list[ToolOutcome] = []
+            with known_exclusions(self.worktree, answers):
+                for (name, arguments), answer in zip(calls, ready, strict=True):
+                    self._ready = answer
+                    try:
+                        outcomes.append(self.invoke(name, arguments))
+                    finally:
+                        self._ready = None
+            return outcomes
+
+    def _batchable(self, calls: Sequence[tuple[str, Mapping[str, object]]]) -> bool:
+        names = {name for name, _ in calls}
+        return (
+            len(calls) > 1
+            and names <= BATCHED_READS
+            and names <= set(self.tool_names())
+            # A pre_tool hook may change files before the read it guards.
+            and not (
+                self.hooks is not None and any(self.hooks.guards(n) for n in names)
+            )
+        )
+
+    def _read_scope(self) -> AbstractContextManager[object]:
+        """State a batch keeps from preparing its reads until they are answered."""
+
+        return nullcontext()
+
+    def _read_barrier(self) -> AbstractContextManager[object]:
+        """What keeps the checkout still for a batch of reads; nothing here.
+
+        Work prepared under it runs on other threads, which must not take it.
+        """
+
+        return nullcontext()
+
+    def _prepare_reads(
+        self, calls: Sequence[tuple[str, Mapping[str, object]]]
+    ) -> tuple[list[_Prepared], dict[str, bool]]:
+        paths = self._read_paths(calls)
+
+        def prepare(name: str, arguments: Mapping[str, object]) -> _Prepared:
+            try:
+                with exclusion_scope():
+                    if name == "search_text":
+                        budget = SearchBudget(self.check_cancelled)
+                        try:
+                            return _SearchPrepared(
+                                budget, self._batch_snapshot(arguments, budget)
+                            )
+                        except SearchError as exc:
+                            return _error(str(exc))
+                    handler: Callable[[Mapping[str, object]], ToolOutcome] = getattr(
+                        self, _HANDLERS[name].__name__
+                    )
+                    return handler(arguments)
+            except Exception as exc:
+                # invoke raises it again in this call's turn, as it would have.
+                return exc
+
+        def files(found: list[str]) -> dict[str, bool]:
+            with exclusion_scope():
+                return self._prefetch(found)
+
+        whole = [
+            (index, name, arguments)
+            for index, (name, arguments) in enumerate(calls)
+            if name in _WHOLE_READS
+        ]
+        prepared: list[_Prepared] = [None] * len(calls)
+        answers: dict[str, bool] = {}
+        workers = len(whole) + (1 if paths else 0)
+        if not workers:
+            return prepared, answers
+        with ThreadPoolExecutor(
+            max_workers=min(workers, _MAX_READ_WORKERS),
+            thread_name_prefix="loupe-read",
+        ) as pool:
+            checked = pool.submit(files, paths) if paths else None
+            futures = [
+                (index, pool.submit(prepare, name, arguments))
+                for index, name, arguments in whole
+            ]
+            for index, future in futures:
+                prepared[index] = future.result()
+            if checked is not None:
+                try:
+                    answers = checked.result()
+                except (LlmCoordError, OSError):
+                    answers = {}  # Each read then checks its own path.
+        return prepared, answers
+
+    def _read_paths(
+        self, calls: Sequence[tuple[str, Mapping[str, object]]]
+    ) -> list[str]:
+        paths: list[str] = []
+        for name, arguments in calls:
+            if name != "read_file":
+                continue
+            try:
+                path = normalize_changed_path(_string(arguments, "path"))
+            except (ScopeValidationError, LlmCoordError, ValueError):
+                continue  # The call itself reports the bad path.
+            if path not in paths:
+                paths.append(path)
+        return paths
+
+    def _prefetch(self, paths: list[str]) -> dict[str, bool]:
+        """Check the batch's file reads ahead of their calls, in one pass.
+
+        Returns whether each path is excluded. A broker with a read barrier
+        also reads the files that are not.
+        """
+
+        return exclusion_answers(self.worktree, paths)
+
+    def _batch_snapshot(
+        self, arguments: Mapping[str, object], budget: SearchBudget
+    ) -> SearchSnapshot:
+        """A search's snapshot, taken with the batch's read barrier held."""
+
+        return self._search_snapshot(arguments, budget)
+
+    def _match_searches(
+        self,
+        calls: Sequence[tuple[str, Mapping[str, object]]],
+        prepared: list[_Prepared],
+    ) -> list[ToolOutcome | Exception | None]:
+        """Match each prepared search's pattern, in parallel, without the barrier."""
+
+        def match(
+            arguments: Mapping[str, object], search: _SearchPrepared
+        ) -> ToolOutcome | Exception:
+            try:
+                return _search_response(
+                    search.snapshot, arguments, self.limits, search.budget
+                )
+            except SearchError as exc:
+                return _error(str(exc))
+            except Exception as exc:
+                return exc
+
+        searches = [
+            (index, arguments, item)
+            for index, ((_, arguments), item) in enumerate(
+                zip(calls, prepared, strict=True)
+            )
+            if isinstance(item, _SearchPrepared)
+        ]
+        ready: list[ToolOutcome | Exception | None] = [
+            None if isinstance(item, _SearchPrepared) else item for item in prepared
+        ]
+        if not searches:
+            return ready
+        with ThreadPoolExecutor(
+            max_workers=min(len(searches), _MAX_READ_WORKERS),
+            thread_name_prefix="loupe-search",
+        ) as pool:
+            futures = [
+                (index, pool.submit(match, arguments, search))
+                for index, arguments, search in searches
+            ]
+            for index, future in futures:
+                ready[index] = future.result()
+        return ready
 
     def tool_schemas(self, names: Sequence[str]) -> tuple[dict[str, object], ...]:
         """Schemas for the named tools, including this task's MCP tools."""

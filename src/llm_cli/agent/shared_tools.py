@@ -13,10 +13,12 @@ import binascii
 import difflib
 import hashlib
 import json
+import threading
 from _thread import RLock
 from collections import deque
-from collections.abc import Callable, Mapping
-from contextlib import nullcontext
+from collections.abc import Callable, Hashable, Iterator, Mapping
+from concurrent.futures import Future
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -80,6 +82,50 @@ class _Observation:
     content: bytes | None
 
 
+class _ReadBatch:
+    """Work a batch of reads shares, done once while the barrier is held."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._results: dict[Hashable, Future[object]] = {}
+
+    def once[T](self, key: Hashable, compute: Callable[[], T]) -> T:
+        with self._lock:
+            pending = self._results.get(key)
+            owner = pending is None
+            if pending is None:
+                pending = self._results[key] = Future()
+        if owner:
+            try:
+                value = compute()
+            except BaseException as exc:
+                # A failure is the caller's own: a search that ran out of time
+                # must not cut short another search's budget.
+                with self._lock:
+                    del self._results[key]
+                pending.set_exception(exc)
+                raise
+            pending.set_result(value)
+            return value
+        try:
+            return pending.result()  # type: ignore[return-value]
+        except BaseException:
+            return compute()
+
+    def keep(self, key: Hashable, value: object) -> None:
+        """Record a value prepared ahead, for ``kept`` to return."""
+
+        done: Future[object] = Future()
+        done.set_result(value)
+        with self._lock:
+            self._results[key] = done
+
+    def kept(self, key: Hashable) -> object | None:
+        with self._lock:
+            done = self._results.get(key)
+        return done.result() if done is not None and done.done() else None
+
+
 @dataclass(slots=True)
 class SharedToolBroker(ToolBroker):
     """Read shared source while accumulating one task's unpublished overlay.
@@ -96,6 +142,10 @@ class SharedToolBroker(ToolBroker):
 
     _modes: dict[str, str] = field(default_factory=dict, init=False)
     _permissions: dict[str, int] = field(default_factory=dict, init=False)
+    # While a batch of reads prepares its answers: work its searches share.
+    _batch: _ReadBatch | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def invoke(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
         # Hooks run outside the publication lock: a slow hook must not hold
@@ -451,12 +501,46 @@ class SharedToolBroker(ToolBroker):
             # Copy a bounded, coherent source view under the barrier. Regex
             # matching must never block another session's reads/publication.
             with budget.lock(self.publication_lock):
-                if self.guard is not None:
-                    self.guard()
-                snapshot = self._search_snapshot(arguments, budget)
+                snapshot = self._batch_snapshot(arguments, budget)
             return _search_response(snapshot, arguments, self.limits, budget)
         except SearchError as exc:
             return _error(str(exc))
+
+    def _batch_snapshot(
+        self, arguments: Mapping[str, object], budget: SearchBudget
+    ) -> SearchSnapshot:
+        if self.guard is not None:
+            self.guard()
+        return self._search_snapshot(arguments, budget)
+
+    def _read_barrier(self) -> AbstractContextManager[object]:
+        return self.publication_lock
+
+    @contextmanager
+    def _read_scope(self) -> Iterator[None]:
+        # Under the barrier the checkout and pending edits stay as they are, so
+        # the batch's searches share their listings and file scans, and its
+        # file reads use the contents read with everything else.
+        self._batch = _ReadBatch()
+        try:
+            yield
+        finally:
+            self._batch = None
+
+    def _prefetch(self, paths: list[str]) -> dict[str, bool]:
+        answers = ToolBroker._prefetch(self, paths)
+        batch = self._batch
+        assert batch is not None
+        for relative in paths:
+            # An excluded file is refused before it is read; never read it.
+            if answers.get(relative, True) or relative in self._contents:
+                continue
+            try:
+                found: object = self._observe(relative, check_ignored=False)
+            except Exception as exc:
+                found = exc
+            batch.keep(("observe", relative), found)
+        return answers
 
     def _search_snapshot(
         self, arguments: Mapping[str, object], budget: SearchBudget
@@ -547,21 +631,21 @@ class SharedToolBroker(ToolBroker):
                 scanned += 1
                 try:
                     content = self._contents.get(relative)
+                    secret: bool | None = None
+                    text: str | None = None
                     if content is None:
                         # The tree was already filtered in batched Git calls;
                         # do not spawn Git again for every file.
-                        _, content = self._observe(
-                            relative, check_ignored=False, screen=False
-                        )
+                        content, secret, text = self._search_file(relative)
                     if content is None:
                         continue
                     scanned_bytes += len(content)
                     if scanned_bytes > self.limits.max_read_bytes:
                         return finish(stop_reason="read_size_limit; narrow path")
-                    if contains_secret_material(content):
+                    if contains_secret_material(content) if secret is None else secret:
                         withheld += 1
                         continue
-                    current = content.decode("utf-8")
+                    current = content.decode("utf-8") if text is None else text
                     fingerprint.update(
                         json.dumps(
                             [relative, hashlib.sha256(content).hexdigest()]
@@ -574,7 +658,49 @@ class SharedToolBroker(ToolBroker):
                 return finish(stop_reason="scanned_file_limit; narrow path")
         return finish()
 
+    def _batch_observation(
+        self, relative: str
+    ) -> tuple[FileIdentity, bytes | None]:
+        batch = self._batch
+        found = batch.kept(("observe", relative)) if batch is not None else None
+        if found is None:
+            return self._observe(relative, check_ignored=False)
+        if isinstance(found, Exception):
+            raise found
+        assert isinstance(found, tuple)
+        return found
+
+    def _search_file(self, relative: str) -> tuple[bytes | None, bool, str | None]:
+        """A file for search: its bytes, whether it holds secrets, and its text.
+
+        The text is None when the file is not UTF-8 or holds secrets. A batch
+        of reads works this out once per file for all of its searches.
+        """
+
+        def read() -> tuple[bytes | None, bool, str | None]:
+            _, content = self._observe(relative, check_ignored=False, screen=False)
+            if content is None:
+                return None, False, None
+            if contains_secret_material(content):
+                return content, True, None
+            try:
+                return content, False, content.decode("utf-8")
+            except UnicodeDecodeError:
+                return content, False, None
+
+        batch = self._batch
+        return read() if batch is None else batch.once(("file", relative), read)
+
     def _source_tree(
+        self, top: Path, remaining: Callable[[], float]
+    ) -> dict[Path, tuple[list[Path], bool]]:
+        batch = self._batch
+        if batch is None:
+            return self._list_tree(top, remaining)
+        # The search adds to its copy of the tree as it scans.
+        return dict(batch.once(("tree", top), lambda: self._list_tree(top, remaining)))
+
+    def _list_tree(
         self, top: Path, remaining: Callable[[], float]
     ) -> dict[Path, tuple[list[Path], bool]]:
         """List visible entries under ``top``, a batch of directories at a time.
@@ -805,8 +931,9 @@ class SharedToolBroker(ToolBroker):
             # partial view, even when a peer published while the model thought.
             content = self._observations[relative].content
         else:
-            # _target above already applied the exclusion rules.
-            identity, content = self._observe(relative, check_ignored=False)
+            # _target above already applied the exclusion rules. A batch of
+            # reads read the file along with the rest of its reads.
+            identity, content = self._batch_observation(relative)
             if content is not None:
                 try:
                     content.decode("utf-8")

@@ -7,7 +7,7 @@ import re
 import subprocess
 import tempfile
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -55,10 +55,42 @@ _SECRET_PATTERNS = (
 _user_excludes_cache: ContextVar[dict[Path, str] | None] = ContextVar(
     "loupe_user_excludes", default=None
 )
+# A batch of reads checks all its paths at once, then answers each read's
+# own check from these results.
+_known_exclusions: ContextVar[tuple[Path, Mapping[str, bool]] | None] = ContextVar(
+    "loupe_known_exclusions", default=None
+)
 # User rules are evaluated in an empty repository; one per process suffices
 # because nothing ever writes to it.
 _empty_lock = threading.Lock()
 _empty_repository_directory: tempfile.TemporaryDirectory[str] | None = None
+
+
+@contextmanager
+def known_exclusions(root: Path, answers: Mapping[str, bool]) -> Iterator[None]:
+    """Answer exclusion checks of these paths from results already computed.
+
+    ``answers`` maps each path to whether ``excluded_paths`` excludes it. A
+    check that names any other path runs normally.
+    """
+
+    token = _known_exclusions.set((root, answers))
+    try:
+        yield
+    finally:
+        _known_exclusions.reset(token)
+
+
+def exclusion_answers(
+    root: Path,
+    relative_paths: list[str],
+    *,
+    remaining: Callable[[], float] | None = None,
+) -> dict[str, bool]:
+    """Check many paths in one pass, for later use with ``known_exclusions``."""
+
+    excluded = excluded_paths(root, relative_paths, remaining=remaining)
+    return {path: path in excluded for path in relative_paths}
 
 
 @contextmanager
@@ -204,6 +236,11 @@ def excluded_paths(
 ) -> set[str]:
     if not relative_paths:
         return set()
+    known = _known_exclusions.get()
+    if known is not None and known[0] == root:
+        answers = known[1]
+        if all(path in answers for path in relative_paths):
+            return {path for path in relative_paths if answers[path]}
     excluded = {path for path in relative_paths if _private_path(path)}
     for start in range(0, len(relative_paths), _CHECK_BATCH):
         excluded.update(
