@@ -188,6 +188,9 @@ def test_hidden_tests_need_the_requested_changes(tmp_path: Path) -> None:
     tests = sessions.ACCEPTANCE / experiment.acceptance
 
     untouched = sessions.acceptance(repository, tests, sys.executable, ())
+    unedited = sessions.acceptance(
+        repository, tests, sys.executable, (), skip=(sessions.OPERATOR_GROUP,)
+    )
     with open(repository / experiment.disruption.edit_path, "a") as handle:
         handle.write(experiment.disruption.edit_append)
     edited = sessions.acceptance(repository, tests, sys.executable, ())
@@ -196,6 +199,9 @@ def test_hidden_tests_need_the_requested_changes(tmp_path: Path) -> None:
     # Only the guard that a cart without a code is unchanged passes.
     assert untouched["passed"] == 1
     assert untouched["groups"]["operator"] == [0, 1]
+    # Without a hand edit, its test is not scored.
+    assert "operator" not in unedited["groups"]
+    assert unedited["total"] == untouched["total"] - 1
     # The operator's edit is valid on its own and is what its test checks.
     assert edited["own_tests_passed"]
     assert edited["groups"]["operator"] == [1, 1]

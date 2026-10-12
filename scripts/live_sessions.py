@@ -37,7 +37,7 @@ import tempfile
 import time
 import tomllib
 import xml.etree.ElementTree as ElementTree
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -56,6 +56,8 @@ from llm_cli.protocol.client import DaemonClient
 EXPERIMENTS = Path(__file__).with_name("live_sessions.toml")
 ACCEPTANCE = Path(__file__).with_name("benchmark_acceptance")
 ARMS = ("single", "pair")
+# Acceptance tests named test_operator_* check the disruption's hand edit.
+OPERATOR_GROUP = "operator"
 SCENARIOS = ("clean", "disrupted")
 # Task titles keep the prompt's first 500 characters.
 _TITLE_KEY = 200
@@ -332,11 +334,18 @@ def _diverged_batches(database: Path, sessions: Iterable[str]) -> int:
 
 
 def acceptance(
-    checkout: Path, tests: Path, python: str, protected: Sequence[Path]
+    checkout: Path,
+    tests: Path,
+    python: str,
+    protected: Sequence[Path],
+    skip: Collection[str] = (),
 ) -> dict[str, Any]:
-    """Run the checkout's own tests and the hidden ones, sandboxed, on a copy."""
+    """Run the checkout's own tests and the hidden ones, sandboxed, on a copy.
 
-    expected = acceptance_tests(tests)
+    Tests in a `skip` group are not scored.
+    """
+
+    expected = [name for name in acceptance_tests(tests) if group(name) not in skip]
     kind = available_sandbox()
     if kind is None:
         return {"ran": False, "reason": "no working sandbox on this machine"}
@@ -618,6 +627,8 @@ def run_arm(
             ACCEPTANCE / experiment.acceptance,
             sys.executable,
             protected,
+            # The operator's edit can only survive if it was made.
+            skip=() if edit_at is not None else (OPERATOR_GROUP,),
         ),
     }
 
