@@ -45,17 +45,53 @@ _DIRECTORIES = (".", "src", "src/pkg", "docs", "docs/notes", "build", "missing")
 _EXTRA_PATHS = ("missing.txt", "binary.dat", "src", "../outside.txt", "docs/new.md")
 
 
+def _matches_here(
+    pattern: str,
+    files: list[tuple[str, str]],
+    *,
+    offset: int,
+    limit: int,
+    budget: Any,
+) -> list[tuple[str, int, str]]:
+    """The regex worker's matching, in this process (see bounded_search)."""
+
+    import re
+
+    from llm_cli.agent.bounded_search import SearchError
+
+    budget.remaining()
+    try:
+        expression = re.compile(pattern)
+    except (re.error, RecursionError, OverflowError) as exc:
+        raise SearchError("that is not a valid regular expression") from exc
+    matches: list[tuple[str, int, str]] = []
+    seen = 0
+    for relative, content in files:
+        for number, line in enumerate(content.splitlines(), start=1):
+            if expression.search(line):
+                if seen >= offset:
+                    matches.append((relative, number, line.strip()[:201]))
+                    if len(matches) > limit:
+                        return matches
+                seen += 1
+    return matches
+
+
 @pytest.fixture(autouse=True)
 def patient_searches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Compare what reads answer, not how fast a stalled machine runs them.
 
     A search's five-second limit is wall-clock time, so on a slow runner either
     the sequential or the batched copy could run out where the other does not.
+    Each search also starts a regex worker process; macOS CI runners have hung
+    starting some of the hundreds these cases need, so both copies match in
+    this process instead. The worker itself is tested in test_bounded_search.
     """
 
     from llm_cli.agent import bounded_search
 
     monkeypatch.setattr(bounded_search, "SEARCH_TIMEOUT_SECONDS", 120.0)
+    monkeypatch.setattr(tools_module, "find_matches", _matches_here)
 
 
 @pytest.fixture(scope="module")
