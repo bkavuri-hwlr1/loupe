@@ -350,23 +350,68 @@ coordination cursor without repeating its write. HEAD and index were unchanged.
 This verifies provider transport and the tested coordination/recovery paths;
 it is not yet a comparison of coding quality or throughput against one agent.
 
+## Live two-session experiment
+
+`scripts/live_sessions.py` runs the same multi-file change two ways with a
+real model: one session given every part, and one session per part working
+at once in one shared checkout. The `shop` experiment (`live_sessions.toml`)
+asks for discount codes and stock limits, which both edit the cart, its tests,
+and the changelog. A "disrupted" scenario also appends a function to the cart
+by hand once an agent has edited it, as someone in an editor would, and kills
+and restarts the background service once every session has edited. The script
+plays the operator: it answers questions and, when a session's work is not
+applied, asks again in a new session, counting both as interventions. Hidden
+acceptance tests then run in a sandbox against a copy of the final checkout.
+It is billed and never runs in CI:
+
+```console
+uv run --extra openai python scripts/live_sessions.py --profile NAME
+```
+
+One run of each arm with `gpt-6-sol` at `xhigh` effort (2026-10-12):
+
+| Scenario | Arm | Wall time | Tokens | Interventions | Hidden tests |
+| --- | --- | --- | --- | --- | --- |
+| clean | one agent | 87 s | 132k | 0 | 16/16 |
+| clean | two sessions | 183 s | 413k | 1 | 16/16 |
+| disrupted | one agent | 194 s | 315k | 1 | 17/17 |
+| disrupted | two sessions | 164 s | 368k | 1 | 17/17 |
+
+- **Safety held.** Every final checkout passed every hidden test, the hand
+  edit survived both disrupted runs, no session overwrote another's work, and
+  both runs that crashed resumed with each tool result recorded once.
+- **Stale edits stop the work.** Whenever a file a session had already edited
+  changed underneath it -- another session's publication or the hand edit --
+  the session noticed, but could not redo its edits on the new version: a
+  shared read of a path with pending edits returns those edits, so no tool
+  shows the newer file or moves the edits onto it. Its required checks became
+  stale, it finished `partial`, and its proposal was held for review. This
+  happened in all three runs with an overlapping change, and each needed the
+  operator to ask again.
+- **Parallel work is faster only without that.** In the clean run, the
+  session whose work went in first finished in 52 seconds, against 87 for one
+  agent doing both parts. The other session spent 125 seconds before its work
+  was held and 56 more redoing it, so the pair finished later than one agent
+  and used about three times the tokens (413k against 132k).
+
+These are single runs, so the timings are noisy; the held proposals are not,
+since the tools cannot do otherwise.
+
 ## Next executable slice
 
-1. Run a repeatable two-session experiment with a live provider: complete a
-   multi-file task, introduce a conflicting external edit, interrupt and resume
-   execution, and independently test the combined result. Compare completion
-   time, model cost, and operator intervention with one agent. The existing
-   scripted-provider tests are the deterministic baseline.
-2. Extend external-change reconciliation beyond live intent/overlap context, then
-   validate the remaining multi-profile authority and migration guarantees.
+1. Reconcile pending edits with files that change underneath them, whether
+   another session published them or someone edited them outside Loupe:
+   rebase the edits onto the current version with a three-way merge from
+   their recorded base, rerun required checks, and involve the model only
+   when the merge conflicts. Then rerun the two-session experiment.
+2. Validate the remaining multi-profile authority and migration guarantees.
 3. Add isolated mode with explicit environment hydration and publication
    through the same batch protocol, building on the check-snapshot runner.
    Symlinks and binary file operations still need dedicated recovery semantics.
-4. Add the remaining execution passes -- read-only planning, independent
-   review of the exact diff, and a bounded repair loop -- at the session-aware
-   harness boundary.
-5. Add `run_command` behind an explicit policy, plus `db backup`, config
-   inspection/editing, and retention maintenance in the CLI.
+4. Add an independent review of the exact diff before publication, at the
+   session-aware harness boundary. Plan mode and bounded repair already exist.
+5. Add `db backup`, config inspection and editing, and retention maintenance
+   to the CLI.
 6. Build the opt-in knowledge/RAG and graph planes on top of that durable task
    lifecycle, with `none` and exact-search fallbacks before optional vector
    acceleration.
