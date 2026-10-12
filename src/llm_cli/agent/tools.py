@@ -20,6 +20,7 @@ import os
 import re
 import shlex
 import threading
+import time
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -87,6 +88,9 @@ class _SearchPrepared:
 
     budget: SearchBudget
     snapshot: SearchSnapshot
+    # When the snapshot was ready; waiting for the rest of the batch from
+    # then on does not count against the search's own time limit.
+    ready_at: float = field(default_factory=time.monotonic)
 
 
 # A batched read's prepared answer: an outcome, the error its call raises, a
@@ -584,6 +588,7 @@ class ToolBroker:
         def match(
             arguments: Mapping[str, object], search: _SearchPrepared
         ) -> ToolOutcome | Exception:
+            search.budget.deadline += time.monotonic() - search.ready_at
             try:
                 return _search_response(
                     search.snapshot, arguments, self.limits, search.budget

@@ -623,8 +623,10 @@ results identical to the same calls made one after another:
   another read does can change them. Searches take their snapshots. File reads
   are checked for exclusions in one pass, and in the shared checkout the files
   that are not excluded are read. An excluded file is never read.
-- With the barrier released, searches match their patterns in parallel, so a
-  slow pattern never blocks another session's reads or publication.
+- With the barrier released, searches match their patterns in parallel, each
+  in its own worker process as before, so a slow pattern never blocks another
+  session's reads or publication. Time a search spends waiting for the rest of
+  the batch does not count against its five-second limit.
 - Every call then runs through the normal `invoke` in order, receiving its
   prepared answer. Budgets, read observations, partial-read tracking, events
   and errors are therefore exactly those of sequential calls. All disk reads
@@ -644,8 +646,9 @@ must match. Planting either of two plausible bugs made it fail: answering file
 reads in parallel too, and a wrong exclusion cache. On this repository, four
 file reads dropped from about 65 ms to 30 ms (shared) and 57 ms to 20 ms
 (isolated). Two listings and two searches went from 278 ms to 158 ms. A batch
-takes about as long as its slowest search, because regex matching and secret
-scanning are Python work that threads cannot run in parallel. Isolated tasks
+takes about as long as its slowest search: walking the tree, scanning files
+for secrets and decoding them run in the daemon's Python, where threads do not
+run in parallel, and each search starts a regex worker process. Isolated tasks
 still check exclusions per directory during a search.
 
 **6. Task plan tool (implemented).** `update_plan` records an ordered checklist

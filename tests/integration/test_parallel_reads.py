@@ -45,6 +45,19 @@ _DIRECTORIES = (".", "src", "src/pkg", "docs", "docs/notes", "build", "missing")
 _EXTRA_PATHS = ("missing.txt", "binary.dat", "src", "../outside.txt", "docs/new.md")
 
 
+@pytest.fixture(autouse=True)
+def patient_searches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Compare what reads answer, not how fast a stalled machine runs them.
+
+    A search's five-second limit is wall-clock time, so on a slow runner either
+    the sequential or the batched copy could run out where the other does not.
+    """
+
+    from llm_cli.agent import bounded_search
+
+    monkeypatch.setattr(bounded_search, "SEARCH_TIMEOUT_SECONDS", 120.0)
+
+
 @pytest.fixture(scope="module")
 def repository(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("parallel-reads") / "repo"
@@ -382,3 +395,23 @@ def test_a_batch_never_reads_a_file_its_call_refuses(
     assert [outcome.is_error for outcome in outcomes] == [True, True, False]
     assert ".env" not in read and "build/out.txt" not in read
     assert read == ["README.md"]
+
+
+def test_waiting_for_the_rest_of_a_batch_is_not_search_time(repository: Path) -> None:
+    import time
+
+    from llm_cli.agent.bounded_search import SearchBudget
+
+    broker = SharedToolBroker(worktree=repository, scopes=("*",))
+    arguments: dict[str, object] = {"pattern": "alpha"}
+    snapshot = broker._batch_snapshot(arguments, SearchBudget(lambda: None))
+    # Its limit ran out a second ago, but only after eleven seconds of waiting
+    # for the rest of the batch, which is not this search's own time.
+    now = time.monotonic()
+    budget = SearchBudget(lambda: None, deadline=now - 1)
+    prepared = tools_module._SearchPrepared(budget, snapshot, ready_at=now - 11)
+
+    (outcome,) = broker._match_searches([("search_text", arguments)], [prepared])
+
+    assert isinstance(outcome, ToolOutcome) and not outcome.is_error
+    assert "README.md" in outcome.content
