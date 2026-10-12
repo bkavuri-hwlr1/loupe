@@ -45,6 +45,10 @@ def test_seatbelt_profile_denies_by_default_and_passes_paths_as_parameters(
     assert deny < exception < writable
     assert "(allow network-outbound (remote unix-socket" in profile
     assert "network-outbound (remote ip" not in profile
+    # The writable path's parent directories can be stat'ed, not read.
+    metadata = profile.index('(allow file-read-metadata (literal (param "ANCESTOR_0"))')
+    assert deny < metadata
+    assert f"ANCESTOR_{len(tmp_path.parts) - 1}={tmp_path}" in argv
     # The command starts under the shell that hosts the in-sandbox reaper.
     assert argv[-7:-3] == ["--", "/bin/sh", "-c", sandbox._SEATBELT_LAUNCHER]
     assert argv[-3:] == ["loupe-sandbox", "pytest", "-q"]
@@ -295,6 +299,34 @@ def test_real_sandbox_hides_protected_paths_except_readable_ones(
 
     assert secret.returncode != 0 and "private" not in secret.stdout
     assert dependency.returncode == 0 and dependency.stdout == "library\n"
+
+
+@needs_sandbox
+def test_real_sandbox_lets_commands_stat_the_protected_directories_above_them(
+    layout: dict[str, Path],
+) -> None:
+    # Command snapshots sit inside Loupe's protected data directory.
+    snapshot = layout["secret"] / "run" / "source"
+    snapshot.mkdir(parents=True)
+    policy = SandboxPolicy(writable=(snapshot,), protected=(layout["secret"],))
+    run = snapshot.parent
+
+    # pytest stats the directory above its root while collecting.
+    stat = _run(
+        policy,
+        [
+            sys.executable,
+            "-c",
+            f"import pathlib; print(pathlib.Path({str(run)!r}).is_file())",
+        ],
+        snapshot,
+    )
+    listing = _run(policy, ["ls", str(run)], snapshot)
+    sibling = _run(policy, ["cat", str(layout["secret"] / "key.txt")], snapshot)
+
+    assert stat.returncode == 0 and stat.stdout == "False\n", stat.stderr
+    assert listing.returncode != 0
+    assert sibling.returncode != 0 and "private" not in sibling.stdout
 
 
 @needs_sandbox
