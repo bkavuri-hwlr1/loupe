@@ -105,6 +105,26 @@ def test_unknown_internal_events_never_interrupt_a_public_message() -> None:
     assert render_event(_event("internal.future_event")) is None
 
 
+def test_edits_moved_onto_newer_changes_are_shown() -> None:
+    rendered = render_event(
+        _event(
+            "edits.reconciled",
+            merged=["src/cart.py"],
+            conflicted=["CHANGELOG.md"],
+            adopted=[],
+            dropped=[],
+            unmerged=[],
+        )
+    )
+
+    assert rendered == (
+        "  Files changed under the pending edits. src/cart.py: merged onto newer "
+        "changes; CHANGELOG.md: conflict with newer changes; the agent resolves "
+        "them."
+    )
+    assert render_event(_event("edits.reconciled", merged=[])) is None
+
+
 def test_legacy_summary_is_identified_without_being_claimed_as_an_answer() -> None:
     output = io.StringIO()
     renderer = EventRenderer(output)

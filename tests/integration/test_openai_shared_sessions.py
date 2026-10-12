@@ -377,7 +377,14 @@ def test_openai_restart_restores_native_calls_and_private_candidate_without_repl
     asyncio.run(scenario())
 
 
-def test_openai_sessions_prepare_overlapping_edits_and_preserve_the_losing_batch(
+def _last_output(request: dict[str, Any]) -> str:
+    outputs = [
+        item for item in request["input"] if item.get("type") == "function_call_output"
+    ]
+    return str(json.loads(outputs[-1]["output"])["content"])
+
+
+def test_openai_sessions_prepare_overlapping_edits_and_the_second_merges(
     tmp_path: Path,
     repository_factory: Callable[[Path, dict[str, str]], Path],
     service_factory: Callable[[Path], DaemonService],
@@ -413,26 +420,24 @@ def test_openai_sessions_prepare_overlapping_edits_and_preserve_the_losing_batch
 
             return complete
 
-        def settled(request: dict[str, Any]) -> list[dict[str, Any]]:
-            # The loser's draft claimed success; one tools-disabled turn
-            # rewrites it from the runner's facts.
-            assert request["tools"] == []
-            assert '"publication": "diverged"' in request["input"][-1]["content"]
+        def read_conflict(request: dict[str, Any]) -> list[dict[str, Any]]:
+            # The second finished after the first published, and both changed
+            # the shared line. Its private file needed no merge.
+            refused = _last_output(request)
+            assert "docs/shared.md: your edits conflict" in refused
+            assert "docs/second.md" not in refused
+            assert "Resolve the conflict markers in docs/shared.md" in refused
+            return [_function("reread", "read_file", path="docs/shared.md")]
+
+        def resolve(request: dict[str, Any]) -> list[dict[str, Any]]:
+            assert "||||||| your starting version\nbase\n" in _last_output(request)
             return [
-                {
-                    "type": "message",
-                    "id": "msg_settled",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [
-                        {
-                            "type": "output_text",
-                            "text": "Another session changed docs/shared.md first, "
-                            "so nothing was published.",
-                            "annotations": [],
-                        }
-                    ],
-                }
+                _function(
+                    "resolve",
+                    "write_file",
+                    path="docs/shared.md",
+                    content="first\nsecond\n",
+                )
             ]
 
         clients = [
@@ -456,7 +461,11 @@ def test_openai_sessions_prepare_overlapping_edits_and_preserve_the_losing_batch
                         ),
                     ],
                     pause(index),
-                    *([settled] if name == "second" else []),
+                    *(
+                        [read_conflict, resolve, _finish("finish-resolved")]
+                        if name == "second"
+                        else []
+                    ),
                 ]
             )
             for index, name in enumerate(("first", "second"))
@@ -495,25 +504,12 @@ def test_openai_sessions_prepare_overlapping_edits_and_preserve_the_losing_batch
             _assert_completed(service, "first")
             release[1].set()
             await asyncio.wait_for(backgrounds[1], timeout=10)
-            _assert_diverged_batch(
-                service,
-                "second",
-                {"docs/shared.md": b"second\n", "docs/second.md": b"second\n"},
-            )
-            assert (repository / "docs/shared.md").read_text() == "first\n"
+            _assert_completed(service, "second")
+            assert (repository / "docs/shared.md").read_text() == "first\nsecond\n"
             assert (repository / "docs/first.md").read_text() == "first\n"
-            assert (repository / "docs/second.md").read_text() == "base\n"
-            # The winner's publication was expected, so its draft stood.
-            assert [len(client.requests) for client in clients] == [2, 3]
-            answers = [
-                event.payload["answer"]
-                for event in service.store.list_task_events("second")
-                if event.event_type == "model.finished"
-            ]
-            assert answers == [
-                "Another session changed docs/shared.md first, so nothing was "
-                "published."
-            ]
+            assert (repository / "docs/second.md").read_text() == "second\n"
+            # Both publications were what the drafts assumed, so they stood.
+            assert [len(client.requests) for client in clients] == [2, 5]
         finally:
             for signal in release:
                 signal.set()
@@ -521,6 +517,77 @@ def test_openai_sessions_prepare_overlapping_edits_and_preserve_the_losing_batch
                 asyncio.gather(*backgrounds, return_exceptions=True), timeout=15
             )
             service.close()
+
+    asyncio.run(scenario())
+
+
+def test_openai_rewrites_the_answer_when_publication_is_refused(
+    tmp_path: Path,
+    repository_factory: Callable[[Path, dict[str, str]], Path],
+    service_factory: Callable[[Path], DaemonService],
+) -> None:
+    async def scenario() -> None:
+        repository = repository_factory(tmp_path, {"docs/shared.md": "base\n"})
+        service = service_factory(tmp_path)
+
+        def finish(request: dict[str, Any]) -> list[dict[str, Any]]:
+            # Replaced with bytes the edit cannot be merged into.
+            (repository / "docs/shared.md").write_bytes(b"\xff binary\n")
+            return _finish()
+
+        def settled(request: dict[str, Any]) -> list[dict[str, Any]]:
+            # The draft claimed success; one tools-disabled turn rewrites it
+            # from the runner's facts.
+            assert request["tools"] == []
+            assert '"publication": "diverged"' in request["input"][-1]["content"]
+            return [
+                {
+                    "type": "message",
+                    "id": "msg_settled",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "docs/shared.md changed first, so nothing was "
+                            "published.",
+                            "annotations": [],
+                        }
+                    ],
+                }
+            ]
+
+        client = ResponsesClient(
+            [
+                [
+                    _reasoning("only"),
+                    _function("read", "read_file", path="docs/shared.md"),
+                    _function(
+                        "write", "write_file", path="docs/shared.md", content="x\n"
+                    ),
+                ],
+                finish,
+                settled,
+            ]
+        )
+        service.providers.replace(
+            "openai",
+            lambda model: OpenAIProvider(model=model or DEFAULT_MODEL, client=client),
+        )
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(repository)}))
+        credentials = await _open_openai_session(service, repository, "only")
+        work = await _start(service, repository, credentials, "only", ("docs/",))
+        await asyncio.wait_for(work, timeout=10)
+
+        _assert_diverged_batch(service, "only", {"docs/shared.md": b"x\n"})
+        answers = [
+            event.payload["answer"]
+            for event in service.store.list_task_events("only")
+            if event.event_type == "model.finished"
+        ]
+        assert answers == ["docs/shared.md changed first, so nothing was published."]
+        service.close()
 
     asyncio.run(scenario())
 

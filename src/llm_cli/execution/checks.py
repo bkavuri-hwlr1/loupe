@@ -356,6 +356,15 @@ class CheckRunner:
             else None
         )
 
+    def current(self) -> bool:
+        """Whether every required check passed on this exact source and proposal."""
+
+        return all(
+            self._passed(name)
+            for name, spec in self.config.get("checks", {}).items()
+            if spec["required"]
+        )
+
     def _passed(self, name: str) -> bool:
         files = self.candidates()
         source = verification_identity(self.root, self.config)

@@ -16,7 +16,7 @@ import json
 import threading
 from _thread import RLock
 from collections import deque
-from collections.abc import Callable, Hashable, Iterator, Mapping
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -68,8 +68,18 @@ from llm_cli.workspace.identity import (
     content_identity,
     read_identified_path,
 )
+from llm_cli.workspace.merge import (
+    BASE_LABEL,
+    OURS_LABEL,
+    THEIRS_LABEL,
+    has_conflict_markers,
+    merge_text,
+)
 
 _MAX_CANDIDATES = 50
+# Rounds of merging onto the checkout and rerunning checks before finishing,
+# for when other sessions keep publishing while checks run.
+CATCH_UP_ROUNDS = 3
 _MAX_OBSERVATIONS = 200
 _MAX_RETAINED_BYTES = 4 * 1024 * 1024
 # Directory entries gathered before one exclusion check during a search.
@@ -80,6 +90,82 @@ _SEARCH_BATCH_ENTRIES = 1_000
 class _Observation:
     base: FileIdentity
     content: bytes | None
+
+
+@dataclass(frozen=True, slots=True)
+class Reconciliation:
+    """What moving pending edits onto files that changed underneath them did."""
+
+    merged: tuple[str, ...] = ()
+    conflicted: tuple[str, ...] = ()
+    # The checkout already holds exactly these edits.
+    adopted: tuple[str, ...] = ()
+    # Deleted on one side and changed on the other: the edit was set aside.
+    dropped: tuple[str, ...] = ()
+    # Changed into something the tools may not read; publication will refuse.
+    unmerged: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return any(
+            (self.merged, self.conflicted, self.adopted, self.dropped, self.unmerged)
+        )
+
+    @property
+    def clean(self) -> bool:
+        """Whether every edit went onto the current files as it was."""
+
+        return not (self.conflicted or self.dropped or self.unmerged)
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "merged": list(self.merged),
+            "conflicted": list(self.conflicted),
+            "adopted": list(self.adopted),
+            "dropped": list(self.dropped),
+            "unmerged": list(self.unmerged),
+        }
+
+    def note(self) -> str:
+        """Tell the model what happened, or "" when nothing changed."""
+
+        if not self:
+            return ""
+        lines = [
+            "Files you edited changed in the shared checkout since you read them "
+            "(another session published, or someone edited them):"
+        ]
+        lines += [
+            f"- {path}: your edits were merged onto its current version."
+            for path in self.merged
+        ]
+        lines += [
+            f"- {path}: your edits conflict with its current version. The file "
+            f"now holds conflict markers (<<<<<<< {OURS_LABEL}, ||||||| "
+            f"{BASE_LABEL}, =======, >>>>>>> {THEIRS_LABEL}). Read it and "
+            "resolve every conflict with apply_patch, keeping both changes "
+            "where they belong."
+            for path in self.conflicted
+        ]
+        lines += [
+            f"- {path}: the checkout already has your edits; nothing is pending."
+            for path in self.adopted
+        ]
+        lines += [
+            f"- {path}: it was deleted, or changed after you deleted it, so your "
+            "edit was set aside. Read it again and redo the edit if it is still "
+            "needed."
+            for path in self.dropped
+        ]
+        lines += [
+            f"- {path}: it changed in a way that cannot be merged, so publication "
+            "will refuse your edit to it."
+            for path in self.unmerged
+        ]
+        if self.merged or self.conflicted:
+            lines.append(
+                "Read merged files again before replacing them with write_file."
+            )
+        return "\n".join(lines)
 
 
 class _ReadBatch:
@@ -299,6 +385,187 @@ class SharedToolBroker(ToolBroker):
                 )
                 for relative, content in sorted(self._contents.items())
             )
+
+    def reconcile(self, *, only_if_clean: bool = False) -> Reconciliation:
+        """Move pending edits onto files that changed since they were read.
+
+        Another session's publication, or an edit outside Loupe, leaves an
+        edit's recorded base behind the checkout, and publication would refuse
+        it. Each such edit is merged onto the file's current bytes, as a rebase
+        would, and those bytes become its base. Overlapping changes leave
+        conflict markers for the model to resolve. A merged file must be read
+        again before write_file may replace it, so the model cannot overwrite
+        changes it has not seen. With ``only_if_clean``, nothing changes unless
+        every edit goes onto the current files as it is.
+        """
+
+        merged: list[str] = []
+        conflicted: list[str] = []
+        adopted: list[str] = []
+        dropped: list[str] = []
+        unmerged: list[str] = []
+        with self.publication_lock:
+            observations = dict(self._observations)
+            contents = dict(self._contents)
+            modes = dict(self._modes)
+            for relative, ours in sorted(self._contents.items()):
+                observed = self._observations[relative]
+                result = None
+                try:
+                    target = self._target(relative)
+                    if modes.get(relative) == DIRECTORY_MODE:
+                        if target.is_dir():
+                            contents.pop(relative)
+                            modes.pop(relative, None)
+                            adopted.append(relative)
+                        continue
+                    current, theirs = self._observe(relative, screen=False)
+                    if current == observed.base:
+                        continue
+                    ensure_safe_content(theirs or b"")
+                    if ours is not None and theirs is not None:
+                        result = merge_text(observed.content or b"", ours, theirs)
+                except (WorkspaceBrokerError, IdentityError, LlmCoordError):
+                    unmerged.append(relative)
+                    continue
+                except UnicodeDecodeError:
+                    unmerged.append(relative)
+                    continue
+                observations[relative] = _Observation(current, theirs)
+                if ours == theirs or ours is None or theirs is None:
+                    contents.pop(relative)
+                    modes.pop(relative, None)
+                    (adopted if ours == theirs else dropped).append(relative)
+                    continue
+                assert result is not None
+                if result.content == theirs:
+                    contents.pop(relative)
+                    modes.pop(relative, None)
+                    adopted.append(relative)
+                    continue
+                contents[relative] = result.content
+                if modes.get(relative) == observed.base.mode and current.mode:
+                    modes[relative] = current.mode
+                (conflicted if result.conflicts else merged).append(relative)
+            report = Reconciliation(
+                tuple(merged),
+                tuple(conflicted),
+                tuple(adopted),
+                tuple(dropped),
+                tuple(unmerged),
+            )
+            if only_if_clean and not report.clean:
+                return report
+            try:
+                _check_retained_bounds(observations, contents)
+            except WorkspaceBrokerError:
+                stale = [*merged, *conflicted, *adopted, *dropped, *unmerged]
+                return Reconciliation(unmerged=tuple(sorted(stale)))
+            self._observations = observations
+            self._contents = contents
+            self._modes = modes
+            for relative in [*adopted, *dropped]:
+                self._permissions.pop(relative, None)
+            self._partial_reads.update([*merged, *conflicted])
+        return report
+
+    def unresolved(self) -> list[str]:
+        """Pending files that still hold conflict markers from a merge."""
+
+        with self.publication_lock:
+            return sorted(
+                relative
+                for relative, content in self._contents.items()
+                if has_conflict_markers(content)
+            )
+
+    def stale_paths(self) -> list[str]:
+        """Pending files whose checkout bytes are no longer their recorded base."""
+
+        with self.publication_lock:
+            return [
+                candidate.relative_path
+                for candidate in self.candidates()
+                if not self._at_base(candidate)
+            ]
+
+    def _at_base(self, candidate: BatchFile) -> bool:
+        try:
+            target = self._target(candidate.relative_path)
+            return read_identified_path(target)[0] == candidate.base
+        except (WorkspaceBrokerError, IdentityError, LlmCoordError):
+            # A path tools may no longer read cannot be at its base.
+            return False
+
+    def catch_up(self) -> Reconciliation:
+        """Reconcile, recording what changed for the conversation view."""
+
+        report = self.reconcile()
+        if report:
+            self.emit("edits.reconciled", report.payload())
+        return report
+
+    def catching_up[**P](
+        self, run: Callable[P, ToolOutcome]
+    ) -> Callable[P, ToolOutcome]:
+        """Wrap a check or command so it sees edits moved onto current files."""
+
+        def wrapped(*args: P.args, **kwargs: P.kwargs) -> ToolOutcome:
+            note = self.catch_up().note()
+            unresolved = self.unresolved()
+            if unresolved:
+                return _error(_joined(note, _resolve_first(unresolved)))
+            outcome = run(*args, **kwargs)
+            if not note:
+                return outcome
+            return ToolOutcome(_joined(note, outcome.content), outcome.is_error)
+
+        return wrapped
+
+    def finish_gate_with(
+        self,
+        gate: Callable[[], ToolOutcome | None] | None,
+        current: Callable[[], bool],
+    ) -> ToolOutcome | None:
+        """Catch up with the checkout, then require checks, before finishing.
+
+        Checks rerun on the merged edits. When another session publishes while
+        they run, the edits are merged again and the checks rerun, up to
+        CATCH_UP_ROUNDS times, so a failure the combination causes comes back
+        to the agent. Conflicts and failed checks refuse to finish; a checkout
+        that keeps changing does not, since publication catches up again
+        without the agent.
+        """
+
+        notes: list[str] = []
+        for _ in range(CATCH_UP_ROUNDS):
+            report = self.catch_up()
+            if note := report.note():
+                notes.append(note)
+            unresolved = self.unresolved()
+            if unresolved:
+                return _error(_joined(*notes, _resolve_first(unresolved)))
+            if report.dropped:
+                # Publishing the rest unseen would split the agent's change.
+                return _error(
+                    _joined(
+                        *notes,
+                        "Redo the edits that were set aside if they are still "
+                        "needed, then finish again.",
+                    )
+                )
+            if not self.candidates():
+                return None
+            refused = gate() if gate is not None else None
+            # Catching up again cannot fix a change that cannot be merged;
+            # publication refuses it instead.
+            if set(self.stale_paths()) - set(report.unmerged):
+                continue
+            if refused is not None:
+                return ToolOutcome(_joined(*notes, refused.content), True)
+            if current():
+                return None
+        return None
 
     def usage_snapshot(self) -> dict[str, object]:
         with self.publication_lock:
@@ -812,8 +1079,11 @@ class SharedToolBroker(ToolBroker):
 
     def _validate_changes(self, arguments: Mapping[str, object]) -> ToolOutcome:
         del arguments
+        note = self.catch_up().note()
         if not self._contents:
-            return _ok("no changes yet; nothing to validate", self.limits)
+            return _ok(
+                _joined(note, "no changes yet; nothing to validate"), self.limits
+            )
         conflicts: list[str] = []
         for candidate in self.candidates():
             denial = self._write_denial(candidate.relative_path)
@@ -824,13 +1094,23 @@ class SharedToolBroker(ToolBroker):
                 conflicts.append(candidate.relative_path)
         if conflicts:
             return _error(
-                "shared paths changed since their base read; candidates are preserved "
-                f"but publication will conflict: {', '.join(conflicts)}"
+                _joined(
+                    note,
+                    "shared paths changed since their base read; candidates are "
+                    f"preserved but publication will conflict: {', '.join(conflicts)}",
+                )
             )
+        unresolved = self.unresolved()
+        if unresolved:
+            return _error(_joined(note, _resolve_first(unresolved)))
         listing = "\n".join(f"  {relative}" for relative in sorted(self._contents))
         return _ok(
-            f"all {len(self._contents)} candidate path(s) are in scope and match "
-            f"their observed bases:\n{listing}\nPublication rechecks these identities.",
+            _joined(
+                note,
+                f"all {len(self._contents)} candidate path(s) are in scope and "
+                f"match their observed bases:\n{listing}\nPublication rechecks "
+                "these identities.",
+            ),
             self.limits,
         )
 
@@ -1113,6 +1393,18 @@ class SharedToolBroker(ToolBroker):
         self, relative_paths: list[str], *, remaining: Callable[[], float] | None = None
     ) -> set[str]:
         return excluded_paths(self.worktree, relative_paths, remaining=remaining)
+
+
+def _joined(*parts: str) -> str:
+    return "\n\n".join(part for part in parts if part)
+
+
+def _resolve_first(paths: Sequence[str]) -> str:
+    return (
+        "Resolve the conflict markers in "
+        + ", ".join(paths)
+        + " before running checks or finishing."
+    )
 
 
 def _check_retained_bounds(

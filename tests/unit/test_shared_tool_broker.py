@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 
 from llm_cli.agent.limits import ExecutionLimits
-from llm_cli.agent.shared_tools import SharedToolBroker
+from llm_cli.agent.shared_tools import CATCH_UP_ROUNDS, SharedToolBroker
+from llm_cli.agent.tools import ToolOutcome
 from llm_cli.git.environment import run_git
 from llm_cli.workspace.broker import MAX_SHARED_TEXT_BYTES, WorkspaceBrokerError
 from llm_cli.workspace.identity import ABSENT, EXECUTABLE_MODE, identify_path
@@ -113,7 +114,7 @@ def test_new_files_are_listed_and_searchable_without_being_created(
     assert broker.candidates()[0].base == ABSENT
 
 
-def test_multiple_edits_and_external_changes_keep_the_original_base(
+def test_external_changes_keep_the_original_base_until_reconciled(
     checkout: Path,
 ) -> None:
     broker = _broker(checkout)
@@ -125,9 +126,221 @@ def test_multiple_edits_and_external_changes_keep_the_original_base(
     (candidate,) = broker.candidates()
     assert candidate.base == base
     assert candidate.content == b"finished guide\n"
+    # Both changed the only line: validating merges, and the edits conflict.
     result = broker.invoke("validate_changes", {})
-    assert result.is_error and "publication will conflict" in result.content
+    assert result.is_error and "conflict markers" in result.content
+    (candidate,) = broker.candidates()
+    assert candidate.base == identify_path(checkout / "docs/guide.md")
+    assert candidate.content == (
+        b"<<<<<<< your pending edits\nfinished guide\n"
+        b"||||||| your starting version\noriginal guide\n"
+        b"=======\nanother session\n>>>>>>> current checkout\n"
+    )
     assert (checkout / "docs/guide.md").read_text() == "another session\n"
+
+
+_LINES = "one\ntwo\nthree\nfour\nfive\n"
+
+
+def test_edits_merge_onto_a_file_that_changed_underneath_them(
+    checkout: Path,
+) -> None:
+    (checkout / "docs/guide.md").write_text(_LINES)
+    broker = _broker(checkout)
+    _patch(broker, "one", "ONE")
+    (checkout / "docs/guide.md").write_text(_LINES.replace("five", "FIVE"))
+
+    result = broker.invoke("validate_changes", {})
+
+    assert not result.is_error, result.content
+    assert "docs/guide.md: your edits were merged" in result.content
+    (candidate,) = broker.candidates()
+    assert candidate.base == identify_path(checkout / "docs/guide.md")
+    assert candidate.content == b"ONE\ntwo\nthree\nfour\nFIVE\n"
+    assert candidate.original == _LINES.replace("five", "FIVE").encode()
+    # The model has not seen the merged file, so it cannot overwrite it blind.
+    write = {"path": "docs/guide.md", "content": "ONE\n"}
+    assert broker.invoke("write_file", write).is_error
+    assert "FIVE" in broker.invoke("read_file", {"path": "docs/guide.md"}).content
+    assert not broker.invoke("write_file", write).is_error
+
+
+def test_a_conflict_must_be_resolved_before_checks_or_finishing(
+    checkout: Path,
+) -> None:
+    (checkout / "docs/guide.md").write_text(_LINES)
+    broker = _broker(checkout)
+    _patch(broker, "two", "TWO")
+    (checkout / "docs/guide.md").write_text(_LINES.replace("two", "2"))
+    ran: list[str] = []
+    broker.check_runner = broker.catching_up(
+        lambda name: ran.append(name) or ToolOutcome("passed", False)
+    )
+    broker.finish_gate = lambda: broker.finish_gate_with(None, lambda: True)
+
+    check = broker.invoke("run_check", {"name": "test"})
+    finish = broker.invoke("finish_task", {"answer": "done"})
+
+    assert check.is_error and "conflict markers (<<<<<<< your pending" in check.content
+    assert not ran
+    assert finish.is_error and "Resolve the conflict markers in docs/guide.md" in (
+        finish.content
+    )
+    assert broker.unresolved() == ["docs/guide.md"]
+    text = broker.invoke("read_file", {"path": "docs/guide.md"}).content
+    conflict = text[text.index("<<<<<<<") : text.index("current checkout\n") + 17]
+    _patch(broker, conflict, "TWO and 2\n")
+    assert broker.unresolved() == []
+    assert not broker.invoke("run_check", {"name": "test"}).is_error
+    assert ran == ["test"]
+    assert not broker.invoke("finish_task", {"answer": "done"}).is_error
+    assert broker.candidates()[0].content == b"one\nTWO and 2\nthree\nfour\nfive\n"
+
+
+def test_merging_only_if_clean_leaves_conflicting_edits_alone(
+    checkout: Path,
+) -> None:
+    (checkout / "docs/guide.md").write_text(_LINES)
+    broker = _broker(checkout)
+    _patch(broker, "one", "ONE")
+    _patch(broker, "five", "FIVE")
+    before = broker.usage_snapshot()
+    (checkout / "docs/guide.md").write_text(_LINES.replace("five", "5"))
+
+    report = broker.reconcile(only_if_clean=True)
+
+    assert report.conflicted == ("docs/guide.md",) and not report.clean
+    assert broker.usage_snapshot() == before
+
+
+def test_edits_the_checkout_already_has_are_no_longer_pending(
+    checkout: Path,
+) -> None:
+    broker = _broker(checkout)
+    _patch(broker)
+    (checkout / "docs/guide.md").write_text("edited guide\n")
+
+    report = broker.reconcile()
+
+    assert report.adopted == ("docs/guide.md",) and report.clean
+    assert broker.candidates() == ()
+
+
+@pytest.mark.parametrize("ours_deleted", [True, False])
+def test_a_deletion_against_a_change_sets_the_edit_aside(
+    checkout: Path, ours_deleted: bool
+) -> None:
+    broker = _broker(checkout)
+    if ours_deleted:
+        assert not broker.invoke("delete_file", {"path": "docs/guide.md"}).is_error
+        (checkout / "docs/guide.md").write_text("changed guide\n")
+    else:
+        _patch(broker)
+        (checkout / "docs/guide.md").unlink()
+
+    report = broker.reconcile()
+
+    assert report.dropped == ("docs/guide.md",) and not report.clean
+    assert "your edit was set aside" in report.note()
+    # Nothing pending: the other change stands, and the model can redo its own.
+    assert broker.candidates() == ()
+
+
+def test_finishing_stops_once_when_an_edit_was_set_aside(checkout: Path) -> None:
+    broker = _broker(checkout)
+    _patch(broker)
+    assert not broker.invoke(
+        "write_file", {"path": "docs/new.md", "content": "new\n"}
+    ).is_error
+    (checkout / "docs/guide.md").unlink()
+    finish = lambda: broker.finish_gate_with(None, lambda: True)  # noqa: E731
+
+    refused = finish()
+
+    # The rest of the change is not published until the agent has seen this.
+    assert refused is not None and "your edit was set aside" in refused.content
+    assert [c.relative_path for c in broker.candidates()] == ["docs/new.md"]
+    assert finish() is None
+
+
+def test_a_change_that_cannot_be_merged_still_refuses_publication(
+    checkout: Path,
+) -> None:
+    broker = _broker(checkout)
+    _patch(broker)
+    (checkout / "docs/guide.md").write_bytes(b"\xff\xfe binary\n")
+
+    result = broker.invoke("validate_changes", {})
+
+    assert result.is_error and "cannot be merged" in result.content
+    assert "publication will conflict: docs/guide.md" in result.content
+    assert broker.stale_paths() == ["docs/guide.md"]
+    # Nor can a path that became a symlink, which tools may not read at all.
+    (checkout / "docs/guide.md").unlink()
+    (checkout / "docs/guide.md").symlink_to(checkout / "src/app.py")
+    assert broker.reconcile().unmerged == ("docs/guide.md",)
+    assert broker.stale_paths() == ["docs/guide.md"]
+
+
+def test_finishing_merges_and_rechecks_until_the_checkout_holds_still(
+    checkout: Path,
+) -> None:
+    (checkout / "docs/guide.md").write_text(_LINES)
+    broker = _broker(checkout)
+    _patch(broker, "one", "ONE")
+    publications = iter(["three", "five"])
+    checked: list[bytes | None] = []
+
+    def gate() -> None:
+        # Another session publishes while the first two check runs go.
+        checked.append(broker.candidates()[0].content)
+        word = next(publications, None)
+        if word is not None:
+            path = checkout / "docs/guide.md"
+            path.write_text(path.read_text().replace(word, word.upper()))
+
+    assert broker.finish_gate_with(gate, lambda: True) is None
+    assert checked == [
+        b"ONE\ntwo\nthree\nfour\nfive\n",
+        b"ONE\ntwo\nTHREE\nfour\nfive\n",
+        b"ONE\ntwo\nTHREE\nfour\nFIVE\n",
+    ]
+    assert broker.stale_paths() == []
+
+
+def test_finishing_stops_catching_up_after_a_few_rounds(checkout: Path) -> None:
+    (checkout / "docs/guide.md").write_text(_LINES)
+    broker = _broker(checkout)
+    _patch(broker, "one", "ONE")
+    runs: list[None] = []
+
+    def gate() -> None:
+        runs.append(None)
+        path = checkout / "docs/guide.md"
+        path.write_text(path.read_text() + "more\n")
+
+    # Publication catches up again, so the agent is not sent back to retry.
+    assert broker.finish_gate_with(gate, lambda: True) is None
+    assert len(runs) == CATCH_UP_ROUNDS
+    assert broker.stale_paths() == ["docs/guide.md"]
+
+
+def test_merged_edits_survive_a_checkpoint(checkout: Path) -> None:
+    (checkout / "docs/guide.md").write_text(_LINES)
+    broker = _broker(checkout)
+    _patch(broker, "one", "ONE")
+    (checkout / "docs/guide.md").write_text(_LINES.replace("five", "FIVE"))
+    broker.reconcile()
+
+    resumed = _broker(checkout)
+    resumed.restore_usage(json.loads(json.dumps(broker.usage_snapshot())))
+
+    assert resumed.candidates() == broker.candidates()
+    assert resumed.stale_paths() == []
+    # Still unseen after the restart, so still not replaceable blind.
+    assert resumed.invoke(
+        "write_file", {"path": "docs/guide.md", "content": "x\n"}
+    ).is_error
 
 
 def test_rereading_live_source_refreshes_the_base_before_first_edit(

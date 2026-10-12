@@ -81,24 +81,26 @@ def test_six_cli_instances_repeated_seeded_publication(
             cluster.release(labels[name])
         outcomes = {name: cluster.settled(labels[name]) for name in names}
         winners = [name for name in names if outcomes[name]["state"] == "completed"]
-        assert len(winners) == (1 if contended else 6), outcomes
+        # Every worker read the same shared base. Each later one merges onto
+        # what was published first, resolving the shared line by keeping both.
+        # One can still lose a race: a peer publishing between its finish and
+        # its own publication leaves a conflict nobody is there to resolve.
+        assert len(winners) >= 1 if contended else len(winners) == 6, outcomes
         for name in names:
             task = outcomes[name]
             if name in winners:
-                expected.update(proposals[name])
+                expected[f"docs/{name}.md"] = proposals[name][f"docs/{name}.md"]
             else:
-                assert task["state"] == "failed", task
-                events = cluster.rpc("task.events", task_id=task["task_id"], limit=500)
-                assert any(
-                    event["payload"].get("failure_code") == "PATH_BASE_MISMATCH"
-                    for event in events
-                ), events
+                # Nothing of a losing batch is published; all of it is kept.
+                assert task["state"] in {"failed", "awaiting_review"}, task
                 proposal = cluster.rpc("task.diff", task_id=task["task_id"])
                 assert set(proposal["paths"]) == set(proposals[name])
-                assert all(
-                    "+" + value.strip() in proposal["diff"]
-                    for value in proposals[name].values()
-                )
+        if contended:
+            shared = (cluster.repository / "docs/shared.md").read_text()
+            assert sorted(shared.splitlines()) == sorted(
+                proposals[name]["docs/shared.md"].strip() for name in winners
+            )
+            expected["docs/shared.md"] = shared
         published += len(winners)
         assert all(
             (cluster.repository / path).read_text() == content
@@ -125,7 +127,7 @@ def test_six_cli_instances_repeated_seeded_publication(
 
 
 @pytest.mark.parametrize("change", ["replace", "delete", "symlink"])
-def test_external_edit_never_gets_overwritten_or_partially_published(
+def test_external_edit_is_never_overwritten_or_partially_published(
     cluster: _Cluster, change: str, git_run: Callable[..., str]
 ) -> None:
     before = _git_state(cluster, git_run)
@@ -149,20 +151,37 @@ def test_external_edit_never_gets_overwritten_or_partially_published(
             target.symlink_to(outside)
     cluster.release("a")
     cluster.release("b")
-    failed = cluster.settled("a")
-    assert failed["state"] == "failed", failed
+    outcome = cluster.settled("a")
     assert cluster.settled("b")["state"] == "completed"
-    assert (cluster.repository / "docs/a.md").read_text() == "base a\n"
     assert (cluster.repository / "docs/b.md").read_text() == "unaffected peer\n"
     assert outside.read_text() == "external editor\n"
-    if change == "delete":
+    if change == "replace":
+        # The edit conflicted with the editor's; the agent kept both.
+        assert outcome["state"] == "completed", outcome
+        assert target.read_text() == "external editor\nprivate shared\n"
+        assert (cluster.repository / "docs/a.md").read_text() == "private a\n"
+        _assert_quiescent(cluster, 2)
+    elif change == "delete":
+        # The agent was told its edit was set aside before anything published,
+        # and chose to finish with the rest.
+        assert outcome["state"] == "completed", outcome
         assert not target.exists()
+        assert (cluster.repository / "docs/a.md").read_text() == "private a\n"
+        events = cluster.rpc("task.events", task_id=outcome["task_id"], limit=500)
+        assert any(
+            "your edit was set aside" in str(event["payload"].get("content", ""))
+            for event in events
+            if event["event_type"] == "model.tool_result"
+        )
+        _assert_quiescent(cluster, 2)
     else:
-        assert target.read_text() == "external editor\n"
-        assert target.is_symlink() is (change == "symlink")
-    retained = cluster.rpc("task.diff", task_id=failed["task_id"])
-    assert set(retained["paths"]) == {"docs/shared.md", "docs/a.md"}
-    _assert_quiescent(cluster, 1)
+        # A symlink cannot be merged into: none of the batch is published.
+        assert outcome["state"] == "failed", outcome
+        assert target.is_symlink() and target.read_text() == "external editor\n"
+        assert (cluster.repository / "docs/a.md").read_text() == "base a\n"
+        retained = cluster.rpc("task.diff", task_id=outcome["task_id"])
+        assert set(retained["paths"]) == {"docs/shared.md", "docs/a.md"}
+        _assert_quiescent(cluster, 1)
     assert _git_state(cluster, git_run) == before
 
 
