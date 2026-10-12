@@ -321,11 +321,12 @@ def test_real_sandbox_lets_commands_stat_the_protected_directories_above_them(
         ],
         snapshot,
     )
-    listing = _run(policy, ["ls", str(run)], snapshot)
+    # Seatbelt refuses the listing; bubblewrap shows an empty mount instead.
+    listing = _run(policy, ["ls", "-a", str(layout["secret"])], snapshot)
     sibling = _run(policy, ["cat", str(layout["secret"] / "key.txt")], snapshot)
 
     assert stat.returncode == 0 and stat.stdout == "False\n", stat.stderr
-    assert listing.returncode != 0
+    assert "key.txt" not in listing.stdout
     assert sibling.returncode != 0 and "private" not in sibling.stdout
 
 
