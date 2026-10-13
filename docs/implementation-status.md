@@ -434,6 +434,9 @@ The same experiment after pending edits learned to follow changed files
 
 ## Next executable slice
 
+[`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
+remaining harness gaps into packages that separate sessions can run at once.
+
 1. Validate the remaining multi-profile authority and migration guarantees.
 2. Add isolated mode with explicit environment hydration and publication
    through the same batch protocol, building on the check-snapshot runner.
