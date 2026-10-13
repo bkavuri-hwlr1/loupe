@@ -160,6 +160,23 @@ the remaining planned capabilities are listed below.
   agent's own edits for review. Changes that cannot be merged, such as a file
   that became binary or a symlink, still refuse the whole batch.
 
+- Regex matching reuses a fixed pool of at most four isolated Python workers
+  across brokers and batched reads. Waiting, pipe transfer, compilation and
+  matching share the search deadline. Timeout or cancellation kills and reaps
+  that child before its slot is reused; the next request starts a replacement.
+  Idle workers drop the previous JSON source payload and purge compiled regex
+  caches after each request. The sequential/batched read differential suite
+  once again exercises the real matching workers.
+- Wave 1 regex measurements on the existing read microbenchmark used the same
+  unchanged checkout, 15 measured runs after two warmups. The shared two-listing,
+  two-search batch median fell from 195.0 to 136.5 ms (sequential: 378.2 to
+  283.3 ms). Isolated full-source scans remained dominated by source acquisition:
+  348.7 to 374.4 ms batched and 636.5 to 639.5 ms sequential in these runs, while
+  other validation jobs were active. A separate alternating before/after matcher
+  measurement (30 samples after five warmups, identical 2,000-line input and
+  paginated results) fell from 13.33 to 0.43 ms. Reuse removes process-launch cost;
+  it does not remove checkout discovery and privacy checks.
+
 ## Current execution boundary
 
 `llm-coord chat --repo /path/to/repository --scope docs/` uses shared checkout
