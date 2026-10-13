@@ -412,7 +412,67 @@ def test_disjoint_shared_agents_overlap_and_the_combined_program_passes(
     asyncio.run(scenario())
 
 
-def test_one_stale_base_preserves_the_entire_agent_batch_without_publishing(
+def test_an_edit_made_outside_loupe_is_merged_with_the_agents_edits(
+    tmp_path: Path,
+    repository_factory: Callable[[Path, dict[str, str]], Path],
+    service_factory: Callable[[Path], DaemonService],
+) -> None:
+    async def scenario() -> None:
+        repository = repository_factory(
+            tmp_path, {"docs/b.md": "line 1\nline 2\nline 3\n"}
+        )
+        service = service_factory(tmp_path)
+
+        def edit_between_stage_and_finish(
+            results: Sequence[ToolCallResult],
+        ) -> ModelTurn:
+            assert all(not result.is_error for result in results)
+            replacement = repository / "editor-save.tmp"
+            replacement.write_text("line 1\nline 2\neditor 3\n", encoding="utf-8")
+            replacement.replace(repository / "docs/b.md")
+            return _finish()
+
+        provider = ScriptedProvider(
+            "merging-agent",
+            [
+                _tools(
+                    _call("read_file", path="docs/b.md"),
+                    _call(
+                        "write_file",
+                        path="docs/b.md",
+                        content="agent 1\nline 2\nline 3\n",
+                    ),
+                ),
+                edit_between_stage_and_finish,
+            ],
+        )
+        _register(service, provider)
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(repository)}))
+        credentials = await _open_session(service, repository, provider)
+        background = await _start(service, repository, credentials, "merge", ("docs/",))
+        await asyncio.wait_for(background, timeout=20)
+
+        _assert_completed(service, "merge")
+        assert (repository / "docs/b.md").read_text() == (
+            "agent 1\nline 2\neditor 3\n"
+        )
+        events = service.store.list_task_events("merge")
+        assert [e.payload for e in events if e.event_type == "edits.reconciled"] == [
+            {
+                "merged": ["docs/b.md"],
+                "conflicted": [],
+                "adopted": [],
+                "dropped": [],
+                "unmerged": [],
+            }
+        ]
+        service.close()
+
+    asyncio.run(scenario())
+
+
+def test_an_unmergeable_change_preserves_the_entire_agent_batch_unpublished(
     tmp_path: Path,
     repository_factory: Callable[[Path, dict[str, str]], Path],
     service_factory: Callable[[Path], DaemonService],
@@ -429,8 +489,9 @@ def test_one_stale_base_preserves_the_entire_agent_batch_without_publishing(
             assert all(not result.is_error for result in results)
             assert (repository / "docs/a.md").read_text() == "base a\n"
             assert (repository / "docs/b.md").read_text() == "base b\n"
+            # Text edits cannot be merged into what is now a binary file.
             replacement = repository / "editor-save.tmp"
-            replacement.write_text("external b\n", encoding="utf-8")
+            replacement.write_bytes(b"\xff\xfe external b\n")
             replacement.replace(repository / "docs/b.md")
             return _finish()
 
@@ -456,7 +517,7 @@ def test_one_stale_base_preserves_the_entire_agent_batch_without_publishing(
         task = service.store.get_task("stale")
         assert task is not None and task.state == "failed"
         assert (repository / "docs/a.md").read_text() == "base a\n"
-        assert (repository / "docs/b.md").read_text() == "external b\n"
+        assert (repository / "docs/b.md").read_bytes() == b"\xff\xfe external b\n"
         execution = service.store.get_execution("stale", 1)
         assert execution is not None
         assert execution.failure_code == ErrorCode.PATH_BASE_MISMATCH

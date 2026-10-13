@@ -26,7 +26,7 @@ from llm_cli.agent.harness import CodingAgentHarness
 from llm_cli.coordination.models import ClaimState
 from llm_cli.daemon.service import DaemonService
 from llm_cli.errors import ErrorCode, LlmCoordError
-from llm_cli.providers.base import ModelTurn, ToolCallResult
+from llm_cli.providers.base import ModelTurn, ToolCallRequest, ToolCallResult
 from llm_cli.workspace.broker import load_candidate_content
 
 
@@ -40,24 +40,6 @@ def _finish_after_release(
         return _finish()
 
     return finish
-
-
-def _assert_active_optimistic(
-    service: DaemonService, task_id: str, session_id: str
-) -> None:
-    task = service.store.get_task(task_id)
-    assert task is not None
-    claim = service.store.get_claim(str(task.current_claim_id))
-    session = service.store.get_session(session_id)
-    assert claim is not None and session is not None
-    assert claim.state is ClaimState.ACTIVE_WORK
-    assert claim.scheduling_mode == "optimistic"
-    assert claim.workspace_id == session.workspace_id
-    assert not claim.blocking_claim_ids
-    assert not any(
-        event.event_type == "claim.queued"
-        for event in service.store.list_task_events(task_id)
-    )
 
 
 def _assert_diverged_batch(
@@ -86,7 +68,65 @@ def _assert_diverged_batch(
     assert retained == expected
 
 
-def test_same_scope_agents_prepare_concurrently_and_preserve_the_stale_batch(
+
+def _resolve_conflicts(
+    resolved: dict[str, str], starting: dict[str, str]
+) -> list[Callable[[Sequence[ToolCallResult]], ModelTurn] | ModelTurn]:
+    """Steps for an agent whose finish found conflicts: read, rewrite, finish."""
+
+    def read(results: Sequence[ToolCallResult]) -> ModelTurn:
+        (refused,) = results
+        assert refused.is_error and "Resolve the conflict markers in" in (
+            refused.content
+        )
+        assert all(path in refused.content for path in resolved)
+        return _tools(
+            *(
+                ToolCallRequest(f"resolve-read:{path}", "read_file", {"path": path})
+                for path in resolved
+            )
+        )
+
+    def rewrite(results: Sequence[ToolCallResult]) -> ModelTurn:
+        # Each conflict shows the version this agent started from.
+        for result, path in zip(results, resolved, strict=True):
+            assert "<<<<<<< your pending edits" in result.content
+            assert f"||||||| your starting version\n{starting[path]}" in (
+                result.content
+            )
+        return _tools(
+            *(
+                ToolCallRequest(
+                    f"resolve-write:{path}",
+                    "write_file",
+                    {"path": path, "content": content},
+                )
+                for path, content in resolved.items()
+            )
+        )
+
+    return [read, rewrite, _finish("resolved")]
+
+
+def _assert_active_optimistic(
+    service: DaemonService, task_id: str, session_id: str
+) -> None:
+    task = service.store.get_task(task_id)
+    assert task is not None
+    claim = service.store.get_claim(str(task.current_claim_id))
+    session = service.store.get_session(session_id)
+    assert claim is not None and session is not None
+    assert claim.state is ClaimState.ACTIVE_WORK
+    assert claim.scheduling_mode == "optimistic"
+    assert claim.workspace_id == session.workspace_id
+    assert not claim.blocking_claim_ids
+    assert not any(
+        event.event_type == "claim.queued"
+        for event in service.store.list_task_events(task_id)
+    )
+
+
+def test_same_scope_agents_prepare_concurrently_and_merge_onto_each_other(
     tmp_path: Path,
     repository_factory: Callable[[Path, dict[str, str]], Path],
     service_factory: Callable[[Path], DaemonService],
@@ -123,6 +163,15 @@ def test_same_scope_agents_prepare_concurrently_and_preserve_the_stale_batch(
                         ),
                     ),
                     _finish_after_release(staged[index], release[index]),
+                    # Only the second finishes after the other published.
+                    *(
+                        _resolve_conflicts(
+                            {"docs/shared.md": "first shared\nsecond shared\n"},
+                            {"docs/shared.md": "base shared\n"},
+                        )
+                        if name == "second"
+                        else ()
+                    ),
                 ],
             )
             for index, name in enumerate(("first", "second"))
@@ -150,29 +199,32 @@ def test_same_scope_agents_prepare_concurrently_and_preserve_the_stale_batch(
             assert (repository / "docs/second.md").read_text() == "base second\n"
 
             # Both models saw the original bytes. Only the first is allowed to
-            # finish now; the second must conflict against its retained base.
+            # finish now; the second's edits are merged onto what it published.
+            # Its private file merges cleanly; the shared line conflicts against
+            # its retained base, and it resolves that before finishing.
             release[0].set()
             await asyncio.wait_for(backgrounds[0], timeout=10)
             _assert_completed(service, "first")
             release[1].set()
             await asyncio.wait_for(backgrounds[1], timeout=10)
-            _assert_diverged_batch(
-                service,
-                "second",
-                {
-                    "docs/shared.md": b"second shared\n",
-                    "docs/second.md": b"second private\n",
-                },
+            _assert_completed(service, "second")
+            assert (repository / "docs/shared.md").read_text() == (
+                "first shared\nsecond shared\n"
             )
-            assert (repository / "docs/shared.md").read_text() == "first shared\n"
             assert (repository / "docs/first.md").read_text() == "first private\n"
-            assert (repository / "docs/second.md").read_text() == "base second\n"
+            assert (repository / "docs/second.md").read_text() == "second private\n"
+            reconciled = [
+                event.payload
+                for event in service.store.list_task_events("second")
+                if event.event_type == "edits.reconciled"
+            ]
+            assert reconciled[0]["conflicted"] == ["docs/shared.md"]
             winner = service.store.get_session(sessions[0]["session_id"])
-            loser = service.store.get_session(sessions[1]["session_id"])
+            second = service.store.get_session(sessions[1]["session_id"])
             assert winner is not None and winner.conversation_revision == 1
-            assert loser is not None and loser.conversation_revision == 0
+            assert second is not None and second.conversation_revision == 1
             workspace = service.store.get_workspace(str(winner.workspace_id))
-            assert workspace is not None and workspace.workspace_revision == 1
+            assert workspace is not None and workspace.workspace_revision == 2
             assert git_run(repository, "show-ref") == refs
             assert git_run(repository, "write-tree") == index
         finally:
@@ -395,7 +447,24 @@ def test_restart_resumes_both_overlapping_claims_and_keeps_original_bases(
         release = [threading.Event(), threading.Event()]
         resumed = [
             ScriptedProvider(
-                name, [_finish_after_release(staged[index], release[index])]
+                name,
+                [
+                    _finish_after_release(staged[index], release[index]),
+                    *(
+                        _resolve_conflicts(
+                            {
+                                "docs/shared.md": "first shared\nsecond shared\n",
+                                "docs/extra.md": "first extra\nsecond extra\n",
+                            },
+                            {
+                                "docs/shared.md": "base shared\n",
+                                "docs/extra.md": "base extra\n",
+                            },
+                        )
+                        if name == "second"
+                        else ()
+                    ),
+                ],
             )
             for index, name in enumerate(("first", "second"))
         ]
@@ -429,19 +498,17 @@ def test_restart_resumes_both_overlapping_claims_and_keeps_original_bases(
             _assert_completed(live, "first")
             release[1].set()
             await asyncio.wait_for(backgrounds[1], timeout=10)
-            _assert_diverged_batch(
-                live,
-                "second",
-                {
-                    "docs/shared.md": b"second shared\n",
-                    "docs/extra.md": b"second extra\n",
-                },
+            # The second kept its original bases across the restart, so its
+            # edits conflict with the first's instead of replacing them.
+            _assert_completed(live, "second")
+            assert (repository / "docs/shared.md").read_text() == (
+                "first shared\nsecond shared\n"
             )
-            assert (repository / "docs/shared.md").read_text() == "first shared\n"
-            assert (repository / "docs/extra.md").read_text() == "first extra\n"
+            assert (repository / "docs/extra.md").read_text() == (
+                "first extra\nsecond extra\n"
+            )
             for provider in resumed:
                 assert provider.restored_state is not None
-                assert len(provider.results) == 1
                 assert len(provider.results[0]) == 4
                 writes = [
                     event
@@ -449,7 +516,9 @@ def test_restart_resumes_both_overlapping_claims_and_keeps_original_bases(
                     if event.event_type == "tool.called"
                     and event.payload.get("tool") == "write_file"
                 ]
-                assert len(writes) == 2
+                # The staged writes were not repeated; the second only wrote
+                # its two resolutions.
+                assert len(writes) == (2 if provider.model == "first" else 4)
             assert (await live.handle(_request("task.recover", {})))["outcomes"] == []
         finally:
             for signal in release:

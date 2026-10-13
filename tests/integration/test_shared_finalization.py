@@ -138,9 +138,11 @@ def test_an_expected_publication_keeps_the_draft(
 
 def _stale_check(root: Path) -> str:
     # Passes in its snapshot, then changes the real checkout, so the evidence
-    # is stale by the time auto mode would publish.
+    # is stale by the time auto mode would publish. It changes it on every
+    # run, like a checkout others keep publishing to, so rerunning it to catch
+    # up never makes it current.
     target = json.dumps(str(root / "dependency.py"))
-    return f"import pathlib; pathlib.Path({target}).write_text('changed\\n')"
+    return f"open({target}, 'a').write('changed\\n')"
 
 
 def test_a_stale_check_in_auto_mode_rewrites_the_answer_once(
@@ -219,8 +221,9 @@ def test_a_diverged_checkout_rewrites_the_answer_before_the_failure(
         service = service_factory(tmp_path)
 
         def finish(results: Sequence[ToolCallResult]) -> ModelTurn:
-            # Someone edits the file after the agent read it.
-            (root / "a.py").write_text("value = 9\n")
+            # Someone replaces the file after the agent read it, with bytes
+            # its edit cannot be merged into.
+            (root / "a.py").write_bytes(b"\xff value = 9\n")
             return _finish(DRAFT)
 
         settled = "a.py changed underneath this task, so nothing was published."
@@ -228,7 +231,7 @@ def test_a_diverged_checkout_rewrites_the_answer_before_the_failure(
         creds = await setup(service, root, provider)
         await await_task(service, root, creds)
 
-        assert (root / "a.py").read_text() == "value = 9\n"
+        assert (root / "a.py").read_bytes() == b"\xff value = 9\n"
         assert _answer(service)["text"] == settled
         assert _finalization(service)["facts"]["publication"] == "diverged"
         execution = service.store.get_execution("task", 1)
@@ -436,7 +439,7 @@ def test_a_crash_during_the_rewrite_settles_without_resending_it(
         service = service_factory(tmp_path)
 
         def finish(results: Sequence[ToolCallResult]) -> ModelTurn:
-            (root / "a.py").write_text("value = 9\n")
+            (root / "a.py").write_bytes(b"\xff value = 9\n")
             return _finish(DRAFT)
 
         def killed(results: Sequence[ToolCallResult]) -> ModelTurn:

@@ -201,8 +201,12 @@ Deliver the answer the user requested, not a report of having prepared it.
 Explanations and reviews do not require edits. Finish with a complete answer in
 ordinary response text, or call finish_task with that answer and an optional
 operational summary. Publication follows the task's mode below.
-A conflict preserves your candidates and refuses publication. Do not claim
-publication has happened inside your summary.
+When files you edited change in the checkout while you work, your pending
+edits are merged onto their current version before checks run and before you
+finish, and you are told. Overlapping edits leave conflict markers in the file;
+resolve them before finishing. A change that cannot be merged preserves your
+candidates and refuses publication. Do not claim publication has happened
+inside your summary.
 Other sessions may have changed files discussed in earlier prompts. Read the
 current contents again before relying on earlier conversation context.
 Coordination updates attached to prompts or tool results are advisory facts.
@@ -235,7 +239,9 @@ Explain what is ready for review and do not claim the checkout was updated."""
 _AUTO_MODE_GUIDANCE = """\
 Mode: auto. Finish the requested work within the claimed scopes. Afterwards the
 daemon rechecks edited files and automatically publishes the whole eligible batch
-when required checks pass. Conflicts and failed checks retain the proposal."""
+when required checks pass. If another session published first, your edits are
+merged onto its changes and the checks rerun. Conflicts and failed checks
+retain the proposal."""
 
 _ANSWER_GUIDANCE = """\
 
