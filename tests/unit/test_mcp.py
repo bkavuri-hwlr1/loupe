@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 import sys
@@ -494,6 +495,36 @@ def test_stalled_mcp_dns_workers_have_a_global_bound(
             assert client.call_tool("echo", {}, 3)["content"][0]["text"] == "{}"
         finally:
             release.set()
+            client.close()
+
+
+def test_http_timeout_cannot_implicitly_reconnect_before_sending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with http_mcp_server() as server:
+        client = HttpClient(server.url, headers={})
+        client.start(3)
+        original = http.client.HTTPConnection.request
+
+        def delayed_send(
+            connection: http.client.HTTPConnection, *args: Any, **kwargs: Any
+        ) -> None:
+            # Let the timeout close the established socket before send() checks
+            # it. HTTPConnection's default auto_open would reconnect here.
+            time.sleep(0.1)
+            original(connection, *args, **kwargs)
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(http.client.HTTPConnection, "request", delayed_send)
+                with pytest.raises(McpError) as failure:
+                    client.call_tool("echo", {}, 0.05)
+                assert failure.value.kind == "timeout"
+                assert not any(
+                    message.get("method") == "tools/call" for message in server.messages
+                )
+            assert client.call_tool("echo", {}, 3)["content"][0]["text"] == "{}"
+        finally:
             client.close()
 
 

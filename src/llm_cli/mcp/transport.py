@@ -159,6 +159,9 @@ class HttpClient(McpClient):
         connection = http.client.HTTPConnection(
             host, port, timeout=_remaining(deadline)
         )
+        # The timeout guard can clear sock while send() is starting. Never let
+        # HTTPConnection reconnect implicitly after that absolute deadline.
+        connection.auto_open = 0
         headers = {
             **self._headers,
             "Accept": "application/json, text/event-stream",
