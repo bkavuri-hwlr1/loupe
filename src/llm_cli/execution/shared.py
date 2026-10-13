@@ -80,7 +80,7 @@ class SharedTaskExecutionRunner:
         # Set by the daemon. Without it, or without a working OS sandbox,
         # tasks are never offered model-chosen commands.
         self.commands: CommandSettings | None = None
-        # Configured MCP servers, started for each task outside plan mode.
+        # Configured MCP servers; only declared read-only servers run in plan mode.
         self.mcp_servers: tuple[McpServerConfig, ...] = ()
         # User hooks, run in a sandbox around each task's tool calls.
         self.hooks: tuple[HookConfig, ...] = ()

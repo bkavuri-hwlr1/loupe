@@ -86,6 +86,12 @@ def call(name: str, arguments: dict) -> dict:
 def main() -> None:
     if MODE == "crash":
         sys.exit(3)
+    if MODE == "deep-json":
+        read()  # Wait for initialize, so there is a pending request to fail.
+        sys.stdout.write("[" * 20_000 + "0" + "]" * 20_000 + "\n")
+        sys.stdout.flush()
+        time.sleep(5)
+        return
     if pid_file := os.environ.get("FAKE_MCP_PID_FILE"):
         with open(pid_file, "w") as handle:
             handle.write(str(os.getpid()))

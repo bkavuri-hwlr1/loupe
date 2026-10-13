@@ -65,7 +65,13 @@ def test_the_client_handshakes_lists_and_calls_tools(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("mode", "kind"), [("crash", "exited"), ("old", "protocol"), ("silent", "timeout")]
+    ("mode", "kind"),
+    [
+        ("crash", "exited"),
+        ("old", "protocol"),
+        ("silent", "timeout"),
+        ("deep-json", "protocol"),
+    ],
 )
 def test_servers_that_cannot_start_say_how(
     tmp_path: Path, mode: str, kind: str
@@ -354,6 +360,8 @@ def test_http_handshake_sessions_tools_resources_and_prompts(mode: str) -> None:
     "mode",
     [
         "invalid-json",
+        "deep-json",
+        "deep-sse",
         "wrong-id",
         "oversized",
         "oversized-sse",

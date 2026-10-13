@@ -187,6 +187,12 @@ def http_mcp_server(mode: str = "json") -> Iterator[HttpServer]:
             ).encode()
             if state.mode == "invalid-json":
                 payload = b"not JSON"
+            elif state.mode == "deep-json":
+                payload = b"[" * 20_000 + b"0" + b"]" * 20_000
+            elif state.mode == "deep-sse":
+                payload = b"data: " + b"[" * 20_000 + b"0" + b"]" * 20_000 + b"\n\n"
+                self.send(payload, "text/event-stream")
+                return
             elif state.mode == "wrong-id":
                 payload = b'{"jsonrpc":"2.0","id":false,"result":{}}'
             elif state.mode == "oversized":

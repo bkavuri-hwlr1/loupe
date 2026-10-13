@@ -344,7 +344,7 @@ def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
                 f"{where}.env must map variable names to text",
             )
         approval = raw.get("approval", "ask")
-        if approval not in {"ask", "allow"}:
+        if not isinstance(approval, str) or approval not in {"ask", "allow"}:
             raise LlmCoordError(
                 ErrorCode.CONFIG_INVALID, f"{where}.approval must be ask or allow"
             )

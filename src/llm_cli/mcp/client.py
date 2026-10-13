@@ -278,6 +278,11 @@ class StdioClient(McpClient):
                     break
                 try:
                     message = json.loads(line)
+                except RecursionError:
+                    self._fail_pending(
+                        McpError("the server sent deeply nested JSON", kind="protocol")
+                    )
+                    break
                 except ValueError:
                     continue  # Stray output is not a message.
                 if isinstance(message, dict):
