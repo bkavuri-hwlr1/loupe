@@ -98,6 +98,15 @@ the remaining planned capabilities are listed below.
   Durable launches record harness, provider, and model separately; an explicit
   provider override selects its own default model. The loop has a two-hour
   wall clock, 500-tool-call cap, and 64 KiB tool-result ceiling.
+- MCP authority for shared tasks over stdio or Streamable HTTP (JSON and
+  bounded SSE responses), including tools and explicit resource/prompt
+  list/read/get calls. HTTP header configuration contains only environment
+  variable names, and resolved values stay out of events and results.
+  Servers marked `read_only = true` are offered in plan mode; this is a user
+  assertion about external authority. Calls retain per-server approval,
+  bounded text output, secret screening, and external-data labels. Task end
+  closes stdio process groups and HTTP sessions. Isolated tasks and
+  exploration helpers do not receive MCP access.
 - Durable harness execution checkpoints containing provider-native session
   state plus neutral loop state.
   The checkpoint records message history, the current model turn, completed

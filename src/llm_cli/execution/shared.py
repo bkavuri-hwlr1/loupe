@@ -309,9 +309,12 @@ class SharedTaskExecutionRunner:
                     )
             mcp = (
                 McpToolset(
-                    self.mcp_servers, interactive=asker is not None, emit=broker.emit
+                    self.mcp_servers,
+                    interactive=asker is not None,
+                    emit=broker.emit,
+                    read_only=row["agent_mode"] == "plan",
                 )
-                if self.mcp_servers and row["agent_mode"] != "plan"
+                if self.mcp_servers
                 else None
             )
             broker.mcp = mcp
