@@ -1,0 +1,1164 @@
+{
+  "measured_on_utc": "2026-10-13",
+  "implementation_commit": "b5b0b2a",
+  "fixture_commit": "96f0c4585d0cf574da4db68d86678698d9594d33",
+  "experiment_version": 2,
+  "settings": {
+    "set": [],
+    "provider": "codex",
+    "model": "gpt-6-sol",
+    "effort": "xhigh"
+  },
+  "medians": [
+    {
+      "experiment": "shop",
+      "scenario": "clean",
+      "arm": "pair",
+      "samples": 3,
+      "wall_seconds": 102.4,
+      "tokens": 282324,
+      "hidden_passed": 16,
+      "hidden_total": 16
+    },
+    {
+      "experiment": "shop",
+      "scenario": "clean",
+      "arm": "single",
+      "samples": 3,
+      "wall_seconds": 108.3,
+      "tokens": 130730,
+      "hidden_passed": 16,
+      "hidden_total": 16
+    },
+    {
+      "experiment": "shop",
+      "scenario": "disrupted",
+      "arm": "pair",
+      "samples": 3,
+      "wall_seconds": 105.8,
+      "tokens": 301907,
+      "hidden_passed": 17,
+      "hidden_total": 17
+    },
+    {
+      "experiment": "shop",
+      "scenario": "disrupted",
+      "arm": "single",
+      "samples": 3,
+      "wall_seconds": 109.8,
+      "tokens": 176916,
+      "hidden_passed": 17,
+      "hidden_total": 17
+    },
+    {
+      "experiment": "toolkit",
+      "scenario": "clean",
+      "arm": "pair",
+      "samples": 3,
+      "wall_seconds": 78.4,
+      "tokens": 126735,
+      "hidden_passed": 15,
+      "hidden_total": 15
+    },
+    {
+      "experiment": "toolkit",
+      "scenario": "clean",
+      "arm": "single",
+      "samples": 3,
+      "wall_seconds": 72.4,
+      "tokens": 76102,
+      "hidden_passed": 15,
+      "hidden_total": 15
+    },
+    {
+      "experiment": "toolkit",
+      "scenario": "disrupted",
+      "arm": "pair",
+      "samples": 3,
+      "wall_seconds": 91.8,
+      "tokens": 149761,
+      "hidden_passed": 16,
+      "hidden_total": 16
+    },
+    {
+      "experiment": "toolkit",
+      "scenario": "disrupted",
+      "arm": "single",
+      "samples": 3,
+      "wall_seconds": 75.8,
+      "tokens": 76594,
+      "hidden_passed": 16,
+      "hidden_total": 16
+    }
+  ],
+  "runs": [
+    {
+      "experiment": "shop",
+      "arm": "single",
+      "scenario": "clean",
+      "repetition": 1,
+      "wall_seconds": 262.9,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 85941,
+      "output_tokens": 3413,
+      "cached_tokens": 66432,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "pair",
+      "scenario": "clean",
+      "repetition": 1,
+      "wall_seconds": 102.4,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 272812,
+      "output_tokens": 4769,
+      "cached_tokens": 237440,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ]
+        }
+      },
+      "lanes_applied": {
+        "discounts": true,
+        "stock": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "single",
+      "scenario": "disrupted",
+      "repetition": 1,
+      "wall_seconds": 109.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 173639,
+      "output_tokens": 3277,
+      "cached_tokens": 150400,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 39.6,
+      "crash_seconds": 31.5,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 17,
+        "total": 17,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 1,
+      "wall_seconds": 154.3,
+      "suspended_seconds": 0.1,
+      "prompt_tokens": 309039,
+      "output_tokens": 4964,
+      "cached_tokens": 253696,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 31.5,
+      "crash_seconds": 29.5,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 17,
+        "total": 17,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "discounts": true,
+        "stock": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "clean",
+      "repetition": 1,
+      "wall_seconds": 72.4,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 101382,
+      "output_tokens": 2397,
+      "cached_tokens": 86400,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "clean",
+      "repetition": 1,
+      "wall_seconds": 78.4,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 106862,
+      "output_tokens": 3122,
+      "cached_tokens": 88960,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "disrupted",
+      "repetition": 1,
+      "wall_seconds": 73.7,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 78283,
+      "output_tokens": 2384,
+      "cached_tokens": 60160,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 39.5,
+      "crash_seconds": 35.5,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 1,
+      "wall_seconds": 89.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 146537,
+      "output_tokens": 3224,
+      "cached_tokens": 123264,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 14.1,
+      "crash_seconds": 35.6,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "pair",
+      "scenario": "clean",
+      "repetition": 2,
+      "wall_seconds": 100.6,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 277648,
+      "output_tokens": 4676,
+      "cached_tokens": 244480,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ]
+        }
+      },
+      "lanes_applied": {
+        "discounts": true,
+        "stock": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "single",
+      "scenario": "clean",
+      "repetition": 2,
+      "wall_seconds": 86.3,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 127361,
+      "output_tokens": 3369,
+      "cached_tokens": 106240,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 2,
+      "wall_seconds": 105.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 285900,
+      "output_tokens": 4866,
+      "cached_tokens": 262016,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 35.5,
+      "crash_seconds": 33.5,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 17,
+        "total": 17,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "discounts": true,
+        "stock": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "single",
+      "scenario": "disrupted",
+      "repetition": 2,
+      "wall_seconds": 131.9,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 184013,
+      "output_tokens": 3751,
+      "cached_tokens": 157568,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 47.6,
+      "crash_seconds": 33.5,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 17,
+        "total": 17,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "clean",
+      "repetition": 2,
+      "wall_seconds": 88.3,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 141818,
+      "output_tokens": 3683,
+      "cached_tokens": 124544,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "clean",
+      "repetition": 2,
+      "wall_seconds": 76.3,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 66288,
+      "output_tokens": 2253,
+      "cached_tokens": 52736,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 2,
+      "wall_seconds": 95.9,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 151189,
+      "output_tokens": 3467,
+      "cached_tokens": 132992,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 16.0,
+      "crash_seconds": 27.7,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "disrupted",
+      "repetition": 2,
+      "wall_seconds": 75.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 74313,
+      "output_tokens": 2281,
+      "cached_tokens": 64512,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 35.7,
+      "crash_seconds": 31.7,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "single",
+      "scenario": "clean",
+      "repetition": 3,
+      "wall_seconds": 108.3,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 143957,
+      "output_tokens": 3302,
+      "cached_tokens": 129664,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "pair",
+      "scenario": "clean",
+      "repetition": 3,
+      "wall_seconds": 116.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 285178,
+      "output_tokens": 4810,
+      "cached_tokens": 248704,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ]
+        }
+      },
+      "lanes_applied": {
+        "discounts": true,
+        "stock": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "single",
+      "scenario": "disrupted",
+      "repetition": 3,
+      "wall_seconds": 90.0,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 165310,
+      "output_tokens": 3535,
+      "cached_tokens": 145024,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 37.8,
+      "crash_seconds": 31.7,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 17,
+        "total": 17,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "shop",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 3,
+      "wall_seconds": 103.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 296480,
+      "output_tokens": 5427,
+      "cached_tokens": 269440,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 28.1,
+      "crash_seconds": 41.6,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 17,
+        "total": 17,
+        "own_tests_passed": true,
+        "groups": {
+          "discounts": [
+            7,
+            7
+          ],
+          "stock": [
+            7,
+            7
+          ],
+          "both": [
+            2,
+            2
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "discounts": true,
+        "stock": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "clean",
+      "repetition": 3,
+      "wall_seconds": 66.2,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 73687,
+      "output_tokens": 2415,
+      "cached_tokens": 60800,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "clean",
+      "repetition": 3,
+      "wall_seconds": 72.3,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 123809,
+      "output_tokens": 2926,
+      "cached_tokens": 112384,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "disrupted",
+      "repetition": 3,
+      "wall_seconds": 83.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 69734,
+      "output_tokens": 2308,
+      "cached_tokens": 61568,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 43.6,
+      "crash_seconds": 33.6,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 3,
+      "wall_seconds": 91.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 134575,
+      "output_tokens": 3207,
+      "cached_tokens": 115712,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 20.1,
+      "crash_seconds": 27.5,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    }
+  ]
+}
