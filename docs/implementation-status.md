@@ -434,6 +434,12 @@ The same experiment after pending edits learned to follow changed files
 
 ## Next executable slice
 
+Wave 1 E1 makes the multi-terminal test fixture's own polling client tolerate
+60 seconds per RPC. The macOS CI failure was in `_Cluster.rpc("task.list")`,
+not a chat process. A regression stops the real daemon for six seconds during
+that call and verifies that it completes after the daemon resumes. Product
+clients retain their five-second default and uncertain mutations are not retried.
+
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
 remaining harness gaps into packages that separate sessions can run at once.
 

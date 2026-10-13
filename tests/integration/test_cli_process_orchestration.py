@@ -249,7 +249,10 @@ class _Cluster:
             "GIT_CONFIG_GLOBAL": os.devnull,
         }
         self.paths = AppPaths.resolve("test", environ=self.env)
-        self.client = DaemonClient(self.paths)
+        # These tests assert correctness across real processes, not RPC latency.
+        # A stalled CI runner must not spend the product's five-second UI budget
+        # while polling task.list (the client seen in the macOS CI traceback).
+        self.client = DaemonClient(self.paths, timeout_seconds=60.0)
         self.stack = ExitStack()
         self.processes: list[subprocess.Popen[str]] = []
         self.daemon = self._spawn(
