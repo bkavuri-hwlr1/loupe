@@ -46,6 +46,61 @@ def test_the_shipped_experiments_are_valid() -> None:
         ]
 
 
+@pytest.mark.skipif(available_sandbox() is None, reason="needs a working sandbox")
+def test_toolkit_hidden_tests_fail_untouched_and_pass_reference(tmp_path: Path) -> None:
+    version, experiments = sessions.load_experiments()
+    assert version >= 2
+    experiment = next(e for e in experiments if e.id == "toolkit")
+    repository = benchmark._fixture(tmp_path / "toolkit", experiment.fixture)
+    tests = sessions.ACCEPTANCE / experiment.acceptance
+    untouched = sessions.acceptance(repository, tests, sys.executable, ())
+    assert untouched["ran"] and untouched["own_tests_passed"]
+    assert untouched["passed"] == 0
+    assert untouched["total"] == 16
+    text = repository / "src/toolkit/text.py"
+    text.write_text(
+        text.read_text()
+        + """
+
+
+def normalize_space(value):
+    return " ".join(value.split())
+
+
+def slug(value):
+    import re
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+"""
+    )
+    numbers = repository / "src/toolkit/numbers.py"
+    numbers.write_text(
+        numbers.read_text()
+        + """
+
+
+def mean(values):
+    items = list(values)
+    if not items:
+        raise ValueError("empty input")
+    return float(sum(items) / len(items))
+
+
+def clamp(value, lower, upper):
+    if lower > upper:
+        raise ValueError("reversed bounds")
+    return max(lower, min(upper, value))
+"""
+    )
+    registry = repository / experiment.disruption.edit_path
+    registry.write_text(
+        registry.read_text().replace("False", "True")
+        + experiment.disruption.edit_append
+    )
+    solution = sessions.acceptance(repository, tests, sys.executable, ())
+    assert solution["ran"] and solution["own_tests_passed"]
+    assert solution["passed"] == solution["total"] == 16
+
+
 def _experiment_file(tmp_path: Path, **changes: object) -> Path:
     fields = {
         "id": '"x"',
