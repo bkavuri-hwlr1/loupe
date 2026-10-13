@@ -77,6 +77,11 @@ the remaining planned capabilities are listed below.
   lifecycle, database inspection, repository registration, tasks, and claims.
   A finished task attempt is advanced explicitly with `llm-coord task retry`;
   a terminal claim is never handed back as though it still granted authority.
+- Multi-terminal orchestration tests give the fixture's polling client 60 seconds
+  per RPC. A macOS CI stall timed out `_Cluster.rpc("task.list")`; a regression
+  now stops the real daemon for six seconds during that call and verifies it
+  completes after resume. Product clients retain their five-second default,
+  and uncertain mutations are not retried.
 - A provider-independent harness/driver seam. The lifecycle owns the claim, worktree,
   validation, publication, and recovery; a driver only decides file contents,
   and only through a tool broker bounded by the claim. Drivers declare their
@@ -433,12 +438,6 @@ The same experiment after pending edits learned to follow changed files
   more wall time. Parallel sessions should pay off on parts that overlap less.
 
 ## Next executable slice
-
-Wave 1 E1 makes the multi-terminal test fixture's own polling client tolerate
-60 seconds per RPC. The macOS CI failure was in `_Cluster.rpc("task.list")`,
-not a chat process. A regression stops the real daemon for six seconds during
-that call and verifies that it completes after the daemon resumes. Product
-clients retain their five-second default and uncertain mutations are not retried.
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
 remaining harness gaps into packages that separate sessions can run at once.
