@@ -140,6 +140,7 @@ _PUBLIC_EVENTS = frozenset(
         "workflow.cancelled",
         "workflow.stopping",
         "workflow.verification",
+        "edits.reconciled",
     }
 )
 
@@ -329,6 +330,8 @@ def render_event(event: dict[str, Any]) -> str | None:
         return _review_notice(payload)
     if kind == "workflow.cancelled":
         return "  Stopped. Pending edits retained; checkout unchanged."
+    if kind == "edits.reconciled":
+        return _reconciled_notice(payload)
     if kind == "workflow.stopping":
         return "  Stopping at the next safe boundary…"
     if kind == "workflow.verification":
@@ -540,6 +543,28 @@ def _detail(kind: str, payload: dict[str, Any]) -> str:
     if reason:
         return f" ({_clip(reason)})"
     return ""
+
+
+_RECONCILED = (
+    ("merged", "merged onto newer changes"),
+    ("conflicted", "conflict with newer changes; the agent resolves them"),
+    ("adopted", "already in the checkout"),
+    ("dropped", "set aside: deleted on one side and changed on the other"),
+    ("unmerged", "cannot be merged"),
+)
+
+
+def _reconciled_notice(payload: dict[str, Any]) -> str | None:
+    parts = []
+    for key, outcome in _RECONCILED:
+        paths = payload.get(key)
+        if isinstance(paths, list) and paths:
+            shown = ", ".join(_clip(path) for path in paths[:4])
+            more = f" and {len(paths) - 4} more" if len(paths) > 4 else ""
+            parts.append(f"{shown}{more}: {outcome}")
+    if not parts:
+        return None
+    return "  Files changed under the pending edits. " + "; ".join(parts) + "."
 
 
 def _review_notice(payload: dict[str, Any]) -> str:

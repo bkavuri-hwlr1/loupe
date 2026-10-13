@@ -145,6 +145,20 @@ the remaining planned capabilities are listed below.
   HEAD, index, and refs. A preflight conflict retains the whole proposal
   without publishing any file; startup and explicit recovery can roll forward
   partially applied batches without overwriting third states.
+- Pending edits follow files that change underneath them. When another session
+  publishes, or someone edits a file outside Loupe, a task's edits are merged
+  onto the file's current bytes with a three-way merge from their recorded
+  base before validation, checks, commands, and finishing. Overlapping edits
+  leave diff3 conflict markers (`your pending edits` / `your starting
+  version` / `current checkout`), and checks and finishing are refused until
+  the agent resolves them; a merged file must be read again before
+  `write_file` may replace it. An edit deleted on one side and changed on the
+  other is set aside, and finishing refuses once so the agent sees it first.
+  Checks rerun when the checkout changes while they run. In auto mode, a task
+  whose checkout moved after it finished merges again, reruns its checks, and
+  publishes under the same lock as the final check; a conflict there holds the
+  agent's own edits for review. Changes that cannot be merged, such as a file
+  that became binary or a symlink, still refuse the whole batch.
 
 ## Current execution boundary
 
@@ -395,27 +409,43 @@ One run of each arm with `gpt-6-sol` at `xhigh` effort (2026-10-12):
   and used about three times the tokens (413k against 132k).
 
 These are single runs, so the timings are noisy; the held proposals are not,
-since the tools cannot do otherwise.
+since the tools could not do otherwise.
+
+The same experiment after pending edits learned to follow changed files
+(same model and effort, 2026-10-12):
+
+| Scenario | Arm | Wall time | Tokens | Interventions | Hidden tests |
+| --- | --- | --- | --- | --- | --- |
+| clean | one agent | 82 s | 126k | 0 | 16/16 |
+| clean | two sessions | 93 s | 281k | 0 | 16/16 |
+| disrupted | one agent | 93 s | 172k | 0 | 17/17 |
+| disrupted | two sessions | 108 s | 306k | 0 | 17/17 |
+
+- **No run needed the operator.** Each session that finished second, and the
+  single agent after the hand edit, had its edits merged onto the newer files
+  before finishing. Where the edits overlapped -- the cart, its tests, and the
+  changelog -- the model resolved the conflict markers, its checks passed,
+  and it published. The hand edit survived both disrupted runs, and both
+  crashed runs resumed with each tool result recorded once.
+- **Two sessions are still not faster on this task.** Both parts edit the same
+  three files, so the second session resolves the overlap and each session
+  reads the code for itself: about twice one agent's tokens, and slightly
+  more wall time. Parallel sessions should pay off on parts that overlap less.
 
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
 remaining harness gaps into packages that separate sessions can run at once.
 
-1. Reconcile pending edits with files that change underneath them, whether
-   another session published them or someone edited them outside Loupe:
-   rebase the edits onto the current version with a three-way merge from
-   their recorded base, rerun required checks, and involve the model only
-   when the merge conflicts. Then rerun the two-session experiment.
-2. Validate the remaining multi-profile authority and migration guarantees.
-3. Add isolated mode with explicit environment hydration and publication
+1. Validate the remaining multi-profile authority and migration guarantees.
+2. Add isolated mode with explicit environment hydration and publication
    through the same batch protocol, building on the check-snapshot runner.
    Symlinks and binary file operations still need dedicated recovery semantics.
-4. Add an independent review of the exact diff before publication, at the
+3. Add an independent review of the exact diff before publication, at the
    session-aware harness boundary. Plan mode and bounded repair already exist.
-5. Add `db backup`, config inspection and editing, and retention maintenance
+4. Add `db backup`, config inspection and editing, and retention maintenance
    to the CLI.
-6. Build the opt-in knowledge/RAG and graph planes on top of that durable task
+5. Build the opt-in knowledge/RAG and graph planes on top of that durable task
    lifecycle, with `none` and exact-search fallbacks before optional vector
    acceleration.
 

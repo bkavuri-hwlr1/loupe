@@ -217,7 +217,7 @@ def test_daemon_crash_resumes_two_private_batches_once(
     ]
 
 
-def test_external_edit_during_outage_retains_entire_original_proposal(
+def test_external_edit_during_outage_is_merged_from_the_original_base(
     recovery_cluster: _RecoveryCluster,
 ) -> None:
     cluster = recovery_cluster
@@ -236,17 +236,23 @@ def test_external_edit_during_outage_retains_entire_original_proposal(
     cluster.release("b")
     assert cluster.settled("b")["state"] == "completed"
     cluster.release("a")
-    failed = cluster.settled("a")
-    assert failed["state"] == "failed"
-    assert (
-        cluster.repository / "docs/shared.md"
-    ).read_text() == "external edit while down\n"
-    assert (cluster.repository / "docs/a.md").read_text() == "base a\n"
+    merged = cluster.settled("a")
+    # The restored edit kept its original base, so it conflicted with the
+    # edit made while the daemon was down instead of replacing it, and the
+    # agent resolved the conflict by keeping both.
+    assert merged["state"] == "completed", merged
+    events = cluster.rpc("task.events", task_id=merged["task_id"], limit=500)
+    assert any(
+        "||||||| your starting version\nbase shared\n"
+        in str(event["payload"].get("content", ""))
+        for event in events
+        if event["event_type"] == "model.tool_result"
+    )
+    assert (cluster.repository / "docs/shared.md").read_text() == (
+        "external edit while down\nstale a\n"
+    )
+    assert (cluster.repository / "docs/a.md").read_text() == "private a\n"
     assert (cluster.repository / "docs/b.md").read_text() == "new b\n"
-    proposal = cluster.rpc("task.diff", task_id=failed["task_id"])
-    assert set(proposal["paths"]) == {"docs/a.md", "docs/shared.md"}
-    assert "-base shared" in proposal["diff"] and "+stale a" in proposal["diff"]
-    assert cluster.revision(failed["session_id"]) == 0
 
 
 def test_persisted_stop_survives_daemon_crash_without_stopping_peer(

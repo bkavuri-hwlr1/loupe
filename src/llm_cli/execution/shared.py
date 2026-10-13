@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import itertools
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -24,8 +25,8 @@ from llm_cli.agent.finalization import (
     settlement_surprises,
 )
 from llm_cli.agent.hooks import HookRunner
-from llm_cli.agent.shared_tools import SharedToolBroker
-from llm_cli.agent.tools import TaskCancelled
+from llm_cli.agent.shared_tools import CATCH_UP_ROUNDS, SharedToolBroker
+from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.config.models import HookConfig, McpServerConfig
 from llm_cli.coordination.models import (
     ClaimConflict,
@@ -232,11 +233,18 @@ class SharedTaskExecutionRunner:
                 deadline_at=deadline_at,
                 on_result=broker.record_check,
             )
-            if checker.config.get("checks") and row["agent_mode"] != "plan":
-                broker.check_runner = checker.run
-                broker.finish_gate = lambda: (
-                    checker.gate() if broker and broker.candidates() else None
+            checked = bool(checker.config.get("checks"))
+            if row["agent_mode"] != "plan":
+                # Before checks and finishing, pending edits are moved onto
+                # files other sessions changed, so they verify what would
+                # actually be published.
+                broker.finish_gate = functools.partial(
+                    broker.finish_gate_with,
+                    checker.gate if checked else None,
+                    checker.current if checked else lambda: True,
                 )
+            if checked and row["agent_mode"] != "plan":
+                broker.check_runner = broker.catching_up(checker.run)
                 instructions += "\nConfigured checks: " + ", ".join(
                     checker.config["checks"]
                 )
@@ -249,7 +257,7 @@ class SharedTaskExecutionRunner:
             )
             if sandbox is not None:
                 assert self.commands is not None
-                broker.command_runner = CommandRunner(
+                commands = CommandRunner(
                     root=broker.worktree,
                     snapshot_root=self.commands.snapshot_root,
                     candidates=broker.candidates,
@@ -266,7 +274,8 @@ class SharedTaskExecutionRunner:
                         *checker.config.get("runtime_paths", []),
                     ),
                     deadline_at=deadline_at,
-                ).run
+                )
+                broker.command_runner = broker.catching_up(commands.run)
                 broker.command_approval = self.commands.approval
             if self.hooks and self.commands is not None:
                 hook_sandbox = available_sandbox()
@@ -361,63 +370,94 @@ class SharedTaskExecutionRunner:
             self.workflow.retain(
                 task.task_id, task.attempt, execution.execution_id, files
             )
-            with self.publisher.lock:
-                self.ensure_available(workspace.workspace_id)
-                stopped = self.workflow.stopped(task.task_id, task.attempt)
-                incomplete = run.outcome != "completed"
-                if incomplete and not files and not stopped:
-                    self.coordinator.settle_shared_execution(
-                        execution.execution_id,
-                        outcome="failed_safe",
-                        failure_code=(
-                            "MODEL_BLOCKED"
-                            if run.outcome == "blocked"
-                            else "RESPONSE_INCOMPLETE"
-                        ),
+            gave_up = False
+            for rounds in itertools.count():
+                if rounds:
+                    gave_up = not self._catch_up(
+                        task, claim, broker, checker.gate if checked else None
                     )
-                    self.workflow.update(
-                        task.task_id,
-                        task.attempt,
-                        status="failed",
-                        expires_at=self.store._now(None)
-                        + self.coordinator.terminal_retention_ms,
+                    files = broker.candidates()
+                    self.workflow.retain(
+                        task.task_id, task.attempt, execution.execution_id, files
                     )
-                    result = self.store.get_execution(task.task_id, task.attempt)
-                    assert result is not None
-                    return result
-                hold = stopped or incomplete or bool(
-                    files
-                    and (
-                        row["publish_mode"] == "review"
-                        or not verification_current(
-                            self.store, row, broker.worktree, files
-                        )
-                    )
-                )
-                verification = verification_status(
-                    self.store, row, broker.worktree, files
-                )
-                outcome = "held_for_review"
-                if not hold:
-                    broker.emit("workflow.verification", {"status": verification})
-                    self.coordinator.reserve_shared_publication(
-                        execution.execution_id,
-                        fencing_token=claim.fencing_token,
-                        changed_paths=(file.relative_path for file in files),
-                    )
-                    if not files:
-                        outcome = "no_changes"
-                    else:
-                        publication = self.publisher.publish(
+                with self.publisher.lock:
+                    self.ensure_available(workspace.workspace_id)
+                    stopped = self.workflow.stopped(task.task_id, task.attempt)
+                    incomplete = run.outcome != "completed"
+                    if incomplete and not files and not stopped:
+                        self.coordinator.settle_shared_execution(
                             execution.execution_id,
-                            session.session_id,
-                            files,
-                            claim.scopes,
-                            case_insensitive_filesystem=(
-                                repository.path_case_insensitive
+                            outcome="failed_safe",
+                            failure_code=(
+                                "MODEL_BLOCKED"
+                                if run.outcome == "blocked"
+                                else "RESPONSE_INCOMPLETE"
                             ),
                         )
-                        outcome = publication.state
+                        self.workflow.update(
+                            task.task_id,
+                            task.attempt,
+                            status="failed",
+                            expires_at=self.store._now(None)
+                            + self.coordinator.terminal_retention_ms,
+                        )
+                        result = self.store.get_execution(task.task_id, task.attempt)
+                        assert result is not None
+                        return result
+                    # Another session may have published since this task's
+                    # checks ran. An auto-mode task that finished catches up
+                    # instead of being held: its edits are merged onto the
+                    # current files and its checks rerun, outside the lock.
+                    behind = (
+                        not gave_up
+                        and rounds < CATCH_UP_ROUNDS
+                        and bool(files)
+                        and not stopped
+                        and not incomplete
+                        and row["publish_mode"] != "review"
+                        and bool(
+                            broker.stale_paths()
+                            or not verification_current(
+                                self.store, row, broker.worktree, files
+                            )
+                        )
+                    )
+                    if behind:
+                        continue
+                    hold = stopped or incomplete or bool(
+                        files
+                        and (
+                            row["publish_mode"] == "review"
+                            or not verification_current(
+                                self.store, row, broker.worktree, files
+                            )
+                        )
+                    )
+                    verification = verification_status(
+                        self.store, row, broker.worktree, files
+                    )
+                    outcome = "held_for_review"
+                    if not hold:
+                        broker.emit("workflow.verification", {"status": verification})
+                        self.coordinator.reserve_shared_publication(
+                            execution.execution_id,
+                            fencing_token=claim.fencing_token,
+                            changed_paths=(file.relative_path for file in files),
+                        )
+                        if not files:
+                            outcome = "no_changes"
+                        else:
+                            publication = self.publisher.publish(
+                                execution.execution_id,
+                                session.session_id,
+                                files,
+                                claim.scopes,
+                                case_insensitive_filesystem=(
+                                    repository.path_case_insensitive
+                                ),
+                            )
+                            outcome = publication.state
+                break
             # The files are settled. Finish the response before the task
             # becomes terminal, outside the lock: a model call must never
             # block other sessions' reads.
@@ -546,6 +586,28 @@ class SharedTaskExecutionRunner:
         result = self.store.get_execution(task.task_id, task.attempt)
         assert result is not None
         return result
+
+    def _catch_up(
+        self,
+        task: TaskRecord,
+        claim: ClaimRecord,
+        broker: SharedToolBroker,
+        gate: Callable[[], ToolOutcome | None] | None,
+    ) -> bool:
+        """Move a finished task's edits onto the current checkout and recheck.
+
+        Only a clean merge is kept: a conflict needs the agent or the user, so
+        the edits stay as the agent left them and the task is held. Checks run
+        again on the merged edits, which is all publication then needs.
+        """
+
+        with self.lifecycle._renewing_lease(task=task, claim=claim):
+            report = broker.reconcile(only_if_clean=True)
+            if not report.clean:
+                return False
+            if report:
+                broker.emit("edits.reconciled", report.payload())
+            return gate is None or gate() is None
 
     def _finalize_response(
         self,

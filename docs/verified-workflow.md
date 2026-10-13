@@ -73,6 +73,12 @@ and `--publish auto` flags still select normal and auto.
 
 In normal and auto modes, required checks run before the agent finishes;
 failures are returned to it so it can repair the proposal.
+When files a task edited change in the checkout while it works -- another
+session published, or you edited them -- its pending edits are merged onto
+the current version before checks run and before it finishes. Overlapping
+edits leave conflict markers for the agent to resolve. In auto mode, a task
+whose files changed after it finished is merged and rechecked before it
+publishes; a conflict at that point holds its proposal for review.
 Repairs are bounded. After a check first fails, the agent has three repair
 attempts: the repair stops after three more failing runs of that check, or
 sooner if the same failure comes back three times in a row. Timings, temporary

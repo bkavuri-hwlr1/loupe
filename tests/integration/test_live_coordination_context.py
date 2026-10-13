@@ -18,7 +18,7 @@ from test_openai_shared_sessions import (
     _reasoning,
 )
 from test_openai_shared_sessions import _finish as _openai_finish
-from test_optimistic_shared_sessions import _assert_diverged_batch
+from test_optimistic_shared_sessions import _resolve_conflicts
 from test_shared_agent_execution import (
     ScriptedProvider,
     _assert_completed,
@@ -92,8 +92,12 @@ def test_mid_turn_peer_publication_refreshes_context_and_keeps_cas_authority(
             assert results[1].call_id == "validate_changes:"
             assert results[1].is_error is overlapping
             if overlapping:
+                # Validating merged the edit onto the peer's; they conflict.
                 assert results[1].content.startswith(
-                    "shared paths changed since their base read"
+                    "Files you edited changed in the shared checkout"
+                )
+                assert "Resolve the conflict markers in docs/a.md" in (
+                    results[1].content
                 )
             packet = _packet(results[1].content)
             seen.append(packet)
@@ -131,6 +135,14 @@ def test_mid_turn_peer_publication_refreshes_context_and_keeps_cas_authority(
                 ),
                 wait_for_peer,
                 inspect_update,
+                *(
+                    _resolve_conflicts(
+                        {"docs/a.md": "a published\nb candidate\n"},
+                        {"docs/a.md": "base a\n"},
+                    )
+                    if overlapping
+                    else ()
+                ),
             ],
         )
         _register(service, a, b)
@@ -158,12 +170,13 @@ def test_mid_turn_peer_publication_refreshes_context_and_keeps_cas_authority(
             assert not a.steps and not b.steps
 
             if overlapping:
-                _assert_diverged_batch(
-                    service,
-                    "b-task",
-                    {"docs/a.md": b"b candidate\n", "docs/private.md": b"b private\n"},
+                # Publication still compares exact bases: only the resolved
+                # merge, made against the peer's version, was published.
+                _assert_completed(service, "b-task")
+                assert (repository / "docs/a.md").read_text() == (
+                    "a published\nb candidate\n"
                 )
-                assert (repository / "docs/private.md").read_text() == "base private\n"
+                assert (repository / "docs/private.md").read_text() == "b private\n"
             else:
                 _assert_completed(service, "b-task")
                 assert (repository / "docs/b.md").read_text() == "b candidate\n"

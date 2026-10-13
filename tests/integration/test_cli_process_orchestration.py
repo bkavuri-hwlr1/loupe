@@ -55,6 +55,8 @@ class _BarrierProvider:
         self.phase = 0
         self.request: dict[str, Any] = {}
         self.evidence: dict[str, Any] = {}
+        # Conflicted files being read, by call id, to resolve them.
+        self.reading: dict[str, str] = {}
 
     def session(
         self,
@@ -84,6 +86,8 @@ class _BarrierProvider:
         )
 
     def send_tool_results(self, results: Sequence[ToolCallResult]) -> ModelTurn:
+        if self.phase >= 3:
+            return self._after_refusal(results)
         assert all(not item.is_error for item in results), results
         self.evidence[f"results_{self.phase}"] = [r.content for r in results]
         self.phase += 1
@@ -127,8 +131,85 @@ class _BarrierProvider:
             ),
         )
 
+    def _after_refusal(self, results: Sequence[ToolCallResult]) -> ModelTurn:
+        """Answer a refused finish the way an agent would.
+
+        Conflicts are resolved by keeping both sides, the published one first;
+        anything else, such as an edit set aside, is accepted.
+        """
+
+        self.phase += 1
+        reads = {r.call_id: r for r in results if r.call_id in self.reading}
+        if reads:
+            writes = tuple(
+                ToolCallRequest(
+                    name="write_file",
+                    call_id=f"resolve-write-{self.phase}-{index}",
+                    arguments={
+                        "path": self.reading[call_id],
+                        "content": _both(read.content.split(_CONTEXT)[0]),
+                    },
+                )
+                for index, (call_id, read) in enumerate(reads.items())
+            )
+            self.reading = {}
+            return ModelTurn(text="Resolving the conflicts", tool_calls=writes)
+        refused = [r.content for r in results if r.is_error]
+        self.evidence.setdefault("refusals", []).extend(refused)
+        marker = "Resolve the conflict markers in "
+        conflict = next((text for text in refused if marker in text), None)
+        if conflict is not None:
+            paths = conflict.split(marker)[1].split(" before ")[0].split(", ")
+            self.reading = {
+                f"resolve-read-{self.phase}-{index}": path
+                for index, path in enumerate(paths)
+            }
+            return ModelTurn(
+                text="Reading the conflicts",
+                tool_calls=tuple(
+                    ToolCallRequest(
+                        name="read_file", call_id=call_id, arguments={"path": path}
+                    )
+                    for call_id, path in self.reading.items()
+                ),
+            )
+        return ModelTurn(
+            text="",
+            tool_calls=(
+                ToolCallRequest(
+                    name="finish_task",
+                    call_id=f"refinish-{self.phase}",
+                    arguments={
+                        "answer": "Prepared the requested edits.",
+                        "summary": "edited",
+                    },
+                ),
+            ),
+        )
+
     def record_tool_results(self, results: Sequence[ToolCallResult]) -> None:
         self.evidence["terminal_results"] = [result.content for result in results]
+
+
+def _both(text: str) -> str:
+    """Resolve every conflict by keeping the published side, then ours."""
+
+    lines, ours, theirs, part = [], [], [], None
+    for line in text.splitlines(keepends=True):
+        if line.startswith("<<<<<<< "):
+            part = ours
+        elif line.startswith("||||||| "):
+            part = []
+        elif line.startswith("=======") and part is not None:
+            part = theirs
+        elif line.startswith(">>>>>>> "):
+            lines += theirs + ours
+            ours, theirs, part = [], [], None
+        elif part is not None:
+            part.append(line)
+        else:
+            lines.append(line)
+    return "".join(lines)
 
 
 def _daemon_entry() -> None:
@@ -381,7 +462,7 @@ def test_two_cli_processes_publish_disjoint_edits_and_resume(
 
 
 @pytest.mark.parametrize("winner", ["a", "b"])
-def test_two_cli_processes_retain_entire_conflicting_batch(
+def test_two_cli_processes_merge_a_conflicting_batch(
     cluster: _Cluster, winner: str, git_run: Callable[..., str]
 ) -> None:
     before = [
@@ -402,23 +483,21 @@ def test_two_cli_processes_retain_entire_conflicting_batch(
     cluster.release(winner)
     assert cluster.settled(winner)["state"] == "completed"
     cluster.release(loser_name)
+    # The loser's edits were merged onto the winner's. Its shared line
+    # conflicted, so it resolved that, keeping both, and then published.
     loser = cluster.settled(loser_name)
-    assert loser["state"] == "failed", loser
-    assert (cluster.repository / "docs/shared.md").read_text() == f"from {winner}\n"
+    assert loser["state"] == "completed", loser
+    assert (cluster.repository / "docs/shared.md").read_text() == (
+        f"from {winner}\nfrom {loser_name}\n"
+    )
     assert (cluster.repository / f"docs/{winner}.md").read_text() == f"new {winner}\n"
     assert (
         cluster.repository / f"docs/{loser_name}.md"
-    ).read_text() == f"base {loser_name}\n"
-    proposal = cluster.rpc("task.diff", task_id=loser["task_id"])
-    assert set(proposal["paths"]) == {"docs/shared.md", f"docs/{loser_name}.md"}
-    assert f"+from {loser_name}" in proposal["diff"]
-    assert f"+new {loser_name}" in proposal["diff"]
-    cluster.send(loser_process, "/diff")
+    ).read_text() == f"new {loser_name}\n"
     cluster.send(loser_process, "/exit")
     assert loser_process.wait(timeout=10) == 0
     output = (cluster.root / f"{loser_name}.log").read_text()
-    assert "PATH_BASE_MISMATCH" in output
-    assert f"from {loser_name}" in output and f"new {loser_name}" in output
+    assert "docs/shared.md: conflict with newer changes" in output
     assert before == [
         git_run(cluster.repository, *args) for args in (("show-ref",), ("write-tree",))
     ]
