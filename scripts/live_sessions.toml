@@ -1,0 +1,71 @@
+# Experiments for scripts/live_sessions.py: the same work done by one agent
+# and by two sessions working at once in one shared checkout.
+#
+# Each experiment names a fixture from scripts/benchmark_fixtures/ and hidden
+# acceptance tests from scripts/benchmark_acceptance/, which the agents never
+# see. The "single" arm sends every part in one prompt; the "pair" arm sends
+# each part to its own session, all started together. Prompts are single
+# lines, since the chat reads one line per prompt.
+#
+#   answer        the reply to any question an agent asks
+#   follow_up     what the operator types when a session's work was not
+#                 applied; {reason} and {prompt} are filled in
+#   max_follow_ups  how many times one part is asked again
+#   [experiments.disruption]  used by the "disrupted" scenario: once an agent
+#                 has edited edit_path, the operator appends edit_append to it
+#                 on disk; once every session has edited, the background
+#                 service is killed and restarted if crash is true
+#   [experiments.checks.NAME]  checks to configure; "{python}" in argv is
+#                 this interpreter, which has pytest
+# Bump `version` whenever the experiments, fixtures, or acceptance tests
+# change, so results from different versions are not compared.
+version = 1
+
+[[experiments]]
+id = "shop"
+fixture = "shop"
+acceptance = "shop"
+mode = "auto"
+answer = "Use your judgment and follow the request as written."
+follow_up = """
+Your earlier change was not applied ({reason}). Make it again, starting from \
+the files as they are now: {prompt}"""
+max_follow_ups = 1
+
+[[experiments.parts]]
+name = "discounts"
+prompt = """
+Add discount codes to the shop package. In src/shop/pricing.py, add \
+DISCOUNT_CODES = {"SAVE10": 10, "HALF": 50}, mapping each code to a percent \
+off, and apply_discount(amount_cents, percent), which returns the discounted \
+amount rounded down to whole cents. In src/shop/cart.py, add \
+Cart.apply_code(code): codes ignore case, an unknown code raises ValueError, \
+and a second code replaces the first. Cart.total() returns the subtotal with \
+the code's discount applied; Cart.subtotal() stays undiscounted. Add tests, \
+and add a line about the change under Unreleased in CHANGELOG.md."""
+
+[[experiments.parts]]
+name = "stock"
+prompt = """
+Add stock limits to the shop package. In src/shop/catalog.py, give Product a \
+field stock: int | None = None, where None means unlimited, add an OutOfStock \
+exception that subclasses ValueError, and add Catalog.restock(sku, quantity), \
+which adds quantity to that product's stock and leaves unlimited products \
+unlimited. In src/shop/cart.py, Cart.add must raise OutOfStock when the \
+cart's quantity of that product would exceed its stock. Add tests, and add a \
+line about the change under Unreleased in CHANGELOG.md."""
+
+[experiments.disruption]
+edit_path = "src/shop/cart.py"
+edit_append = '''
+
+
+def describe(cart: Cart) -> str:
+    """A one-line summary for logs."""
+    return f"{len(cart.lines)} line(s), subtotal {cart.subtotal()} cents"
+'''
+crash = true
+
+[experiments.checks.test]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
