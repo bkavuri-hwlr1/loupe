@@ -373,8 +373,8 @@ validates a staged private file through the existing loader, serializes
 cross-profile writes, and durably replaces the file atomically. Tests cover
 active/saved values across restart, secret redaction, concurrent updates and
 invalid-value refusal without changing the original bytes/inode/timestamp,
-including malformed typed values and mixed table arrays. TOML dotted/quoted
-keys support digit-prefixed server names and punctuated header names.
+including malformed typed values, unsupported value types and mixed table arrays.
+TOML dotted/quoted keys support digit-prefixed server names and punctuated header names.
 Credential-looking keys are refused, except MCP header keys whose value is an
 environment-variable name; the loader still validates the complete candidate.
 

@@ -63,8 +63,8 @@ the remaining planned capabilities are listed below.
   source provenance, redacting secret-bearing values and distinguishing saved
   changes pending restart. `config set KEY VALUE` validates with the existing
   loader and durably replaces the private TOML file atomically. Invalid edits
-  preserve its bytes and metadata, including malformed typed values; TOML
-  dotted/quoted keys support MCP names and header punctuation. Concurrent
+  preserve its bytes and metadata, including malformed or unsupported typed
+  values; TOML dotted/quoted keys support MCP names and header punctuation. Concurrent
   profile setters retain each
   other's updates. Config files are shared by profiles and edits activate after
   daemon restart. Formatting/comments are rewritten on successful edits.

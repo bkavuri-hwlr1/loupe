@@ -317,7 +317,12 @@ def _toml(document: dict[str, Any]) -> str:
 
 def _toml_value(value: object) -> str:
     if isinstance(value, (str, bool, int, list)):
-        return json.dumps(value, ensure_ascii=False)
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError) as error:
+            raise _invalid(
+                "configuration value has an unsupported TOML type"
+            ) from error
     raise _invalid("configuration value has an unsupported TOML type")
 
 
