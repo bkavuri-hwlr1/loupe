@@ -455,6 +455,19 @@ Live tasks, held proposals, unfinished finalization, uncertain checks, and
 unresolved publication or cleanup are excluded. Pruning adds an audit event
 to each affected task; an interrupted compaction can safely be repeated.
 
+`loupe config show` lists the active daemon's effective settings with their
+source (`default`, `config file`, or selected `profile`). Saved changes pending
+restart appear separately. Secret-bearing values, including MCP environment
+values, are redacted. `loupe config set agent.commands allow` validates a key
+and text or TOML value before atomically saving it. For arrays, quote the TOML
+expression: `loupe config set agent.web_domains '["docs.python.org"]'`.
+Keys follow TOML dotted-key notation, including quoted parts for names containing
+punctuation. Invalid values leave the original file untouched; `show` keeps the
+active values visible even if the saved file is invalid. Successful edits rewrite TOML
+formatting and comments; run `loupe daemon restart` to activate saved settings.
+The configuration file is shared by profiles; the selected profile identifies
+the daemon whose current values are shown.
+
 The daemon protocol uses versioned, four-byte length-prefixed JSON messages over
 an owner-only Unix domain socket. The first supported platforms are macOS and
 Linux. Windows transport and worktree behavior are deferred.

@@ -59,6 +59,15 @@ the remaining planned capabilities are listed below.
   remain inspectable. Held proposals, live claims, unfinished checkpoints,
   uncertain checks and unresolved recovery journals prevent pruning. Each
   affected task receives a durable audit event; repeating cleanup is safe.
+- `loupe config show` reports the active daemon's effective settings and frozen
+  source provenance, redacting secret-bearing values and distinguishing saved
+  changes pending restart. `config set KEY VALUE` validates with the existing
+  loader and durably replaces the private TOML file atomically. Invalid edits
+  preserve its bytes and metadata, including malformed typed values; TOML
+  dotted/quoted keys support MCP names and header punctuation. Concurrent
+  profile setters retain each
+  other's updates. Config files are shared by profiles and edits activate after
+  daemon restart. Formatting/comments are rewritten on successful edits.
 - Repository registration that derives a stable local or normalized-remote
   coordination identity.
 - Durable repository heads, task records, claims, scope rows, events, outbox
@@ -454,9 +463,7 @@ remaining harness gaps into packages that separate sessions can run at once.
    Symlinks and binary file operations still need dedicated recovery semantics.
 3. Add an independent review of the exact diff before publication, at the
    session-aware harness boundary. Plan mode and bounded repair already exist.
-4. Add config inspection and editing
-   to the CLI.
-5. Build the opt-in knowledge/RAG and graph planes on top of that durable task
+4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
    lifecycle, with `none` and exact-search fallbacks before optional vector
    acceleration.
 

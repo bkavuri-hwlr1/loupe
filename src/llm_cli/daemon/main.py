@@ -17,6 +17,7 @@ from typing import IO
 from llm_cli import PROTOCOL_VERSION, __version__
 from llm_cli.build import code_identity
 from llm_cli.config.loader import load_settings
+from llm_cli.config.operations import load_settings_snapshot
 from llm_cli.daemon.service import DaemonService
 from llm_cli.errors import LlmCoordError
 from llm_cli.ids import new_id
@@ -61,8 +62,18 @@ async def run_daemon(paths: AppPaths) -> int:
     boot_id = new_id("boot")
     # Snapshot the sources this daemon loaded; later edits must not change it.
     identity = code_identity()
-    settings = load_settings(paths.config_file, profile_id=paths.profile_id)
-    service = DaemonService(paths, settings, shutdown, boot_id=boot_id)
+    settings, config_sources = load_settings_snapshot(
+        paths.config_file,
+        profile_id=paths.profile_id,
+        loader=load_settings,
+    )
+    service = DaemonService(
+        paths,
+        settings,
+        shutdown,
+        boot_id=boot_id,
+        config_sources=config_sources,
+    )
     server = RpcServer(paths.socket, paths.profile_id, service.handle)
     reconcile_task: asyncio.Task[None] | None = None
 
