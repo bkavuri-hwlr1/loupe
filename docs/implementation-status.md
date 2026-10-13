@@ -399,6 +399,9 @@ since the tools cannot do otherwise.
 
 ## Next executable slice
 
+[`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
+remaining harness gaps into packages that separate sessions can run at once.
+
 1. Reconcile pending edits with files that change underneath them, whether
    another session published them or someone edited them outside Loupe:
    rebase the edits onto the current version with a three-way merge from
