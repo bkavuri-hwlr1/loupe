@@ -1629,7 +1629,7 @@ llm graph rebuild
 ```text
 llm db status
 llm db check
-llm db backup [DEST]
+loupe db backup [--out DIR]
 llm db restore BACKUP
 llm db migrate
 llm gc [--dry-run]

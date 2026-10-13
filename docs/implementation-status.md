@@ -48,6 +48,10 @@ the remaining planned capabilities are listed below.
 - Three independently migrated SQLite databases: control, knowledge, and
   vectors. The control database uses WAL, `synchronous=FULL`, transactional
   checksummed migrations, integrity checking, and an atomic online-backup API.
+  `loupe db backup [--out DIR]` exposes verified online snapshots through the
+  daemon, with a fresh timestamped `0700` directory, three `0600` database
+  files, and printed integrity/hash/schema metadata. The running-daemon
+  integration test confirms the latest committed task survives the snapshot.
 - Repository registration that derives a stable local or normalized-remote
   coordination identity.
 - Durable repository heads, task records, claims, scope rows, events, outbox
@@ -443,7 +447,7 @@ remaining harness gaps into packages that separate sessions can run at once.
    Symlinks and binary file operations still need dedicated recovery semantics.
 3. Add an independent review of the exact diff before publication, at the
    session-aware harness boundary. Plan mode and bounded repair already exist.
-4. Add `db backup`, config inspection and editing, and retention maintenance
+4. Add config inspection and editing, and retention maintenance
    to the CLI.
 5. Build the opt-in knowledge/RAG and graph planes on top of that durable task
    lifecycle, with `none` and exact-search fallbacks before optional vector
