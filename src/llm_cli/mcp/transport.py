@@ -20,7 +20,12 @@ from collections.abc import Iterator, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
-from llm_cli.mcp.client import _MAX_MESSAGE_BYTES, McpClient, McpError
+from llm_cli.mcp.client import (
+    _MAX_MESSAGE_BYTES,
+    McpClient,
+    McpError,
+    _validate_message,
+)
 
 # getaddrinfo has no cancellation API. At most four daemon workers may remain
 # resolving after callers time out; subsequent calls wait only their deadline.
@@ -302,10 +307,8 @@ class HttpClient(McpClient):
                 if line.startswith(b"data:"):
                     data.append(line[5:].lstrip(b" "))
                 elif not line and data:
-                    message = json.loads(b"\n".join(data))
+                    message = _validate_message(json.loads(b"\n".join(data)))
                     data.clear()
-                    if not isinstance(message, dict):
-                        raise McpError("invalid SSE message", kind="protocol")
                     if isinstance(message.get("method"), str):
                         if "id" in message:
                             reply: dict[str, object] = {
@@ -327,10 +330,9 @@ class HttpClient(McpClient):
 
     @staticmethod
     def _response(message: object, request_id: object) -> dict[str, Any]:
+        message = _validate_message(message)
         if (
-            not isinstance(message, dict)
-            or message.get("jsonrpc") != "2.0"
-            or type(message.get("id")) is not type(request_id)
+            type(message.get("id")) is not type(request_id)
             or message.get("id") != request_id
         ):
             raise McpError("invalid JSON-RPC response", kind="protocol")

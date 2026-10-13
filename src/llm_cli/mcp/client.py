@@ -18,7 +18,7 @@ import subprocess
 import threading
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import IO, Any
 
@@ -30,6 +30,7 @@ _SUPPORTED_VERSIONS = frozenset(
     {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
 )
 _MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+_MAX_MESSAGE_DEPTH = 64
 _MAX_LIST_PAGES = 20
 _MAX_LIST_ITEMS = 128
 _EXIT_GRACE_SECONDS = 2.0
@@ -46,6 +47,35 @@ class McpError(Exception):
     def __init__(self, message: str, *, kind: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+def _validate_message(message: object) -> dict[str, Any]:
+    """Bound JSON-RPC structure independently of Python's decoder limits.
+
+    A stack of iterators uses memory proportional to nesting, not the number
+    of values. Validate the whole message before any schema or result reaches
+    recursive formatting and secret screening.
+    """
+
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+        raise McpError("the server sent no JSON-RPC object", kind="protocol")
+    stack: list[Iterator[Any]] = [iter(message.values())]
+    while stack:
+        try:
+            value = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+            continue
+        if isinstance(value, dict):
+            children = iter(value.values())
+        elif isinstance(value, list):
+            children = iter(value)
+        else:
+            continue
+        if len(stack) >= _MAX_MESSAGE_DEPTH:
+            raise McpError("the server sent deeply nested JSON", kind="protocol")
+        stack.append(children)
+    return message
 
 
 class _Pending:
@@ -285,8 +315,11 @@ class StdioClient(McpClient):
                     break
                 except ValueError:
                     continue  # Stray output is not a message.
-                if isinstance(message, dict):
-                    self._dispatch(message)
+                try:
+                    self._dispatch(_validate_message(message))
+                except McpError as exc:
+                    self._fail_pending(exc)
+                    break
         except (OSError, ValueError):
             pass
         with self._lock:

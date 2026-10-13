@@ -20,7 +20,7 @@ from llm_cli.agent.shared_tools import SharedToolBroker
 from llm_cli.config.loader import load_settings
 from llm_cli.config.models import McpServerConfig
 from llm_cli.errors import LlmCoordError
-from llm_cli.mcp.client import McpError, StdioClient
+from llm_cli.mcp.client import McpError, StdioClient, _validate_message
 from llm_cli.mcp.tools import McpToolset
 from llm_cli.mcp.transport import HttpClient
 
@@ -75,6 +75,8 @@ def test_the_client_handshakes_lists_and_calls_tools(tmp_path: Path) -> None:
         ("old", "protocol"),
         ("silent", "timeout"),
         ("deep-json", "protocol"),
+        ("deep-dict", "protocol"),
+        ("non-object", "protocol"),
     ],
 )
 def test_servers_that_cannot_start_say_how(
@@ -126,6 +128,77 @@ def test_tools_are_offered_under_prefixed_names_with_labels(tmp_path: Path) -> N
         ]
     finally:
         toolset.close()
+
+
+def test_json_rpc_nesting_limit_is_independent_of_the_decoder() -> None:
+    nested: dict[str, object] = {"leaf": "text"}
+    for _ in range(62):
+        nested = {"nested": nested}
+    message = {"jsonrpc": "2.0", "id": 1, "result": nested}
+    assert _validate_message(message) is message  # 64 containers including root.
+    message["result"] = {"nested": nested}
+    with pytest.raises(McpError) as failure:
+        _validate_message(message)
+    assert failure.value.kind == "protocol"
+    with pytest.raises(McpError):
+        _validate_message([{"jsonrpc": "2.0", "result": {}}])
+
+
+def test_stdio_nested_results_never_reach_formatting(tmp_path: Path) -> None:
+    toolset, _ = _toolset(tmp_path)
+    try:
+        text, error = toolset.call("mcp__fake__deep", {}, max_bytes=1_000)
+        assert error and "did not follow the protocol" in text
+        assert "must not reach formatting" not in text
+    finally:
+        toolset.close()
+
+
+@pytest.mark.parametrize("transport", ["stdio", "http"])
+def test_nested_tool_schemas_are_rejected_before_screening(
+    tmp_path: Path, transport: str
+) -> None:
+    with http_mcp_server("deep-schema") as http_server:
+        config = (
+            _config(env=(("FAKE_MCP_MODE", "deep-schema"),))
+            if transport == "stdio"
+            else _config(command=(), url=http_server.url)
+        )
+        toolset, events = _toolset(tmp_path, config)
+        try:
+            assert toolset.names() == ()
+            assert events == [
+                (
+                    "mcp.server.failed",
+                    {"server": "fake", "reason": "it did not follow the protocol"},
+                )
+            ]
+        finally:
+            toolset.close()
+
+
+@pytest.mark.parametrize("mode", ["deep-result", "deep-sse-result"])
+def test_http_nested_results_never_reach_metadata_or_prompt_screening(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    with http_mcp_server(mode) as http_server:
+        toolset, _ = _toolset(tmp_path, _config(command=(), url=http_server.url))
+        try:
+            for operation, arguments in (
+                ("echo", {"text": "hi"}),
+                ("resources_list", {}),
+                ("resources_read", {"uri": "test://guide"}),
+                ("prompts_list", {}),
+                ("prompts_get", {"name": "review"}),
+            ):
+                text, error = toolset.call(
+                    f"mcp__fake__{operation}", arguments, max_bytes=1_000
+                )
+                assert error and "did not follow the protocol" in text
+                assert "must not reach formatting" not in text
+        finally:
+            toolset.close()
 
 
 def test_output_is_labelled_screened_and_capped(tmp_path: Path) -> None:

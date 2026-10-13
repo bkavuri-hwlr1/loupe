@@ -32,6 +32,7 @@ PAGES = [
         {"name": "roots", "description": "Ask the client for its roots."},
         {"name": "big", "description": "Return a lot of text."},
         {"name": "image", "description": "Return an image."},
+        {"name": "deep", "description": "Return nested structured data."},
         {"name": "bad name!", "description": "Not a valid tool name."},
         {
             "name": "huge",
@@ -80,15 +81,34 @@ def call(name: str, arguments: dict) -> dict:
         return text("x" * 100_000)
     if name == "image":
         return {"content": [{"type": "image", "data": "AAAA", "mimeType": "image/png"}]}
+    if name == "deep":
+        nested: dict = {"text": "must not reach formatting"}
+        for _ in range(128):
+            nested = {"nested": nested}
+        return {"structuredContent": nested}
     raise KeyError(name)
 
 
 def main() -> None:
     if MODE == "crash":
         sys.exit(3)
-    if MODE == "deep-json":
-        read()  # Wait for initialize, so there is a pending request to fail.
-        sys.stdout.write("[" * 20_000 + "0" + "]" * 20_000 + "\n")
+    if MODE in {"deep-json", "deep-dict", "non-object"}:
+        message = read()  # Wait until there is a pending request to fail.
+        if MODE == "deep-json":
+            payload = "[" * 20_000 + "0" + "]" * 20_000
+        elif MODE == "deep-dict":
+            payload = (
+                '{"jsonrpc":"2.0","id":'
+                + str(message["id"])
+                + ',"result":'
+                + '{"nested":' * 20_000
+                + "{}"
+                + "}" * 20_000
+                + "}"
+            )
+        else:
+            payload = "[]"
+        sys.stdout.write(payload + "\n")
         sys.stdout.flush()
         time.sleep(5)
         return
@@ -109,6 +129,11 @@ def main() -> None:
         elif method == "tools/list":
             page = int(message.get("params", {}).get("cursor") or 0)
             result = {"tools": PAGES[page]}
+            if MODE == "deep-schema":
+                nested: dict = {"type": "object"}
+                for _ in range(128):
+                    nested = {"properties": {"nested": nested}}
+                result = {"tools": [{"name": "deep", "inputSchema": nested}]}
             if page + 1 < len(PAGES):
                 result["nextCursor"] = str(page + 1)
         elif method == "tools/call":

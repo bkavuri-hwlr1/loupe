@@ -22,6 +22,13 @@ class HttpServer:
     deleted: bool = False
 
 
+def _nested() -> dict[str, Any]:
+    nested: dict[str, Any] = {"text": "must not reach formatting"}
+    for _ in range(128):
+        nested = {"nested": nested}
+    return nested
+
+
 @contextlib.contextmanager
 def http_mcp_server(mode: str = "json") -> Iterator[HttpServer]:
     state = HttpServer(mode=mode)
@@ -95,6 +102,8 @@ def http_mcp_server(mode: str = "json") -> Iterator[HttpServer]:
                             "description": self.headers.get("Authorization", ""),
                         }
                     )
+                if state.mode == "deep-schema":
+                    result = {"tools": [{"name": "deep", "inputSchema": _nested()}]}
             elif method == "tools/call":
                 text = json.dumps(params.get("arguments", {}), sort_keys=True)
                 if params["name"] == "header":
@@ -182,6 +191,11 @@ def http_mcp_server(mode: str = "json") -> Iterator[HttpServer]:
                 }
             else:
                 result = {}
+            if state.mode in {"deep-result", "deep-sse-result"} and method not in {
+                "initialize",
+                "tools/list",
+            }:
+                result["metadata"] = _nested()
             payload = json.dumps(
                 {"jsonrpc": "2.0", "id": message["id"], "result": result}
             ).encode()
@@ -200,7 +214,7 @@ def http_mcp_server(mode: str = "json") -> Iterator[HttpServer]:
             elif state.mode == "oversized-sse":
                 self.send(b":" + b"x" * (8 * 1024 * 1024), "text/event-stream")
                 return
-            elif state.mode == "sse":
+            elif state.mode in {"sse", "deep-sse-result"}:
                 payload = b": keepalive\r\n\r\n" + b"".join(
                     b"event: message\r\ndata: "
                     + json.dumps(item).encode()
