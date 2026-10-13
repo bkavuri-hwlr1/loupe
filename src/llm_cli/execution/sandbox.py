@@ -225,12 +225,12 @@ def _seatbelt(policy: SandboxPolicy, argv: Sequence[str]) -> list[str]:
     parameters: list[str] = []
     rules: list[str] = []
 
-    def filters(prefix: str, paths: Sequence[Path]) -> str:
+    def filters(prefix: str, paths: Sequence[Path], kind: str = "subpath") -> str:
         names = []
         for index, path in enumerate(paths):
             name = f"{prefix}_{index}"
             parameters.extend(("-D", f"{name}={path}"))
-            names.append(f'(subpath (param "{name}"))')
+            names.append(f'({kind} (param "{name}"))')
         return " ".join(names)
 
     if policy.protected:
@@ -244,6 +244,15 @@ def _seatbelt(policy: SandboxPolicy, argv: Sequence[str]) -> list[str]:
             f"(allow network-bind network-inbound (local unix-socket {writable}))"
         )
         rules.append(f"(allow network-outbound (remote unix-socket {writable}))")
+        # A writable path can sit inside a protected one, as command snapshots
+        # sit in Loupe's data directory. Tools such as pytest stat the
+        # directories above their working directory and stop at "operation
+        # not permitted", so those directories, and only they, can be stat'ed.
+        # Their contents stay unreadable and unlisted.
+        ancestors = sorted({a for path in policy.writable for a in path.parents})
+        rules.append(
+            f"(allow file-read-metadata {filters('ANCESTOR', ancestors, 'literal')})"
+        )
     profile = _SEATBELT_BASE + "\n".join(rules) + "\n"
     return [
         _SANDBOX_EXEC,
