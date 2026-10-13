@@ -38,8 +38,10 @@ async def setup(
     code: str | None = None,
     required: bool = True,
     timeout: int = 10,
+    registered: bool = False,
 ) -> dict[str, str]:
-    _register(service, provider)
+    if not registered:
+        _register(service, provider)
     service.initialize()
     await service.handle(_request("repo.add", {"path": str(root)}))
     credentials = await _open_session(service, root, provider)
@@ -176,9 +178,7 @@ def test_review_can_apply_and_undo_refuses_external_changes(
     asyncio.run(scenario())
 
 
-def _failing_worktrees(
-    monkeypatch: pytest.MonkeyPatch, failures: int
-) -> list[str]:
+def _failing_worktrees(monkeypatch: pytest.MonkeyPatch, failures: int) -> list[str]:
     """Make building a check's snapshot fail in Git, ``failures`` times."""
 
     from llm_cli.execution import checks
@@ -363,7 +363,7 @@ def test_cancel_running_check_preserves_checkout(
     asyncio.run(scenario())
 
 
-def test_source_baseline_change_invalidates_check_evidence(
+def test_apply_refreshes_stale_source_check_evidence(
     tmp_path: Path,
     repository_factory: Callable[..., Path],
     service_factory: Callable[..., DaemonService],
@@ -386,9 +386,11 @@ def test_source_baseline_change_invalidates_check_evidence(
         await await_task(service, root, creds)
         assert service.workflow.checks("task")[0]["state"] == "passed"
         (root / "dependency.py").write_text("new dependency\n")
-        with pytest.raises(LlmCoordError, match="stale"):
-            await service.handle(_request("task.apply", {"task_id": "task"}))
-        assert (root / "a.py").read_text() == "value = 1\n"
+        applied = await service.handle(_request("task.apply", {"task_id": "task"}))
+        assert applied["state"] == "published"
+        assert (root / "a.py").read_text() == "value = 2\n"
+        assert len(service.workflow.checks("task")) == 2
+        assert service.workflow.checks("task")[-1]["state"] == "passed"
 
     asyncio.run(scenario())
 
@@ -595,8 +597,9 @@ def test_dirty_untracked_and_runtime_inputs_are_private(
         assert (root / "runtime/input.txt").read_text() == "copied"
         assert not (root / "runtime/setup.txt").exists()
         (root / "runtime/input.txt").write_text("changed dependency")
-        with pytest.raises(LlmCoordError, match="stale"):
+        with pytest.raises(LlmCoordError, match="Required checks did not pass"):
             await service.handle(_request("task.apply", {"task_id": "task"}))
+        assert service.workflow.checks("task")[-1]["state"] == "failed"
 
     asyncio.run(scenario())
 
@@ -884,5 +887,186 @@ def test_interrupted_snapshot_cleanup_uses_recorded_worktree(
         assert unrelated.exists()
         assert (root / "a.py").read_text() == "value = 2\n"
         cleanup_interrupted_checks(service.store, managed_root)
+
+    asyncio.run(scenario())
+
+
+_MERGE_BASE = "left = 1\n" + "# separator\n" * 8 + "right = 1\n"
+
+
+def held_provider(task_id: str, content: str) -> ScriptedProvider:
+    return ScriptedProvider(
+        task_id,
+        [
+            _tools(
+                _call("read_file", path="a.py"),
+                _call("write_file", path="a.py", content=content),
+            ),
+            _finish(),
+        ],
+    )
+
+
+async def held_change(
+    service: DaemonService,
+    root: Path,
+    task_id: str,
+    content: str,
+    *,
+    code: str | None = None,
+    provider: ScriptedProvider | None = None,
+) -> None:
+    registered = provider is not None
+    provider = provider or held_provider(task_id, content)
+    creds = await setup(
+        service, root, provider, review=True, code=code, registered=registered
+    )
+    await await_task(service, root, creds, task_id)
+    assert service._task_view(task_id)["state"] == "awaiting_review"
+
+
+@pytest.mark.parametrize("reject_merged", [False, True])
+def test_apply_merges_two_held_sessions_and_checks_current_result(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    reject_merged: bool,
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": _MERGE_BASE})
+        service = service_factory(tmp_path)
+        first = _MERGE_BASE.replace("left = 1", "left = 2")
+        second = _MERGE_BASE.replace("right = 1", "right = 2")
+        both = first.replace("right = 1", "right = 2")
+        code = "from pathlib import Path; text=Path('a.py').read_text(); print(text)"
+        if reject_merged:
+            code += "; assert not ('left = 2' in text and 'right = 2' in text)"
+        providers = (
+            held_provider("first-session", first),
+            held_provider("second-session", second),
+        )
+        _register(service, *providers)
+        await held_change(
+            service, root, "first", first, code=code, provider=providers[0]
+        )
+        await held_change(
+            service, root, "second", second, code=code, provider=providers[1]
+        )
+        await service.handle(_request("task.apply", {"task_id": "first"}))
+        if reject_merged:
+            with pytest.raises(LlmCoordError, match="Required checks did not pass"):
+                await service.handle(_request("task.apply", {"task_id": "second"}))
+            assert (root / "a.py").read_text() == first
+            assert service.workflow.checks("second")[-1]["state"] == "failed"
+        else:
+            applied = await service.handle(
+                _request("task.apply", {"task_id": "second"})
+            )
+            assert applied["state"] == "published"
+            assert (root / "a.py").read_text() == both
+            assert len(service.workflow.checks("second")) == 2
+            with service.store.connection() as con:
+                output = con.execute(
+                    "SELECT output FROM check_runs WHERE task_id='second' "
+                    "ORDER BY created_at DESC,run_id DESC LIMIT 1"
+                ).fetchone()[0]
+            assert both in output
+            await service.handle(_request("task.undo", {"task_id": "second"}))
+            assert (root / "a.py").read_text() == first
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("change", ["overlap", "delete", "binary", "symlink"])
+@pytest.mark.parametrize("allow_unverified", [False, True])
+def test_apply_refuses_changed_unmergeable_files_without_partial_writes(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    change: str,
+    allow_unverified: bool,
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": _MERGE_BASE})
+        service = service_factory(tmp_path)
+        await held_change(
+            service, root, "task", _MERGE_BASE.replace("left = 1", "left = 2")
+        )
+        target = root / "a.py"
+        if change == "delete":
+            target.unlink()
+        elif change == "binary":
+            target.write_bytes(b"\xff\x00")
+        elif change == "symlink":
+            target.unlink()
+            target.symlink_to("other.py")
+        else:
+            target.write_text(_MERGE_BASE.replace("left = 1", "left = 3"))
+        before = target.read_bytes() if target.is_file() else None
+        with pytest.raises(LlmCoordError, match=r"Conflict at a\.py.*change again"):
+            await service.handle(
+                _request(
+                    "task.apply",
+                    {
+                        "task_id": "task",
+                        "allow_unverified": allow_unverified,
+                    },
+                )
+            )
+        assert (target.read_bytes() if target.is_file() else None) == before
+        assert target.is_symlink() == (change == "symlink")
+        assert service.workflow.get("task")["action_task_id"] is None
+
+    asyncio.run(scenario())
+
+
+def test_apply_runs_checks_outside_lock_and_refuses_checkout_changed_during_check(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    from llm_cli.execution.checks import CheckRunner
+
+    async def scenario() -> None:
+        root = repository_factory(
+            tmp_path, {"a.py": _MERGE_BASE, "dependency.py": "old"}
+        )
+        service = service_factory(tmp_path)
+        await held_change(
+            service,
+            root,
+            "task",
+            _MERGE_BASE.replace("left = 1", "left = 2"),
+            code="print('passed')",
+        )
+        (root / "a.py").write_text(_MERGE_BASE.replace("right = 1", "right = 2"))
+        before = (root / "a.py").read_text()
+        original = CheckRunner.run
+
+        def moving_check(self: CheckRunner, name: str) -> Any:
+            acquired: list[bool] = []
+
+            def acquire() -> None:
+                got = self.lock.acquire(timeout=1)
+                acquired.append(got)
+                if got:
+                    self.lock.release()
+
+            thread = threading.Thread(target=acquire)
+            thread.start()
+            thread.join(2)
+            assert acquired == [True]
+            result = original(self, name)
+            (root / "dependency.py").write_text("new")
+            return result
+
+        monkeypatch.setattr(CheckRunner, "run", moving_check)
+        with pytest.raises(LlmCoordError, match="stale"):
+            await service.handle(_request("task.apply", {"task_id": "task"}))
+        assert (root / "a.py").read_text() == before
+        assert service.workflow.get("task")["action_task_id"] is None
 
     asyncio.run(scenario())

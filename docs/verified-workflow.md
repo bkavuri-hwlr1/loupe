@@ -117,9 +117,15 @@ for review and release their work claim. The user can continue with another
 prompt. Use `loupe task discard TASK_ID` to discard a retained proposal.
 
 Check results are bound to the exact source baseline, copied runtime inputs, pending edits, and frozen
-configuration. A source or copied dependency change makes previous results stale. To obtain fresh
-verification, ask for the change again in the conversation; `loupe task retry` does not apply to
-conversation tasks and refuses them. To explicitly apply despite failed or missing checks:
+configuration. A source or copied dependency change makes previous results stale.
+`/apply` merges a held proposal onto the current checkout and reruns missing or
+stale required checks on that exact result. Checks run in disposable snapshots
+without holding the publication lock; the daemon revalidates the checkout and
+check evidence before journaled publication. If the checkout changes during
+checks, retry apply. Overlapping edits, deleted files, and binary or symlink
+changes refuse the entire proposal, name its paths, and require a fresh change
+from the session. Conflict markers are never applied. `loupe task retry` does
+not apply to conversation tasks. To explicitly apply despite failed or missing checks:
 
 ```console
 loupe task apply TASK_ID --allow-unverified
@@ -137,7 +143,8 @@ is marked as an error. See the [privacy limits](../SECURITY.md#secrets-and-priva
 ## Undo and recovery
 
 Undo creates a new inverse publication. Every affected file must still match
-what the original task published. Otherwise the entire undo is refused, leaving
+what the original task published. Undo of a merged apply preserves the checkout
+changes that existed before that apply. Otherwise the entire undo is refused, leaving
 the checkout unchanged. Task-created directories are removed only when empty;
 subsequent additions are preserved. Undo does not run checks automatically.
 HEAD, the index, and user refs remain unchanged.

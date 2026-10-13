@@ -670,6 +670,37 @@ class CheckRunner:
         )
 
 
+def check_retained_proposal(
+    workflow: TaskWorkflow,
+    row: dict[str, Any],
+    root: Path,
+    files: tuple[BatchFile, ...],
+) -> str | None:
+    """Refresh required evidence for a manual apply's captured candidate.
+
+    The caller releases its publication lock before invoking this helper and
+    revalidates both the candidate bases and evidence under that lock afterward.
+    """
+
+    def emit(event: str, payload: dict[str, object]) -> None:
+        workflow.store.record_task_event(
+            claim_id=None, task_id=row["task_id"], event_type=event, payload=payload
+        )
+
+    runner = CheckRunner(
+        workflow,
+        row,
+        root,
+        workflow.store.path.parent / "check-worktrees",
+        lambda: files,
+        lambda: False,
+        emit,
+        workflow.publisher.lock,
+    )
+    outcome = runner.gate()
+    return outcome.content if outcome else None
+
+
 def supervised_run(
     argv: list[str],
     *,

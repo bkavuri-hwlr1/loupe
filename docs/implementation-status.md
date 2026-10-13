@@ -160,6 +160,13 @@ the remaining planned capabilities are listed below.
   agent's own edits for review. Changes that cannot be merged, such as a file
   that became binary or a symlink, still refuse the whole batch.
 
+- Held proposals use the same three-way text merge when manually applied.
+  Required checks rerun against the merged candidate outside the publication
+  lock, followed by exact-base and evidence validation before journaled apply.
+  Conflicting or unmergeable paths refuse the whole batch, including with
+  `--allow-unverified`; undo remains exact-base and preserves the preceding
+  checkout changes.
+
 ## Current execution boundary
 
 `llm-coord chat --repo /path/to/repository --scope docs/` uses shared checkout

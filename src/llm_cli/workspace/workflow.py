@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from llm_cli.agent.modes import publication_mode, validate_agent_mode
+from llm_cli.agent.source_policy import ensure_safe_content
 from llm_cli.coordination.coordinator import RepositoryCoordinator
+from llm_cli.errors import LlmCoordError
 from llm_cli.ids import new_id
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.batches import (
@@ -26,6 +28,7 @@ from llm_cli.workspace.batches import (
     result_identity,
 )
 from llm_cli.workspace.identity import DIRECTORY_MODE, ObjectKind, read_identified_path
+from llm_cli.workspace.merge import has_conflict_markers, merge_text
 
 
 def encode_files(files: tuple[BatchFile, ...]) -> str:
@@ -167,7 +170,8 @@ class TaskWorkflow:
         default_mode = session.agent_mode if session else "auto"
         agent_mode = validate_agent_mode(
             launch.parameters.get("agent_mode", default_mode)
-            if launch else default_mode
+            if launch
+            else default_mode
         )
         with self.store.connection() as con:
             config = con.execute(
@@ -188,7 +192,9 @@ class TaskWorkflow:
                     task.attempt,
                     publication_mode(agent_mode)
                     if launch and "agent_mode" in launch.parameters
-                    else mode[0] if mode else publication_mode(agent_mode),
+                    else mode[0]
+                    if mode
+                    else publication_mode(agent_mode),
                     config[0] if config else "{}",
                     self.store._now(None),
                     agent_mode,
@@ -402,10 +408,102 @@ class TaskWorkflow:
     ) -> dict[str, Any]:
         with self.publisher.lock:
             self.reconcile()
-            return self._apply(task_id, undo=undo, allow_unverified=allow_unverified)
+            row = self.get(task_id)
+            # Undo and completed/recovering actions retain their exact-base
+            # semantics, and invalid actions fail before starting checks.
+            if (
+                undo
+                or row is None
+                or row["proposal_json"] is None
+                or row["action_task_id"]
+                or row["status"] not in {"awaiting_review", "cancelled"}
+                or row["agent_mode"] == "plan"
+            ):
+                return self._apply(
+                    task_id, undo=undo, allow_unverified=allow_unverified
+                )
+            task = self.store.get_task(task_id)
+            assert task is not None
+            session = self.store.get_session(task.session_id or "")
+            if session is None:
+                raise ValueError("Apply currently requires a shared-session task.")
+            workspace = self.store.get_workspace(session.workspace_id or "")
+            assert workspace is not None
+            root = Path(workspace.canonical_path)
+            files = self._merge_proposal(root, decode_files(row["proposal_json"]))
+
+        if not allow_unverified:
+            from llm_cli.execution.checks import check_retained_proposal
+
+            # Configured commands must never hold the shared publication lock.
+            failure = check_retained_proposal(self, row, root, files)
+            if failure is not None:
+                raise ValueError(failure)
+        with self.publisher.lock:
+            current = self.get(task_id)
+            if current is None or current["proposal_json"] != row["proposal_json"]:
+                raise ValueError("Proposal changed during checks; retry apply.")
+            return self._apply(
+                task_id, undo=False, allow_unverified=allow_unverified, prepared=files
+            )
+
+    @staticmethod
+    def _merge_proposal(
+        root: Path, files: tuple[BatchFile, ...]
+    ) -> tuple[BatchFile, ...]:
+        merged: list[BatchFile] = []
+        conflicts: list[str] = []
+        for f in files:
+            try:
+                current, theirs = read_identified_path(
+                    candidate_target(root, f.relative_path)
+                )
+                if has_conflict_markers(f.content):
+                    raise ValueError("unresolved merge")
+                if current == f.base:
+                    merged.append(f)
+                    continue
+                # Delete/modify, add/add and type changes require a fresh edit.
+                if (
+                    f.base.kind is not ObjectKind.REGULAR
+                    or current.kind is not ObjectKind.REGULAR
+                    or f.original is None
+                    or f.content is None
+                    or theirs is None
+                    or f.mode == DIRECTORY_MODE
+                ):
+                    raise ValueError("unmergeable change")
+                ensure_safe_content(theirs)
+                result = merge_text(f.original, f.content, theirs)
+                if result.conflicts or has_conflict_markers(result.content):
+                    raise ValueError("overlapping edits")
+                merged.append(
+                    BatchFile(
+                        f.relative_path,
+                        current,
+                        result.content,
+                        current.mode if f.mode == f.base.mode else f.mode,
+                        theirs,
+                        current.permissions,
+                    )
+                )
+            except (ValueError, OSError, RuntimeError, LlmCoordError):
+                conflicts.append(f.relative_path)
+        if conflicts:
+            raise ValueError(
+                "Conflict at "
+                + ", ".join(conflicts)
+                + "; no files changed. Ask the session to make the change again."
+            )
+        return tuple(merged)
 
     def _apply(
-        self, task_id: str, *, undo: bool, allow_unverified: bool
+        self,
+        task_id: str,
+        *,
+        undo: bool,
+        allow_unverified: bool,
+        prepared: tuple[BatchFile, ...] | None = None,
     ) -> dict[str, Any]:
         row = self.get(task_id)
         if row is None or row["proposal_json"] is None:
@@ -441,7 +539,7 @@ class TaskWorkflow:
         workspace = self.store.get_workspace(session.workspace_id or "")
         assert workspace is not None
         root = Path(workspace.canonical_path)
-        files = decode_files(row["proposal_json"])
+        files = prepared if prepared is not None else decode_files(row["proposal_json"])
         if not files:
             raise ValueError("This task has no file changes.")
         if undo:
@@ -477,9 +575,8 @@ class TaskWorkflow:
 
             if not verification_current(self.store, row, root, files):
                 raise ValueError(
-                    "Required checks are missing, failed, or stale. Ask for th"
-                    "e change again in the conversation to rerun them, or use "
-                    "--allow-unverified."
+                    "Required checks became stale during apply; retry apply, "
+                    "or use --allow-unverified."
                 )
         for f in files:
             identity, _ = read_identified_path(candidate_target(root, f.relative_path))
@@ -533,7 +630,14 @@ class TaskWorkflow:
         )
         self.ensure(child.task_id)
         self.retain(child.task_id, child.attempt, execution.execution_id, files)
-        self.update(task_id, row["attempt"], **{action_key: child.task_id})
+        self.update(
+            task_id,
+            row["attempt"],
+            **{action_key: child.task_id},
+            # Undo must revert only this applied change, retaining the newer
+            # checkout bytes that the held proposal was merged onto.
+            **({"proposal_json": encode_files(files)} if not undo else {}),
+        )
         assert claim.fencing_token is not None
         self.coordinator.reserve_shared_publication(
             execution.execution_id,
