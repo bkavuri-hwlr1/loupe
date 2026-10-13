@@ -52,6 +52,12 @@ the remaining planned capabilities are listed below.
   daemon, with a fresh timestamped `0700` directory, three `0600` database
   files, and printed integrity/hash/schema metadata. The running-daemon
   integration test confirms the latest committed task survives the snapshot.
+- `loupe db prune --older-than 30d` defaults to a dry run; `--apply` removes
+  old streaming/command/check chunks and retained check text, then runs
+  SQLite `VACUUM`. Task records, final answers, summaries and check metadata
+  remain inspectable. Held proposals, live claims, unfinished checkpoints,
+  uncertain checks and unresolved recovery journals prevent pruning. Each
+  affected task receives a durable audit event; repeating cleanup is safe.
 - Repository registration that derives a stable local or normalized-remote
   coordination identity.
 - Durable repository heads, task records, claims, scope rows, events, outbox
@@ -447,7 +453,7 @@ remaining harness gaps into packages that separate sessions can run at once.
    Symlinks and binary file operations still need dedicated recovery semantics.
 3. Add an independent review of the exact diff before publication, at the
    session-aware harness boundary. Plan mode and bounded repair already exist.
-4. Add config inspection and editing, and retention maintenance
+4. Add config inspection and editing
    to the CLI.
 5. Build the opt-in knowledge/RAG and graph planes on top of that durable task
    lifecycle, with `none` and exact-search fallbacks before optional vector
