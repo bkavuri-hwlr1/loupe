@@ -4,22 +4,25 @@ Only http and https URLs without credentials are fetched. Every address a host
 resolves to must be public, so loopback, private, link-local (including cloud
 metadata), and carrier-grade NAT addresses are refused, and the connection is
 pinned to an address that was checked, so DNS rebinding cannot redirect it.
-Redirects are checked the same way at every hop. Requests carry no cookies or
-credentials and ignore proxy settings. HTML is reduced to readable text.
+Redirects are checked the same way at every hop. A configured HTTP proxy uses
+CONNECT to the checked address, preserving target DNS pinning and TLS identity.
+Requests carry no cookies or target credentials. HTML is reduced to readable text.
 """
 
 from __future__ import annotations
 
 import http.client
 import ipaddress
+import os
 import re
 import socket
 import ssl
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from email.message import Message
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
+from urllib.request import proxy_bypass_environment  # type: ignore[attr-defined]
 
 from llm_cli import __version__
 
@@ -49,6 +52,46 @@ class Page:
 
 
 Resolver = Callable[[str, int], Sequence[str]]
+
+
+def check_proxy(url: str) -> tuple[str, int]:
+    """A trusted configuration may name an HTTP CONNECT proxy, never a page."""
+
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        raise WebFetchError("the configured web proxy is not a valid URL") from None
+    if (
+        parts.scheme != "http"
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.path not in {"", "/"}
+        or parts.query
+        or parts.fragment
+        or any(ord(char) < 33 or ord(char) == 127 for char in url)
+    ):
+        raise WebFetchError(
+            "the web proxy must be an http URL without credentials, query, or path"
+        )
+    return parts.hostname, port or 80
+
+
+def _proxy_for(
+    scheme: str,
+    host: str,
+    port: int,
+    explicit: str | None,
+    environ: Mapping[str, str],
+) -> tuple[str, int] | None:
+    bypass = environ.get("no_proxy", environ.get("NO_PROXY", ""))
+    authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    if proxy_bypass_environment(authority, {"no": bypass}):
+        return None
+    key = f"{scheme}_proxy"
+    url = explicit or environ.get(key, environ.get(key.upper(), ""))
+    return check_proxy(url) if url else None
 
 
 def public_addresses(host: str, port: int) -> list[str]:
@@ -94,6 +137,8 @@ def fetch(
     allowed: Callable[[str, str], str | None],
     resolver: Resolver = public_addresses,
     tls: ssl.SSLContext | None = None,
+    proxy: str | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> Page:
     """Fetch ``url``, following redirects.
 
@@ -102,6 +147,7 @@ def fetch(
     """
 
     context = tls or ssl.create_default_context()
+    environment = os.environ if environ is None else environ
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
         scheme, host, port = check_url(current)
@@ -111,7 +157,14 @@ def fetch(
         address = resolver(host, port)[0]
         parts = urlsplit(current)
         target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
-        connection = _connection(scheme, host, address, port, timeout, context)
+        proxy_address = _proxy_for(scheme, host, port, proxy, environment)
+        connection = (
+            _TunnelConnection(
+                scheme, host, address, port, timeout, context, proxy_address
+            )
+            if proxy_address
+            else _connection(scheme, host, address, port, timeout, context)
+        )
         try:
             connection.request(
                 "GET",
@@ -197,6 +250,40 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def connect(self) -> None:
         sock = socket.create_connection((self._address, self.port), self.timeout)
         self.sock = self._tls.wrap_socket(sock, server_hostname=self.host)
+
+
+class _TunnelConnection(http.client.HTTPConnection):
+    """Connect through an explicitly configured proxy to the pinned target IP."""
+
+    def __init__(
+        self,
+        scheme: str,
+        host: str,
+        address: str,
+        port: int,
+        timeout: float,
+        context: ssl.SSLContext,
+        proxy: tuple[str, int],
+    ) -> None:
+        super().__init__(proxy[0], proxy[1], timeout=timeout)
+        self._scheme = scheme
+        self._target_host = host
+        self._tls = context
+        # HTTPConnection does not bracket IPv6 literals in CONNECT authorities.
+        tunnel_host = f"[{address}]" if ":" in address else address
+        self.set_tunnel(tunnel_host, port)
+
+    def connect(self) -> None:
+        super().connect()
+        if self._scheme == "https":
+            assert self.sock is not None
+            try:
+                self.sock = self._tls.wrap_socket(
+                    self.sock, server_hostname=self._target_host
+                )
+            except BaseException:
+                self.close()
+                raise
 
 
 def _decode(body: bytes, content_type: str) -> str:
@@ -315,6 +402,7 @@ def html_to_text(html: str, *, base: str = "") -> str:
 __all__ = [
     "Page",
     "WebFetchError",
+    "check_proxy",
     "check_url",
     "fetch",
     "html_to_text",

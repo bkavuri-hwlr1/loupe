@@ -132,13 +132,14 @@ class TaskExecutionRunner:
         # Read-only web_fetch policy; see Settings.agent_web_fetch.
         self.web_fetch = "off"
         self.web_domains: tuple[str, ...] = ()
+        self.web_proxy: str | None = None
 
     def web_access(self) -> WebAccess | None:
         """A fresh web policy for one task, or None when web_fetch is off."""
 
         if self.web_fetch == "off":
             return None
-        return WebAccess(self.web_fetch, self.web_domains)
+        return WebAccess(self.web_fetch, self.web_domains, proxy=self.web_proxy)
 
     def execute(
         self,

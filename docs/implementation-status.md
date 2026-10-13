@@ -366,6 +366,13 @@ it is not yet a comparison of coding quality or throughput against one agent.
 
 ## Live two-session experiment
 
+Wave 1 B4 adds HTTP CONNECT proxy support for public `web_fetch` pages through
+`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (or their lowercase forms), and an explicit
+`agent.web_proxy`. CONNECT uses the target's checked IP; TLS still verifies its
+hostname, and redirects retain domain approvals and address checks. Local proxy
+tests cover successful fetches, bypass, refused private targets and redirects,
+and secret-free configuration errors. See harness plan item 10 for configuration.
+
 `scripts/live_sessions.py` runs the same multi-file change two ways with a
 real model: one session given every part, and one session per part working
 at once in one shared checkout. The `shop` experiment (`live_sessions.toml`)
