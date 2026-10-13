@@ -71,6 +71,7 @@ from llm_cli.providers.anthropic_provider import AnthropicProvider
 from llm_cli.providers.codex_provider import CodexProvider
 from llm_cli.providers.openai_provider import OpenAIProvider
 from llm_cli.providers.registry import ProviderRegistry
+from llm_cli.storage.backup import BackupError, backup_profile
 from llm_cli.storage.connection import connect_knowledge, connect_vectors
 from llm_cli.storage.control import ControlStore
 from llm_cli.storage.migrations import (
@@ -505,6 +506,17 @@ class DaemonService:
             return self._db_status()
         if method == "db.check":
             return self._db_check()
+        if method == "db.backup":
+            output = _optional_string(params, "out")
+            try:
+                return await asyncio.to_thread(
+                    backup_profile, self.paths, Path(output) if output else None
+                )
+            except (BackupError, OSError) as exc:
+                raise LlmCoordError(
+                    ErrorCode.INTERNAL_RECOVERABLE,
+                    "the verified database backup could not complete",
+                ) from exc
         if method == "repo.add":
             return await self._repo_add(params)
         if method == "repo.list":
@@ -1210,8 +1222,10 @@ class DaemonService:
                     {"active_task_id": str(active["task_id"])},
                 )
         claim_only = bool(params.get("claim_only", False))
-        if session is not None and session.agent_mode != "auto" and (
-            fixture_values or claim_only
+        if (
+            session is not None
+            and session.agent_mode != "auto"
+            and (fixture_values or claim_only)
         ):
             raise ValueError("plan and normal modes require the coding-agent driver")
         interactive = params.get("interactive", False)
@@ -1798,7 +1812,10 @@ class DaemonService:
         self, parameters: Mapping[str, object]
     ) -> CodingAgentHarness:
         if not {"provider", "model"} <= set(parameters) or set(parameters) - {
-            "provider", "model", "effort", "agent_mode"
+            "provider",
+            "model",
+            "effort",
+            "agent_mode",
         }:
             raise ValueError("the coding-agent launch recipe is malformed")
         if "agent_mode" in parameters:

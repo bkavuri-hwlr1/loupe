@@ -440,6 +440,13 @@ Local persistence is split into three SQLite databases:
 | `knowledge.sqlite3` | sources, documents, chunks, FTS, user memory, and graph facts | mixed; user memory authoritative, repository projections rebuildable |
 | `vectors.sqlite3` | embedding metadata and vector projection | disposable and rebuildable |
 
+`loupe db backup` writes verified online copies of all three databases into a
+fresh timestamped directory under the profile's `backups` directory. Use
+`--out DIR` to choose its parent. The directory is owner-only (`0700`), files
+are `0600`, and output lists each path and its `integrity_check` result. Each
+database is a separate snapshot, including committed WAL pages; a failed run
+can leave a private partial directory for diagnosis.
+
 The daemon protocol uses versioned, four-byte length-prefixed JSON messages over
 an owner-only Unix domain socket. The first supported platforms are macOS and
 Linux. Windows transport and worktree behavior are deferred.

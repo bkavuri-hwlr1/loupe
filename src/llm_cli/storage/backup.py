@@ -14,7 +14,10 @@ import stat
 import tempfile
 from contextlib import closing, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+
+from llm_cli.paths import AppPaths, reject_symlink_components
 
 
 class BackupError(RuntimeError):
@@ -38,6 +41,37 @@ class BackupMetadata:
     size: int
     sha256: str
     schema_version: int
+
+
+def backup_profile(paths: AppPaths, output: Path | None = None) -> dict[str, object]:
+    """Back up all three databases into a fresh private timestamped directory.
+
+    Each file is a verified online snapshot. The databases have independent
+    transactions, so the directory does not claim a cross-database atomic view.
+    A failed run leaves its private partial directory available for diagnosis.
+    """
+
+    parent = Path(os.path.abspath(output or paths.data_dir / "backups"))
+    reject_symlink_components(parent)
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    reject_symlink_components(parent)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ-")
+    directory = Path(tempfile.mkdtemp(prefix=stamp, dir=parent))
+    databases = []
+    for source in (paths.control_db, paths.knowledge_db, paths.vectors_db):
+        metadata = backup_database(source, directory / source.name)
+        databases.append(
+            {
+                "database": source.name,
+                "path": str(metadata.path),
+                "integrity_check": "ok",
+                "size": metadata.size,
+                "sha256": metadata.sha256,
+                "schema_version": metadata.schema_version,
+            }
+        )
+    _fsync_directory(parent)
+    return {"directory": str(directory), "databases": databases}
 
 
 def backup_database(
