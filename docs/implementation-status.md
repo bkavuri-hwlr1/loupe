@@ -160,6 +160,15 @@ the remaining planned capabilities are listed below.
   agent's own edits for review. Changes that cannot be merged, such as a file
   that became binary or a symlink, still refuse the whole batch.
 
+- Public `web_fetch` pages support configured HTTP CONNECT proxies through
+  `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (or lowercase forms), and an explicit
+  `agent.web_proxy`. CONNECT uses the target's checked IP, with bracketed IPv6
+  authorities in both the request and Host header across supported Python
+  versions. TLS still verifies the original hostname; redirects retain domain
+  approvals and public-address checks. Local proxy tests cover successful
+  fetches, bypass, refused private targets and redirects, and configuration
+  errors without secrets. See harness plan item 10 for configuration.
+
 ## Current execution boundary
 
 `llm-coord chat --repo /path/to/repository --scope docs/` uses shared checkout
@@ -365,13 +374,6 @@ This verifies provider transport and the tested coordination/recovery paths;
 it is not yet a comparison of coding quality or throughput against one agent.
 
 ## Live two-session experiment
-
-Wave 1 B4 adds HTTP CONNECT proxy support for public `web_fetch` pages through
-`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (or their lowercase forms), and an explicit
-`agent.web_proxy`. CONNECT uses the target's checked IP; TLS still verifies its
-hostname, and redirects retain domain approvals and address checks. Local proxy
-tests cover successful fetches, bypass, refused private targets and redirects,
-and secret-free configuration errors. See harness plan item 10 for configuration.
 
 `scripts/live_sessions.py` runs the same multi-file change two ways with a
 real model: one session given every part, and one session per part working

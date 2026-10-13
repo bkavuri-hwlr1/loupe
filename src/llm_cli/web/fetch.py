@@ -65,6 +65,7 @@ def check_proxy(url: str) -> tuple[str, int]:
     if (
         parts.scheme != "http"
         or not parts.hostname
+        or port == 0
         or parts.username is not None
         or parts.password is not None
         or parts.path not in {"", "/"}
@@ -269,9 +270,11 @@ class _TunnelConnection(http.client.HTTPConnection):
         self._scheme = scheme
         self._target_host = host
         self._tls = context
-        # HTTPConnection does not bracket IPv6 literals in CONNECT authorities.
+        # Some supported Python releases strip IPv6 brackets in set_tunnel or
+        # omit them in its synthesized Host header. Keep both authorities exact.
         tunnel_host = f"[{address}]" if ":" in address else address
-        self.set_tunnel(tunnel_host, port)
+        self.set_tunnel(tunnel_host, port, headers={"Host": f"{tunnel_host}:{port}"})
+        self._tunnel_host = tunnel_host
 
     def connect(self) -> None:
         super().connect()

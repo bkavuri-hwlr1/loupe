@@ -164,6 +164,36 @@ def test_https_proxy_keeps_target_tls_identity(
     assert tunnels == [f"127.0.0.1:{server}"]
 
 
+def test_ipv6_connect_request_and_host_use_bracketed_authority() -> None:
+    seen: list[tuple[str, str | None]] = []
+
+    class ConnectResponder(Handler):
+        protocol_version = "HTTP/1.1"
+
+        def do_CONNECT(self) -> None:
+            seen.append((self.path, self.headers.get("Host")))
+            self.send_response(200)
+            self.end_headers()
+            self.close_connection = False
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ConnectResponder)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        page = _fetch(
+            "http://docs.test:8080/plain.txt",
+            resolver=lambda host, port: ["2606:4700:4700::1111"],
+            proxy=f"http://127.0.0.1:{httpd.server_address[1]}",
+        )
+        assert page.text == "café"
+        assert seen == [
+            ("[2606:4700:4700::1111]:8080", "[2606:4700:4700::1111]:8080")
+        ]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_proxy_never_receives_private_targets_or_denied_redirects(
     server: int, proxy: tuple[int, list[str]]
 ) -> None:
@@ -217,6 +247,7 @@ def test_explicit_proxy_overrides_environment(
         "http://proxy.test/path",
         "http://proxy.test?token=secret",
         "http://proxy.test:99999",
+        "http://proxy.test:0",
         "http://proxy.test\n",
     ],
 )
