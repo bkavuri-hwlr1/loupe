@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -408,6 +411,89 @@ def test_http_timeouts_and_expired_sessions_do_not_replay_calls() -> None:
             assert failure.value.kind == "timeout"
             assert client.call_tool("echo", {}, 3)["content"][0]["text"] == "{}"
         finally:
+            client.close()
+
+
+def test_http_dns_timeout_never_transmits_the_expired_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with http_mcp_server() as server:
+        client = HttpClient(server.url, headers={})
+        client.start(3)
+        original = socket.getaddrinfo
+        entered, release, returned = (
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+        )
+
+        def stalled(*args: Any, **kwargs: Any) -> Any:
+            entered.set()
+            release.wait(1)
+            try:
+                return original(*args, **kwargs)
+            finally:
+                returned.set()
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(socket, "getaddrinfo", stalled)
+                started = time.monotonic()
+                with pytest.raises(McpError) as failure:
+                    client.call_tool("echo", {}, 0.05)
+                assert failure.value.kind == "timeout"
+                assert time.monotonic() - started < 0.5
+                assert entered.is_set() and not returned.is_set()
+                assert not any(
+                    message.get("method") == "tools/call" for message in server.messages
+                )
+                release.set()
+                assert returned.wait(2)
+            # A late DNS completion never starts the expired network operation.
+            assert not any(
+                message.get("method") == "tools/call" for message in server.messages
+            )
+            assert client.call_tool("echo", {}, 3)["content"][0]["text"] == "{}"
+        finally:
+            release.set()
+            client.close()
+
+
+def test_stalled_mcp_dns_workers_have_a_global_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with http_mcp_server() as server:
+        client = HttpClient(server.url, headers={})
+        client.start(3)
+        original = socket.getaddrinfo
+        release = threading.Event()
+        calls: list[threading.Event] = []
+
+        def stalled(*args: Any, **kwargs: Any) -> Any:
+            returned = threading.Event()
+            calls.append(returned)
+            release.wait(2)
+            try:
+                return original(*args, **kwargs)
+            finally:
+                returned.set()
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(socket, "getaddrinfo", stalled)
+                for _ in range(6):
+                    with pytest.raises(McpError) as failure:
+                        client.call_tool("echo", {}, 0.05)
+                    assert failure.value.kind == "timeout"
+                assert len(calls) == 4
+                assert not any(
+                    message.get("method") == "tools/call" for message in server.messages
+                )
+                release.set()
+                assert all(returned.wait(2) for returned in calls)
+            assert client.call_tool("echo", {}, 3)["content"][0]["text"] == "{}"
+        finally:
+            release.set()
             client.close()
 
 

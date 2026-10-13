@@ -13,6 +13,7 @@ import http.client
 import itertools
 import json
 import socket
+import ssl
 import threading
 import time
 from collections.abc import Iterator, Mapping
@@ -20,6 +21,69 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from llm_cli.mcp.client import _MAX_MESSAGE_BYTES, McpClient, McpError
+
+# getaddrinfo has no cancellation API. At most four daemon workers may remain
+# resolving after callers time out; subsequent calls wait only their deadline.
+_DNS_SLOTS = threading.BoundedSemaphore(4)
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise McpError("request timed out", kind="timeout")
+    return remaining
+
+
+def _resolve(host: str, port: int, deadline: float) -> list[tuple[int, int, int, Any]]:
+    if not _DNS_SLOTS.acquire(timeout=_remaining(deadline)):
+        raise McpError("resolution timed out", kind="timeout")
+    done = threading.Event()
+    addresses: list[tuple[int, int, int, Any]] = []
+    failure: list[Exception] = []
+
+    def resolve() -> None:
+        try:
+            addresses.extend(
+                (family, kind, protocol, address)
+                for family, kind, protocol, _, address in socket.getaddrinfo(
+                    host, port, type=socket.SOCK_STREAM
+                )
+            )
+        except Exception as exc:
+            failure.append(exc)
+        finally:
+            _DNS_SLOTS.release()
+            done.set()
+
+    worker = threading.Thread(target=resolve, name="loupe-mcp-dns", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError as exc:
+        _DNS_SLOTS.release()
+        raise McpError("resolution unavailable", kind="start") from exc
+    if not done.wait(_remaining(deadline)):
+        raise McpError("resolution timed out", kind="timeout")
+    _remaining(deadline)
+    if failure or not addresses:
+        raise McpError("resolution failed", kind="protocol")
+    return addresses
+
+
+def _connect(host: str, port: int, deadline: float) -> socket.socket:
+    for family, kind, protocol, address in _resolve(host, port, deadline):
+        connection = socket.socket(family, kind, protocol)
+        try:
+            connection.settimeout(_remaining(deadline))
+            connection.connect(address)
+            connection.settimeout(_remaining(deadline))
+            return connection
+        except McpError:
+            connection.close()
+            raise
+        except OSError:
+            connection.close()
+    _remaining(deadline)
+    raise McpError("connection failed", kind="protocol")
 
 
 class HttpClient(McpClient):
@@ -86,15 +150,15 @@ class HttpClient(McpClient):
     ) -> dict[str, Any] | None:
         if timeout <= 0:
             raise McpError("request timed out", kind="timeout")
+        deadline = time.monotonic() + timeout
         body = json.dumps(message, separators=(",", ":")).encode() if message else None
         if body is not None and len(body) > _MAX_MESSAGE_BYTES:
             raise McpError("request is oversized", kind="protocol")
-        cls = (
-            http.client.HTTPSConnection
-            if self._url.scheme == "https"
-            else http.client.HTTPConnection
+        host = self._url.hostname or ""
+        port = self._url.port or (443 if self._url.scheme == "https" else 80)
+        connection = http.client.HTTPConnection(
+            host, port, timeout=_remaining(deadline)
         )
-        connection = cls(self._url.hostname or "", self._url.port, timeout=timeout)
         headers = {
             **self._headers,
             "Accept": "application/json, text/event-stream",
@@ -107,7 +171,6 @@ class HttpClient(McpClient):
         path = self._url.path or "/"
         if self._url.query:
             path += "?" + self._url.query
-        deadline = time.monotonic() + timeout
         expired = threading.Event()
         active_socket: socket.socket | None = None
 
@@ -119,12 +182,25 @@ class HttpClient(McpClient):
                     active_socket.shutdown(socket.SHUT_RDWR)
             connection.close()
 
-        timer = threading.Timer(timeout, expire)
+        timer = threading.Timer(_remaining(deadline), expire)
         timer.daemon = True
         timer.start()
         try:
+            context = (
+                ssl.create_default_context() if self._url.scheme == "https" else None
+            )
+            active_socket = _connect(host, port, deadline)
+            connection.sock = active_socket
+            if context is not None:
+                active_socket.settimeout(_remaining(deadline))
+                active_socket = context.wrap_socket(active_socket, server_hostname=host)
+                connection.sock = active_socket
+            # DNS/connect/TLS may have completed at the deadline. Never start
+            # sending a call once it has expired, including a late DNS result.
+            active_socket.settimeout(_remaining(deadline))
+            if expired.is_set():
+                raise McpError("request timed out", kind="timeout")
             connection.request(verb, path, body=body, headers=headers)
-            active_socket = connection.sock
             response = connection.getresponse()
             if verb == "DELETE":
                 return None

@@ -270,6 +270,10 @@ Connections use normal HTTPS certificate validation, no ambient proxy/cookie
 settings, and no redirects. Responses are capped at 8 MiB and have a total
 deadline, including SSE streams. An expired session is reinitialized without
 replaying the failed call, whose side effects may already have happened.
+DNS and socket setup spend the same deadline, and an expired setup never
+transmits the call. Since the OS resolver cannot be cancelled, at most four
+daemon workers may remain resolving after timeouts; further calls wait only
+their own deadline for a slot.
 
 Resources and prompts are offered as explicit tools when advertised by the
 server, with the same approval, output bound, and secret screening as remote
