@@ -107,6 +107,9 @@ the remaining planned capabilities are listed below.
   bounded text output, secret screening, and external-data labels. Task end
   closes stdio process groups and HTTP sessions. Isolated tasks and
   exploration helpers do not receive MCP access.
+  Received JSON-RPC messages require object shape and at most 64 nested
+  object/array containers before schema or result screening, independently
+  of Python's decoder limits; malformed messages fail as protocol errors.
 - Durable harness execution checkpoints containing provider-native session
   state plus neutral loop state.
   The checkpoint records message history, the current model turn, completed
