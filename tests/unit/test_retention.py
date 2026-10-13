@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from llm_cli.agent.harness import _emit_transcript, _LiveEvents
 from llm_cli.coordination.coordinator import RepositoryCoordinator
 from llm_cli.storage.control import ControlStore
 from llm_cli.storage.retention import prune_task_output, retention_age_ms
@@ -189,3 +191,49 @@ def test_invalid_age_never_changes_database(store: ControlStore, value: str) -> 
         prune_task_output(store, older_than=value, apply=True)
     assert store.list_task_events("old") == before
     assert retention_age_ms("30d") == 30 * DAY
+
+
+def test_actual_multipart_previews_and_output_prune_but_full_answer_survives(
+    store: ControlStore,
+) -> None:
+    _task(store)
+
+    class Broker:
+        def emit(self, kind: str, payload: dict[str, object]) -> None:
+            store.record_task_event(
+                task_id="old",
+                claim_id=None,
+                event_type=kind,
+                payload=payload,
+                now=OLD,
+            )
+
+    broker: Any = Broker()
+    live = _LiveEvents(broker)
+    live("model.text.delta", {"text": "provisional" * 10_000})
+    live.flush()
+    answer = "complete answer" * 10_000
+    _emit_transcript(
+        broker, "model.finished", {"answer": answer, "summary": "final summary"}
+    )
+    for kind in ("command.output", "check.output"):
+        _emit_transcript(broker, kind, {"text": "verbose" * 10_000})
+    before = store.list_task_events("old", limit=500)
+    previews = [e for e in before if e.event_type == "model.answer.preview"]
+    assert len(previews) > 1 and all("part" in e.payload for e in previews)
+    finished = [
+        e for e in before if e.event_type == "model.finished" and "part" in e.payload
+    ]
+    assert len(finished) > 1
+    assert "".join(str(e.payload["answer"]) for e in finished) == answer
+    result = prune_task_output(store, older_than="30d", apply=True)
+    assert result["event_chunks"] > 5
+    after = store.list_task_events("old", limit=500)
+    assert not any(
+        e.event_type in {"model.answer.preview", "command.output", "check.output"}
+        for e in after
+    )
+    assert [
+        e for e in after if e.event_type == "model.finished" and "part" in e.payload
+    ] == finished
+    assert all(e.payload["summary"] == "final summary" for e in finished)

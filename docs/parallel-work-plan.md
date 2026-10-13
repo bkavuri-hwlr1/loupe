@@ -353,7 +353,9 @@ task inspectable with `task show` and its answer, and recovery tests pass on a
 pruned database.
 
 **Implemented:** `db.prune` previews by default and deletes only disposable
-output when `--apply` is present. Eligibility checks terminal timestamps and
+output when `--apply` is present, including multipart provisional answer
+previews. Multipart committed answers and summary metadata remain intact.
+Eligibility checks terminal timestamps and
 all claims, workflows, checks, execution checkpoints and publication journals.
 A pruned fixture remains inspectable with its final answer and summary; an
 interrupted execution retains its evidence and recovers normally.

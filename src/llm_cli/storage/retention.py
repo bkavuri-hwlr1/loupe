@@ -13,6 +13,7 @@ _DAY_MS = 24 * 60 * 60 * 1_000
 _AGE = re.compile(r"([1-9][0-9]{0,5})d")
 _OUTPUT_EVENTS = (
     "model.text.delta",
+    "model.answer.preview",
     "model.reasoning.delta",
     "model.tool.delta",
     "check.output",
