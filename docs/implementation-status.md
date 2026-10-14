@@ -53,12 +53,16 @@ the remaining planned capabilities are listed below.
   files, and printed integrity/hash/schema metadata. The running-daemon
   integration test confirms the latest committed task survives the snapshot.
 - `loupe db prune --older-than 30d` defaults to a dry run; `--apply` removes
-  old model previews/deltas and command/check chunks plus retained check text,
-  then runs
-  SQLite `VACUUM`. Task records, final answers, summaries and check metadata
-  remain inspectable. Held proposals, live claims, unfinished checkpoints,
-  uncertain checks and unresolved recovery journals prevent pruning. Each
-  affected task receives a durable audit event; repeating cleanup is safe.
+  old model previews/deltas, tool results, command/check chunks and retained
+  check text, slims settled execution checkpoints, then runs SQLite `VACUUM`.
+  Checkpoints drop provider conversations already saved to their session and,
+  once published, the file contents now in the checkout. Task records, final
+  answers, summaries, usage and check metadata remain inspectable. Held
+  proposals, live claims, unfinished finalization, uncertain checks and
+  unresolved recovery journals prevent pruning. Each affected task receives a
+  durable audit event; repeating cleanup is safe. On a copy of an 18.8 MB
+  profile database, pruning everything settled over a day ago left 5.6 MB:
+  checkpoints were 8.1 MB of it and tool output 3.4 MB.
 - Repository registration that derives a stable local or normalized-remote
   coordination identity.
 - Durable repository heads, task records, claims, scope rows, events, outbox

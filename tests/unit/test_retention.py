@@ -121,26 +121,47 @@ def test_preview_apply_keeps_task_answers_summaries_and_check_metadata(
     assert store.list_task_events("old") == events
 
 
-@pytest.mark.parametrize("state", ["awaiting_review", "running", "failed"])
-def test_workflow_not_settled_is_protected(store: ControlStore, state: str) -> None:
-    _task(store)
-    _workflow(store)
-    with store.connection() as connection:
-        connection.execute("UPDATE task_workflows SET status=?", (state,))
-    assert prune_task_output(store, older_than="30d", apply=True)["event_chunks"] == 0
-    assert len(store.list_task_events("old")) == 8
-
-
-def test_retained_proposal_and_uncertain_checks_are_protected(
-    store: ControlStore,
+@pytest.mark.parametrize(
+    ("status", "proposal", "protected"),
+    [
+        ("awaiting_review", None, True),
+        ("awaiting_review", "[]", True),
+        ("cancelled", "[]", True),
+        ("failed", "[]", True),
+        ("running", "[]", True),
+        # A task that stopped without a held proposal has nothing to decide.
+        ("running", None, False),
+        ("failed", None, False),
+        ("cancelled", None, False),
+        # A published proposal kept for undo needs no output or checkpoint.
+        ("published", "[]", False),
+        ("undone", "[]", False),
+    ],
+)
+def test_held_proposals_are_protected_and_settled_workflows_prune(
+    store: ControlStore, status: str, proposal: str | None, protected: bool
 ) -> None:
     _task(store)
     _workflow(store)
     with store.connection() as connection:
-        connection.execute("UPDATE task_workflows SET proposal_json='[]'")
-    assert prune_task_output(store, older_than="30d", apply=True)["event_chunks"] == 0
+        connection.execute(
+            "UPDATE task_workflows SET status=?,proposal_json=?", (status, proposal)
+        )
+    result = prune_task_output(store, older_than="30d", apply=True)
+    assert result["event_chunks"] == (0 if protected else 5)
+    assert len(store.list_task_events("old")) == (8 if protected else 4)
     with store.connection() as connection:
-        connection.execute("UPDATE task_workflows SET proposal_json=NULL")
+        assert tuple(
+            connection.execute(
+                "SELECT status,proposal_json FROM task_workflows"
+            ).fetchone()
+        ) == (status, proposal)
+
+
+def test_uncertain_checks_are_protected(store: ControlStore) -> None:
+    _task(store)
+    _workflow(store)
+    with store.connection() as connection:
         connection.execute("UPDATE check_runs SET state='uncertain'")
     assert prune_task_output(store, older_than="30d", apply=True)["check_outputs"] == 0
 
@@ -237,3 +258,158 @@ def test_actual_multipart_previews_and_output_prune_but_full_answer_survives(
         e for e in after if e.event_type == "model.finished" and "part" in e.payload
     ] == finished
     assert all(e.payload["summary"] == "final summary" for e in finished)
+
+
+def _execution(store: ControlStore, state: str, checkpoint: dict[str, Any]) -> str:
+    store.create_task(repository_id="repo", task_id="old", now=OLD)
+    coordinator = RepositoryCoordinator(store)
+    claim = coordinator.request_claim("old", ["README.md"], now=OLD)
+    execution = store.create_execution(
+        task_id="old",
+        attempt=1,
+        claim_id=claim.claim_id,
+        driver="coding-agent",
+        worktree_path="/fixture",
+        base_oid="a" * 40,
+        boot_id="dead",
+        now=OLD,
+    )
+    coordinator.release_claim(
+        claim.claim_id, reason="fixture", task_state="failed", now=OLD
+    )
+    with store.connection() as connection:
+        connection.execute("UPDATE task_executions SET state=?", (state,))
+        connection.execute(
+            "UPDATE tasks SET state=?,finished_at=?,updated_at=?",
+            ("completed" if state == "published" else "failed", OLD, OLD),
+        )
+        connection.execute(
+            "INSERT INTO execution_checkpoints(execution_id,driver,checkpoint_json,"
+            "created_at,updated_at) VALUES (?, 'coding-agent', ?, ?, ?)",
+            (execution.execution_id, json.dumps(checkpoint), OLD, OLD),
+        )
+    store.record_task_event(
+        task_id="old",
+        claim_id=None,
+        event_type="model.tool_result",
+        payload={"call_id": "c1", "tool": "read_file", "content": "x" * 10_000},
+        now=OLD,
+    )
+    return execution.execution_id
+
+
+def _checkpoint(store: ControlStore, execution_id: str) -> dict[str, Any]:
+    with store.connection() as connection:
+        row = connection.execute(
+            "SELECT checkpoint_json FROM execution_checkpoints WHERE execution_id=?",
+            (execution_id,),
+        ).fetchone()
+    return dict(json.loads(row[0]))
+
+
+_USAGE = {
+    "calls": 12,
+    "bytes_read": 4096,
+    "shared_workspace_state": {"files": [{"path": "a.py", "content": "x" * 50_000}]},
+}
+
+
+def test_settled_checkpoints_drop_saved_conversation_and_published_files(
+    store: ControlStore,
+) -> None:
+    finished = {
+        "version": 1,
+        "phase": "finished",
+        "provider": "anthropic",
+        "model": "model",
+        "session": {"input": ["conversation" * 10_000]},
+        "tool_usage": _USAGE,
+        "usage_total": {"prompt_tokens": 10, "output_tokens": 2},
+        "accepted_answer": {"answer": "complete answer"},
+        "finalization": None,
+    }
+    execution_id = _execution(store, "published", finished)
+    preview = prune_task_output(store, older_than="30d")
+    assert preview["checkpoints"] == 1
+    assert preview["checkpoint_bytes"] > 150_000
+    assert preview["event_chunks"] == 1
+    assert _checkpoint(store, execution_id) == finished
+    applied = prune_task_output(store, older_than="30d", apply=True)
+    assert applied["checkpoints"] == 1
+    slim = _checkpoint(store, execution_id)
+    assert slim == {
+        key: value for key, value in finished.items() if key != "session"
+    } | {"tool_usage": {"calls": 12, "bytes_read": 4096}}
+    assert [e.event_type for e in store.list_task_events("old")][-1] == (
+        "task.output_pruned"
+    )
+    assert store.list_task_events("old")[-1].payload["checkpoints"] == 1
+    assert not any(
+        e.event_type == "model.tool_result" for e in store.list_task_events("old")
+    )
+    repeat = prune_task_output(store, older_than="30d", apply=True)
+    assert repeat["checkpoints"] == repeat["event_chunks"] == 0
+
+
+def test_failed_turn_keeps_pending_files_but_not_its_conversation(
+    store: ControlStore,
+) -> None:
+    interrupted = {
+        "version": 1,
+        "phase": "tool_results",
+        "session": {"input": ["conversation" * 1_000]},
+        "tool_usage": _USAGE,
+    }
+    execution_id = _execution(store, "failed", interrupted)
+    assert prune_task_output(store, older_than="30d", apply=True)["checkpoints"] == 1
+    assert _checkpoint(store, execution_id) == {
+        "version": 1,
+        "phase": "tool_results",
+        "tool_usage": _USAGE,
+    }
+
+
+def test_interrupted_answer_keeps_its_conversation_for_retry(
+    store: ControlStore,
+) -> None:
+    from llm_cli.agent.finalization import FinalizationState, SettlementFacts
+
+    facts = SettlementFacts(
+        publication="published", verification="passed", completion="completed"
+    )
+    checkpoint = {
+        "version": 1,
+        "phase": "finished",
+        "session": {"input": ["conversation"]},
+        "tool_usage": {"calls": 1},
+        "accepted_answer": {"answer": "facts only"},
+        "finalization": FinalizationState(
+            status="interrupted", attempts=1, facts=facts
+        ).to_dict(),
+    }
+    execution_id = _execution(store, "published", checkpoint)
+    result = prune_task_output(store, older_than="30d", apply=True)
+    assert result["eligible_tasks"] == 1 and result["checkpoints"] == 0
+    assert _checkpoint(store, execution_id) == checkpoint
+
+
+@pytest.mark.parametrize(
+    ("batch", "protected"), [("diverged", False), ("applying", True)]
+)
+def test_refused_shared_batches_settle_but_applying_ones_are_protected(
+    store: ControlStore, batch: str, protected: bool
+) -> None:
+    execution_id = _execution(
+        store, "failed", {"version": 1, "phase": "finished", "finalization": None}
+    )
+    with store.connection() as connection:
+        # Only the batch state matters here; its owners are not under test.
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            "INSERT INTO workspace_batches(batch_id,session_id,workspace_id,"
+            "checkout_id,canonical_path,git_common_dir,request_json,state,"
+            "created_at,updated_at) VALUES (?,'s','w','c','/r','/r/.git','{}',?,?,?)",
+            (execution_id, batch, OLD, OLD),
+        )
+    result = prune_task_output(store, older_than="30d")
+    assert result["eligible_tasks"] == (0 if protected else 1)
