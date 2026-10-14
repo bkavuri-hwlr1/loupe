@@ -771,8 +771,12 @@ is still checked as public before contacting the proxy; CONNECT names its checke
 IP address, while HTTPS verifies the original hostname. Redirects repeat these
 checks and select the proxy for their own scheme and host. Proxy connection
 errors never echo the proxy URL. The proxy is trusted user configuration, never
-page content.
-Remaining gap: fetching through exploration helpers.
+page content. Known limits: naming the IP address in CONNECT keeps DNS pinning
+but defeats proxies that allow sites by hostname; proxies that restrict CONNECT
+to port 443 refuse plain HTTP pages; and an environment proxy URL containing
+credentials makes every fetch fail rather than bypassing the proxy.
+Remaining gaps: fetching through exploration helpers, and proxies that need
+authentication.
 
 **11. Token usage display (implemented).** Adapters now report `prompt_tokens`
 with one meaning for every provider: all prompt tokens, cached or not
