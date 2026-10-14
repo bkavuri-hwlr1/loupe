@@ -206,7 +206,7 @@ def _settled(raw: str, execution_state: str) -> dict[str, object] | None:
     if not isinstance(checkpoint, dict):
         return None
     phase = checkpoint.get("phase")
-    if phase in _UNSETTLED_PHASES:
+    if not isinstance(phase, str) or phase in _UNSETTLED_PHASES:
         return None
     try:
         finalization = checkpoint_finalization(checkpoint)

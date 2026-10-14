@@ -59,8 +59,9 @@ the remaining planned capabilities are listed below.
   once published, the file contents now in the checkout. Task records, final
   answers, summaries, usage and check metadata remain inspectable. Held
   proposals, live claims, unfinished finalization, uncertain checks and
-  unresolved recovery journals prevent pruning. Each affected task receives a
-  durable audit event; repeating cleanup is safe. On a copy of an 18.8 MB
+  unresolved recovery journals prevent pruning. Malformed checkpoint phases
+  protect their task while other settled tasks can still prune. Each affected
+  task receives a durable audit event; repeating cleanup is safe. On a copy of an 18.8 MB
   profile database, pruning everything settled over a day ago left 5.6 MB:
   checkpoints were 8.1 MB of it and tool output 3.4 MB.
 - `loupe config show` reports the active daemon's effective settings and frozen

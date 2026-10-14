@@ -314,6 +314,70 @@ _USAGE = {
 }
 
 
+@pytest.mark.parametrize("execution_state", ["published", "failed"])
+@pytest.mark.parametrize(
+    "phase",
+    [None, False, 1, [], {}],
+    ids=["null", "boolean", "number", "list", "table"],
+)
+def test_malformed_checkpoint_phase_protects_only_its_task(
+    store: ControlStore, execution_state: str, phase: object
+) -> None:
+    execution_id = _execution(
+        store,
+        execution_state,
+        {"version": 1, "phase": phase, "session": {"input": ["saved conversation"]}},
+    )
+    _workflow(store)
+    _task(store, "eligible")
+    _workflow(store, "eligible")
+    protected_events = store.list_task_events("old")
+    eligible_events = store.list_task_events("eligible")
+
+    def protected_rows() -> tuple[object, object]:
+        with store.connection() as connection:
+            return (
+                tuple(
+                    connection.execute(
+                        "SELECT checkpoint_json FROM execution_checkpoints "
+                        "WHERE execution_id=?",
+                        (execution_id,),
+                    ).fetchone()
+                ),
+                tuple(
+                    connection.execute(
+                        "SELECT output,truncated,state FROM check_runs "
+                        "WHERE task_id='old'"
+                    ).fetchone()
+                ),
+            )
+
+    original_rows = protected_rows()
+    for apply in (False, True):
+        result = prune_task_output(store, older_than="30d", apply=apply)
+        assert result["eligible_tasks"] == 1
+        assert result["event_chunks"] == 5
+        assert result["check_outputs"] == 1
+        assert result["checkpoints"] == 0
+        assert protected_rows() == original_rows
+        assert store.list_task_events("old") == protected_events
+        if not apply:
+            assert store.list_task_events("eligible") == eligible_events
+
+    assert [event.event_type for event in store.list_task_events("eligible")] == [
+        "task.created",
+        "model.finished",
+        "execution.published",
+        "task.output_pruned",
+    ]
+    with store.connection() as connection:
+        assert tuple(
+            connection.execute(
+                "SELECT output,truncated FROM check_runs WHERE task_id='eligible'"
+            ).fetchone()
+        ) == ("", 1)
+
+
 def test_settled_checkpoints_drop_saved_conversation_and_published_files(
     store: ControlStore,
 ) -> None:
