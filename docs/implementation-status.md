@@ -475,6 +475,13 @@ retry, and other validation jobs ran on the same machine. The new experiment
 separates the code edits, but its shorter tasks still did not amortize the
 additional session work in these measurements.
 
+These runs used experiment version 2, whose toolkit registry put the two
+flags on adjacent lines. A three-way merge treats adjacent changed lines as
+one conflict, so every two-session toolkit run had to resolve a registry
+conflict, which may account for part of its extra time. Version 3 puts a
+comment line between the flags so the parts merge cleanly; it has not been
+measured yet.
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the

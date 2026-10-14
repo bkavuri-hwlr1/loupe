@@ -19,7 +19,7 @@
 #                 this interpreter, which has pytest
 # Bump `version` whenever the experiments, fixtures, or acceptance tests
 # change, so results from different versions are not compared.
-version = 2
+version = 3
 
 [[experiments]]
 id = "shop"
