@@ -527,7 +527,7 @@ class DaemonService:
             except (BackupError, OSError) as exc:
                 raise LlmCoordError(
                     ErrorCode.INTERNAL_RECOVERABLE,
-                    "the verified database backup could not complete",
+                    f"the verified database backup could not complete: {exc}",
                 ) from exc
         if method == "db.prune":
             apply = params.get("apply", False)

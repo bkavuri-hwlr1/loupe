@@ -337,7 +337,8 @@ and holds the latest tasks.
 **Implemented:** `db.backup` runs through the daemon and creates a new private
 timestamped directory, including the latest committed WAL state. A real-daemon
 CLI integration test checks all three integrity results, owner-only modes,
-latest-task visibility, repeat backups, and symlink-path refusal.
+latest-task visibility, repeat backups, and output directories reached
+through a symlink, as `/tmp` is on macOS.
 
 ### D2. Retention: prune old task output
 
@@ -358,7 +359,10 @@ previews. Multipart committed answers and summary metadata remain intact.
 Eligibility checks terminal timestamps and
 all claims, workflows, checks, execution checkpoints and publication journals.
 A pruned fixture remains inspectable with its final answer and summary; an
-interrupted execution retains its evidence and recovers normally.
+interrupted execution retains its evidence and recovers normally. Settled
+checkpoints lose the saved conversation and published file contents, which
+were most of the profile database's size; an interrupted answer keeps them for
+`/retry-answer`, and a failed turn keeps its pending files for `task diff`.
 
 ### D3. `loupe config show` and `set`
 

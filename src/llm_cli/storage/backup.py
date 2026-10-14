@@ -51,7 +51,13 @@ def backup_profile(paths: AppPaths, output: Path | None = None) -> dict[str, obj
     A failed run leaves its private partial directory available for diagnosis.
     """
 
-    parent = Path(os.path.abspath(output or paths.data_dir / "backups"))
+    # A chosen directory may pass through symlinks, as /tmp does on macOS; the
+    # backup goes where it points. The default stays in the private data dir.
+    parent = (
+        Path(os.path.realpath(output))
+        if output is not None
+        else paths.data_dir / "backups"
+    )
     reject_symlink_components(parent)
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     reject_symlink_components(parent)
