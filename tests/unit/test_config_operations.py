@@ -145,6 +145,27 @@ def test_concurrent_setters_preserve_each_others_values(config: Path) -> None:
     assert settings.agent_provider == "openai"
 
 
+def test_symlinked_configuration_loads_and_shows_but_set_refuses_it(
+    config: Path, tmp_path: Path
+) -> None:
+    # Dotfile managers often link config.toml; the daemon must still start.
+    target = tmp_path / "dotfiles" / "config.toml"
+    target.parent.mkdir()
+    target.write_text('[agent]\ncommands = "allow"\n')
+    config.symlink_to(target)
+    active, sources = load_settings_snapshot(config, profile_id="fixture")
+    assert active.agent_commands == "allow"
+    assert sources["agent.commands"] == "config file"
+    shown = effective_config(config, active, sources)
+    assert shown["saved_pending_restart"] is False
+    with pytest.raises(LlmCoordError, match="symlink; edit the file it points to"):
+        set_config_value(
+            config, profile_id="fixture", key="agent.explore", value="false"
+        )
+    assert config.is_symlink()
+    assert target.read_text() == '[agent]\ncommands = "allow"\n'
+
+
 def test_symlink_or_hardlink_configuration_is_refused(
     config: Path, tmp_path: Path
 ) -> None:

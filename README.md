@@ -469,6 +469,8 @@ Keys follow TOML dotted-key notation, including quoted parts for names containin
 punctuation. Invalid values leave the original file untouched; `show` keeps the
 active values visible even if the saved file is invalid. Successful edits rewrite TOML
 formatting and comments; run `loupe daemon restart` to activate saved settings.
+A symlinked config file, as dotfile managers create, is read normally, but
+`config set` will not replace it; edit the file it points to.
 The configuration file is shared by profiles; the selected profile identifies
 the daemon whose current values are shown.
 

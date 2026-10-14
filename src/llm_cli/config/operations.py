@@ -42,7 +42,6 @@ def _setting_key(attribute: str) -> str:
 
 
 def _read_document(path: Path) -> dict[str, Any]:
-    reject_symlink_components(path)
     if not path.exists():
         return {}
     try:
@@ -112,10 +111,10 @@ def load_settings_snapshot(
 
     The existing loader remains the validation authority. The daemon freezes
     these sources with its settings rather than attributing later file edits to
-    the already-running process.
+    the already-running process. Like the loader, reading follows a symlinked
+    file, as dotfile managers create; only ``set`` refuses to write through one.
     """
 
-    reject_symlink_components(path)
     try:
         raw = path.read_bytes() if path.exists() else b""
         document = tomllib.loads(raw.decode("utf-8"))
@@ -211,6 +210,10 @@ def set_config_value(
         any(_SENSITIVE.search(part) for part in parts) and not header_reference
     ):
         raise _invalid("secrets belong in provider login or environment variables")
+    if path.is_symlink():
+        raise _invalid(
+            "the configuration file is a symlink; edit the file it points to"
+        )
     reject_symlink_components(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     reject_symlink_components(path)
