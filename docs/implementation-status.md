@@ -77,6 +77,11 @@ the remaining planned capabilities are listed below.
   lifecycle, database inspection, repository registration, tasks, and claims.
   A finished task attempt is advanced explicitly with `llm-coord task retry`;
   a terminal claim is never handed back as though it still granted authority.
+- Multi-terminal orchestration tests give the fixture's polling client 60 seconds
+  per RPC. A macOS CI stall timed out `_Cluster.rpc("task.list")`; a regression
+  now stops the real daemon for six seconds during that call and verifies it
+  completes after resume. Product clients retain their five-second default,
+  and uncertain mutations are not retried.
 - A provider-independent harness/driver seam. The lifecycle owns the claim, worktree,
   validation, publication, and recovery; a driver only decides file contents,
   and only through a tool broker bounded by the claim. Drivers declare their
@@ -168,6 +173,23 @@ the remaining planned capabilities are listed below.
   approvals and public-address checks. Local proxy tests cover successful
   fetches, bypass, refused private targets and redirects, and configuration
   errors without secrets. See harness plan item 10 for configuration.
+
+- Regex matching reuses a fixed pool of at most four isolated Python workers
+  across brokers and batched reads. Waiting, pipe transfer, compilation and
+  matching share the search deadline. Timeout or cancellation kills and reaps
+  that child before its slot is reused; the next request starts a replacement.
+  Idle workers drop the previous JSON source payload and purge compiled regex
+  caches after each request. The sequential/batched read differential suite
+  once again exercises the real matching workers.
+- Wave 1 regex measurements on the existing read microbenchmark used the same
+  unchanged checkout, 15 measured runs after two warmups. The shared two-listing,
+  two-search batch median fell from 195.0 to 136.5 ms (sequential: 378.2 to
+  283.3 ms). Isolated full-source scans remained dominated by source acquisition:
+  348.7 to 374.4 ms batched and 636.5 to 639.5 ms sequential in these runs, while
+  other validation jobs were active. A separate alternating before/after matcher
+  measurement (30 samples after five warmups, identical 2,000-line input and
+  paginated results) fell from 13.33 to 0.43 ms. Reuse removes process-launch cost;
+  it does not remove checkout discovery and privacy checks.
 
 ## Current execution boundary
 
