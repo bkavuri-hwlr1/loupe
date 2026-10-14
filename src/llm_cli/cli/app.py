@@ -19,7 +19,9 @@ from llm_cli.cli.interrupts import ExitRequested
 from llm_cli.cli.output import emit
 from llm_cli.cli.render import checkout_event_text
 from llm_cli.cli.session import (
+    APPLY_TIMEOUT_SECONDS,
     _follow,
+    _patient,
     open_or_resume_session,
     remove_session_secret,
     run_session,
@@ -537,7 +539,12 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
         return _dispatch_session(arguments, client)
     if command == "task":
         if arguments.task_command in {"diff", "checks", "apply", "undo", "cancel"}:
-            return client.call(
+            caller = (
+                _patient(client, APPLY_TIMEOUT_SECONDS)
+                if arguments.task_command == "apply"
+                else client
+            )
+            return caller.call(
                 "task." + arguments.task_command,
                 {
                     "task_id": arguments.task_id,

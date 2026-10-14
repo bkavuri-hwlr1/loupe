@@ -950,3 +950,66 @@ def test_closing_the_conversation_clears_the_context_meter(
 def test_usage_rejects_arguments(client: Client, menu: Menu) -> None:
     with pytest.raises(ValueError, match="Usage: /usage"):
         start(client)._command("/usage now")
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_apply_waits_for_required_checks_beyond_the_default_rpc_timeout(
+    client: Client,
+    menu: Menu,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupted: bool,
+) -> None:
+    # Apply may run required checks first, so it must not give up after the
+    # five-second default while the daemon goes on to publish.
+    waits: list[tuple[str, float]] = []
+
+    def call(self: DaemonClient, method: str, params: Any = None, **_: Any) -> Any:
+        waits.append((method, self.timeout_seconds))
+        if interrupted and method == "task.apply":
+            raise KeyboardInterrupt
+        return {"state": "published"}
+
+    monkeypatch.setattr(DaemonClient, "call", call)
+    daemon = DaemonClient(client.paths)
+    chat = shell.ChatShell(
+        daemon,
+        repository=client.paths.state_dir.parent,
+        scopes=["*"],
+        provider=None,
+        model=None,
+        resume_session_id=None,
+        workspace_mode=None,
+        stdin=io.StringIO(),
+        stream=io.StringIO(),
+        plain=True,
+    )
+    assert chat._command("/apply task-1")
+    assert waits == [("task.apply", session.APPLY_TIMEOUT_SECONDS)]
+    assert daemon.timeout_seconds == 5.0
+    if interrupted:
+        assert "the apply continues" in output(chat)
+    else:
+        assert "required checks run first" in output(chat)
+    chat._command("/diff task-1")
+    assert waits[-1] == ("task.diff", 5.0)
+
+
+def test_task_apply_command_waits_for_required_checks(
+    client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.cli.app import build_parser, dispatch
+
+    waits: list[tuple[str, float]] = []
+
+    def call(self: DaemonClient, method: str, params: Any = None, **_: Any) -> Any:
+        waits.append((method, self.timeout_seconds))
+        return {}
+
+    monkeypatch.setattr(DaemonClient, "call", call)
+    daemon = DaemonClient(client.paths)
+    for command in (["task", "apply", "task-1"], ["task", "undo", "task-1"]):
+        dispatch(build_parser().parse_args(command), daemon)
+    assert waits == [
+        ("task.apply", session.APPLY_TIMEOUT_SECONDS),
+        ("task.undo", 5.0),
+    ]

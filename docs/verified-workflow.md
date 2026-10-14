@@ -122,7 +122,8 @@ configuration. A source or copied dependency change makes previous results stale
 stale required checks on that exact result. Checks run in disposable snapshots
 without holding the publication lock; the daemon revalidates the checkout and
 check evidence before journaled publication. If the checkout changes during
-checks, retry apply. Overlapping edits, deleted files, and binary or symlink
+checks, retry apply. `/apply` and `loupe task apply` wait for those checks;
+Ctrl+C stops waiting, not the apply. Overlapping edits, deleted files, and binary or symlink
 changes refuse the entire proposal, name its paths, and require a fresh change
 from the session. Conflict markers are never applied. `loupe task retry` does
 not apply to conversation tasks. To explicitly apply despite failed or missing checks:
