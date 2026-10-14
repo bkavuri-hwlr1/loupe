@@ -172,6 +172,15 @@ the remaining planned capabilities are listed below.
   `--allow-unverified`; undo remains exact-base and preserves the preceding
   checkout changes.
 
+- Public `web_fetch` pages support configured HTTP CONNECT proxies through
+  `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (or lowercase forms), and an explicit
+  `agent.web_proxy`. CONNECT uses the target's checked IP, with bracketed IPv6
+  authorities in both the request and Host header across supported Python
+  versions. TLS still verifies the original hostname; redirects retain domain
+  approvals and public-address checks. Local proxy tests cover successful
+  fetches, bypass, refused private targets and redirects, and configuration
+  errors without secrets. See harness plan item 10 for configuration.
+
 - Regex matching reuses a fixed pool of at most four isolated Python workers
   across brokers and batched reads. Waiting, pipe transfer, compilation and
   matching share the search deadline. Timeout or cancellation kills and reaps

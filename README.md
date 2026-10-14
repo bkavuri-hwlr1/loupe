@@ -353,6 +353,15 @@ carry no cookies or credentials. Pages arrive as text, limited in size and
 screened for recognized secrets, and the agent treats them as information
 rather than instructions. The conversation shows which domains were read.
 
+Behind a proxy, Loupe uses `HTTPS_PROXY` / `HTTP_PROXY` and `NO_PROXY` from its
+environment, or `web_proxy = "http://proxy.example:8080"` under `[agent]`. The
+proxy must accept HTTP CONNECT without a password. Loupe checks each address
+itself and asks the proxy to connect to that IP address, not the hostname, so
+a proxy that allows sites by hostname will refuse, and many proxies allow
+CONNECT only to port 443, refusing plain `http://` pages. A proxy setting that
+includes a password stops `web_fetch` with an error rather than connecting
+directly.
+
 ### Repository instructions and long conversations
 
 Put build, test, and style guidance for the agent in an `AGENTS.md` file (the
