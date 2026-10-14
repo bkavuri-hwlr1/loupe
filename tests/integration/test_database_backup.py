@@ -72,11 +72,17 @@ def test_live_daemon_backup_keeps_latest_task_and_private_files(
             second = client.call("db.backup")
             assert Path(second["directory"]).parent == client.paths.data_dir / "backups"
             assert second["directory"] != result["directory"]
+            # A chosen directory may pass through a symlink, as /tmp does on
+            # macOS; the backup lands in the directory it points to.
             linked = tmp_path / "linked"
             linked.symlink_to(tmp_path / "backups", target_is_directory=True)
-            with pytest.raises(LlmCoordError, match="symlink"):
-                client.call("db.backup", {"out": str(linked / "child")})
-            assert not (tmp_path / "backups" / "child").exists()
+            third = client.call("db.backup", {"out": str(linked / "child")})
+            assert Path(third["directory"]).parent == tmp_path / "backups" / "child"
+            assert stat.S_IMODE(Path(third["directory"]).stat().st_mode) == 0o700
+            blocked = tmp_path / "not-a-directory"
+            blocked.write_text("")
+            with pytest.raises(LlmCoordError, match="could not complete: .*exists"):
+                client.call("db.backup", {"out": str(blocked)})
             assert client.call("system.ping", autostart=False)
         finally:
             client.call("system.shutdown", autostart=False)
