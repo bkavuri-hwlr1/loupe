@@ -363,6 +363,8 @@ interrupted execution retains its evidence and recovers normally. Settled
 checkpoints lose the saved conversation and published file contents, which
 were most of the profile database's size; an interrupted answer keeps them for
 `/retry-answer`, and a failed turn keeps its pending files for `task diff`.
+Malformed checkpoint phases protect their task without preventing cleanup of
+other settled tasks; dry-run and applied pruning both preserve that evidence.
 
 ### D3. `loupe config show` and `set`
 
