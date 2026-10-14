@@ -81,7 +81,7 @@ def test_live_daemon_backup_keeps_latest_task_and_private_files(
             assert stat.S_IMODE(Path(third["directory"]).stat().st_mode) == 0o700
             blocked = tmp_path / "not-a-directory"
             blocked.write_text("")
-            with pytest.raises(LlmCoordError, match="could not complete: .*exists"):
+            with pytest.raises(LlmCoordError, match=r"could not complete: .*exists"):
                 client.call("db.backup", {"out": str(blocked)})
             assert client.call("system.ping", autostart=False)
         finally:
