@@ -262,10 +262,13 @@ them and how it treats what they return:
   never server output.
 
 Streamable HTTP endpoints may be local or remote configured authority; they
-do not follow the public-address restrictions of `web_fetch`. HTTP headers
+do not follow the public-address restrictions of `web_fetch`, but a remote one
+must use HTTPS so header credentials are never sent in plain text. HTTP headers
 map names to environment variable names in configuration. Values are resolved
 only into task memory, are never recorded, and cannot replace protocol headers.
 Missing, oversized, or control-containing values prevent the server starting.
+Results are withheld when they contain a header value of eight or more
+characters; shorter values, such as a team name, are not credentials.
 Connections use normal HTTPS certificate validation, no ambient proxy/cookie
 settings, and no redirects. Responses are capped at 8 MiB and have a total
 deadline, including SSE streams. An expired session is reinitialized without

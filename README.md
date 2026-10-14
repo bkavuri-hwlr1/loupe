@@ -296,7 +296,8 @@ timeout = 120                 # seconds per call
 # read_only = true            # offer this server in plan mode too
 ```
 
-For HTTP, use `url` instead of `command`. Header values come from environment
+For HTTP, use `url` instead of `command`; remote endpoints must use `https`
+(plain `http` is accepted only on localhost). Header values come from environment
 variables in Loupe's process; the configuration contains only their names:
 
 ```toml

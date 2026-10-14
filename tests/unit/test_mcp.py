@@ -741,8 +741,18 @@ def test_http_configuration_contains_only_header_variable_names(tmp_path: Path) 
     (server,) = load_settings(config).mcp_servers
     assert server.url == "https://example.com/mcp" and server.command == ()
     assert server.headers == (("Authorization", "MCP_AUTH"),) and server.read_only
+    for local in (
+        "http://localhost:8080/mcp",
+        "http://127.0.0.1:8080/mcp",
+        "http://[::1]:8080/mcp",
+    ):
+        config.write_text(f'[mcp.servers.remote]\nurl = "{local}"\n')
+        assert load_settings(config).mcp_servers[0].url == local
     for bad in (
         'url = "ftp://example.com/mcp"',
+        # Header credentials would cross the network unencrypted.
+        'url = "http://example.com/mcp"',
+        'url = "http://10.0.0.5/mcp"',
         'url = "https://user:password@example.com/mcp"',
         'url = "https://example.com:invalid/mcp"',
         'url = "https://example.com/mcp#fragment"',
@@ -760,3 +770,22 @@ def test_http_configuration_contains_only_header_variable_names(tmp_path: Path) 
         config.write_text("[mcp.servers.remote]\n" + bad + "\n")
         with pytest.raises(LlmCoordError):
             load_settings(config)
+
+
+def test_short_header_values_do_not_withhold_ordinary_output(tmp_path: Path) -> None:
+    with http_mcp_server() as server:
+        config = McpServerConfig(
+            name="remote",
+            url=server.url,
+            headers=(("X-Team", "MCP_TEAM"),),
+            approval="allow",
+        )
+        toolset, _ = _toolset(tmp_path, config, environ={"MCP_TEAM": "text"})
+        try:
+            text, error = toolset.call(
+                "mcp__remote__resources_read", {"uri": "test://guide"}, max_bytes=10_000
+            )
+            assert not error and "Guide text" in text
+            assert server.headers[-1]["X-Team"] == "text"
+        finally:
+            toolset.close()

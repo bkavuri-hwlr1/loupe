@@ -23,6 +23,9 @@ from llm_cli.mcp.client import McpClient, McpError, StdioClient
 from llm_cli.mcp.transport import HttpClient
 
 PREFIX = "mcp__"
+# Header values this short are not credentials, such as a team or region name;
+# screening them would withhold any output that happens to contain them.
+_MIN_SCREENED_SECRET = 8
 _START_TIMEOUT_SECONDS = 30.0
 # Providers accept tool names of at most 64 letters, digits, "_" and "-".
 _TOOL_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -289,7 +292,7 @@ class McpToolset:
                         part
                         for value in headers.values()
                         for part in (value, value.split(" ", 1)[-1])
-                        if part
+                        if len(part) >= _MIN_SCREENED_SECRET
                     )
                     client = HttpClient(server.url, headers=headers)
                 else:

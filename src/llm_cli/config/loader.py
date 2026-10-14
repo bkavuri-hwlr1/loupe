@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import tomllib
 from dataclasses import replace
@@ -239,6 +240,15 @@ def _hooks(hooks: dict[str, Any]) -> tuple[HookConfig, ...]:
     return tuple(configured)
 
 
+def _loopback(host: str | None) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
+
+
 def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
     if set(mcp) - {"servers"}:
         raise _unknown("mcp", set(mcp) - {"servers"})
@@ -287,6 +297,8 @@ def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
                     parsed is not None
                     and parsed.scheme in {"http", "https"}
                     and bool(parsed.hostname)
+                    # Header values are credentials; only local HTTP is plain.
+                    and (parsed.scheme == "https" or _loopback(parsed.hostname))
                     and parsed.port != 0
                     and parsed.username is None
                     and parsed.password is None
@@ -300,7 +312,8 @@ def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
             if not valid_url:
                 raise LlmCoordError(
                     ErrorCode.CONFIG_INVALID,
-                    f"{where}.url must be an HTTP(S) endpoint without credentials",
+                    f"{where}.url must be an HTTPS endpoint without credentials "
+                    "(plain HTTP only on localhost)",
                 )
             if "env" in raw or "cwd" in raw:
                 raise LlmCoordError(
