@@ -8,14 +8,37 @@ revision counts and Git invariants instead of depending on a particular winner.
 from __future__ import annotations
 
 import json
+import os
 import random
+import signal
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Timer
 
 import pytest
 from test_cli_process_orchestration import _CONTEXT, _Cluster
 from test_cli_process_orchestration import cluster as cluster
+
+from llm_cli.protocol.client import DaemonClient
+
+
+def test_polling_rpc_survives_a_stalled_daemon(cluster: _Cluster) -> None:
+    """A correctness test must tolerate a runner stall longer than the UI budget.
+
+    The failing CI traceback was this fixture's task.list polling client, not
+    one of the six chat processes. Stop the real daemon while a request waits.
+    """
+
+    assert DaemonClient(cluster.paths).timeout_seconds == 5.0
+    os.kill(cluster.daemon.pid, signal.SIGSTOP)
+    resume = Timer(6.0, lambda: os.kill(cluster.daemon.pid, signal.SIGCONT))
+    resume.start()
+    try:
+        assert cluster.rpc("task.list") == []
+    finally:
+        resume.cancel()
+        os.kill(cluster.daemon.pid, signal.SIGCONT)
+        resume.join()
 
 
 def _git_state(cluster: _Cluster, git_run: Callable[..., str]) -> tuple[str, str]:
