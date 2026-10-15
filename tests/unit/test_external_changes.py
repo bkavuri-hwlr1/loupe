@@ -376,3 +376,28 @@ def test_pending_publication_during_scan_never_records_external_change(
     with pytest.raises(LlmCoordError, match="publication changed"):
         scanner.scan_session("reader")
     assert not _events(store)
+
+
+def test_own_publication_uses_checkout_case_rules(
+    checkout: tuple[ControlStore, Path, str], tmp_path: Path
+) -> None:
+    store, root, workspace = checkout
+    (root / "lower.py").write_text("old")
+    if not (root / "LOWER.py").exists():
+        pytest.skip("requires a case-insensitive filesystem")
+    with store.connection() as conn:
+        conn.execute("UPDATE checkouts SET path_case_insensitive=1")
+    _read(store, root, "lower.py")
+    scanner = external.ExternalWorkspaceScanner(store)
+    scanner.scan_session("reader")
+    base, _ = read_identified_path(root / "LOWER.py")
+    publisher = SharedBatchPublisher(store, tmp_path / "private", threading.RLock())
+    publisher.publish(
+        session_id="other",
+        batch_id="case-publication",
+        files=(BatchFile("LOWER.py", base, b"new", REGULAR_MODE, original=b"old"),),
+        scopes=("LOWER.py",),
+        case_insensitive_filesystem=True,
+    )
+    assert scanner.scan_session("reader") == 0
+    assert not _events(store)
