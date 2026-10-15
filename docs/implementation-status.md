@@ -582,8 +582,40 @@ These runs used experiment version 2, whose toolkit registry put the two
 flags on adjacent lines. A three-way merge treats adjacent changed lines as
 one conflict, so every two-session toolkit run had to resolve a registry
 conflict, which may account for part of its extra time. Version 3 puts a
-comment line between the flags so the parts merge cleanly; it has not been
-measured yet.
+comment line between the flags so the parts merge cleanly. Its repeated
+measurement follows below.
+
+
+### Toolkit version 3 measured results (October 14, 2026 local)
+
+The revised fixture separates adjacent text and numeric registry flags with a
+comment, allowing their disjoint changes to merge cleanly. On
+final Wave 1 commit `47d1451`, twelve live Codex runs repeated single/pair and
+clean/disrupted cases three times with `gpt-6-sol`, effort `xhigh`, exploration available (unused in every run), commands allowed, web fetch off,
+and a matching noneditable Python 3.14 wheel. Independent review was unavailable
+in this baseline. Full test
+suites were held during measurement; implementation work and short focused
+checks continued. [Sanitized per-run evidence](experiments/wave1-toolkit-v3-2026-10-14.json)
+retains the source fingerprint and exact settings.
+
+| Scenario | One agent median | Two sessions median | One agent tokens | Two sessions tokens |
+|---|---:|---:|---:|---:|
+| Clean | 62.4 s | 74.4 s | 70,197 | 124,159 |
+| Restart + manual edit | 79.8 s | 84.0 s | 84,108 | 162,268 |
+
+All twelve runs passed their own tests and every hidden acceptance test
+(15/15 clean, 16/16 disrupted). Every disrupted run restarted the daemon and
+preserved the operator edit. There were no answers, follow-ups, timeouts,
+rejected batches, failed lanes, or measured sleep intervals.
+
+On this fixture, two sessions were 19.2% slower clean and 5.3% slower disrupted,
+using 1.77x and 1.93x the tokens respectively. Tokens are prompt plus output,
+including cached prompt tokens, and do not measure dollar cost. Three samples
+per case do not establish a general performance claim. Earlier version 2 ran
+on implementation `b5b0b2a`; version 3 also includes subsequent Wave 1 product
+changes, so the difference does not isolate the fixture revision. The shop
+fixture was unchanged and was not rerun. E2 remains deferred.
+
 
 ## Wave 2 B1: independent review before settlement
 
