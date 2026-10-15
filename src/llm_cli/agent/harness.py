@@ -419,6 +419,8 @@ class CodingAgentHarness:
             if saved is not None
             else self.clock() + self.limits.wall_clock_seconds
         )
+        tools.deadline_at = deadline
+        tools.clock = self.clock
         explorer: Explorer | None = None
         if self.explorations and tools.explorer is None:
             explorer = Explorer(
@@ -791,8 +793,17 @@ class CodingAgentHarness:
             return True
 
         def send_prompt(text: str) -> ModelTurn:
+            notice = tools.pending_parent_notice()
+            text = _with_parent_notice(text, notice)
+
+            def send() -> ModelTurn:
+                response = self._guarded(session.send_user, text, tools, live)
+                if notice is not None:
+                    tools.acknowledge_parent_notice(notice[0])
+                return response
+
             try:
-                return self._guarded(session.send_user, text, tools, live)
+                return send()
             except LlmCoordError as exc:
                 # The provider rejected the prompt as too long and left the
                 # history unchanged. Summarize it and send the prompt again.
@@ -808,7 +819,7 @@ class CodingAgentHarness:
                 current_results=results,
                 current_in_flight=in_flight,
             )
-            return self._guarded(session.send_user, text, tools, live)
+            return send()
 
         def record_turn(new_turn: ModelTurn) -> None:
             nonlocal context_tokens, summarized_this_turn
@@ -944,8 +955,9 @@ class CodingAgentHarness:
                         *rest,
                     )
                 update = refresh_coordination()
+                notice = tools.pending_parent_notice()
                 payload = _results_with_coordination(
-                    results, update, self.limits.max_tool_output_bytes
+                    results, update, self.limits.max_tool_output_bytes, notice
                 )
                 # A summary can absorb these results without recording them,
                 # so a failed summary leaves them to be sent as usual.
@@ -980,6 +992,8 @@ class CodingAgentHarness:
                     )
                     continue
                 assert turn is not None
+                if notice is not None:
+                    tools.acknowledge_parent_notice(notice[0])
                 consumed_coordination(update)
                 mark_review_delivered()
                 record_turn(turn)
@@ -1863,10 +1877,19 @@ def _with_coordination(text: str, update: CoordinationUpdate | None) -> str:
     )
 
 
+def _with_parent_notice(text: str, notice: tuple[int, str] | None) -> str:
+    if notice is None:
+        return text
+    return (
+        text + "\n\n[Helper workspace update]\n" + notice[1] + "\n[End helper update]"
+    )
+
+
 def _results_with_coordination(
     results: Sequence[ToolCallResult],
     update: CoordinationUpdate | None,
     limit: int,
+    notice: tuple[int, str] | None = None,
 ) -> tuple[ToolCallResult, ...]:
     """Attach facts without creating an unmatched native tool result.
 
@@ -1875,11 +1898,11 @@ def _results_with_coordination(
     last outcome to fit the existing per-result budget, retaining the update.
     """
 
-    if update is None or not update.text:
+    suffix = _with_parent_notice(_with_coordination("", update), notice)
+    if not suffix:
         return tuple(results)
     if not results:
-        raise ValueError("coordination tool update has no completed tool result")
-    suffix = _with_coordination("", update)
+        raise ValueError("checkout update has no completed tool result")
     available = limit - len(suffix.encode("utf-8"))
     last = results[-1]
     content = last.content
