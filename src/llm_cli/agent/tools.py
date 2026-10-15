@@ -25,6 +25,7 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -97,6 +98,7 @@ class _SearchPrepared:
 # search awaiting matching, or nothing to prepare (file reads).
 type _Prepared = ToolOutcome | Exception | _SearchPrepared | None
 READ_ONLY_TOOLS = ("list_files", "read_file", "search_text", "read_diff")
+_HELPER_CALL: ContextVar[bool] = ContextVar("exploration_helper_call", default=False)
 MAX_EXPLORE_TASK_CHARACTERS = 4_000
 MAX_EXPLORE_LABEL_CHARACTERS = 80
 PLAN_STATUSES = ("pending", "in_progress", "completed")
@@ -186,6 +188,8 @@ class ToolBroker:
     finish_gate: Callable[[], ToolOutcome | None] | None = None
     usage: ToolUsage = field(default_factory=ToolUsage)
     agent_mode: str = "auto"
+    deadline_at: float | None = None
+    clock: Callable[[], float] = time.time
     _partial_reads: set[str] = field(default_factory=set, init=False)
     _commands_approved: bool = field(default=False, init=False)
     _mcp_approved: set[str] = field(default_factory=set, init=False)
@@ -200,6 +204,11 @@ class ToolBroker:
     _approval_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
     )
+    _notice_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
+    _notice_version: int = field(default=0, init=False)
+    _notice_text: str | None = field(default=None, init=False)
     # A delegated view exposes only source reads and these parent-owned tools.
     # None is an ordinary broker; an empty mapping is a source-only view.
     _helper_tools: dict[str, Callable[[Mapping[str, object]], ToolOutcome]] | None = (
@@ -232,7 +241,7 @@ class ToolBroker:
     def usage_snapshot(self) -> dict[str, object]:
         """Return JSON-safe counters so a resumed turn keeps every limit."""
 
-        return {
+        saved: dict[str, object] = {
             "calls": self.usage.calls,
             "files_read": self.usage.files_read,
             "bytes_read": self.usage.bytes_read,
@@ -248,6 +257,13 @@ class ToolBroker:
             ],
             "repairs": self._repairs.to_dict(),
         }
+        with self._notice_lock:
+            if self._notice_version:
+                saved["parent_notice"] = {
+                    "version": self._notice_version,
+                    "text": self._notice_text,
+                }
+        return saved
 
     def restore_usage(self, saved: Mapping[str, object]) -> None:
         """Restore a checkpointed budget without accepting malformed counters."""
@@ -288,6 +304,24 @@ class ToolBroker:
             raise ValueError("saved partial file reads are malformed")
         plan = parse_plan(saved.get("plan", []))
         repairs = RepairTracker.from_dict(saved.get("repairs"))
+        notice = saved.get("parent_notice", {"version": 0, "text": None})
+        if (
+            not isinstance(notice, dict)
+            or set(notice) != {"version", "text"}
+            or type(notice["version"]) is not int
+            or notice["version"] < 0
+            or (
+                notice["text"] is not None
+                and (
+                    not isinstance(notice["text"], str)
+                    or len(notice["text"].encode()) > self.limits.max_tool_output_bytes
+                    or contains_secret_material(notice["text"])
+                )
+            )
+        ):
+            raise ValueError("saved parent update notice is invalid")
+        with self._notice_lock:
+            self._notice_version, self._notice_text = notice["version"], notice["text"]
         self._partial_reads = set(partial_reads)
         self._repairs = repairs
         self.usage = ToolUsage(
@@ -302,6 +336,44 @@ class ToolBroker:
             outcome=outcome,
             plan=plan,
         )
+
+    def helper_call_active(self) -> bool:
+        return _HELPER_CALL.get()
+
+    def notify_parent(self, note: str) -> None:
+        """Keep a mandatory helper workspace update until the parent receives it."""
+        text = (
+            "An exploration helper updated your pending edits against changed "
+            "checkout files. Read the current pending diff/files before editing.\n\n"
+            + note
+        )
+        if contains_secret_material(text):
+            text = "An exploration helper updated pending edits; read the current diff."
+        with self._notice_lock:
+            self._notice_version += 1
+            self._notice_text = _clipped(
+                "\n\n".join(part for part in (text, self._notice_text) if part),
+                self.limits.max_tool_output_bytes // 2,
+            )
+
+    def pending_parent_notice(self) -> tuple[int, str] | None:
+        with self._notice_lock:
+            if self._notice_text is None:
+                return None
+            return self._notice_version, self._notice_text
+
+    def acknowledge_parent_notice(self, version: int) -> None:
+        with self._notice_lock:
+            if version == self._notice_version:
+                self._notice_text = None
+
+    def _check_web_lifecycle(self) -> None:
+        self.check_cancelled()
+        if self.deadline_at is not None and self.clock() >= self.deadline_at:
+            raise LlmCoordError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "the agent exceeded its wall-clock budget for this task",
+            )
 
     def record_interrupted_call(self) -> None:
         """Count a tool call whose filesystem outcome cannot be replayed safely."""
@@ -379,7 +451,11 @@ class ToolBroker:
             handler: Callable[[Mapping[str, object]], ToolOutcome] = getattr(
                 self, _HANDLERS[name].__name__
             )
-            return handler(arguments)
+            token = _HELPER_CALL.set(True)
+            try:
+                return handler(arguments)
+            finally:
+                _HELPER_CALL.reset(token)
 
         return invoke
 
@@ -448,6 +524,9 @@ class ToolBroker:
             self.usage.calls += 1
             call = self.usage.calls
         self.emit("tool.called", {"tool": name, "call": call})
+        notice = self.pending_parent_notice() if self._helper_tools is None else None
+        if notice is not None:
+            return _error(notice[1])
         if self.agent_mode == "plan" and name not in self.tool_names():
             self.usage.denied += 1
             return _error(
@@ -520,6 +599,7 @@ class ToolBroker:
         names = {name for name, _ in calls}
         return (
             len(calls) > 1
+            and self.pending_parent_notice() is None
             and names <= BATCHED_READS
             and names <= set(self.tool_names())
             # A pre_tool hook may change files before the read it guards.
@@ -692,7 +772,9 @@ class ToolBroker:
             return _error("the URL contains recognized secret material; leave it out")
         try:
             page, downloaded = self.web.page(
-                url, allowed=self._web_allowed, check_cancelled=self.check_cancelled
+                url,
+                allowed=self._web_allowed,
+                check_cancelled=self._check_web_lifecycle,
             )
         except WebFetchError as exc:
             return _error(f"web_fetch could not read that page: {exc}")
@@ -745,6 +827,10 @@ class ToolBroker:
                 f"1. Allow once\n2. Allow {host} for the rest of this task\n3. Deny\n\n"
                 "Reply with a number or your own answer."
             )
+            if _HELPER_CALL.get():
+                question = (
+                    "An exploration helper requests this approval.\n\n" + question
+                )
             answer = self.asker(question).strip()
             choice = answer.casefold()
             if choice in {"2", "always", "allow all"}:
@@ -1126,6 +1212,10 @@ class ToolBroker:
                 "3. Deny\n\n"
                 "Reply with a number or your own answer."
             )
+            if _HELPER_CALL.get():
+                question = (
+                    "An exploration helper requests this approval.\n\n" + question
+                )
             if len(question) > MAX_QUESTION_CHARACTERS:
                 return _error(
                     "that command is too long to show for approval; shorten it"
@@ -1212,6 +1302,9 @@ class ToolBroker:
         """Apply the same completion gate to natural answers and finish tools."""
 
         self.check_cancelled()
+        notice = self.pending_parent_notice()
+        if notice is not None:
+            return _error(notice[1])
         if outcome not in _COMPLETION_OUTCOMES:
             return _error("outcome must be completed, blocked, or partial")
         if not answer.strip():
