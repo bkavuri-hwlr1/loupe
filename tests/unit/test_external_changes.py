@@ -12,12 +12,13 @@ from typing import Any
 
 import pytest
 
+from llm_cli.agent.shared_tools import SharedToolBroker
 from llm_cli.errors import LlmCoordError
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace import external
 from llm_cli.workspace.batches import BatchFile, SharedBatchPublisher
 from llm_cli.workspace.context import SharedCoordinationContext
-from llm_cli.workspace.identity import REGULAR_MODE, read_identified_path
+from llm_cli.workspace.identity import REGULAR_MODE, FileIdentity, read_identified_path
 
 
 @pytest.fixture
@@ -401,3 +402,72 @@ def test_own_publication_uses_checkout_case_rules(
     )
     assert scanner.scan_session("reader") == 0
     assert not _events(store)
+
+
+def _tracked_broker(store: ControlStore, root: Path) -> SharedToolBroker:
+    def record(path: str, identity: FileIdentity) -> None:
+        store.record_workspace_read(
+            session_id="reader", relative_path=path, identity=identity
+        )
+
+    return SharedToolBroker(root, ("*",), on_read=record)
+
+
+def test_private_helper_replays_do_not_reset_publication_dedup(
+    checkout: tuple[ControlStore, Path, str], tmp_path: Path
+) -> None:
+    store, root, _ = checkout
+    (root / "a").write_text("old")
+    broker = _tracked_broker(store, root)
+    assert not broker.invoke("read_file", {"path": "a"}).is_error
+    assert not broker.invoke("write_file", {"path": "a", "content": "pending"}).is_error
+    helper = broker.read_only_view(broker.limits)
+    scanner = external.ExternalWorkspaceScanner(store)
+    assert scanner.scan_session("reader") == 0
+    base, _ = read_identified_path(root / "a")
+    publisher = SharedBatchPublisher(store, tmp_path / "private", threading.RLock())
+    publisher.publish(
+        session_id="other",
+        batch_id="private-view-publication",
+        files=(BatchFile("a", base, b"peer", REGULAR_MODE, original=b"old"),),
+        scopes=("a",),
+    )
+    assert scanner.scan_session("reader") == 0
+    for _ in range(2):
+        assert helper.invoke("read_file", {"path": "a"}).content == "pending"
+        assert not helper.invoke("read_diff", {}).is_error
+        assert scanner.scan_session("reader") == 0
+    assert not _events(store)
+
+
+def test_private_helper_replays_do_not_duplicate_a_real_outside_edit(
+    checkout: tuple[ControlStore, Path, str],
+) -> None:
+    store, root, _ = checkout
+    (root / "a").write_text("old")
+    broker = _tracked_broker(store, root)
+    assert not broker.invoke("read_file", {"path": "a"}).is_error
+    assert not broker.invoke("write_file", {"path": "a", "content": "pending"}).is_error
+    helper = broker.read_only_view(broker.limits)
+    scanner = external.ExternalWorkspaceScanner(store)
+    assert scanner.scan_session("reader") == 0
+    (root / "a").write_text("outside")
+    assert scanner.scan_session("reader") == 1
+    for _ in range(2):
+        assert helper.invoke("read_file", {"path": "a"}).content == "pending"
+        assert scanner.scan_session("reader") == 0
+    assert len(_events(store)) == 1
+
+
+def test_helper_absent_disk_read_observes_later_outside_creation(
+    checkout: tuple[ControlStore, Path, str],
+) -> None:
+    store, root, _ = checkout
+    broker = _tracked_broker(store, root)
+    helper = broker.read_only_view(broker.limits)
+    assert helper.invoke("read_file", {"path": "missing.py"}).is_error
+    scanner = external.ExternalWorkspaceScanner(store)
+    assert scanner.scan_session("reader") == 0
+    (root / "missing.py").write_text("created outside")
+    assert scanner.scan_session("reader") == 1
+    assert _events(store) == [{"path": "missing.py", "affected_session_id": "reader"}]
