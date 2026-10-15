@@ -262,6 +262,19 @@ tests.
 with absolute paths, `node_modules`, nested repositories, escaping symlinks,
 and FIFOs with explicit decisions; nothing is copied yet.
 
+**Implemented (Wave 2 C1):** [ADR 0009](adr/0009-isolated-runtime-hydration.md)
+accepts the conservative preview minimum. `workspace/hydration.py` inventories
+actual ignored entries with descriptor-relative no-follow traversal, NUL-safe
+Git classification, metadata/time/depth/entry bounds, per-file and aggregate
+copy budgets, and stable lexical decisions. The daemon-free
+`loupe workspace hydrate [PATH] --plan` command returns human/JSON metadata;
+`--approve-secret PATH` previews exact-file consent only. `.venv` requires a
+portability adapter/rebuild without inspecting its bytes; contained symlink
+recreation is deferred along with escaping/absolute links. Refused directories
+explicitly mark descendants unexamined. Incomplete or changed inventories
+cannot propose copies. COW probing, pinned source/ignore-rule materialization,
+actual isolated workspaces and publication remain C2/C3 work.
+
 ### C2. Isolated mode: sessions in their own worktree
 
 **Depends on C1.** Open an isolated session on a managed linked worktree

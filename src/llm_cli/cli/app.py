@@ -240,6 +240,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workspace_status = workspace_commands.add_parser("status")
     workspace_status.add_argument("path", nargs="?", default=".")
+    hydrate = workspace_commands.add_parser(
+        "hydrate", help="preview ignored runtime hydration without copying files"
+    )
+    hydrate.add_argument("path", nargs="?", default=".")
+    hydrate.add_argument("--plan", action="store_true", required=True)
+    hydrate.add_argument(
+        "--approve-secret",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="preview consent for this exact runtime file; never recursive or saved",
+    )
+    hydrate.add_argument("--max-entries", type=int, default=20_000)
+    hydrate.add_argument("--max-metadata-bytes", type=int, default=4 * 1024 * 1024)
+    hydrate.add_argument("--max-depth", type=int, default=64)
+    hydrate.add_argument("--max-file-bytes", type=int, default=256 * 1024 * 1024)
+    hydrate.add_argument("--max-bytes", type=int, default=2 * 1024 * 1024 * 1024)
+    hydrate.add_argument(
+        "--max-allocated-bytes", type=int, default=2 * 1024 * 1024 * 1024
+    )
+    hydrate.add_argument("--max-seconds", type=float, default=10.0)
     workspace_read = workspace_commands.add_parser(
         "read", help="read one shared file and return its exact base identity"
     )
@@ -494,6 +515,22 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             return _watch(client, task_id, 0, arguments.as_json, arguments.plain)
         return result
     if command == "workspace":
+        if arguments.workspace_command == "hydrate":
+            from llm_cli.workspace.hydration import HydrationBudgets, plan_hydration
+
+            return plan_hydration(
+                Path(arguments.path),
+                budgets=HydrationBudgets(
+                    max_entries=arguments.max_entries,
+                    max_metadata_bytes=arguments.max_metadata_bytes,
+                    max_depth=arguments.max_depth,
+                    max_file_bytes=arguments.max_file_bytes,
+                    max_total_bytes=arguments.max_bytes,
+                    max_allocated_bytes=arguments.max_allocated_bytes,
+                    max_seconds=arguments.max_seconds,
+                ),
+                approved_secret_paths=arguments.approve_secret,
+            ).to_dict()
         if arguments.workspace_command == "status":
             return client.call(
                 "workspace.status",
