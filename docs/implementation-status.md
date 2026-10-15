@@ -7,6 +7,16 @@ the remaining planned capabilities are listed below.
 
 ## Implemented
 
+- A metadata-only hydration preview for future isolated workspaces:
+  `loupe workspace hydrate [PATH] --plan` (or global `--json`) walks actual
+  ignored runtime entries with bounded no-follow traversal and passive Git
+  ignore classification. It reports sizes, copy/COW candidates, budgets and
+  explicit secret-consent, virtualenv-portability, symlink, special-file and
+  nested-repository refusals. Exact `--approve-secret PATH` flags preview
+  per-file consent without saving it. Truncated or changing inventories
+  disable candidate copies. This command needs no daemon and copies nothing;
+  isolated sessions still await C2/C3. See [ADR 0009](adr/0009-isolated-runtime-hydration.md).
+
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
   retained review proposals, task diffs, apply, undo, and cancellation. Shared
