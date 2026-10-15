@@ -578,21 +578,35 @@ def test_http_timeout_cannot_implicitly_reconnect_before_sending(
         client = HttpClient(server.url, headers={})
         client.start(3)
         original = http.client.HTTPConnection.request
+        original_close = http.client.HTTPConnection.close
+        closed = threading.Event()
+        sending: list[http.client.HTTPConnection] = []
+
+        def note_close(connection: http.client.HTTPConnection) -> None:
+            original_close(connection)
+            if sending and connection is sending[0]:
+                closed.set()
 
         def delayed_send(
             connection: http.client.HTTPConnection, *args: Any, **kwargs: Any
         ) -> None:
-            # Let the timeout close the established socket before send() checks
-            # it. HTTPConnection's default auto_open would reconnect here.
-            time.sleep(0.1)
+            assert connection.sock is not None
+            sending.append(connection)
+            # Wait for this request's timeout callback to close its socket.
+            # Sleeping past the deadline does not prove the callback ran.
+            assert closed.wait(3)
+            assert connection.sock is None
             original(connection, *args, **kwargs)
 
         try:
             with monkeypatch.context() as patch:
                 patch.setattr(http.client.HTTPConnection, "request", delayed_send)
+                patch.setattr(http.client.HTTPConnection, "close", note_close)
                 with pytest.raises(McpError) as failure:
-                    client.call_tool("echo", {}, 0.05)
+                    # Leave setup time; this test concerns sending after close.
+                    client.call_tool("echo", {}, 1)
                 assert failure.value.kind == "timeout"
+                assert len(sending) == 1
                 assert not any(
                     message.get("method") == "tools/call" for message in server.messages
                 )
