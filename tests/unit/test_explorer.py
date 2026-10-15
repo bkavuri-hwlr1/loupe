@@ -1220,8 +1220,9 @@ def test_private_helper_overlay_and_diff_never_replay_source_read_callback(
     assert len(seen) == count and seen[-1] == newest
 
 
+@pytest.mark.parametrize("batched", [False, True])
 def test_pinned_partial_read_does_not_downgrade_latest_source_callback(
-    checkout: Path,
+    checkout: Path, batched: bool
 ) -> None:
     from llm_cli.workspace.identity import identify_path
 
@@ -1231,14 +1232,26 @@ def test_pinned_partial_read_does_not_downgrade_latest_source_callback(
         checkout, on_read=lambda path, identity: seen.append((path, identity))
     )
     helper = parent.read_only_view(parent.limits)
-    arguments = {"path": "docs/guide.md", "start_line": 1, "end_line": 1}
-    assert not helper.invoke("read_file", arguments).is_error
+
+    def read(arguments: dict[str, object]) -> Any:
+        if batched:
+            return helper.invoke_reads(
+                [("read_file", arguments), ("list_files", {"path": "docs"})]
+            )[0]
+        return helper.invoke("read_file", arguments)
+
+    arguments: dict[str, object] = {
+        "path": "docs/guide.md",
+        "start_line": 1,
+        "end_line": 1,
+    }
+    assert not read(arguments).is_error
     assert len(seen) == 1
     (checkout / "docs/guide.md").write_text("new checkout\n")
-    assert "original" in helper.invoke("read_file", arguments).content
-    assert "original" in helper.invoke("read_file", {"path": "docs/guide.md"}).content
+    assert "original" in read(arguments).content
+    assert "original" in read({"path": "docs/guide.md"}).content
     assert len(seen) == 1
-    assert not helper.invoke("read_file", {**arguments, "refresh": True}).is_error
+    assert not read({**arguments, "refresh": True}).is_error
     assert seen[-1] == ("docs/guide.md", identify_path(checkout / "docs/guide.md"))
     assert len(seen) == 2
 
@@ -1297,3 +1310,68 @@ def test_batch_source_callbacks_happen_at_capture_and_not_cached_replay(
     assert outcomes[0].content == "original guide\n"
     assert len(seen) == 2
     assert all(content == "original guide\n" for _, _, content in seen)
+
+
+def test_batch_mixed_pinned_read_and_refresh_registers_only_new_source(
+    checkout: Path,
+) -> None:
+    from llm_cli.workspace.identity import identify_path
+
+    (checkout / "docs/guide.md").write_text("original guide\nanother line\n")
+    seen: list[tuple[str, object]] = []
+    parent, _ = _shared(
+        checkout, on_read=lambda path, identity: seen.append((path, identity))
+    )
+    helper = parent.read_only_view(parent.limits)
+    partial: dict[str, object] = {
+        "path": "docs/guide.md",
+        "start_line": 1,
+        "end_line": 1,
+    }
+    assert not helper.invoke("read_file", partial).is_error
+    assert len(seen) == 1
+    (checkout / "docs/guide.md").write_text("new checkout\n")
+    outcomes = helper.invoke_reads(
+        [
+            ("read_file", partial),
+            ("read_file", {"path": "docs/guide.md", "refresh": True}),
+        ]
+    )
+    assert "original" in outcomes[0].content
+    assert outcomes[1].content == "new checkout\n"
+    assert len(seen) == 2
+    assert seen[-1] == ("docs/guide.md", identify_path(checkout / "docs/guide.md"))
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"refresh": True, "start_line": 0},
+        {"refresh": True, "start_line": 2, "end_line": 1},
+        {"refresh": True, "start_column": 0},
+        {"refresh": "yes"},
+    ],
+)
+def test_invalid_batch_read_cannot_refresh_a_pinned_source_observation(
+    checkout: Path, invalid: dict[str, object]
+) -> None:
+    (checkout / "docs/guide.md").write_text("original guide\nanother line\n")
+    seen: list[tuple[str, object]] = []
+    parent, _ = _shared(
+        checkout, on_read=lambda path, identity: seen.append((path, identity))
+    )
+    helper = parent.read_only_view(parent.limits)
+    partial: dict[str, object] = {
+        "path": "docs/guide.md",
+        "start_line": 1,
+        "end_line": 1,
+    }
+    assert not helper.invoke("read_file", partial).is_error
+    original = seen.copy()
+    (checkout / "docs/guide.md").write_text("new checkout\n")
+    outcomes = helper.invoke_reads(
+        [("read_file", partial), ("read_file", {"path": "docs/guide.md", **invalid})]
+    )
+    assert not outcomes[0].is_error and "original" in outcomes[0].content
+    assert outcomes[1].is_error
+    assert seen == original

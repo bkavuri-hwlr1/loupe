@@ -401,6 +401,11 @@ nonregular objects produce opaque metadata changes. Checkout events and model
 notices retain only the path and affected session, never content, diffs or
 identity digests. A `.env` observed through the file broker is tracked using
 metadata only; tracking does not grant model tools permission to read it.
+Only fresh checkout observations register source identities. Reading private
+pending edits, pinned ranges or saved diffs cannot reset the scanner baseline;
+batched fresh reads register under their capture barrier. Unrelated external
+events advance the model's private cursor quietly only after complete event
+validation, without changing terminal acknowledgements.
 Scanner state is durable local metadata. It does not replace publication's
 exact-base validation, monitor Git operations, follow filesystem links, or
 capture every intermediate state of an external writer.

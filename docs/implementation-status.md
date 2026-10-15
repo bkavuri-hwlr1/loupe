@@ -289,8 +289,11 @@ shared session has actually observed, at each model boundary and on rotating
 daemon ticks. Metadata invalidates cached identities; stable eligible source
 is screened before hashing. Excluded, secret, oversized and nonregular paths
 remain opaque. Durable path-only events reach only the session that observed
-the path; scanners never change publication bases or terminal cursors. Own
-confirmed publications are not reported again as outside edits. Scans are
+the path; scanners never change publication bases or terminal cursors. Quiet
+cursor advances require validated irrelevant events and a prior model snapshot.
+Only fresh source captures register observations; private/pinned/diff replays
+cannot reset deduplication. Own confirmed publications are not reported again
+as outside edits. Scans are
 bounded to 1,000 paths, 16 MiB of source, 256 KiB per file and five seconds per
 session; an incomplete boundary refuses to advance its context cursor. It does
 not monitor Git operations or reconstruct intermediate edits between scans.

@@ -812,13 +812,46 @@ class SharedToolBroker(ToolBroker):
         finally:
             self._batch = None
 
+    def _read_paths(
+        self, calls: Sequence[tuple[str, Mapping[str, object]]]
+    ) -> list[str]:
+        paths = ToolBroker._read_paths(self, calls)
+        batch = self._batch
+        if batch is None:
+            return paths
+        fresh: set[str] = set()
+        for name, arguments in calls:
+            if name != "read_file":
+                continue
+            try:
+                relative = normalize_changed_path(_string(arguments, "path"))
+                _read_range(arguments)
+            except (ValueError, LlmCoordError):
+                continue
+            refresh = arguments.get("refresh", False)
+            partial = any(
+                key in arguments for key in ("start_line", "end_line", "start_column")
+            )
+            pinned = (partial or relative in self._partial_reads) and not refresh
+            if not pinned or relative not in self._observations:
+                fresh.add(relative)
+        for relative in paths:
+            batch.keep(("fresh_source", relative), relative in fresh)
+        return paths
+
     def _prefetch(self, paths: list[str]) -> dict[str, bool]:
         answers = ToolBroker._prefetch(self, paths)
         batch = self._batch
         assert batch is not None
         for relative in paths:
             # An excluded file is refused before it is read; never read it.
-            if answers.get(relative, True) or relative in self._contents:
+            if (
+                answers.get(relative, True)
+                or relative in self._contents
+                or batch.kept(("fresh_source", relative)) is False
+            ):
+                # Pinned-only requests must not capture a newer checkout state
+                # they will never return. Keep their batched exclusion answers.
                 continue
             try:
                 identity, content = self._observe(relative, check_ignored=False)

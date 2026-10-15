@@ -471,3 +471,29 @@ def test_helper_absent_disk_read_observes_later_outside_creation(
     (root / "missing.py").write_text("created outside")
     assert scanner.scan_session("reader") == 1
     assert _events(store) == [{"path": "missing.py", "affected_session_id": "reader"}]
+
+
+def test_pinned_batch_cannot_hide_outside_changes(
+    checkout: tuple[ControlStore, Path, str],
+) -> None:
+    store, root, _ = checkout
+    (root / "a").write_text("old line\nsecond line\n")
+    parent = _tracked_broker(store, root)
+    helper = parent.read_only_view(parent.limits)
+    partial: dict[str, object] = {"path": "a", "start_line": 1, "end_line": 1}
+    assert "old line" in helper.invoke("read_file", partial).content
+    scanner = external.ExternalWorkspaceScanner(store)
+    assert scanner.scan_session("reader") == 0
+    (root / "a").write_text("outside edit\n")
+    for expected in (1, 0):
+        outcomes = helper.invoke_reads(
+            [("read_file", partial), ("read_file", {"path": "a"})]
+        )
+        assert all("old line" in outcome.content for outcome in outcomes)
+        assert scanner.scan_session("reader") == expected
+    assert len(_events(store)) == 1
+    outcomes = helper.invoke_reads(
+        [("read_file", {**partial, "refresh": True}), ("read_file", {"path": "a"})]
+    )
+    assert all("outside edit" in outcome.content for outcome in outcomes)
+    assert scanner.scan_session("reader") == 0
