@@ -612,7 +612,10 @@ class ControlStore:
             ).fetchone()
             if session is None:
                 raise KeyError(f"session {session_id!r} does not exist")
-            if str(session["state"]) != "active" or session["workspace_id"] is None:
+            if (
+                str(session["state"]) not in {"active", "disconnected"}
+                or session["workspace_id"] is None
+            ):
                 raise ValueError("an active shared-workspace session is required")
             workspace = connection.execute(
                 "SELECT * FROM workspaces WHERE workspace_id = ?",
@@ -642,6 +645,14 @@ class ControlStore:
                     identity.digest,
                     timestamp,
                 ),
+            )
+            from llm_cli.workspace.external import register_read
+
+            register_read(
+                connection,
+                session_id=session_id,
+                workspace_id=str(workspace["workspace_id"]),
+                relative_path=relative_path,
             )
             return self.workspace_from_row(workspace)
 

@@ -271,9 +271,17 @@ coordination cursor enter the same execution checkpoint.
 The current context slice is advisory: it does not implement the plan's future
 verified context-packet acknowledgments or mutation barrier. It covers durable
 coordinator events and intentions, with up to 1,000 pending events and a 16 KiB
-rendered update. It does not scan for unmanaged external edits or monitor Git
-operations. Exact-base checks still reject stale publication independently of
-anything the model has seen.
+rendered update. A bounded scan now detects net external changes to paths a
+shared session has actually observed, at each model boundary and on rotating
+daemon ticks. Metadata invalidates cached identities; stable eligible source
+is screened before hashing. Excluded, secret, oversized and nonregular paths
+remain opaque. Durable path-only events reach only the session that observed
+the path; scanners never change publication bases or terminal cursors. Own
+confirmed publications are not reported again as outside edits. Scans are
+bounded to 1,000 paths, 16 MiB of source, 256 KiB per file and five seconds per
+session; an incomplete boundary refuses to advance its context cursor. It does
+not monitor Git operations or reconstruct intermediate edits between scans.
+Exact-base checks still reject stale publication independently of model context.
 
 Sessionless background runs and the `fixture_write` driver retain the original
 linked-worktree lifecycle described below. This is separate from the planned

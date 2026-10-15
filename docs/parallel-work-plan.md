@@ -294,6 +294,12 @@ each sees the other's published work, and neither loses edits.
 
 ### C4. Track edits made outside Loupe while sessions work
 
+**Implementation (Wave 2).** Durable bounded observations, periodic scans and
+model-boundary refreshes now emit path-only notices for sessions that read a
+changed path. Source identities are screened; ignored/secret paths remain
+opaque, and own publications are deduplicated. Full validation is in progress.
+Native watchers and Git-operation reconciliation remain later work.
+
 **Why.** #41 merges edits onto files changed outside Loupe when the agent
 next validates, checks, or finishes, but sessions are not told about outside
 edits as they happen: the coordination context says "External editor changes

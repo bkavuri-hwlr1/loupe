@@ -389,3 +389,18 @@ authoritative and follows the knowledge-database backup policy.
 There are no security-supported releases yet. Security support, release signing,
 dependency update cadence, and end-of-life policy will be published before the
 first general release.
+
+
+### External-change notices
+
+Shared sessions register safe source observations for external-change tracking.
+The scanner opens descendants through no-follow directory descriptors, uses
+metadata to avoid unchanged-file reads, and screens stable bounded source before
+hashing it. Ignored/private paths, recognized secrets, oversized files and
+nonregular objects produce opaque metadata changes. Checkout events and model
+notices retain only the path and affected session, never content, diffs or
+identity digests. A `.env` observed through the file broker is tracked using
+metadata only; tracking does not grant model tools permission to read it.
+Scanner state is durable local metadata. It does not replace publication's
+exact-base validation, monitor Git operations, follow filesystem links, or
+capture every intermediate state of an external writer.
