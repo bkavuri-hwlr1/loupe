@@ -132,7 +132,10 @@ the remaining planned capabilities are listed below.
   `web_fetch` handlers with the same sandbox, command/domain approvals,
   pre-tool hooks, output screening, and page cache. Their command writes are
   discarded, their calls use the reserved helper budget, and their tokens
-  contribute to task usage. Plan helpers still cannot run commands, and all
+  contribute to task usage. Parallel fetches coalesce the same URL, serialize
+  bounded-cache updates, and allow waiting helpers to cancel or time out
+  without holding the cache lock over network/approval work.
+  Plan helpers still cannot run commands, and all
   helper views refuse edits, configured checks, general questions, MCP access,
   and task completion. Helpers start no new tools after the task deadline.
 - MCP authority for shared tasks over stdio or Streamable HTTP (JSON and

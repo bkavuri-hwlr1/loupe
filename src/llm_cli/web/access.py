@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import ssl
+import threading
+import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import Future
 from urllib.parse import urlsplit
 
-from llm_cli.web.fetch import Page, Resolver, fetch, public_addresses
+from llm_cli.web.fetch import Page, Resolver, WebFetchError, fetch, public_addresses
 
 _MAX_PAGE_BYTES = 2 * 1024 * 1024
 _TIMEOUT_SECONDS = 20.0
@@ -45,6 +48,8 @@ class WebAccess:
         self._proxy = proxy
         self._approved: set[str] = set()
         self._pages: dict[str, Page] = {}
+        self._in_flight: dict[str, Future[Page]] = {}
+        self._lock = threading.Lock()
 
     def available(self, *, interactive: bool) -> bool:
         """Whether any fetch could be allowed: by policy, list, or approval."""
@@ -52,37 +57,88 @@ class WebAccess:
         return self.mode == "allow" or bool(self.domains) or interactive
 
     def allowed_without_asking(self, host: str) -> bool:
-        return (
-            self.mode == "allow"
-            or host in self._approved
-            or any(domain_matches(host, pattern) for pattern in self.domains)
-        )
+        with self._lock:
+            return (
+                self.mode == "allow"
+                or host in self._approved
+                or any(domain_matches(host, pattern) for pattern in self.domains)
+            )
 
     def approve(self, host: str) -> None:
-        self._approved.add(host)
+        with self._lock:
+            self._approved.add(host)
 
     def page(
-        self, url: str, *, allowed: Callable[[str, str], str | None]
+        self,
+        url: str,
+        *,
+        allowed: Callable[[str, str], str | None],
+        check_cancelled: Callable[[], None] | None = None,
     ) -> tuple[Page, bool]:
-        """Fetch ``url``, or reuse this task's earlier fetch of it; the flag
-        says whether it was downloaded now."""
+        """Fetch once per URL, sharing a pending fetch and the bounded cache.
 
-        cached = self._pages.get(url)
-        if cached is not None:
-            return cached, False
-        page = fetch(
-            url,
-            max_bytes=self._max_bytes,
-            timeout=self._timeout,
-            allowed=allowed,
-            resolver=self._resolver,
-            tls=self._tls,
-            proxy=self._proxy,
-        )
-        if len(self._pages) >= _MAX_CACHED_PAGES:
-            self._pages.pop(next(iter(self._pages)))
-        self._pages[url] = page
+        Only the owner reports a download. Network, approvals, cancellation,
+        and future waits never hold the cache lock.
+        """
+
+        if check_cancelled is not None:
+            check_cancelled()
+        with self._lock:
+            cached = self._pages.get(url)
+            if cached is not None:
+                return cached, False
+            pending = self._in_flight.get(url)
+            owner = pending is None
+            if pending is None:
+                pending = self._in_flight[url] = Future()
+        if not owner:
+            return self._wait_for_page(pending, check_cancelled), False
+        try:
+            page = fetch(
+                url,
+                max_bytes=self._max_bytes,
+                timeout=self._timeout,
+                allowed=allowed,
+                resolver=self._resolver,
+                tls=self._tls,
+                proxy=self._proxy,
+            )
+            if check_cancelled is not None:
+                check_cancelled()
+        except BaseException as exc:
+            with self._lock:
+                del self._in_flight[url]
+            pending.set_exception(exc)
+            raise
+        with self._lock:
+            if len(self._pages) >= _MAX_CACHED_PAGES:
+                self._pages.pop(next(iter(self._pages)))
+            self._pages[url] = page
+            del self._in_flight[url]
+        pending.set_result(page)
         return page, True
+
+    def _wait_for_page(
+        self, pending: Future[Page], check_cancelled: Callable[[], None] | None
+    ) -> Page:
+        # A stuck owner must not park a helper indefinitely or swallow task
+        # cancellation. Waiting never extends the normal per-fetch timeout.
+        deadline = time.monotonic() + self._timeout
+        while True:
+            if check_cancelled is not None:
+                check_cancelled()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WebFetchError("waiting for the page exceeded the fetch timeout")
+            try:
+                page = pending.result(timeout=min(0.1, remaining))
+            except TimeoutError:
+                if pending.done():
+                    raise
+                continue
+            if check_cancelled is not None:
+                check_cancelled()
+            return page
 
 
 def host_of(url: str) -> str:
