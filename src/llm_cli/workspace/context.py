@@ -154,6 +154,9 @@ class SharedCoordinationContext:
                 if event_type in _CHANGE_TYPES:
                     if row["payload_json"] is None:
                         raise _too_large("a coordination event exceeds its size budget")
+                    # Validate even another session's event before asserting
+                    # that the complete replay leaves our facts unchanged.
+                    change = self._change(row, case_insensitive)
                     if event_type == "workspace.external_changed":
                         try:
                             payload = json.loads(str(row["payload_json"]))
@@ -167,7 +170,6 @@ class SharedCoordinationContext:
                             unrelated_external += 1
                             other_events += 1
                             continue
-                    change = self._change(row, case_insensitive)
                     changes_bytes += len(json.dumps(change, ensure_ascii=True))
                     if changes_bytes > _MAX_CONTEXT_BYTES:
                         raise _too_large(
@@ -180,13 +182,18 @@ class SharedCoordinationContext:
                     other_events += 1
             if expected != head + 1:
                 raise _too_large("checkout coordination history has an unavailable gap")
-            if (start == head and self._last_sequence == head) or (
-                self._last_sequence is not None
+            if start == head and self._last_sequence == head:
+                return CoordinationUpdate(sequence=head, text=None)
+            if (
+                after_sequence is not None
+                and self._last_sequence is not None
                 and unrelated_external == head - start
                 and unrelated_external > 0
             ):
                 self._last_sequence = head
-                return CoordinationUpdate(sequence=head, text=None)
+                return CoordinationUpdate(
+                    sequence=head, text=None, facts_unchanged=True
+                )
             intent_rows = connection.execute(
                 """
                 SELECT i.session_id, p.path

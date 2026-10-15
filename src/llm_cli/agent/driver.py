@@ -53,6 +53,10 @@ class CoordinationUpdate:
 
     sequence: int
     text: str | None
+    # Trusted context compiler assertion: every event through sequence was
+    # validated and none changed the facts relevant to this model context.
+    # This permits a quiet cursor advance, never a skipped bootstrap snapshot.
+    facts_unchanged: bool = False
 
 
 @dataclass(frozen=True, slots=True)
