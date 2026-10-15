@@ -65,6 +65,13 @@ def usage_lines(result: Mapping[str, Any]) -> list[str]:
                 f"  Of these, explore helpers used {format_tokens(helper_prompt)} "
                 f"prompt and {format_tokens(helper_output)} output tokens."
             )
+        review_prompt = count("review_prompt_tokens")
+        review_output = count("review_output_tokens")
+        if review_prompt or review_output:
+            lines.append(
+                f"  Of these, independent review used {format_tokens(review_prompt)} "
+                f"prompt and {format_tokens(review_output)} output tokens."
+            )
     tokens = result.get("context_tokens")
     budget = result.get("context_budget")
     percent = context_percent(tokens, budget)
