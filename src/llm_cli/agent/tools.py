@@ -691,7 +691,9 @@ class ToolBroker:
         if contains_secret_material(url):
             return _error("the URL contains recognized secret material; leave it out")
         try:
-            page, downloaded = self.web.page(url, allowed=self._web_allowed)
+            page, downloaded = self.web.page(
+                url, allowed=self._web_allowed, check_cancelled=self.check_cancelled
+            )
         except WebFetchError as exc:
             return _error(f"web_fetch could not read that page: {exc}")
         if downloaded:  # Reading on from the cache is not another fetch.
