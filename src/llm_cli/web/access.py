@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import ssl
 import threading
-import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, wait
 from urllib.parse import urlsplit
 
-from llm_cli.web.fetch import Page, Resolver, WebFetchError, fetch, public_addresses
+from llm_cli.web.fetch import Page, Resolver, fetch, public_addresses
 
 _MAX_PAGE_BYTES = 2 * 1024 * 1024
 _TIMEOUT_SECONDS = 20.0
@@ -121,16 +120,13 @@ class WebAccess:
     def _wait_for_page(
         self, pending: Future[Page], check_cancelled: Callable[[], None] | None
     ) -> Page:
-        # A stuck owner must not park a helper indefinitely or swallow task
-        # cancellation. Waiting never extends the normal per-fetch timeout.
-        deadline = time.monotonic() + self._timeout
+        # The shared future includes human approvals as well as network work.
+        # Its lifecycle is the task's cancellation/deadline, not the network
+        # timeout that fetch() applies only after approval.
         while True:
             if check_cancelled is not None:
                 check_cancelled()
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise WebFetchError("waiting for the page exceeded the fetch timeout")
-            ready, _ = wait((pending,), timeout=min(0.1, remaining))
+            ready, _ = wait((pending,), timeout=0.1)
             if not ready:
                 continue
             page = pending.result()
