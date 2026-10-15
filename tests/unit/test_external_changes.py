@@ -381,7 +381,7 @@ def test_pending_publication_during_scan_never_records_external_change(
 def test_own_publication_uses_checkout_case_rules(
     checkout: tuple[ControlStore, Path, str], tmp_path: Path
 ) -> None:
-    store, root, workspace = checkout
+    store, root, _ = checkout
     (root / "lower.py").write_text("old")
     if not (root / "LOWER.py").exists():
         pytest.skip("requires a case-insensitive filesystem")
