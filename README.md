@@ -283,8 +283,8 @@ the task's own effort. Models without effort levels ignore the setting.
 ### MCP servers
 
 Loupe can offer the agent tools from Model Context Protocol servers you
-configure. Each server runs for the length of a task, over standard input and
-output:
+configure. Each task starts its own stdio servers or connects to configured
+Streamable HTTP endpoints:
 
 ```toml
 [mcp.servers.docs]
@@ -293,17 +293,39 @@ env = { DOCS_TOKEN = "..." }  # passed to this server only
 approval = "ask"              # or "allow"
 timeout = 120                 # seconds per call
 # cwd = "/absolute/path"      # defaults to your home directory
+# read_only = true            # offer this server in plan mode too
+```
+
+For HTTP, use `url` instead of `command`; remote endpoints must use `https`
+(plain `http` is accepted only on localhost). Header values come from environment
+variables in Loupe's process; the configuration contains only their names:
+
+```toml
+[mcp.servers.reference]
+url = "https://mcp.example.com/mcp"
+headers = { Authorization = "REFERENCE_MCP_AUTH" }
+read_only = true
 ```
 
 Servers run outside Loupe's scope enforcement with your privileges, so by
 default Loupe asks before the first call to each server in a task: allow once,
 allow that server for the rest of the task, or deny. A server that needs
-approval is not offered when no one can answer, and MCP tools are not offered
-in plan mode. A server gets a minimal environment plus the variables you
-configure, never Loupe's own credentials, and does not run in your checkout
-unless you set `cwd`. Its output reaches the model labelled as external data,
-screened for recognized secrets and limited in size. The conversation shows
-which servers started and why any could not.
+approval is not offered when no one can answer. Plan mode starts and offers
+only servers you mark `read_only = true`; this is your assertion about their
+behavior, since Loupe cannot enforce it on external servers. A stdio server
+gets a minimal environment plus the variables you configure, never Loupe's own
+credentials, and does not run in your checkout unless you set `cwd`.
+
+When a server advertises resources or prompts, the agent also gets
+`mcp__NAME__resources_list`, `resources_read`, `prompts_list`, and `prompts_get`
+(all with the same `mcp__NAME__` prefix). List calls accept a `cursor` returned
+as `nextCursor`; reads take a `uri`, and prompt retrieval takes a `name` and
+optional string `arguments`. Results reach the model labelled as external
+data, screened for secrets, and limited in size; prompts remain tool output
+and binary content is omitted. HTTP accepts JSON and SSE responses, sends no
+ambient cookies or proxies, refuses redirects, and ends its session with the
+task. Header values and server logs never enter events. The conversation
+shows which servers started and why any could not.
 
 ### Hooks
 

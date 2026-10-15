@@ -11,7 +11,7 @@ class McpServerConfig:
     """One configured Model Context Protocol server."""
 
     name: str
-    command: tuple[str, ...]
+    command: tuple[str, ...] = ()
     # Added to the server's minimal environment; Loupe's own is not passed.
     env: tuple[tuple[str, str], ...] = ()
     # "ask" needs the user's approval in an interactive session; "allow" does
@@ -21,6 +21,12 @@ class McpServerConfig:
     # The server's working directory; None means the user's home directory,
     # so no checkout is implied.
     cwd: Path | None = None
+    # A Streamable HTTP endpoint instead of a stdio command.
+    url: str | None = None
+    # Header name -> environment variable name; resolved values are never saved.
+    headers: tuple[tuple[str, str], ...] = ()
+    # User assertion about external authority, not a sandbox guarantee.
+    read_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

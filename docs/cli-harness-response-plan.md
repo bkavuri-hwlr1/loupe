@@ -2,7 +2,7 @@
 
 Status: first response-and-delivery milestone implemented and locally validated;
 context management (phase 7, items 1–3), sandboxed commands (item 4), faster
-read tools (item 5), the task plan tool (item 6), stdio MCP tools (item 7),
+read tools (item 5), the task plan tool (item 6), MCP tools/resources/prompts (item 7),
 user hooks (item 8), exploration helpers (item 9), read-only web fetch
 (item 10), token usage display (item 11), and the live-model benchmark
 (item 12) implemented, as are bounded repair (phase 5) and the live behavior
@@ -481,7 +481,7 @@ existing authority model: repository and tool content never grants authority.
 | 4 | Governed shell execution with an OS sandbox | Implemented (`run_command`, shared tasks) |
 | 5 | Faster read-only tools | Implemented, including batched reads |
 | 6 | Visible task plan tool | Implemented (`update_plan`) |
-| 7 | MCP client support | Implemented (stdio servers, tools) |
+| 7 | MCP client support | Implemented (stdio/Streamable HTTP, tools/resources/prompts, plan mode) |
 | 8 | User hooks around tool calls and completion | Implemented (`pre_tool`, `post_edit`) |
 | 9 | Subagents for broad exploration | Implemented (`explore`) |
 | 10 | Read-only web fetch | Implemented (`web_fetch`) |
@@ -663,13 +663,17 @@ instructions. Step text is collapsed to one line, screened for recognized
 secrets, and sanitized before display. In the shared checkout the tool does
 not take the publication lock.
 
-**7. MCP client (implemented for stdio tools).** Configured Model Context
-Protocol servers (`[mcp.servers.NAME]`: `command`, `env`, `approval`,
-`timeout`, `cwd`) start for each shared task outside plan mode, through a
-small synchronous stdio JSON-RPC client in `llm_cli/mcp/`. The client performs
-the initialize handshake, lists tools across pages, calls them with
-timeouts, answers pings, and declines server-to-client requests, since it
-declares no client capabilities. Each tool reaches the model as
+**7. MCP client (implemented).** Configured Model Context Protocol servers
+(`[mcp.servers.NAME]`) use either `command` (stdio, with optional `env` and
+`cwd`) or `url` (Streamable HTTP, with optional `headers` mapping header names
+to environment variable names). Header values remain only in task memory.
+The synchronous clients in `llm_cli/mcp/` perform the initialize handshake,
+list tools across bounded pages, make calls with timeouts, answer pings, and
+decline server-to-client requests, since they declare no client capabilities.
+HTTP accepts JSON or bounded SSE responses, propagates session and negotiated
+protocol headers, refuses redirects, and terminates sessions at task end.
+Expired sessions are reinitialized without replaying a failed call. Each
+remote tool reaches the model as
 `mcp__SERVER__TOOL` with a bounded, validated schema and a description naming
 the server. Their tools are external authority: `approval = "ask"` (the
 default) asks the user before the first call to each server in a task, with
@@ -677,11 +681,16 @@ the same once, rest-of-task, or deny choices as `run_command`, and such a
 server is not offered without someone to ask. Servers get a minimal
 environment plus their configured variables and run in the user's home unless
 configured, so no write scope over the checkout is implied. Results are text
-only, bounded, withheld if they contain recognized secrets, and labelled as
-external data. `mcp.server.started` and `mcp.server.failed` events show which
-servers are available. Remaining gaps: HTTP transports, MCP resources and
-prompts, offering read-only MCP tools in plan mode, and isolated-workspace
-tasks (which do not offer `run_command` either).
+only, bounded, withheld if they contain recognized secrets or resolved HTTP
+header values, and labelled as external data. Resource and prompt capabilities
+add explicit list/read and list/get tools under the same prefix. Their list
+metadata is bounded, text is screened like tool results, binary content is
+omitted, and prompt messages remain untrusted tool output. `read_only = true`
+starts and offers that server in plan mode too; the flag is a user assertion
+about external authority. Exploration helpers never receive MCP access.
+`mcp.server.started` and `mcp.server.failed` events show which servers are
+available without endpoint URLs, headers, or server output. Remaining gap:
+isolated-workspace tasks (which do not offer `run_command` either).
 
 **8. Hooks (implemented).** User-configured commands around the agent's tool
 calls in shared tasks, run with the same governance as item 4's commands: a

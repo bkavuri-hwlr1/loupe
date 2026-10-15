@@ -1,7 +1,7 @@
-"""A minimal Model Context Protocol client over stdio.
+"""Model Context Protocol session operations and the stdio transport.
 
-Loupe uses only MCP tools: the client performs the initialize handshake, lists
-tools, and calls them. It declares no client capabilities, so requests a server
+The client performs the initialize handshake and requests tools, resources and
+prompts. It declares no client capabilities, so requests a server
 sends to the client (sampling, roots, elicitation) are declined; notifications
 are ignored. Messages are newline-delimited JSON-RPC 2.0, as the stdio
 transport specifies.
@@ -16,7 +16,9 @@ import os
 import signal
 import subprocess
 import threading
-from collections.abc import Mapping, Sequence
+import time
+from abc import ABC, abstractmethod
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import IO, Any
 
@@ -28,7 +30,9 @@ _SUPPORTED_VERSIONS = frozenset(
     {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
 )
 _MAX_MESSAGE_BYTES = 8 * 1024 * 1024
-_MAX_TOOL_PAGES = 20
+_MAX_MESSAGE_DEPTH = 64
+_MAX_LIST_PAGES = 20
+_MAX_LIST_ITEMS = 128
 _EXIT_GRACE_SECONDS = 2.0
 
 
@@ -45,6 +49,35 @@ class McpError(Exception):
         self.kind = kind
 
 
+def _validate_message(message: object) -> dict[str, Any]:
+    """Bound JSON-RPC structure independently of Python's decoder limits.
+
+    A stack of iterators uses memory proportional to nesting, not the number
+    of values. Validate the whole message before any schema or result reaches
+    recursive formatting and secret screening.
+    """
+
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+        raise McpError("the server sent no JSON-RPC object", kind="protocol")
+    stack: list[Iterator[Any]] = [iter(message.values())]
+    while stack:
+        try:
+            value = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+            continue
+        if isinstance(value, dict):
+            children = iter(value.values())
+        elif isinstance(value, list):
+            children = iter(value)
+        else:
+            continue
+        if len(stack) >= _MAX_MESSAGE_DEPTH:
+            raise McpError("the server sent deeply nested JSON", kind="protocol")
+        stack.append(children)
+    return message
+
+
 class _Pending:
     def __init__(self) -> None:
         self.done = threading.Event()
@@ -52,7 +85,88 @@ class _Pending:
         self.failure: McpError | None = None
 
 
-class StdioClient:
+class McpClient(ABC):
+    """Transport-independent operations for one task's MCP session."""
+
+    def __init__(self) -> None:
+        self.server_info: dict[str, Any] = {}
+        self.capabilities: dict[str, Any] = {}
+        self.protocol_version = PROTOCOL_VERSION
+
+    @abstractmethod
+    def start(self, timeout: float) -> None: ...
+
+    @abstractmethod
+    def request(
+        self, method: str, params: Mapping[str, object], timeout: float
+    ) -> dict[str, Any]: ...
+
+    @abstractmethod
+    def _notify(self, method: str) -> None: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+    def _initialize(self, timeout: float) -> None:
+        result = self.request(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "loupe", "version": __version__},
+            },
+            timeout,
+        )
+        version = result.get("protocolVersion")
+        if not isinstance(version, str) or version not in _SUPPORTED_VERSIONS:
+            raise McpError("unsupported protocol version", kind="protocol")
+        self.protocol_version = str(version)
+        info, capabilities = result.get("serverInfo"), result.get("capabilities")
+        self.server_info = info if isinstance(info, dict) else {}
+        self.capabilities = capabilities if isinstance(capabilities, dict) else {}
+        self._notify("notifications/initialized")
+
+    def list_tools(self, timeout: float) -> list[dict[str, Any]]:
+        return self._list("tools", timeout)
+
+    def list_resources(self, timeout: float) -> list[dict[str, Any]]:
+        return self._list("resources", timeout)
+
+    def list_prompts(self, timeout: float) -> list[dict[str, Any]]:
+        return self._list("prompts", timeout)
+
+    def _list(self, kind: str, timeout: float) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        cursor: str | None = None
+        deadline = time.monotonic() + timeout
+        for _ in range(_MAX_LIST_PAGES):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise McpError("list timed out", kind="timeout")
+            result = self.request(
+                f"{kind}/list", {"cursor": cursor} if cursor else {}, remaining
+            )
+            page = result.get(kind)
+            if not isinstance(page, list):
+                raise McpError("list returned no item list", kind="protocol")
+            items.extend(item for item in page if isinstance(item, dict))
+            if len(items) >= _MAX_LIST_ITEMS:
+                return items[:_MAX_LIST_ITEMS]
+            next_cursor = result.get("nextCursor")
+            if not isinstance(next_cursor, str) or not next_cursor:
+                return items
+            cursor = next_cursor
+        return items
+
+    def call_tool(
+        self, name: str, arguments: Mapping[str, object], timeout: float
+    ) -> dict[str, Any]:
+        return self.request(
+            "tools/call", {"name": name, "arguments": dict(arguments)}, timeout
+        )
+
+
+class StdioClient(McpClient):
     """One running MCP server, driven over its standard input and output."""
 
     def __init__(
@@ -62,6 +176,7 @@ class StdioClient:
         env: Mapping[str, str],
         cwd: Path,
     ) -> None:
+        super().__init__()
         self._command = tuple(command)
         self._env = dict(env)
         self._cwd = cwd
@@ -72,7 +187,6 @@ class StdioClient:
         self._write_lock = threading.Lock()
         self._closed = False
         self._threads: list[threading.Thread] = []
-        self.server_info: dict[str, Any] = {}
 
     def start(self, timeout: float) -> None:
         """Launch the server and complete the initialize handshake."""
@@ -100,44 +214,10 @@ class StdioClient:
             thread = threading.Thread(target=target, args=(stream,), daemon=True)
             thread.start()
             self._threads.append(thread)
-        result = self.request(
-            "initialize",
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "loupe", "version": __version__},
-            },
-            timeout,
-        )
-        version = result.get("protocolVersion")
-        if version not in _SUPPORTED_VERSIONS:
-            raise McpError(f"unsupported protocol version {version!r}", kind="protocol")
-        info = result.get("serverInfo")
-        self.server_info = info if isinstance(info, dict) else {}
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self._initialize(timeout)
 
-    def list_tools(self, timeout: float) -> list[dict[str, Any]]:
-        tools: list[dict[str, Any]] = []
-        cursor: str | None = None
-        for _ in range(_MAX_TOOL_PAGES):
-            params = {"cursor": cursor} if cursor else {}
-            result = self.request("tools/list", params, timeout)
-            page = result.get("tools")
-            if not isinstance(page, list):
-                raise McpError("tools/list returned no tool list", kind="protocol")
-            tools.extend(tool for tool in page if isinstance(tool, dict))
-            next_cursor = result.get("nextCursor")
-            if not isinstance(next_cursor, str) or not next_cursor:
-                return tools
-            cursor = next_cursor
-        return tools
-
-    def call_tool(
-        self, name: str, arguments: Mapping[str, object], timeout: float
-    ) -> dict[str, Any]:
-        return self.request(
-            "tools/call", {"name": name, "arguments": dict(arguments)}, timeout
-        )
+    def _notify(self, method: str) -> None:
+        self._send({"jsonrpc": "2.0", "method": method})
 
     def request(
         self, method: str, params: Mapping[str, object], timeout: float
@@ -228,10 +308,18 @@ class StdioClient:
                     break
                 try:
                     message = json.loads(line)
+                except RecursionError:
+                    self._fail_pending(
+                        McpError("the server sent deeply nested JSON", kind="protocol")
+                    )
+                    break
                 except ValueError:
                     continue  # Stray output is not a message.
-                if isinstance(message, dict):
-                    self._dispatch(message)
+                try:
+                    self._dispatch(_validate_message(message))
+                except McpError as exc:
+                    self._fail_pending(exc)
+                    break
         except (OSError, ValueError):
             pass
         with self._lock:
@@ -279,4 +367,4 @@ class StdioClient:
                 pending.done.set()
 
 
-__all__ = ["PROTOCOL_VERSION", "McpError", "StdioClient"]
+__all__ = ["PROTOCOL_VERSION", "McpClient", "McpError", "StdioClient"]

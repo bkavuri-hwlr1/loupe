@@ -242,12 +242,15 @@ authority: they run as the user, outside Loupe's scope enforcement and
 sandbox, so Loupe cannot limit what they do. Loupe controls only what it hands
 them and how it treats what they return:
 
-- a server runs only when configured, for the length of one task, in its own
-  process group that is ended when the task finishes;
+- a server runs only when configured, for the length of one task; a stdio
+  server's process group ends when the task finishes, and an HTTP session
+  receives a bounded termination request;
 - by default each server needs the user's approval before its first call in a
   task, given through the interactive session; model output can never approve
   it, and a server that needs approval is not offered without someone to ask;
-- MCP tools are not offered in plan mode or to exploration helpers;
+- plan mode starts and offers only servers explicitly marked `read_only =
+  true`; this flag is the user's assertion about external authority, not an
+  enforcement boundary. Exploration helpers receive no MCP access;
 - a server inherits only a minimal environment (such as `PATH` and `HOME`)
   plus its configured variables, so provider keys in Loupe's environment never
   reach it, and its working directory is the user's home unless configured;
@@ -257,6 +260,34 @@ them and how it treats what they return:
   secret material, and labelled as external data rather than instructions;
 - events record which servers started or failed by name and reason category,
   never server output.
+
+Streamable HTTP endpoints may be local or remote configured authority; they
+do not follow the public-address restrictions of `web_fetch`, but a remote one
+must use HTTPS so header credentials are never sent in plain text. HTTP headers
+map names to environment variable names in configuration. Values are resolved
+only into task memory, are never recorded, and cannot replace protocol headers.
+Missing, oversized, or control-containing values prevent the server starting.
+Results are withheld when they contain a header value of eight or more
+characters; shorter values, such as a team name, are not credentials.
+Connections use normal HTTPS certificate validation, no ambient proxy/cookie
+settings, and no redirects. Responses are capped at 8 MiB and have a total
+deadline, including SSE streams. An expired session is reinitialized without
+replaying the failed call, whose side effects may already have happened.
+Every received JSON-RPC message must be an object, with at most 64 nested
+object/array containers checked before schemas or results reach formatting
+and secret screening, independently of Python's JSON decoder limits.
+DNS and socket setup spend the same deadline, and an expired setup never
+transmits the call. Since the OS resolver cannot be cancelled, at most four
+daemon workers may remain resolving after timeouts; further calls wait only
+their own deadline for a slot.
+
+Resources and prompts are offered as explicit tools when advertised by the
+server, with the same approval, output bound, and secret screening as remote
+tools. Resource lists and prompt lists retain only bounded standard metadata;
+binary resources and prompt media are omitted. Prompt messages remain labelled
+tool output and never become trusted user or system instructions. Recognized
+secrets and exact resolved HTTP header values are withheld in server schemas
+and results, including credentials echoed as metadata or JSON-RPC errors.
 
 Arguments the model passes to an MCP tool are sent to that server, and its
 output is sent to the configured model provider as tool output.

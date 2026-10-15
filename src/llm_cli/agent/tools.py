@@ -380,6 +380,8 @@ class ToolBroker:
                 "ask_user",
                 "web_fetch",
             }
+            if self.mcp is not None:
+                allowed.update(self.mcp.names(read_only=True))
             names = [name for name in names if name in allowed]
         return tuple(names)
 

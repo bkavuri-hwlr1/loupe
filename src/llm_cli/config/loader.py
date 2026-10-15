@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from llm_cli.config.models import HookConfig, McpServerConfig, Settings
 from llm_cli.coordination.models import EFFORT_LEVELS
@@ -16,7 +18,27 @@ _ROOT_KEYS = {"agent", "core", "hooks", "leases", "mcp"}
 _HOOK_KINDS = ("pre_tool", "post_edit")
 _HOOK_KEYS = {"match", "command", "timeout", "name"}
 _MAX_HOOKS = 16
-_MCP_SERVER_KEYS = {"command", "env", "approval", "timeout", "cwd"}
+_MCP_SERVER_KEYS = {
+    "command",
+    "env",
+    "approval",
+    "timeout",
+    "cwd",
+    "url",
+    "headers",
+    "read_only",
+}
+_MCP_HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}")
+_MCP_RESERVED_HEADERS = {
+    "accept",
+    "content-type",
+    "content-length",
+    "host",
+    "connection",
+    "transfer-encoding",
+    "mcp-session-id",
+    "mcp-protocol-version",
+}
 # Server names become part of tool names, which providers limit to letters,
 # digits, "_" and "-"; a double underscore would make names ambiguous.
 _MCP_SERVER_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]|_(?!_)){0,23}")
@@ -218,6 +240,15 @@ def _hooks(hooks: dict[str, Any]) -> tuple[HookConfig, ...]:
     return tuple(configured)
 
 
+def _loopback(host: str | None) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
+
+
 def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
     if set(mcp) - {"servers"}:
         raise _unknown("mcp", set(mcp) - {"servers"})
@@ -241,7 +272,13 @@ def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
         if set(raw) - _MCP_SERVER_KEYS:
             raise _unknown(where, set(raw) - _MCP_SERVER_KEYS)
         command = raw.get("command")
-        if (
+        url = raw.get("url")
+        if (command is None) == (url is None):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                f"{where} must configure exactly one of command or url",
+            )
+        if command is not None and (
             not isinstance(command, list)
             or not command
             or len(command) > 64
@@ -250,6 +287,63 @@ def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
             raise LlmCoordError(
                 ErrorCode.CONFIG_INVALID,
                 f"{where}.command must be a list of 1 to 64 non-empty strings",
+            )
+        if url is not None:
+            from llm_cli.agent.source_policy import contains_secret_material
+
+            try:
+                parsed = urlsplit(url) if isinstance(url, str) else None
+                valid_url = (
+                    parsed is not None
+                    and parsed.scheme in {"http", "https"}
+                    and bool(parsed.hostname)
+                    # Header values are credentials; only local HTTP is plain.
+                    and (parsed.scheme == "https" or _loopback(parsed.hostname))
+                    and parsed.port != 0
+                    and parsed.username is None
+                    and parsed.password is None
+                    and not parsed.fragment
+                    and len(url) <= 2_048
+                    and not any(ord(char) < 33 or ord(char) > 126 for char in url)
+                    and not contains_secret_material(url)
+                )
+            except ValueError:
+                valid_url = False
+            if not valid_url:
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID,
+                    f"{where}.url must be an HTTPS endpoint without credentials "
+                    "(plain HTTP only on localhost)",
+                )
+            if "env" in raw or "cwd" in raw:
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID,
+                    f"{where}: env and cwd apply only to command servers",
+                )
+        headers = raw.get("headers", {})
+        if (
+            not isinstance(headers, dict)
+            or len(headers) > 32
+            or not all(
+                isinstance(key, str)
+                and _MCP_HEADER_NAME.fullmatch(key)
+                and key.lower() not in _MCP_RESERVED_HEADERS
+                and isinstance(value, str)
+                and _MCP_ENV_NAME.fullmatch(value)
+                for key, value in headers.items()
+            )
+            or len({key.lower() for key in headers}) != len(headers)
+            or (headers and url is None)
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                f"{where}.headers must map HTTP header names to environment "
+                "variable names (protocol headers are reserved)",
+            )
+        read_only = raw.get("read_only", False)
+        if type(read_only) is not bool:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, f"{where}.read_only must be true or false"
             )
         env = raw.get("env", {})
         if not isinstance(env, dict) or not all(
@@ -263,7 +357,7 @@ def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
                 f"{where}.env must map variable names to text",
             )
         approval = raw.get("approval", "ask")
-        if approval not in {"ask", "allow"}:
+        if not isinstance(approval, str) or approval not in {"ask", "allow"}:
             raise LlmCoordError(
                 ErrorCode.CONFIG_INVALID, f"{where}.approval must be ask or allow"
             )
@@ -283,11 +377,14 @@ def _mcp_servers(mcp: dict[str, Any]) -> tuple[McpServerConfig, ...]:
         configured.append(
             McpServerConfig(
                 name=name,
-                command=tuple(command),
+                command=tuple(command or ()),
                 env=tuple(sorted(env.items())),
                 approval=approval,
                 timeout_seconds=timeout,
                 cwd=Path(cwd) if cwd is not None else None,
+                url=url,
+                headers=tuple(sorted(headers.items())),
+                read_only=read_only,
             )
         )
     return tuple(configured)
