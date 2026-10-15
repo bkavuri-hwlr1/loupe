@@ -469,6 +469,18 @@ are `0600`, and output lists each path and its `integrity_check` result. Each
 database is a separate snapshot, including committed WAL pages; a failed run
 can leave a private partial directory for diagnosis.
 
+`loupe db prune --older-than 30d` previews what pruning would remove for tasks
+settled more than 30 days ago: streamed model output, tool results, command and
+check output, and the parts of saved execution checkpoints nothing reads again
+(a provider conversation already saved to its session, and file contents a
+published change wrote to the checkout). Add `--apply` to remove them and run
+SQLite `VACUUM`. Task records, complete answers, summary events, check results,
+usage totals, and recovery journals remain; an interrupted answer keeps its
+conversation so `/retry-answer` can still rewrite it. Live tasks, held
+proposals, unfinished finalization, uncertain checks, and unresolved
+publication or cleanup are excluded. Pruning adds an audit event to each
+affected task; an interrupted compaction can safely be repeated.
+
 The daemon protocol uses versioned, four-byte length-prefixed JSON messages over
 an owner-only Unix domain socket. The first supported platforms are macOS and
 Linux. Windows transport and worktree behavior are deferred.

@@ -113,6 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     backup.add_argument("--out", type=Path, help="parent of a fresh backup directory")
 
+    prune = database_commands.add_parser("prune", help="prune old settled task output")
+    prune.add_argument(
+        "--older-than", default="30d", help="positive age in days, e.g. 30d"
+    )
+    prune.add_argument("--apply", action="store_true", help="delete output and VACUUM")
+
     repository = commands.add_parser("repo", help="register and inspect repositories")
     repository_commands = repository.add_subparsers(dest="repo_command", required=True)
     add = repository_commands.add_parser("add")
@@ -404,6 +410,14 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                     "out": str(arguments.out.expanduser().absolute())
                     if arguments.out
                     else None
+                },
+            )
+        if arguments.db_command == "prune":
+            return client.call(
+                "db.prune",
+                {
+                    "older_than": arguments.older_than,
+                    "apply": arguments.apply,
                 },
             )
         return client.call(f"db.{arguments.db_command}")

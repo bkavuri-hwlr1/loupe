@@ -80,6 +80,7 @@ from llm_cli.storage.migrations import (
     apply_migrations,
     current_schema_version,
 )
+from llm_cli.storage.retention import prune_task_output
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
@@ -517,6 +518,16 @@ class DaemonService:
                     ErrorCode.INTERNAL_RECOVERABLE,
                     f"the verified database backup could not complete: {exc}",
                 ) from exc
+        if method == "db.prune":
+            apply = params.get("apply", False)
+            if not isinstance(apply, bool):
+                raise ValueError("apply must be a boolean")
+            return await asyncio.to_thread(
+                prune_task_output,
+                self.store,
+                older_than=_optional_string(params, "older_than") or "30d",
+                apply=apply,
+            )
         if method == "repo.add":
             return await self._repo_add(params)
         if method == "repo.list":
