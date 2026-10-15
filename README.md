@@ -271,8 +271,12 @@ agent can hand a read-only question to a helper with the `explore` tool. The
 helper runs in its own model context with read-only tools, sees the task's
 pending edits, and returns a short report, so the main conversation stays
 focused. Several explorations in one turn run in parallel, and the
-conversation shows each one as it finishes. Helpers cannot edit, run commands,
-or ask you questions; their tool calls and tokens count toward the task. Set
+conversation shows each one as it finishes. When the task offers them, helpers
+can run commands in its disposable sandbox and fetch public pages under its
+domain policy. Command and domain approvals ask you through the parent task,
+and task-wide approvals and fetched pages are shared. Helpers cannot edit or
+ask general questions; plan-mode helpers cannot run commands. Their tool calls
+and tokens count toward the task. Set
 `explore = false` under `[agent]` in the configuration file to turn them off.
 
 Helpers use low reasoning effort, which keeps explorations fast and cheaper,

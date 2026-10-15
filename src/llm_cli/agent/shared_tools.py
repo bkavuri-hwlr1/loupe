@@ -223,6 +223,9 @@ class SharedToolBroker(ToolBroker):
 
     publication_lock: RLock = field(default_factory=RLock)
     guard: Callable[[], None] | None = None
+    # Session relevance metadata only; helpers share this callback while
+    # keeping their write-authorizing observations private.
+    on_read: Callable[[str, FileIdentity], None] | None = None
     _observations: dict[str, _Observation] = field(default_factory=dict, init=False)
     _contents: dict[str, bytes | None] = field(default_factory=dict, init=False)
 
@@ -356,7 +359,9 @@ class SharedToolBroker(ToolBroker):
             agent_mode="plan",
             publication_lock=self.publication_lock,
             guard=self.guard,
+            on_read=self.on_read,
         )
+        self._configure_read_only_view(view)
         with self.publication_lock:
             view._contents = dict(self._contents)
             view._modes = dict(self._modes)
@@ -760,6 +765,8 @@ class SharedToolBroker(ToolBroker):
             self._partial_reads.discard(relative)
         else:
             self._partial_reads.add(relative)
+        if not result.is_error and self.on_read is not None:
+            self.on_read(relative, self._observations[relative].base)
         return result
 
     def _search_text(self, arguments: Mapping[str, object]) -> ToolOutcome:
@@ -945,13 +952,18 @@ class SharedToolBroker(ToolBroker):
         """
 
         def read() -> tuple[bytes | None, bool, str | None]:
-            _, content = self._observe(relative, check_ignored=False, screen=False)
+            identity, content = self._observe(
+                relative, check_ignored=False, screen=False
+            )
             if content is None:
                 return None, False, None
             if contains_secret_material(content):
                 return content, True, None
             try:
-                return content, False, content.decode("utf-8")
+                text = content.decode("utf-8")
+                if self.on_read is not None:
+                    self.on_read(relative, identity)
+                return content, False, text
             except UnicodeDecodeError:
                 return content, False, None
 
@@ -1072,6 +1084,9 @@ class SharedToolBroker(ToolBroker):
                     tofile="/dev/null" if content is None else f"b/{relative}",
                 )
             )
+        if self.on_read is not None:
+            for relative in self._contents:
+                self.on_read(relative, self._observations[relative].base)
         paths = "\n".join(f"  {relative}" for relative in sorted(self._contents))
         return _ok(
             f"Pending candidate paths:\n{paths}\n\n{''.join(diffs)}", self.limits

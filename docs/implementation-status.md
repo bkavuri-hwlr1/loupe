@@ -128,6 +128,13 @@ the remaining planned capabilities are listed below.
   Durable launches record harness, provider, and model separately; an explicit
   provider override selects its own default model. The loop has a two-hour
   wall clock, 500-tool-call cap, and 64 KiB tool-result ceiling.
+- Exploration helpers can use the parent task's offered `run_command` and
+  `web_fetch` handlers with the same sandbox, command/domain approvals,
+  pre-tool hooks, output screening, and page cache. Their command writes are
+  discarded, their calls use the reserved helper budget, and their tokens
+  contribute to task usage. Plan helpers still cannot run commands, and all
+  helper views refuse edits, configured checks, general questions, MCP access,
+  and task completion. Helpers start no new tools after the task deadline.
 - MCP authority for shared tasks over stdio or Streamable HTTP (JSON and
   bounded SSE responses), including tools and explicit resource/prompt
   list/read/get calls. HTTP header configuration contains only environment

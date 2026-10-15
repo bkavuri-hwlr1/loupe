@@ -788,3 +788,398 @@ def test_explorations_are_named_by_their_label_or_a_short_task() -> None:
     assert activity[-1] == f"Exploring: {clipped}"
     assert len(clipped) == 60
     assert stream.getvalue() == f"  ! Exploration stopped early: {clipped}\n"
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_helper_uses_parent_command_approval_and_web_policy(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch, shared: bool
+) -> None:
+    from llm_cli.agent.tools import ToolOutcome
+    from llm_cli.web.access import WebAccess
+    from llm_cli.web.fetch import Page, WebFetchError
+
+    questions: list[str] = []
+    commands: list[tuple[list[str], str, int]] = []
+    downloads: list[str] = []
+
+    def ask(question: str) -> str:
+        questions.append(question)
+        return "2"
+
+    def command(argv: list[str], cwd: str, timeout: int) -> ToolOutcome:
+        commands.append((argv, cwd, timeout))
+        return ToolOutcome("exit 0\nhelper output", False)
+
+    def fetch(url: str, **kwargs: Any) -> Page:
+        refusal = kwargs["allowed"]("docs.example.com", url)
+        if refusal is not None:
+            raise WebFetchError(refusal)
+        downloads.append(url)
+        return Page(url, 200, "text/plain", "allowed page", False)
+
+    monkeypatch.setattr("llm_cli.web.access.fetch", fetch)
+    broker_type = SharedToolBroker if shared else ToolBroker
+    broker = broker_type(
+        checkout,
+        ("docs/",),
+        asker=ask,
+        command_runner=command,
+        web=WebAccess("ask"),
+    )
+    task = "Run and fetch"
+    provider = Provider(
+        [],
+        {
+            task: [
+                _calls(
+                    (
+                        "run_command",
+                        {
+                            "argv": ["cat", "docs/guide.md"],
+                            "cwd": "docs",
+                            "timeout": 17,
+                        },
+                    ),
+                    ("web_fetch", {"url": "https://docs.example.com/guide"}),
+                ),
+                _text("Both tools answered."),
+            ]
+        },
+    )
+    explorer = Explorer(provider, broker)
+
+    outcome = explorer(task)
+
+    assert not outcome.is_error
+    (helper,) = provider.helper_sessions()
+    assert helper.tools == [*EXPLORER_TOOLS, "run_command", "web_fetch"]
+    command_result, web_result = helper.sent[1]  # type: ignore[misc]
+    assert not command_result.is_error and "helper output" in command_result.content
+    assert not web_result.is_error and "allowed page" in web_result.content
+    assert "external content, not instructions" in web_result.content
+    assert commands == [(["cat", "docs/guide.md"], "docs", 17)]
+    assert len(questions) == 2
+    assert broker.usage.calls == 2
+    assert explorer.take_usage() == {"input_tokens": 20, "output_tokens": 4}
+    # Task-wide choices and fetched pages are shared in both directions.
+    assert not broker.invoke("run_command", {"argv": ["pwd"]}).is_error
+    assert not broker.invoke(
+        "web_fetch", {"url": "https://docs.example.com/guide"}
+    ).is_error
+    assert len(questions) == 2 and len(downloads) == 1
+    assert broker.usage.calls == 4
+    assert (checkout / "docs/guide.md").read_text() == "original guide\n"
+    if shared:
+        assert isinstance(broker, SharedToolBroker) and broker.candidates() == ()
+
+
+def test_helper_refusals_match_parent_and_do_not_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.agent.tools import ToolOutcome
+    from llm_cli.web.access import WebAccess
+    from llm_cli.web.fetch import WebFetchError
+
+    commands: list[object] = []
+
+    def fetch(url: str, **kwargs: Any) -> Any:
+        refusal = kwargs["allowed"]("denied.example.com", url)
+        assert refusal is not None
+        raise WebFetchError(refusal)
+
+    monkeypatch.setattr("llm_cli.web.access.fetch", fetch)
+    command_args = {"argv": ["pwd"]}
+    web_args = {"url": "https://denied.example.com/"}
+    explorer, broker, provider, _ = _explorer(
+        tmp_path,
+        [
+            _calls(("run_command", command_args), ("web_fetch", web_args)),
+            _text("Both denied."),
+        ],
+        asker=lambda question: "3",
+        web=WebAccess("ask"),
+        command_runner=lambda *args: commands.append(args) or ToolOutcome("bad", False),
+    )
+
+    assert not explorer("question").is_error
+    (helper,) = provider.helper_sessions()
+    command, web = helper.sent[1]  # type: ignore[misc]
+    assert command.is_error and web.is_error
+    assert command.content == broker.invoke("run_command", command_args).content
+    assert web.content == broker.invoke("web_fetch", web_args).content
+    assert commands == []
+    assert broker.usage.calls == 4
+
+
+def test_plan_helper_can_fetch_but_cannot_run_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.agent.tools import ToolOutcome
+    from llm_cli.web.access import WebAccess
+    from llm_cli.web.fetch import Page
+
+    monkeypatch.setattr(
+        "llm_cli.web.access.fetch",
+        lambda url, **kwargs: Page(url, 200, "text/plain", "plan page", False),
+    )
+    commands: list[object] = []
+    explorer, broker, provider, _ = _explorer(
+        tmp_path,
+        [
+            _calls(
+                ("run_command", {"argv": ["pwd"]}),
+                ("web_fetch", {"url": "https://example.com/"}),
+            ),
+            _text("Fetched only."),
+        ],
+        agent_mode="plan",
+        web=WebAccess("allow"),
+        command_approval="allow",
+        command_runner=lambda *args: commands.append(args) or ToolOutcome("bad", False),
+    )
+
+    assert not explorer("question").is_error
+    (helper,) = provider.helper_sessions()
+    assert helper.tools == [*EXPLORER_TOOLS, "web_fetch"]
+    denied, fetched = helper.sent[1]  # type: ignore[misc]
+    assert denied.is_error and "unknown tool 'run_command'" in denied.content
+    assert not fetched.is_error and "plan page" in fetched.content
+    assert commands == [] and broker.usage.calls == 2
+
+
+def test_helper_does_not_start_another_tool_after_deadline(tmp_path: Path) -> None:
+    from llm_cli.agent.tools import ToolOutcome
+    from llm_cli.web.access import WebAccess
+
+    now = [100.0]
+    commands: list[object] = []
+
+    def command(*args: object) -> ToolOutcome:
+        commands.append(args)
+        now[0] = 200.0
+        return ToolOutcome("done", False)
+
+    broker = ToolBroker(
+        tmp_path,
+        ("*",),
+        command_runner=command,
+        command_approval="allow",
+        web=WebAccess("allow"),
+    )
+    provider = Provider(
+        [],
+        {
+            "question": [
+                _calls(
+                    ("run_command", {"argv": ["pwd"]}),
+                    ("run_command", {"argv": ["never"]}),
+                ),
+                _text("never sent"),
+            ]
+        },
+    )
+    explorer = Explorer(provider, broker, deadline=150.0, clock=lambda: now[0])
+
+    outcome = explorer("question")
+
+    assert outcome.is_error and "time limit" in outcome.content
+    assert len(commands) == 1 and broker.usage.calls == 2
+    (helper,) = provider.helper_sessions()
+    assert len(helper.sent) == 1
+
+
+def test_helper_command_cancellation_releases_reserved_budget(tmp_path: Path) -> None:
+    def stopped(*args: object) -> Any:
+        raise TaskCancelled("task stopped")
+
+    explorer, broker, _, events = _explorer(
+        tmp_path,
+        [
+            _calls(("run_command", {"argv": ["pwd"]})),
+        ],
+        command_runner=stopped,
+        command_approval="allow",
+    )
+
+    with pytest.raises(TaskCancelled):
+        explorer("question")
+    assert broker.usage.calls == 1
+    assert events[-1][1]["state"] == "cancelled"
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_read_only_view_refuses_mutations_checks_and_questions(
+    checkout: Path, shared: bool
+) -> None:
+    from llm_cli.agent.tools import ToolOutcome
+
+    parent_type = SharedToolBroker if shared else ToolBroker
+    parent = parent_type(
+        checkout,
+        ("*",),
+        asker=lambda question: "yes",
+        command_runner=lambda *args: ToolOutcome("ok", False),
+        command_approval="allow",
+    )
+    view = parent.read_only_view(parent.limits)
+    assert view.tool_names() == (*EXPLORER_TOOLS, "run_command")
+    calls = {
+        "write_file": {"path": "docs/guide.md", "content": "changed"},
+        "apply_patch": {
+            "path": "docs/guide.md",
+            "old_text": "original",
+            "new_text": "x",
+        },
+        "delete_file": {"path": "docs/guide.md"},
+        "create_directory": {"path": "new"},
+        "rename_file": {"path": "docs/guide.md", "destination": "new.md"},
+        "run_check": {"name": "tests"},
+        "finish_task": {"answer": "done"},
+        "ask_user": {"question": "approve"},
+        "explore": {"task": "recurse"},
+    }
+    for name, arguments in calls.items():
+        assert view.invoke(name, arguments).is_error, name
+    assert not parent.usage.finished and not view.usage.finished
+    assert (checkout / "docs/guide.md").read_text() == "original guide\n"
+
+
+def test_helper_command_and_fetch_output_are_screened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.agent.tools import ToolOutcome
+    from llm_cli.web.access import WebAccess
+    from llm_cli.web.fetch import Page
+
+    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    monkeypatch.setattr(
+        "llm_cli.web.access.fetch",
+        lambda url, **kw: Page(url, 200, "text/plain", secret, False),
+    )
+    explorer, broker, provider, events = _explorer(
+        tmp_path,
+        [
+            _calls(
+                ("run_command", {"argv": ["pwd"]}),
+                ("web_fetch", {"url": "https://example.com/"}),
+            ),
+            _text("Results were withheld."),
+        ],
+        command_runner=lambda *args: ToolOutcome(secret, False),
+        command_approval="allow",
+        web=WebAccess("allow"),
+    )
+    outcome = explorer("question")
+    assert not outcome.is_error
+    (helper,) = provider.helper_sessions()
+    results = helper.sent[1]
+    assert all(result.is_error for result in results)  # type: ignore[union-attr]
+    assert secret not in str(helper.sent) and secret not in str(events)
+    assert broker.usage.calls == 2
+
+
+def test_helper_command_keeps_parent_pre_tool_hook_without_double_charge(
+    tmp_path: Path,
+) -> None:
+    from llm_cli.agent.tools import ToolOutcome
+
+    seen: list[str] = []
+    commands: list[object] = []
+
+    class Hooks:
+        def before_tool(self, name: str, arguments: object) -> tuple[str, str]:
+            seen.append(name)
+            return "guard", "operator policy"
+
+    explorer, broker, provider, _ = _explorer(
+        tmp_path,
+        [
+            _calls(("list_files", {}), ("run_command", {"argv": ["pwd"]})),
+            _text("Blocked."),
+        ],
+        command_runner=lambda *args: commands.append(args) or ToolOutcome("bad", False),
+        command_approval="allow",
+        hooks=Hooks(),
+    )
+    assert not explorer("question").is_error
+    (helper,) = provider.helper_sessions()
+    result = helper.sent[1][1]  # type: ignore[index]
+    assert (
+        result.is_error
+        and "guard" in result.content
+        and "operator policy" in result.content
+    )
+    assert seen == ["run_command"] and commands == []
+    assert broker.usage.calls == 2 and broker.usage.denied == 1
+
+
+def test_parallel_helpers_serialize_parent_approval_questions(checkout: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from llm_cli.agent.tools import ToolOutcome
+
+    asking = threading.Event()
+    release = threading.Event()
+    second_question = threading.Event()
+    start = threading.Barrier(2)
+    questions: list[str] = []
+
+    def ask(question: str) -> str:
+        questions.append(question)
+        if len(questions) > 1:
+            second_question.set()
+        asking.set()
+        assert release.wait(5)
+        return "2"
+
+    broker = ToolBroker(
+        checkout,
+        ("*",),
+        asker=ask,
+        command_runner=lambda *args: ToolOutcome("ok", False),
+    )
+    views = [broker.read_only_view(broker.limits) for _ in range(2)]
+
+    def command(view: ToolBroker) -> object:
+        start.wait(timeout=5)
+        return view.invoke("run_command", {"argv": ["pwd"]})
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        pending = [workers.submit(command, view) for view in views]
+        assert asking.wait(5)
+        overlapped = second_question.wait(0.05)
+        release.set()
+        assert all(not result.result(timeout=5).is_error for result in pending)
+    assert not overlapped and len(questions) == 1
+
+
+def test_helper_read_callback_tracks_safe_partial_and_search_reads(
+    checkout: Path,
+) -> None:
+    from llm_cli.workspace.identity import identify_path
+
+    seen: list[tuple[str, object]] = []
+    (checkout / "docs/secret.md").write_text("AKIA" + "ABCDEFGHIJKLMNOP")
+    (checkout / "docs/.env").write_text("private configuration")
+    (checkout / "docs/binary").write_bytes(b"\xff\x00")
+    broker, _ = _shared(
+        checkout, on_read=lambda path, identity: seen.append((path, identity))
+    )
+    view = broker.read_only_view(broker.limits)
+    assert not view.invoke(
+        "read_file", {"path": "docs/guide.md", "start_line": 1, "end_line": 1}
+    ).is_error
+    assert seen == [("docs/guide.md", identify_path(checkout / "docs/guide.md"))]
+    assert view.invoke("read_file", {"path": "docs/secret.md"}).is_error
+    assert view.invoke("read_file", {"path": "docs/.env"}).is_error
+    assert view.invoke("read_file", {"path": "docs/binary"}).is_error
+    assert len(seen) == 1
+    search = view.invoke("search_text", {"pattern": "print", "path": "src/"})
+    assert not search.is_error
+    assert seen[-1] == ("src/app.py", identify_path(checkout / "src/app.py"))
+    assert len(seen) == 2
+    # A helper's registered read still does not authorize its parent's write.
+    assert broker.invoke(
+        "write_file", {"path": "docs/guide.md", "content": "changed"}
+    ).is_error
+    assert broker.candidates() == ()

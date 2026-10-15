@@ -709,8 +709,14 @@ and `hooks.unavailable` events show hook activity without hook output.
 
 **9. Subagents (implemented as `explore`).** The `explore` tool hands a
 self-contained question to a helper: a new session with the same provider, its
-own system prompt, and only `list_files`, `read_file`, `search_text`, and
-`read_diff`. The helper reads through a view of the task's broker, so the
+own system prompt, `list_files`, `read_file`, `search_text`, and `read_diff`,
+plus `run_command` and `web_fetch` only when the parent offers them. Commands
+use the parent's disposable sandbox, limits, pre-tool hooks, approval state,
+and output screening; their writes are discarded. Fetches use the parent's
+domain policy, approval state, page cache, screening, and external-data labels.
+Approvals ask through the parent question channel. Plan helpers still have
+no commands, and no helper can edit, run configured checks, ask general
+questions, or start further helpers. The helper reads through a view of the task's broker, so the
 source policy and pending edits are the same, but its observations are its
 own: a helper's read never authorizes the task's full-file writes. Up to 40
 tool calls are reserved from the task's budget for each helper, always leaving
@@ -756,7 +762,8 @@ repository, found:
   steps and facts, and sampled citations in the low-effort reports were all
   correct. These are single runs per scenario.
 
-Remaining gap: helpers cannot run sandboxed commands.
+Helper commands and fetches count against the reserved tool budget; an
+expired task starts no further helper model requests or tools.
 
 **10. Web fetch (implemented).** `web_fetch(url, offset)` reads one public page
 as text through the standard library's HTTP client (`llm_cli/web/`). Domain
@@ -770,8 +777,8 @@ are GET with no cookies or target credentials, a 20-second timeout, and a
 2 MiB download limit; only text types are read. HTML becomes readable text
 with headings and links kept; long pages are read in parts through `offset`
 from a per-task cache; output is labelled as external content and screened
-for secrets. It is offered in plan mode, since it reads, but not to
-exploration helpers. `web.fetched` events record the domain and size only.
+for secrets. It is offered in plan mode and to exploration helpers when the
+parent task offers it. `web.fetched` events record the domain and size only.
 HTTP CONNECT proxies are selected from `HTTP_PROXY` / `HTTPS_PROXY` (lowercase
 forms take precedence), or explicitly with `agent.web_proxy = "http://proxy:8080"`.
 `NO_PROXY` / `no_proxy` bypass either selection for matching hosts. Proxy URLs
@@ -784,8 +791,7 @@ page content. Known limits: naming the IP address in CONNECT keeps DNS pinning
 but defeats proxies that allow sites by hostname; proxies that restrict CONNECT
 to port 443 refuse plain HTTP pages; and an environment proxy URL containing
 credentials makes every fetch fail rather than bypassing the proxy.
-Remaining gaps: fetching through exploration helpers, and proxies that need
-authentication.
+Remaining gap: proxies that need authentication.
 
 **11. Token usage display (implemented).** Adapters now report `prompt_tokens`
 with one meaning for every provider: all prompt tokens, cached or not

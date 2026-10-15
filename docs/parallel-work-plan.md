@@ -182,6 +182,11 @@ Count their calls against the helper's reserved budget.
 domain or command approval is refused to the helper exactly as to the parent;
 plan-mode helpers still cannot run commands.
 
+**Implemented.** Helper views expose only source reads plus the parent's
+offered command/fetch handlers, preserving its sandbox, approvals, hooks,
+cache, screening, cancellation, and deadline. Calls use the helper reservation
+without double charging, and helper observations never authorize parent writes.
+
 ### B3. MCP over HTTP, resources and prompts, and plan mode
 
 **Why.** Remaining gaps from harness plan item 7: only stdio servers and tools

@@ -96,6 +96,7 @@ class _SearchPrepared:
 # A batched read's prepared answer: an outcome, the error its call raises, a
 # search awaiting matching, or nothing to prepare (file reads).
 type _Prepared = ToolOutcome | Exception | _SearchPrepared | None
+READ_ONLY_TOOLS = ("list_files", "read_file", "search_text", "read_diff")
 MAX_EXPLORE_TASK_CHARACTERS = 4_000
 MAX_EXPLORE_LABEL_CHARACTERS = 80
 PLAN_STATUSES = ("pending", "in_progress", "completed")
@@ -193,6 +194,16 @@ class ToolBroker:
     # Explorations run in parallel threads and share the call budget.
     _budget_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
+    # Helpers share one parent question channel: approval requests must not
+    # overwrite each other, and task-wide approvals must be checked serially.
+    _approval_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
+    # A delegated view exposes only source reads and these parent-owned tools.
+    # None is an ordinary broker; an empty mapping is a source-only view.
+    _helper_tools: dict[str, Callable[[Mapping[str, object]], ToolOutcome]] | None = (
+        field(default=None, init=False, repr=False, compare=False)
     )
     # The next call's answer, already computed by invoke_reads.
     _ready: ToolOutcome | Exception | None = field(
@@ -327,7 +338,7 @@ class ToolBroker:
         observations, so a helper's reads never authorize this broker's writes.
         """
 
-        return ToolBroker(
+        view = ToolBroker(
             worktree=self.worktree,
             scopes=self.scopes,
             case_insensitive_filesystem=self.case_insensitive_filesystem,
@@ -336,8 +347,45 @@ class ToolBroker:
             cancelled=self.cancelled,
             agent_mode="plan",
         )
+        self._configure_read_only_view(view)
+        return view
+
+    def _configure_read_only_view(self, view: ToolBroker) -> None:
+        # Forward through the parent so task-wide approvals, web cache,
+        # command snapshot/limits and output policy remain exactly its own.
+        # The view already charges each call against its reserved budget.
+        view._helper_tools = {}
+        for name in ("run_command", "web_fetch"):
+            if name in self.tool_names():
+                view._helper_tools[name] = self._helper_handler(name)
+
+    def _helper_handler(
+        self, name: str
+    ) -> Callable[[Mapping[str, object]], ToolOutcome]:
+        def invoke(arguments: Mapping[str, object]) -> ToolOutcome:
+            self.check_cancelled()
+            if self.usage.finished or name not in self.tool_names():
+                return _error(f"the parent task no longer offers {name!r}")
+            if self._repairs.exhausted is not None and name in _REPAIR_TOOLS:
+                return _error(self._repairs.refusal())
+            if self.hooks is not None:
+                blocked = self.hooks.before_tool(name, arguments)
+                if blocked is not None:
+                    hook, reason = blocked
+                    self.usage.denied += 1
+                    return _error(
+                        f"a pre_tool hook ({hook}) blocked this call: {reason}"
+                    )
+            handler: Callable[[Mapping[str, object]], ToolOutcome] = getattr(
+                self, _HANDLERS[name].__name__
+            )
+            return handler(arguments)
+
+        return invoke
 
     def tool_names(self) -> tuple[str, ...]:
+        if self._helper_tools is not None:
+            return (*READ_ONLY_TOOLS, *self._helper_tools)
         names = [
             "list_files",
             "read_file",
@@ -417,9 +465,9 @@ class ToolBroker:
         try:
             # The allowlist decides which tool is exposed; dispatch through the
             # instance so alternate workspace backends can implement it safely.
-            bound_handler: Callable[[Mapping[str, object]], ToolOutcome] = getattr(
-                self, handler.__name__
-            )
+            bound_handler = (self._helper_tools or {}).get(name)
+            if bound_handler is None:
+                bound_handler = getattr(self, handler.__name__)
             ready, self._ready = self._ready, None
             if isinstance(ready, Exception):
                 raise ready
@@ -680,29 +728,31 @@ class ToolBroker:
     def _web_allowed(self, host: str, url: str) -> str | None:
         """Ask before the first fetch from a domain policy does not allow."""
 
-        assert self.web is not None
-        if self.web.allowed_without_asking(host):
-            return None
-        if self.asker is None:
-            return f"{host} is not an allowed domain for web_fetch"
-        shown = _visible(url)
-        if len(shown) > 500:
-            shown = shown[:499] + "…"
-        question = (
-            f"Allow fetching a web page from {host}?\n\nGET {shown}\n\n"
-            f"1. Allow once\n2. Allow {host} for the rest of this task\n3. Deny\n\n"
-            "Reply with a number or your own answer."
-        )
-        answer = self.asker(question).strip()
-        choice = answer.casefold()
-        if choice in {"2", "always", "allow all"}:
-            self.web.approve(host)
-            return None
-        if choice in {"1", "y", "yes", "allow", "allow once"}:
-            return None
-        self.usage.denied += 1
-        reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
-        return f"the user declined fetching from {host}{reason}"
+        with self._approval_lock:
+            self.check_cancelled()
+            assert self.web is not None
+            if self.web.allowed_without_asking(host):
+                return None
+            if self.asker is None:
+                return f"{host} is not an allowed domain for web_fetch"
+            shown = _visible(url)
+            if len(shown) > 500:
+                shown = shown[:499] + "…"
+            question = (
+                f"Allow fetching a web page from {host}?\n\nGET {shown}\n\n"
+                f"1. Allow once\n2. Allow {host} for the rest of this task\n3. Deny\n\n"
+                "Reply with a number or your own answer."
+            )
+            answer = self.asker(question).strip()
+            choice = answer.casefold()
+            if choice in {"2", "always", "allow all"}:
+                self.web.approve(host)
+                return None
+            if choice in {"1", "y", "yes", "allow", "allow once"}:
+                return None
+            self.usage.denied += 1
+            reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
+            return f"the user declined fetching from {host}{reason}"
 
     def _call_mcp(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
         """Run an MCP tool once its server is approved; output is untrusted."""
@@ -1057,32 +1107,37 @@ class ToolBroker:
     ) -> ToolOutcome | None:
         """Ask the user to approve a command; model output can never approve."""
 
-        if self.command_approval == "allow" or self._commands_approved:
-            return None
-        if self.asker is None:
-            return _error(
-                "commands need approval, but no interactive session is attached"
+        with self._approval_lock:
+            self.check_cancelled()
+            if self.command_approval == "allow" or self._commands_approved:
+                return None
+            if self.asker is None:
+                return _error(
+                    "commands need approval, but no interactive session is attached"
+                )
+            location = "" if cwd in {"", "."} else f"\nin {_visible(cwd)}"
+            question = (
+                "Allow this command? It runs in a sandboxed copy of the checkout with "
+                "no network, and its changes are discarded.\n\n"
+                f"$ {_visible(shlex.join(argv))}{location} (timeout {timeout}s)\n\n"
+                "1. Allow once\n2. Allow commands for the rest of this task\n"
+                "3. Deny\n\n"
+                "Reply with a number or your own answer."
             )
-        location = "" if cwd in {"", "."} else f"\nin {_visible(cwd)}"
-        question = (
-            "Allow this command? It runs in a sandboxed copy of the checkout with "
-            "no network, and its changes are discarded.\n\n"
-            f"$ {_visible(shlex.join(argv))}{location} (timeout {timeout}s)\n\n"
-            "1. Allow once\n2. Allow commands for the rest of this task\n3. Deny\n\n"
-            "Reply with a number or your own answer."
-        )
-        if len(question) > MAX_QUESTION_CHARACTERS:
-            return _error("that command is too long to show for approval; shorten it")
-        answer = self.asker(question).strip()
-        choice = answer.casefold()
-        if choice in {"1", "y", "yes", "allow", "allow once"}:
-            return None
-        if choice in {"2", "always", "allow all"}:
-            self._commands_approved = True
-            return None
-        self.usage.denied += 1
-        reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
-        return _error(f"the user declined this command{reason}")
+            if len(question) > MAX_QUESTION_CHARACTERS:
+                return _error(
+                    "that command is too long to show for approval; shorten it"
+                )
+            answer = self.asker(question).strip()
+            choice = answer.casefold()
+            if choice in {"1", "y", "yes", "allow", "allow once"}:
+                return None
+            if choice in {"2", "always", "allow all"}:
+                self._commands_approved = True
+                return None
+            self.usage.denied += 1
+            reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
+            return _error(f"the user declined this command{reason}")
 
     def _create_directory(self, arguments: Mapping[str, object]) -> ToolOutcome:
         path = normalize_changed_path(_string(arguments, "path"))
@@ -2029,8 +2084,10 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
         "context, and get back its report. Use it for broad investigation that "
         "would take many searches or reads, such as tracing how something is "
         "wired through the codebase. Several explore calls in one turn run in "
-        "parallel. The helper sees your pending edits but cannot edit, run "
-        "commands, or ask the user. Rely on its findings to understand the "
+        "parallel. The helper sees your pending edits and may use your offered "
+        "sandboxed commands and web_fetch with the same approvals. It cannot "
+        "edit or ask general questions. Plan helpers cannot run commands. "
+        "Rely on its findings to understand the "
         "code, but read a file yourself before editing it: a report does not "
         "count as reading it.",
         {
@@ -2090,6 +2147,7 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
 __all__ = [
     "MAX_EXPLORE_TASK_CHARACTERS",
     "PLAN_STATUSES",
+    "READ_ONLY_TOOLS",
     "ToolBroker",
     "ToolBudgetExhausted",
     "ToolOutcome",
