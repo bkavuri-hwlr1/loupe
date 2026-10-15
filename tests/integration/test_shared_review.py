@@ -533,15 +533,28 @@ def test_hung_optional_review_times_out_notices_and_publishes_checked_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = ReviewProvider([_first_edit(), _finish()], '{"findings": []}')
-    release, returned = threading.Event(), threading.Event()
+    release, entered = threading.Event(), threading.Event()
+    review_worker: threading.Thread | None = None
+
+    class StartedReviewer(harness_module.Reviewer):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            # Advance only the review clock once its request actually starts;
+            # keep a generous real watchdog during snapshot/thread startup.
+            deadline = kwargs["deadline"]
+            kwargs["clock"] = (
+                lambda: deadline if entered.is_set() else deadline - 60.0
+            )
+            super().__init__(*args, **kwargs)
 
     def blocked(_: Sequence[ToolCallResult] = ()) -> ModelTurn:
-        assert release.wait(3)
-        returned.set()
+        nonlocal review_worker
+        review_worker = threading.current_thread()
+        entered.set()
+        release.wait()  # Always released by the scenario's finally block.
         return ModelTurn(text=_FINDING, usage={"prompt_tokens": 999})
 
     monkeypatch.setattr(provider.reviewer, "_next", blocked)
-    monkeypatch.setattr(harness_module, "_REVIEW_MAX_SECONDS", 0.05, raising=False)
+    monkeypatch.setattr(harness_module, "Reviewer", StartedReviewer)
 
     async def scenario() -> None:
         root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
@@ -554,6 +567,7 @@ def test_hung_optional_review_times_out_notices_and_publishes_checked_work(
                 await _start(service, root, credentials, "task", ("a.py",)), 2
             )
             assert time.monotonic() - before < 2
+            assert entered.is_set()
             _assert_completed(service, "task")
             assert (root / "a.py").read_text() == "value = 2\n"
             reviews = [
@@ -567,11 +581,18 @@ def test_hung_optional_review_times_out_notices_and_publishes_checked_work(
             assert execution is not None and not execution.usage.get(
                 "review_prompt_tokens"
             )
+            events = service.store.list_task_events("task")
+            release.set()
+            assert review_worker is not None
+            review_worker.join(1)
+            assert not review_worker.is_alive()
+            assert service.store.get_execution("task", 1) == execution
+            assert service.store.list_task_events("task") == events
+            assert (root / "a.py").read_text() == "value = 2\n"
+            assert provider.review_sessions == 1
         finally:
             release.set()
             service.close()
-        assert returned.wait(1)
-        assert provider.review_sessions == 1
 
     asyncio.run(scenario())
 
