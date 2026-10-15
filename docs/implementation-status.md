@@ -717,3 +717,27 @@ the tested commits, source fingerprint and required integration regressions.
 The corrected B1 live check found and repaired its planted bug before
 publication; the revised toolkit v3 benchmark completed all twelve runs.
 Phase 2 is not merged, and E2 remains deferred.
+
+
+## Wave 2 review corrections (October 15, 2026)
+
+The corrected candidate `7c15c49` passed **2,385 tests**
+with one expected macOS filesystem skip, Ruff, mypy and package builds. Its
+installed wheel and frozen source were verified unchanged after testing.
+The [validation record](experiments/wave2-review-fixes-2026-10-15.json)
+records the candidate identity and regression coverage.
+
+Independent review now accepts standalone fenced JSON, retains valid findings
+when other entries are malformed, and has a 120-second cap with 1–30 seconds
+reserved for completion. The cap covers provider waits and shared source tools;
+a timeout produces a visible incomplete-review notice. `/usage` itemizes the
+review's share of existing token totals. Real task cancellation and the original
+deadline still govern repair.
+
+Helpers identify themselves in command/domain approvals. A parent receives a
+durable reconciliation notice before its next action, including after replay or
+compaction; shared fetch waiters honor the task lifecycle while awaiting human
+approval. Hydration's default output is a short summary, and `--json` retains
+full details. Ignored dependency directories are explicit rebuild decisions with
+unknown contents rather than enumerated copy candidates, preserving unrelated
+candidates. Actual copying remains C2/C3. E2 remains deferred.

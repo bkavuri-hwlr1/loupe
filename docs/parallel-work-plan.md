@@ -211,6 +211,9 @@ plan-mode helpers still cannot run commands.
 offered command/fetch handlers, preserving its sandbox, approvals, hooks,
 cache, screening, cancellation, and deadline. Calls use the helper reservation
 without double charging, and helper observations never authorize parent writes.
+Helper-triggered reconciliation is delivered durably to the parent before its
+next action. Command/domain approval questions identify the helper; coalesced
+fetch waiters follow task cancellation/deadlines while domain approval is pending.
 
 ### B3. MCP over HTTP, resources and prompts, and plan mode
 
