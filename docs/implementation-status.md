@@ -563,8 +563,9 @@ measurement follows below.
 The revised fixture separates adjacent text and numeric registry flags with a
 comment, allowing their disjoint changes to merge cleanly. On
 final Wave 1 commit `47d1451`, twelve live Codex runs repeated single/pair and
-clean/disrupted cases three times with `gpt-6-sol`, effort `xhigh`, default
-helper/review settings, and a matching noneditable Python 3.14 wheel. Full test
+clean/disrupted cases three times with `gpt-6-sol`, effort `xhigh`, exploration available (unused in every run), commands allowed, web fetch off,
+and a matching noneditable Python 3.14 wheel. Independent review was unavailable
+in this baseline. Full test
 suites were held during measurement; implementation work and short focused
 checks continued. [Sanitized per-run evidence](experiments/wave1-toolkit-v3-2026-10-14.json)
 retains the source fingerprint and exact settings.

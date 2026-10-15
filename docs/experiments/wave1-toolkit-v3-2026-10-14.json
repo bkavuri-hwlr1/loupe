@@ -16,12 +16,17 @@
     "order": "single/pair order alternates by repetition",
     "runtime": "matching noneditable all-extras Python3.14 wheel; source unchanged during all measurements",
     "host_load": "full test suites held during measurement; implementation and short focused checks continued",
-    "tokens": "prompt plus output; cached tokens already included in prompt; not currency cost"
+    "tokens": "prompt plus output; cached tokens already included in prompt; not currency cost",
+    "script_agent_settings": {
+      "commands": "allow",
+      "web_fetch": "off"
+    },
+    "exploration_helpers": "Available by default; no exploration helper was used (all helper_prompt_tokens=0)."
   },
   "limitations": [
     "Three samples per cell, one model/provider, one fixture; no statistical speedup claim.",
     "Prior v2 used implementation b5b0b2a; v3 uses final Wave1 code47d1451, so v2/v3 comparisons do not isolate fixture changes.",
-    "Parallel helpers and the independent reviewer are off in this baseline; these compare independent sessions.",
+    "No exploration helper was used in these runs; independent review was unavailable in this baseline. These compare independent sessions.",
     "E2 live Anthropic/OpenAI validation is deferred."
   ],
   "medians": [
