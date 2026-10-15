@@ -7,9 +7,12 @@ the publication gate. The caller persists the single attempt before starting it.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future
 from dataclasses import dataclass, replace
+from functools import partial
 
 from llm_cli.agent.source_policy import contains_secret_material
 from llm_cli.agent.tools import TaskCancelled, ToolBroker, tool_schemas
@@ -18,6 +21,7 @@ from llm_cli.providers.base import (
     ChatProvider,
     EffortCappedProvider,
     ModelTurn,
+    StreamingSession,
     ToolCallResult,
 )
 
@@ -25,6 +29,7 @@ REVIEW_TOOLS = ("list_files", "read_file", "search_text", "read_diff")
 _MAX_CALLS = 20
 _MAX_INPUT_BYTES = 256 * 1024
 _MAX_REPORT_CHARACTERS = 12_000
+_CANCEL_POLL_SECONDS = 0.05
 _SYSTEM = """\
 You are an independent read-only code reviewer. Review the exact pending diff
 and check evidence in the task data, using read tools for context when needed.
@@ -57,6 +62,10 @@ class ReviewResult:
         return "\n".join(lines)
 
 
+class _ReviewTimedOut(TimeoutError):
+    pass
+
+
 class Reviewer:
     def __init__(
         self,
@@ -75,8 +84,14 @@ class Reviewer:
             else None
         )
         self.usage: dict[str, int] = {}
+        self._abandoned = threading.Event()
+        self._expires_at = 0.0
 
     def review(self, task: str, context: Mapping[str, object]) -> ReviewResult:
+        self._abandoned = threading.Event()
+        # Also bound a provider that blocks while the wall clock stands still
+        # or moves backwards. This limit covers the entire review, not each turn.
+        self._expires_at = time.monotonic() + max(0, self.deadline - self.clock())
         parent = self.broker
         budget = parent.reserve_calls(_MAX_CALLS, keep=5)
         used = 0
@@ -102,15 +117,34 @@ class Reviewer:
             self._guard()
             if self.effort is not None:
                 # EffortCappedProvider's protocol carries this keyword.
-                assert isinstance(self.provider, EffortCappedProvider)
-                session = self.provider.session(
-                    system=_SYSTEM, tools=tool_schemas(REVIEW_TOOLS), effort=self.effort
+                provider = self.provider
+                assert isinstance(provider, EffortCappedProvider)
+                session = self._bounded(
+                    lambda: provider.session(
+                        system=_SYSTEM,
+                        tools=tool_schemas(REVIEW_TOOLS),
+                        effort=self.effort,
+                    )
                 )
             else:
-                session = self.provider.session(
-                    system=_SYSTEM, tools=tool_schemas(REVIEW_TOOLS)
+                session = self._bounded(
+                    lambda: self.provider.session(
+                        system=_SYSTEM, tools=tool_schemas(REVIEW_TOOLS)
+                    )
                 )
-            turn = session.send_user(message)
+            if isinstance(session, StreamingSession):
+                # Cooperative adapters stop consuming the stream at its next
+                # event after abandonment. No parent callbacks run on this thread.
+                abandoned = self._abandoned
+
+                def stop_abandoned_stream(
+                    kind: str, payload: dict[str, object]
+                ) -> None:
+                    if abandoned.is_set():
+                        raise _ReviewTimedOut
+
+                session.set_event_callback(stop_abandoned_stream)
+            turn = self._bounded(lambda: session.send_user(message))
             self._count(turn)
             exhausted = False
             while turn.tool_calls:
@@ -153,7 +187,7 @@ class Reviewer:
                             )
                         )
                 self._guard()
-                turn = session.send_tool_results(results)
+                turn = self._bounded(partial(session.send_tool_results, results))
                 self._count(turn)
             if not turn.answer_complete:
                 return ReviewResult(
@@ -162,16 +196,52 @@ class Reviewer:
             return _parse(turn.text, context)
         except TaskCancelled:
             raise
+        except _ReviewTimedOut:
+            return ReviewResult(
+                failure="the reviewer timed out; review was not completed"
+            )
         except Exception:
             # Provider exception strings can contain request data or credentials.
             return ReviewResult(failure="the reviewer failed; review was not completed")
         finally:
+            self._abandoned.set()
             parent.release_calls(budget - used)
 
     def _guard(self) -> None:
         self.broker.check_cancelled()
-        if self.clock() >= self.deadline:
-            raise ValueError("review deadline reached")
+        if self._remaining() <= 0:
+            raise _ReviewTimedOut
+
+    def _remaining(self) -> float:
+        return min(self.deadline - self.clock(), self._expires_at - time.monotonic())
+
+    def _bounded[T](self, call: Callable[[], T]) -> T:
+        """Supervise one private provider operation, never broker/tool execution.
+
+        The synchronous provider protocol has no transport cancellation. At
+        most one abandoned daemon worker can remain per persisted review
+        attempt; it can only finish its private session request. Late results
+        cannot execute tools, update usage or trigger a second review request.
+        """
+
+        self._guard()
+        result: Future[T] = Future()
+        done = threading.Event()
+
+        def request() -> None:
+            try:
+                result.set_result(call())
+            except BaseException as exc:
+                result.set_exception(exc)
+            finally:
+                done.set()
+
+        threading.Thread(target=request, name="optional-review", daemon=True).start()
+        while not done.wait(min(_CANCEL_POLL_SECONDS, max(0, self._remaining()))):
+            self._guard()
+        # Count a returned turn before checking cancellation/deadline. Only the
+        # supervising caller can mutate counters, never a late worker.
+        return result.result()
 
     def _count(self, turn: ModelTurn) -> None:
         for key, value in turn.usage.items():
@@ -183,7 +253,11 @@ class Reviewer:
 def _parse(text: str, context: Mapping[str, object]) -> ReviewResult:
     if len(text) > _MAX_REPORT_CHARACTERS or contains_secret_material(text):
         return ReviewResult(failure="the review report was unsafe or too large")
-    data = json.loads(text)
+    report = text.strip()
+    lines = report.splitlines()
+    if len(lines) >= 3 and lines[0] == "```json" and lines[-1] == "```":
+        report = "\n".join(lines[1:-1])
+    data = json.loads(report)
     if not isinstance(data, dict) or set(data) != {"findings"}:
         raise ValueError("review needs an explicit findings object")
     raw = data["findings"]
@@ -193,11 +267,14 @@ def _parse(text: str, context: Mapping[str, object]) -> ReviewResult:
     findings = []
     for item in raw:
         if not isinstance(item, dict) or set(item) != {"path", "line", "message"}:
-            raise ValueError("invalid review finding")
+            continue
         path, line, message = item["path"], item["line"], item["message"]
+        try:
+            valid_path = isinstance(path, str) and normalize_changed_path(path) == path
+        except ValueError:
+            valid_path = False
         if (
-            not isinstance(path, str)
-            or normalize_changed_path(path) != path
+            not valid_path
             or path not in paths
             or type(paths[path]) is not int
             or type(line) is not int
@@ -206,8 +283,10 @@ def _parse(text: str, context: Mapping[str, object]) -> ReviewResult:
             or not message.strip()
             or len(message) > 1_000
         ):
-            raise ValueError("review finding must identify a changed path and line")
+            continue
         findings.append((path, line, message.strip()))
+    if raw and not findings:
+        raise ValueError("review supplied no valid findings")
     return ReviewResult(tuple(findings))
 
 

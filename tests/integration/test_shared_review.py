@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +23,7 @@ from test_shared_agent_execution import (
 )
 from test_verified_workflow import setup
 
+from llm_cli.agent import harness as harness_module
 from llm_cli.agent.driver import RunRequest
 from llm_cli.agent.harness import CodingAgentHarness
 from llm_cli.agent.limits import ExecutionLimits
@@ -78,11 +81,13 @@ _FINDING = json.dumps(
 
 
 @pytest.mark.parametrize("natural", [False, True])
+@pytest.mark.parametrize("wrapped", [False, True])
 def test_findings_are_handed_back_once_then_repaired_checked_and_published(
     tmp_path: Path,
     repository_factory: Callable[..., Path],
     service_factory: Callable[..., DaemonService],
     natural: bool,
+    wrapped: bool,
 ) -> None:
     def repair(results: Sequence[ToolCallResult]) -> ModelTurn:
         assert results[-1].is_error
@@ -96,6 +101,13 @@ def test_findings_are_handed_back_once_then_repaired_checked_and_published(
         if natural
         else repair
     )
+    report = (
+        "```json\n"
+        + json.dumps({"findings": [None, *json.loads(_FINDING)["findings"]]})
+        + "\n```"
+        if wrapped
+        else _FINDING
+    )
     provider = ReviewProvider(
         [
             _first_edit(),
@@ -103,7 +115,7 @@ def test_findings_are_handed_back_once_then_repaired_checked_and_published(
             next_step,
             _finish(),
         ],
-        _FINDING,
+        report,
     )
 
     async def scenario() -> None:
@@ -430,3 +442,173 @@ def test_review_response_cannot_finish_after_the_task_deadline(
     assert saved[-1]["usage_total"]["review_prompt_tokens"] == 19
     assert not broker.usage.finished
     assert (root / "a.py").read_text() == "value = 1\n"
+
+
+def test_review_cutoff_reserves_completion_time_and_retains_returned_usage(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+    provider = ReviewProvider([_first_edit(), _finish()], '{"findings": []}')
+    clock = 0.0
+    events: list[tuple[str, Mapping[str, object]]] = []
+
+    def late_review(_: Sequence[ToolCallResult] = ()) -> ModelTurn:
+        nonlocal clock
+        clock = 9.5
+        return ModelTurn(text='{"findings": []}', usage={"prompt_tokens": 19})
+
+    monkeypatch.setattr(provider.reviewer, "_next", late_review)
+    broker = SharedToolBroker(
+        worktree=root,
+        scopes=("a.py",),
+        on_event=lambda kind, data: events.append((kind, data)),
+    )
+    result = CodingAgentHarness(
+        provider,
+        review="on",
+        clock=lambda: clock,
+        limits=ExecutionLimits(wall_clock_seconds=10),
+    ).run(
+        RunRequest(
+            task_id="task",
+            attempt=1,
+            instructions="fix",
+            scopes=("a.py",),
+            worktree=root,
+            base_oid="base",
+            workspace_mode="shared",
+            review_context=lambda: {"line_counts": {"a.py": 1}},
+        ),
+        broker,
+    )
+    assert result.outcome == "completed" and broker.usage.finished
+    assert result.usage["review_prompt_tokens"] == 19
+    review = [data for kind, data in events if kind == "review.finished"]
+    assert len(review) == 1 and review[0]["state"] == "failed"
+    assert "not completed" in str(review[0]["reason"])
+
+
+def test_optional_review_with_no_completion_margin_skips_provider(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+    clock = 0.0
+
+    def finish_near_deadline(_: Sequence[ToolCallResult]) -> ModelTurn:
+        nonlocal clock
+        clock = 9.5
+        return _finish()
+
+    provider = ReviewProvider([_first_edit(), finish_near_deadline], '{"findings": []}')
+    broker = SharedToolBroker(worktree=root, scopes=("a.py",))
+    result = CodingAgentHarness(
+        provider,
+        review="on",
+        clock=lambda: clock,
+        limits=ExecutionLimits(wall_clock_seconds=10),
+    ).run(
+        RunRequest(
+            task_id="task",
+            attempt=1,
+            instructions="fix",
+            scopes=("a.py",),
+            worktree=root,
+            base_oid="base",
+            workspace_mode="shared",
+            review_context=lambda: {"line_counts": {"a.py": 1}},
+        ),
+        broker,
+    )
+    assert result.outcome == "completed" and broker.usage.finished
+    assert provider.review_sessions == 0
+
+
+def test_hung_optional_review_times_out_notices_and_publishes_checked_work(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = ReviewProvider([_first_edit(), _finish()], '{"findings": []}')
+    release, returned = threading.Event(), threading.Event()
+
+    def blocked(_: Sequence[ToolCallResult] = ()) -> ModelTurn:
+        assert release.wait(3)
+        returned.set()
+        return ModelTurn(text=_FINDING, usage={"prompt_tokens": 999})
+
+    monkeypatch.setattr(provider.reviewer, "_next", blocked)
+    monkeypatch.setattr(harness_module, "_REVIEW_MAX_SECONDS", 0.05, raising=False)
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        service.settings = replace(service.settings, agent_review="on")
+        credentials = await setup(service, root, provider, code="print('passed')")
+        before = time.monotonic()
+        try:
+            await asyncio.wait_for(
+                await _start(service, root, credentials, "task", ("a.py",)), 2
+            )
+            assert time.monotonic() - before < 2
+            _assert_completed(service, "task")
+            assert (root / "a.py").read_text() == "value = 2\n"
+            reviews = [
+                e.payload
+                for e in service.store.list_task_events("task")
+                if e.event_type == "review.finished"
+            ]
+            assert len(reviews) == 1 and reviews[0]["state"] == "failed"
+            assert "not completed" in str(reviews[0]["reason"])
+            execution = service.store.get_execution("task", 1)
+            assert execution is not None and not execution.usage.get(
+                "review_prompt_tokens"
+            )
+        finally:
+            release.set()
+            service.close()
+        assert returned.wait(1)
+        assert provider.review_sessions == 1
+
+    asyncio.run(scenario())
+
+
+def test_normal_repair_still_obeys_original_task_deadline(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+    clock = 0.0
+
+    def late_repair(results: Sequence[ToolCallResult]) -> ModelTurn:
+        nonlocal clock
+        assert "a.py:1" in results[-1].content
+        clock = 10
+        return _tools(_call("write_file", path="a.py", content="value = 3\n"))
+
+    provider = ReviewProvider([_first_edit(), _finish(), late_repair], _FINDING)
+    broker = SharedToolBroker(worktree=root, scopes=("a.py",))
+    with pytest.raises(LlmCoordError, match="wall-clock budget"):
+        CodingAgentHarness(
+            provider,
+            review="on",
+            clock=lambda: clock,
+            limits=ExecutionLimits(wall_clock_seconds=10),
+        ).run(
+            RunRequest(
+                task_id="task",
+                attempt=1,
+                instructions="fix",
+                scopes=("a.py",),
+                worktree=root,
+                base_oid="base",
+                workspace_mode="shared",
+                review_context=lambda: {"line_counts": {"a.py": 1}},
+            ),
+            broker,
+        )
+    assert broker.candidates()[0].content == b"value = 2\n"
+    assert not broker.usage.finished
