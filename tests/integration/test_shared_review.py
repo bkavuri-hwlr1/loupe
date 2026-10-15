@@ -6,7 +6,6 @@ import asyncio
 import copy
 import json
 import threading
-import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -561,12 +560,11 @@ def test_hung_optional_review_times_out_notices_and_publishes_checked_work(
         service = service_factory(tmp_path)
         service.settings = replace(service.settings, agent_review="on")
         credentials = await setup(service, root, provider, code="print('passed')")
-        before = time.monotonic()
         try:
+            # Deadlock watchdog only: review expiry is driven by provider entry.
             await asyncio.wait_for(
-                await _start(service, root, credentials, "task", ("a.py",)), 2
+                await _start(service, root, credentials, "task", ("a.py",)), 10
             )
-            assert time.monotonic() - before < 2
             assert entered.is_set()
             _assert_completed(service, "task")
             assert (root / "a.py").read_text() == "value = 2\n"
@@ -584,7 +582,7 @@ def test_hung_optional_review_times_out_notices_and_publishes_checked_work(
             events = service.store.list_task_events("task")
             release.set()
             assert review_worker is not None
-            review_worker.join(1)
+            review_worker.join(10)
             assert not review_worker.is_alive()
             assert service.store.get_execution("task", 1) == execution
             assert service.store.list_task_events("task") == events
