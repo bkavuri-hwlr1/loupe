@@ -65,6 +65,10 @@ from llm_cli.providers.base import (
 )
 
 _MAX_IDLE_TURNS = 2
+# Optional review cannot spend the task's completion/settlement allowance.
+# Short tasks retain 10% (at least one second), longer tasks retain 30 seconds.
+_REVIEW_MAX_SECONDS = 120.0
+_REVIEW_COMPLETION_MARGIN_SECONDS = 30.0
 # Tools whose calls in one turn may run at the same time. They change nothing
 # that a later call depends on, so after a restart an interrupted call simply
 # runs again.
@@ -618,11 +622,18 @@ class CodingAgentHarness:
                     )
 
             try:
+                review_margin = min(
+                    _REVIEW_COMPLETION_MARGIN_SECONDS,
+                    max(1.0, self.limits.wall_clock_seconds * 0.1),
+                )
+                review_deadline = min(
+                    self.clock() + _REVIEW_MAX_SECONDS, deadline - review_margin
+                )
                 reviewer = Reviewer(
                     self.provider,
                     tools,
                     effort_ceiling=self.review_effort,
-                    deadline=deadline,
+                    deadline=review_deadline,
                     clock=self.clock,
                 )
                 context = request.review_context()

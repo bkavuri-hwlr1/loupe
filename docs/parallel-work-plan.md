@@ -176,6 +176,16 @@ is now covered. Timing is not comparative because full suites ran concurrently.
 Frozen product source passed all 2,210 all-extras tests, Ruff and mypy;
 subsequent prompt/test-only follow-ups passed their targeted regressions.
 
+Review accepts a standalone JSON code fence and retains valid, anchored findings
+when other findings are malformed. Optional review has a 120-second total cap
+and reserves 10% of the task budget for completion (minimum one second, maximum
+30 seconds); repair still uses the original task deadline. A timed-out review
+produces a visible incomplete-review notice and permits normal checked
+settlement. Synchronous transports without cancellation can leave at most one
+private daemon request running per durable review attempt; its late response
+cannot execute tools or alter task state, and its unavailable usage is not
+counted. Streaming adapters stop at the next event after abandonment.
+
 ### B2. Exploration helpers can run commands and fetch pages
 
 **Why.** Remaining gaps from the harness plan items 9 and 10: helpers cannot

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -15,7 +17,12 @@ from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.cli.render import EventRenderer, render_event
 from llm_cli.config.loader import load_settings
 from llm_cli.errors import LlmCoordError
-from llm_cli.providers.base import ModelTurn, ToolCallRequest, ToolCallResult
+from llm_cli.providers.base import (
+    ModelTurn,
+    StreamCallback,
+    ToolCallRequest,
+    ToolCallResult,
+)
 from llm_cli.web.access import WebAccess
 
 
@@ -148,6 +155,213 @@ def test_unanchored_or_malformed_reports_fail_without_claiming_no_findings(
         {"diff": "diff", "line_counts": {"a.py": 1}},
     )
     assert result.failure and not result.findings
+
+
+@pytest.mark.parametrize("fence_newline", [None, "\n", "\r\n"])
+@pytest.mark.parametrize(
+    "findings", [[], [{"path": "a.py", "line": 1, "message": "A bug"}]]
+)
+def test_standalone_json_reports_allow_a_json_code_fence(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    fence_newline: str | None,
+    findings: list[dict[str, object]],
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "safe\n"})
+    report = json.dumps({"findings": findings})
+    if fence_newline is not None:
+        report = f" \n```json{fence_newline}{report}{fence_newline}```\n "
+    result = Reviewer(
+        Provider([ModelTurn(text=report)]),
+        SharedToolBroker(worktree=root, scopes=("a.py",)),
+        effort_ceiling=None,
+        deadline=100,
+        clock=lambda: 1,
+    ).review("task", {"line_counts": {"a.py": 1}})
+    assert result.failure is None
+    assert result.findings == ((("a.py", 1, "A bug"),) if findings else ())
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        None,
+        {},
+        {"path": "../a.py", "line": 1, "message": "escape"},
+        {"path": "b.py", "line": 1, "message": "outside diff"},
+        {"path": "a.py", "line": True, "message": "not a line"},
+        {"path": "a.py", "line": 2, "message": "past end"},
+        {"path": "a.py", "line": 1, "message": " "},
+        {"path": "a.py", "line": 1, "message": "x" * 1001},
+    ],
+)
+def test_malformed_findings_do_not_discard_other_valid_findings(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    invalid: object,
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "safe\n"})
+    valid = {"path": "a.py", "line": 1, "message": "  A concrete bug  "}
+    result = Reviewer(
+        Provider([ModelTurn(text=json.dumps({"findings": [invalid, valid]}))]),
+        SharedToolBroker(worktree=root, scopes=("a.py",)),
+        effort_ceiling=None,
+        deadline=100,
+        clock=lambda: 1,
+    ).review("task", {"line_counts": {"a.py": 1}})
+    assert result.failure is None
+    assert result.findings == (("a.py", 1, "A concrete bug"),)
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        'Here is the report:\n```json\n{"findings": []}\n```',
+        '```json\n{"findings": []}\n```\nAdditional advice',
+        '```json\n{"findings": []}\n```\n```json\n{"findings": []}\n```',
+        '{"findings": [null, {}]}',
+        json.dumps({"findings": [{}] * 11}),
+        json.dumps(
+            {
+                "findings": [
+                    {"path": "a.py", "line": 1, "message": "A bug"},
+                    {"message": "-----BEGIN PRIVATE KEY-----"},
+                ]
+            }
+        ),
+    ],
+)
+def test_report_recovery_preserves_standalone_shape_security_and_bounds(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    report: str,
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "safe\n"})
+    result = Reviewer(
+        Provider([ModelTurn(text=report)]),
+        SharedToolBroker(worktree=root, scopes=("a.py",)),
+        effort_ceiling=None,
+        deadline=100,
+        clock=lambda: 1,
+    ).review("task", {"line_counts": {"a.py": 1}})
+    assert result.failure and not result.findings
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_blocked_provider_is_abandoned_without_late_tools_or_usage(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    cancel: bool,
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "safe\n"})
+    started, release, returned = threading.Event(), threading.Event(), threading.Event()
+    provider = Provider([])
+
+    def blocked(_: str) -> ModelTurn:
+        started.set()
+        assert release.wait(2)
+        returned.set()
+        return ModelTurn(
+            text="",
+            tool_calls=(ToolCallRequest("late", "read_file", {"path": "a.py"}),),
+            stop_reason="tool_use",
+            usage={"prompt_tokens": 999},
+        )
+
+    monkeypatch.setattr(provider, "send_user", blocked)
+    broker = SharedToolBroker(
+        worktree=root, scopes=("a.py",), cancelled=lambda: cancel and started.is_set()
+    )
+    reviewer = Reviewer(
+        provider, broker, effort_ceiling=None, deadline=1.05, clock=lambda: 1
+    )
+    before = time.monotonic()
+    try:
+        if cancel:
+            with pytest.raises(TaskCancelled):
+                reviewer.review("task", {"line_counts": {"a.py": 1}})
+        else:
+            assert reviewer.review("task", {"line_counts": {"a.py": 1}}).failure
+        assert time.monotonic() - before < 1
+        assert started.is_set()
+        assert reviewer.usage == {} and broker.usage.calls == 0
+    finally:
+        release.set()
+    assert returned.wait(1)
+    assert reviewer.usage == {} and broker.usage.calls == 0
+    assert provider.calls == 0 and not provider.results
+
+
+def test_blocked_session_creation_cannot_start_a_late_request(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "safe\n"})
+    release, returned = threading.Event(), threading.Event()
+    provider = Provider([ModelTurn(text='{"findings": []}')])
+
+    def blocked(**kwargs: object) -> Provider:
+        assert release.wait(2)
+        returned.set()
+        return provider
+
+    monkeypatch.setattr(provider, "session", blocked)
+    reviewer = Reviewer(
+        provider,
+        SharedToolBroker(worktree=root, scopes=("a.py",)),
+        effort_ceiling=None,
+        deadline=1.05,
+        clock=lambda: 1,
+    )
+    try:
+        assert reviewer.review("task", {"line_counts": {"a.py": 1}}).failure
+    finally:
+        release.set()
+    assert returned.wait(1)
+    assert provider.calls == 0 and reviewer.usage == {}
+
+
+def test_abandoned_stream_stops_at_next_provider_event(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "safe\n"})
+    release, stopped = threading.Event(), threading.Event()
+    provider = Provider([])
+    callback: StreamCallback | None = None
+
+    def set_callback(value: StreamCallback | None) -> None:
+        nonlocal callback
+        callback = value
+
+    def streaming(_: str) -> ModelTurn:
+        assert release.wait(2)
+        assert callback is not None
+        try:
+            callback("text", {"text": "late private delta"})
+        except TimeoutError:
+            stopped.set()
+            raise
+        raise AssertionError("the abandoned stream kept running")
+
+    monkeypatch.setattr(provider, "set_event_callback", set_callback, raising=False)
+    monkeypatch.setattr(provider, "send_user", streaming)
+    reviewer = Reviewer(
+        provider,
+        SharedToolBroker(worktree=root, scopes=("a.py",)),
+        effort_ceiling=None,
+        deadline=1.05,
+        clock=lambda: 1,
+    )
+    try:
+        assert reviewer.review("task", {"line_counts": {"a.py": 1}}).failure
+    finally:
+        release.set()
+    assert stopped.wait(1)
+    assert reviewer.usage == {} and not provider.results
 
 
 def test_review_does_not_send_secret_or_truncated_inputs(
