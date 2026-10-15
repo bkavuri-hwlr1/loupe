@@ -430,8 +430,8 @@ revision, and every session on that checkout binds to it. `llm-coord workspace
 status` reports it together with the limits shared mode cannot exceed, which
 belong in front of an operator rather than only in the plan. `isolated` is
 accepted as a mode name and refused with an explanation rather than silently
-downgraded to shared, because hydration of ignored runtime files does not exist
-yet.
+downgraded to shared. Ignored-runtime hydration has a read-only preview, but
+isolated materialization and publication remain C2/C3 work.
 
 The manual shared-workspace broker remains available for one UTF-8 regular
 file at a time. A brokered read records an exact versioned identity. A session
@@ -695,8 +695,8 @@ remaining harness gaps into packages that separate sessions can run at once.
 2. Add isolated mode with explicit environment hydration and publication
    through the same batch protocol, building on the check-snapshot runner.
    Symlinks and binary file operations still need dedicated recovery semantics.
-3. Measure the opt-in independent review's planted-bug task and keep review
-   disabled by default until its quality and cost are understood.
+3. Broaden independent-review quality and cost measurements beyond the completed
+   planted-bug acceptance run; keep review disabled by default.
 4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
    lifecycle, with `none` and exact-search fallbacks before optional vector
    acceleration.
@@ -727,8 +727,9 @@ installed wheel and frozen source were verified unchanged after testing.
 The [validation record](experiments/wave2-review-fixes-2026-10-15.json)
 records the candidate identity and regression coverage.
 
-Independent review now accepts standalone fenced JSON, retains valid findings
-when other entries are malformed, and has a 120-second cap with 1–30 seconds
+Independent review now accepts standalone fenced JSON and retains valid findings
+when other entries are malformed. Explicit no-findings is valid; a nonempty
+findings list with no valid entries fails. Review has a 120-second cap with 1–30 seconds
 reserved for completion. The cap covers provider waits and shared source tools;
 a timeout produces a visible incomplete-review notice. `/usage` itemizes the
 review's share of existing token totals. Real task cancellation and the original
@@ -738,6 +739,6 @@ Helpers identify themselves in command/domain approvals. A parent receives a
 durable reconciliation notice before its next action, including after replay or
 compaction; shared fetch waiters honor the task lifecycle while awaiting human
 approval. Hydration's default output is a short summary, and `--json` retains
-full details. Ignored dependency directories are explicit rebuild decisions with
-unknown contents rather than enumerated copy candidates, preserving unrelated
-candidates. Actual copying remains C2/C3. E2 remains deferred.
+full details. Git-ignored `node_modules` directories are explicit rebuild
+decisions with unknown contents rather than enumerated copy candidates,
+preserving unrelated candidates. Actual copying remains C2/C3. E2 remains deferred.

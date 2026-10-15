@@ -736,8 +736,9 @@ independently of the terminal's `/changes` acknowledgments. Updates are advisory
 snapshots; file reads and final publication still recheck current state. Context
 contains metadata rather than source bodies or other sessions' prompts. A
 pending update above 1,000 events or 16 KiB is refused explicitly instead of
-silently dropping changes. External-editor watching and manual Git
-reconciliation remain planned.
+silently dropping changes. Bounded scans at model boundaries detect external
+changes to observed files and deliver path-only notices. Manual Git
+reconciliation remains planned.
 
 Try this with the configured provider, then inspect the task IDs printed by chat:
 
@@ -796,8 +797,10 @@ through -- its mode, epoch, and revision -- along with what shared mode cannot
 promise: only cooperative sessions honoring the publication barrier see a
 multi-file batch atomically, and an editor or test run reading paths directly
 may observe an apply in progress. `--workspace isolated` is refused with an
-explanation rather than silently downgraded, since worktree hydration is not
-built.
+explanation rather than silently downgraded, since isolated workspace
+materialization remains unavailable. `loupe workspace hydrate PATH --plan`
+previews runtime hydration without copying files; see the
+[hydration decision](docs/adr/0009-isolated-runtime-hydration.md).
 
 The initial broker commands make that boundary inspectable:
 
