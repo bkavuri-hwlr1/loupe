@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import difflib
 import functools
 import itertools
+import json
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -26,6 +28,7 @@ from llm_cli.agent.finalization import (
 )
 from llm_cli.agent.hooks import HookRunner
 from llm_cli.agent.shared_tools import CATCH_UP_ROUNDS, SharedToolBroker
+from llm_cli.agent.source_policy import ensure_safe_content
 from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.config.models import HookConfig, McpServerConfig
 from llm_cli.coordination.models import (
@@ -41,8 +44,10 @@ from llm_cli.coordination.models import (
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.execution.checks import (
     CheckRunner,
+    digest,
     published_verification,
     verification_current,
+    verification_identity,
     verification_status,
 )
 from llm_cli.execution.commands import (
@@ -58,7 +63,7 @@ from llm_cli.storage.connection import immediate_transaction
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.context import SharedCoordinationContext
 from llm_cli.workspace.identity import FileIdentity
-from llm_cli.workspace.workflow import TaskWorkflow, decode_files
+from llm_cli.workspace.workflow import TaskWorkflow, decode_files, encode_files
 
 
 class SharedTaskExecutionRunner:
@@ -337,6 +342,78 @@ class SharedTaskExecutionRunner:
                     self.ensure_available(workspace.workspace_id)
                     return context(after_sequence)
 
+            def review_context() -> Mapping[str, object]:
+                # This snapshot is runner-authored after the finish gate has
+                # reconciled edits and checked them. Never trust model-provided
+                # diff text or check claims, or silently truncate the diff.
+                with self.publisher.lock:
+                    self.ensure_available(workspace.workspace_id)
+                    files = broker.candidates()
+                    if not checker.current() or broker.stale_paths():
+                        raise ValueError("the candidate/check snapshot changed")
+                    sections: list[str] = []
+                    contents: list[dict[str, object]] = []
+                    line_counts: dict[str, int] = {}
+                    for file in files:
+                        before, after = file.original or b"", file.content or b""
+                        ensure_safe_content(before)
+                        ensure_safe_content(after)
+                        contents.append(
+                            {
+                                "path": file.relative_path,
+                                "original": before.decode(),
+                                "candidate": (
+                                    None if file.content is None else after.decode()
+                                ),
+                                "mode": file.mode,
+                                "permissions": file.permissions,
+                            }
+                        )
+                        line_counts[file.relative_path] = len(
+                            (before if file.content is None else after).splitlines()
+                        )
+                        sections.append(
+                            f"Path {file.relative_path}: mode {file.base.mode} "
+                            f"-> {file.mode}; permissions {file.permissions}\n"
+                        )
+                        sections.extend(
+                            difflib.unified_diff(
+                                before.decode().splitlines(keepends=True),
+                                after.decode().splitlines(keepends=True),
+                                fromfile="a/" + file.relative_path,
+                                tofile="b/" + file.relative_path,
+                            )
+                        )
+                    candidate = digest(encode_files(files))
+                    source = verification_identity(broker.worktree, checker.config)
+                    with self.store.connection() as connection:
+                        checks = connection.execute(
+                            "SELECT name,state,exit_code,output,truncated FROM "
+                            "check_runs WHERE task_id=? AND attempt=? AND "
+                            "candidate_digest=? AND source_digest=? AND "
+                            "config_digest=? ORDER BY created_at,run_id",
+                            (
+                                task.task_id,
+                                task.attempt,
+                                candidate,
+                                source,
+                                digest(row["config_json"]),
+                            ),
+                        ).fetchall()
+                    evidence = [dict(check) for check in checks]
+                    ensure_safe_content(json.dumps(evidence))
+                    return {
+                        "diff": "".join(sections),
+                        # Preserve exact text, including missing final newlines
+                        # that a unified diff alone cannot represent clearly.
+                        "files": contents,
+                        "line_counts": line_counts,
+                        "candidate_digest": candidate,
+                        "source_digest": source,
+                        "checks": evidence,
+                        "verification": "passed" if checked else "not_applicable",
+                    }
+
             request = RunRequest(
                 task_id=task.task_id,
                 attempt=task.attempt,
@@ -358,6 +435,7 @@ class SharedTaskExecutionRunner:
                 # An edit task's answer stays a draft until settlement, so
                 # it can describe what was actually published or held.
                 publication_aware_finalization=isinstance(driver, SettlementFinalizer),
+                review_context=review_context,
             )
             # Starting servers can take longer than a lease, so it is renewed.
             with self.lifecycle._renewing_lease(task=task, claim=claim):

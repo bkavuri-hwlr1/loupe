@@ -10,7 +10,6 @@ because an agent loop has no natural end.
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import math
@@ -38,9 +37,11 @@ from llm_cli.agent.finalization import (
 from llm_cli.agent.instructions import discover_instructions, render_instructions
 from llm_cli.agent.limits import COMPACT_AT_FRACTION, DEFAULT_LIMITS, ExecutionLimits
 from llm_cli.agent.modes import validate_agent_mode
+from llm_cli.agent.reviewer import Reviewer, ReviewResult
 from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
 from llm_cli.agent.tools import (
     BATCHED_READS,
+    TaskCancelled,
     ToolBroker,
     ToolBudgetExhausted,
     ToolOutcome,
@@ -302,6 +303,9 @@ stays focused on the task. Read files yourself for small, targeted lookups.
 - The helper does not see this conversation: include what to look for and what
 the report should cover. Call explore several times in one turn to investigate
 independent questions in parallel.
+- Helpers cannot edit or ask general questions. When offered, commands use the
+parent's sandbox and fetch/command approvals go through the parent's user
+channel. Plan-mode helpers have no command access.
 - Rely on a report's findings to understand the code and answer questions; do
 not re-read files just to confirm them. Read a file yourself before editing it,
 since a report does not count as reading it, or when a finding is surprising
@@ -356,6 +360,8 @@ class CodingAgentHarness:
         clock: Callable[[], float] = time.time,
         explorations: bool = True,
         explore_effort: str | None = None,
+        review: str = "off",
+        review_effort: str | None = "low",
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.provider = provider
@@ -366,6 +372,10 @@ class CodingAgentHarness:
         # more than ``explore_effort``, or the task's own effort when None.
         self.explorations = explorations
         self.explore_effort = explore_effort
+        if review not in {"off", "on"}:
+            raise ValueError("review must be off or on")
+        self.review = review
+        self.review_effort = review_effort
 
     def run(self, request: RunRequest, tools: ToolBroker) -> RunResult:
         saved = _saved_checkpoint(request.resume_state, provider=self.provider)
@@ -495,6 +505,14 @@ class CodingAgentHarness:
                 {"provider": self.provider.name, "model": self.provider.model},
             )
 
+        review_state = (
+            dict(_mapping(saved.get("review"), "saved review"))
+            if saved is not None and saved.get("review") is not None
+            else {}
+        )
+        progress_results: Sequence[ToolCallResult] = results
+        progress_in_flight = in_flight
+
         def checkpoint(
             next_phase: str,
             *,
@@ -538,6 +556,7 @@ class CodingAgentHarness:
                         else None,
                         "outcome": outcome,
                         "completion_blocker": completion_blocker,
+                        "review": dict(review_state),
                         "finalization": (
                             dict(finalization) if finalization is not None else None
                         ),
@@ -545,6 +564,112 @@ class CodingAgentHarness:
                 )
                 is True
             )
+
+        def persist_review() -> None:
+            checkpoint(
+                phase,
+                current_turn=turn,
+                current_results=progress_results if phase == "tools" else results,
+                current_in_flight=progress_in_flight if phase == "tools" else None,
+            )
+
+        previous_gate = tools.finish_gate
+
+        def review_gate() -> ToolOutcome | None:
+            # Checks and reconciliation retain their authority and run again
+            # after the bounded repair. A review failure never overrides them.
+            refused = previous_gate() if previous_gate is not None else None
+            if refused is not None:
+                return refused
+            if tools.usage.writes == 0 or request.review_context is None:
+                return None
+            if review_state:
+                if review_state.get("status") == "started":
+                    review_state.update(
+                        status="failed", reason="review was interrupted"
+                    )
+                    tools.emit(
+                        "review.finished",
+                        {
+                            "state": "failed",
+                            "findings": 0,
+                            "reason": "The independent review was interrupted",
+                        },
+                    )
+                    persist_review()
+                if review_state.get("status") == "findings" and not review_state.get(
+                    "delivered"
+                ):
+                    return ToolOutcome(str(review_state["handback"]), True)
+                return None
+            review_state["status"] = "started"
+            # Persist before any provider call. A daemon restart cannot make a
+            # second billed review or create an unbounded review/repair loop.
+            persist_review()
+            tools.emit("review.started", {"label": "Independent review"})
+            reviewer: Reviewer | None = None
+
+            def record_review_usage() -> None:
+                addition = reviewer.usage if reviewer is not None else {}
+                for key, value in addition.items():
+                    usage_total[key] = usage_total.get(key, 0) + value
+                    usage_total[f"review_{key}"] = (
+                        usage_total.get(f"review_{key}", 0) + value
+                    )
+
+            try:
+                reviewer = Reviewer(
+                    self.provider,
+                    tools,
+                    effort_ceiling=self.review_effort,
+                    deadline=deadline,
+                    clock=self.clock,
+                )
+                context = request.review_context()
+                reviewed = reviewer.review(request.instructions, context)
+            except TaskCancelled:
+                record_review_usage()
+                persist_review()
+                raise
+            except Exception:
+                # Do not put provider/request exception contents in notices.
+                reviewed = ReviewResult(failure="the review snapshot was unavailable")
+            record_review_usage()
+            review_state.update(
+                status="failed"
+                if reviewed.failure
+                else ("findings" if reviewed.findings else "clean"),
+                delivered=False,
+            )
+            if reviewed.findings:
+                review_state["handback"] = reviewed.handback()
+            tools.emit(
+                "review.finished",
+                {
+                    "state": "failed" if reviewed.failure else "completed",
+                    "findings": len(reviewed.findings),
+                    "reason": reviewed.failure,
+                },
+            )
+            persist_review()
+            return ToolOutcome(reviewed.handback(), True) if reviewed.findings else None
+
+        if self.review == "on" and request.agent_mode != "plan":
+            tools.finish_gate = review_gate
+
+        def tool_progress(
+            completed: tuple[ToolCallResult, ...], pending: int | None
+        ) -> None:
+            nonlocal progress_results, progress_in_flight
+            progress_results, progress_in_flight = completed, pending
+            assert turn is not None
+            self._checkpoint_tool_progress(
+                completed, pending, persist=checkpoint, turn=turn
+            )
+
+        def mark_review_delivered() -> None:
+            if review_state.get("status") == "findings":
+                review_state["delivered"] = True
 
         def refresh_coordination() -> CoordinationUpdate | None:
             if request.refresh_coordination is None:
@@ -741,6 +866,10 @@ class CodingAgentHarness:
                     else _CONTINUE_AFTER_COMPACTION,
                     update,
                 )
+                if review_state.get("status") == "findings" and not review_state.get(
+                    "delivered"
+                ):
+                    message += "\n\n" + str(review_state["handback"])
                 if phase == "nudge" and needs_compaction(len(message)):
                     compact()
                     checkpoint(
@@ -750,6 +879,7 @@ class CodingAgentHarness:
                         current_in_flight=in_flight,
                     )
                 turn = send_prompt(message)
+                mark_review_delivered()
                 consumed_coordination(update)
                 record_turn(turn)
                 _accumulate(usage_total, turn.usage)
@@ -764,6 +894,25 @@ class CodingAgentHarness:
                 )
                 continue
             if phase == "tool_results":
+                if (
+                    results
+                    and review_state.get("status") == "findings"
+                    and not review_state.get("delivered")
+                    and not any(
+                        str(review_state["handback"]) in r.content for r in results
+                    )
+                ):
+                    # An interrupted finish may have an unknown-outcome result.
+                    # Keep its provider call ID and restore the durable findings.
+                    first, *rest = results
+                    results = (
+                        ToolCallResult(
+                            first.call_id,
+                            first.content + "\n\n" + str(review_state["handback"]),
+                            True,
+                        ),
+                        *rest,
+                    )
                 update = refresh_coordination()
                 payload = _results_with_coordination(
                     results, update, self.limits.max_tool_output_bytes
@@ -802,6 +951,7 @@ class CodingAgentHarness:
                     continue
                 assert turn is not None
                 consumed_coordination(update)
+                mark_review_delivered()
                 record_turn(turn)
                 _accumulate(usage_total, turn.usage)
                 results = ()
@@ -870,11 +1020,7 @@ class CodingAgentHarness:
                 tools,
                 completed=results,
                 in_flight=in_flight,
-                checkpoint=functools.partial(
-                    self._checkpoint_tool_progress,
-                    persist=checkpoint,
-                    turn=turn,
-                ),
+                checkpoint=tool_progress,
             )
             in_flight = None
             if explorer is not None:

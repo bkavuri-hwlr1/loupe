@@ -1881,6 +1881,8 @@ class DaemonService:
             self.providers.create(provider, model, effort=effort),
             explorations=self.settings.agent_explore,
             explore_effort=self.settings.agent_explore_effort,
+            review=self.settings.agent_review,
+            review_effort=self.settings.agent_review_effort,
         )
 
     @staticmethod

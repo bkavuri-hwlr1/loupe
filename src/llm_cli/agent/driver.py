@@ -73,6 +73,9 @@ class RunRequest:
     refresh_coordination: Callable[[int | None], CoordinationUpdate] | None = None
     agent_mode: str = "auto"
     publication_aware_finalization: bool = False
+    # Runner-authored pending diff and matching check evidence, read-only.
+    # A callback keeps the snapshot current after the completion/check gate.
+    review_context: Callable[[], Mapping[str, object]] | None = None
 
     def __post_init__(self) -> None:
         validate_agent_mode(self.agent_mode)

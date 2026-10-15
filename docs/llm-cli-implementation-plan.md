@@ -869,13 +869,37 @@ Default coding workflow:
    files; produce planned scope and acceptance criteria.
 2. **Claim acquisition** — queue or grant normalized scope.
 3. **Implementation** — edit only effective paths and run targeted checks.
-4. **Independent review** — use a fresh model session or configured reviewer to
-   inspect the exact diff and test evidence.
-5. **Repair** — bounded implementation/review loop.
+4. **Independent review (implemented, opt-in)** — `agent.review = "on"`
+   opens a fresh read-only model session after the edit/check gate. It receives
+   the runner's exact pending diff, full original/candidate text, and only check
+   evidence matching that candidate, source and configuration. It returns
+   validated changed-file/line findings or an explicit no-findings result.
+5. **Repair** — findings go back to the original conversation once, as the
+   completion tool's result (or a nudge after a natural answer). The original
+   agent may repair within its remaining task budget and must pass the normal
+   check gate again. There is no second review loop.
 6. **Trusted validation** — daemon reconstructs exact changed paths, tree, patch
    hash, and allowed Git object graph.
 7. **Ready/integration** — record summary and wait for explicit policy/user
    integration.
+
+Independent review defaults to `off` until measured. Its optional
+`agent.review_effort` defaults to `low`; `"task"` uses the task's effort, and
+the provider caps any configured level at the task's own level. The review
+has at most 20 file-read calls, reserves five calls for the original agent,
+and shares the task's cancellation/deadline. It cannot edit, run commands,
+fetch pages, ask questions, call MCP servers or delegate. Helper reads never
+authorize the original agent's writes. The complete review input is bounded
+at 256 KiB; oversized or unsafe input is refused rather than truncated.
+
+The review attempt and any undelivered findings are checkpointed. Resuming
+never starts a second review; interrupted reviews produce a visible fallback
+notice. Provider failures, malformed reports and unavailable exact snapshots
+also emit that notice and continue through the existing check/publication
+rules. Review is advisory and does not replace those rules or the user's
+normal-mode `/apply`. Review tokens are included in task totals and reported
+separately under `review_*` usage keys. Findings concern the snapshot reviewed;
+subsequent repair or reconciliation still uses the normal trusted gates.
 
 Default limits must be configuration-driven and bounded:
 

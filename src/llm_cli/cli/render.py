@@ -135,6 +135,8 @@ _PUBLIC_EVENTS = frozenset(
         "plan.updated",
         "explore.started",
         "explore.finished",
+        "review.started",
+        "review.finished",
         "question.asked",
         "workflow.awaiting_review",
         "workflow.cancelled",
@@ -312,6 +314,10 @@ def render_event(event: dict[str, Any]) -> str | None:
         return f"  Exploring: {_exploration_name(payload)}"
     if kind == "explore.finished":
         return f"  {_exploration_outcome(payload)}"
+    if kind == "review.started":
+        return "  Independent review…"
+    if kind == "review.finished":
+        return "  " + _independent_review_notice(payload)
     if kind == "plan.updated":
         steps = _plan_steps(payload)
         if not steps:
@@ -565,6 +571,20 @@ def _reconciled_notice(payload: dict[str, Any]) -> str | None:
     if not parts:
         return None
     return "  Files changed under the pending edits. " + "; ".join(parts) + "."
+
+
+def _independent_review_notice(payload: dict[str, Any]) -> str:
+    if payload.get("state") != "completed":
+        return (
+            "Independent review did not complete; continuing without review. "
+            "Required checks and publication rules still apply."
+        )
+    count = payload.get("findings", 0)
+    if type(count) is not int or count < 0:
+        count = 0
+    return f"Independent review: {count} finding{'' if count == 1 else 's'}." + (
+        " Returning to the agent for one repair pass." if count else ""
+    )
 
 
 def _review_notice(payload: dict[str, Any]) -> str:
@@ -935,6 +955,16 @@ class EventRenderer:
                 self.ui.notice(f"  {_CONVERSATION_PHASES[kind]}", style="warning")
             else:
                 self.ui.activity(_CONVERSATION_PHASES[kind])
+            return
+        if kind == "review.started":
+            self.ui.activity("Independent review…")
+            return
+        if kind == "review.finished":
+            self.ui.activity("Thinking…")
+            self.ui.notice(
+                "  " + _independent_review_notice(payload),
+                style="warning" if payload.get("state") != "completed" else "muted",
+            )
             return
         if kind == "explore.started":
             exploration = str(payload.get("exploration_id", ""))

@@ -163,6 +163,13 @@ no findings → publish, reviewer failure → publish with a notice, and the
 setting off → no review. A live benchmark run shows the planted-bug task
 caught.
 
+**Implementation status (2026-10-14).** The opt-in pass, one durable repair
+handback, read-only helper, usage accounting and review notices are implemented.
+Scripted tests cover publication, failures, cancellation and restart; the
+`independent-review-planted-bug` live task requires an observed successful
+review with findings rather than trusting the final answer's claims. Its live
+run remains a separate billed validation after the v3 session measurements.
+
 ### B2. Exploration helpers can run commands and fetch pages
 
 **Why.** Remaining gaps from the harness plan items 9 and 10: helpers cannot
