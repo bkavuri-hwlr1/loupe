@@ -6,7 +6,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future
+from concurrent.futures import Future, wait
 from urllib.parse import urlsplit
 
 from llm_cli.web.fetch import Page, Resolver, WebFetchError, fetch, public_addresses
@@ -130,12 +130,10 @@ class WebAccess:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise WebFetchError("waiting for the page exceeded the fetch timeout")
-            try:
-                page = pending.result(timeout=min(0.1, remaining))
-            except TimeoutError:
-                if pending.done():
-                    raise
+            ready, _ = wait((pending,), timeout=min(0.1, remaining))
+            if not ready:
                 continue
+            page = pending.result()
             if check_cancelled is not None:
                 check_cancelled()
             return page
