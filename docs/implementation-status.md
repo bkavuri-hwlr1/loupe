@@ -639,14 +639,15 @@ input/output. Its tokens count toward task totals and separate `review_*`
 usage. Checkpoints preserve the single attempt and any findings not yet
 delivered, so a restart neither bills a second review nor loses the handback.
 
-Validation so far: 57 focused review/benchmark tests pass, including finding
+Validation so far: 59 focused review/benchmark tests pass, including finding
 repair, natural answers, check failures, reviewer failures, off/plan/no-edit
 paths, secret/oversized inputs, write-authority separation, cancellation token
-retention, and restarts before/after review. Disabling the review gate makes
+retention in execution records, post-review deadline enforcement, and restarts
+before/after review. Disabling the review gate makes
 both publication/repair regressions fail. Independent read-only review found
 no additional defects and its separate run passed all 26 review tests. Ruff
-and mypy pass; full-suite and live planted-bug validation are pending the v3
-session benchmark's host/profile reservation.
+and mypy pass. Full-suite validation and a separately scheduled live
+planted-bug run are in progress; no live-quality result is claimed here yet.
 
 The live benchmark suite is version 3 (separate from the session experiment's
 version). `independent-review-planted-bug` deliberately seeds an off-by-one

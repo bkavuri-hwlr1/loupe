@@ -23,6 +23,7 @@ from test_verified_workflow import setup
 
 from llm_cli.agent.driver import RunRequest
 from llm_cli.agent.harness import CodingAgentHarness
+from llm_cli.agent.limits import ExecutionLimits
 from llm_cli.agent.shared_tools import SharedToolBroker
 from llm_cli.agent.tools import TaskCancelled
 from llm_cli.daemon.service import DaemonService
@@ -356,3 +357,76 @@ def test_cancel_after_review_response_retains_usage_without_publication(
     assert saved[-1]["usage_total"]["review_prompt_tokens"] == 19
     assert (root / "a.py").read_text() == "value = 1\n"
     assert broker.candidates()[0].content == b"value = 2\n"
+
+
+def test_daemon_cancel_preserves_review_usage_on_the_execution_record(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = ReviewProvider([_first_edit(), _finish()], '{"findings": []}')
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        service = service_factory(tmp_path)
+        service.settings = replace(service.settings, agent_review="on")
+
+        def cancel_after_turn(_: Sequence[ToolCallResult] = ()) -> ModelTurn:
+            service.workflow.update("task", 1, stop_requested=1)
+            return ModelTurn(text='{"findings": []}', usage={"prompt_tokens": 19})
+
+        monkeypatch.setattr(provider.reviewer, "_next", cancel_after_turn)
+        credentials = await setup(service, root, provider, code="print('passed')")
+        await asyncio.wait_for(
+            await _start(service, root, credentials, "task", ("a.py",)), 30
+        )
+        execution = service.store.get_execution("task", 1)
+        assert execution is not None
+        assert execution.usage["review_prompt_tokens"] == 19
+        assert (root / "a.py").read_text() == "value = 1\n"
+        service.close()
+
+    asyncio.run(scenario())
+
+
+def test_review_response_cannot_finish_after_the_task_deadline(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+    provider = ReviewProvider([_first_edit(), _finish()], '{"findings": []}')
+    clock = 0
+    saved: list[Mapping[str, object]] = []
+
+    def late_turn(_: Sequence[ToolCallResult] = ()) -> ModelTurn:
+        nonlocal clock
+        clock = 100
+        return ModelTurn(text='{"findings": []}', usage={"prompt_tokens": 19})
+
+    monkeypatch.setattr(provider.reviewer, "_next", late_turn)
+    broker = SharedToolBroker(worktree=root, scopes=("a.py",))
+    with pytest.raises(LlmCoordError, match="wall-clock budget"):
+        CodingAgentHarness(
+            provider,
+            review="on",
+            clock=lambda: clock,
+            limits=ExecutionLimits(wall_clock_seconds=10),
+        ).run(
+            RunRequest(
+                task_id="task",
+                attempt=1,
+                instructions="fix",
+                scopes=("a.py",),
+                worktree=root,
+                base_oid="base",
+                workspace_mode="shared",
+                checkpoint=lambda value: saved.append(copy.deepcopy(dict(value))),
+                review_context=lambda: {"diff": "diff", "line_counts": {"a.py": 1}},
+            ),
+            broker,
+        )
+    assert saved[-1]["usage_total"]["review_prompt_tokens"] == 19
+    assert not broker.usage.finished
+    assert (root / "a.py").read_text() == "value = 1\n"

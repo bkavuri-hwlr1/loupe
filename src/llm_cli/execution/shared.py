@@ -614,6 +614,25 @@ class SharedTaskExecutionRunner:
                     details={"batch_id": execution.execution_id},
                 )
         except Exception as exc:
+            if broker is not None:
+                saved_usage = self.store.get_execution_checkpoint(
+                    execution.execution_id
+                )
+                totals = (
+                    saved_usage.checkpoint.get("usage_total") if saved_usage else None
+                )
+                # An interrupted review still spent tokens. The harness saves
+                # known totals before raising cancellation/deadline errors; keep
+                # them when execution never returns a RunResult below.
+                if (
+                    isinstance(totals, dict)
+                    and all(
+                        isinstance(key, str) and type(value) is int and value >= 0
+                        for key, value in totals.items()
+                    )
+                    and any(key.startswith("review_") for key in totals)
+                ):
+                    self.store.record_execution_usage(execution.execution_id, totals)
             if (
                 broker is not None
                 and self.publisher.get(execution.execution_id) is None
