@@ -434,7 +434,9 @@ class SharedTaskExecutionRunner:
                 refresh_coordination=refresh_coordination,
                 # An edit task's answer stays a draft until settlement, so
                 # it can describe what was actually published or held.
-                publication_aware_finalization=isinstance(driver, SettlementFinalizer),
+                publication_aware_finalization=isinstance(
+                    driver, SettlementFinalizer
+                ),
                 review_context=review_context,
             )
             # Starting servers can take longer than a lease, so it is renewed.
@@ -513,16 +515,12 @@ class SharedTaskExecutionRunner:
                     )
                     if behind:
                         continue
-                    hold = (
-                        stopped
-                        or incomplete
-                        or bool(
-                            files
-                            and (
-                                row["publish_mode"] == "review"
-                                or not verification_current(
-                                    self.store, row, broker.worktree, files
-                                )
+                    hold = stopped or incomplete or bool(
+                        files
+                        and (
+                            row["publish_mode"] == "review"
+                            or not verification_current(
+                                self.store, row, broker.worktree, files
                             )
                         )
                     )
@@ -567,7 +565,9 @@ class SharedTaskExecutionRunner:
                     publication=outcome,
                     verification=verification,
                     completion="cancelled" if stopped else run.outcome,
-                    changed_paths=tuple(sorted(file.relative_path for file in files)),
+                    changed_paths=tuple(
+                        sorted(file.relative_path for file in files)
+                    ),
                 ),
             )
             with self.publisher.lock:
@@ -577,7 +577,9 @@ class SharedTaskExecutionRunner:
                         task.attempt,
                         execution.execution_id,
                         cancelled=stopped,
-                        completion_outcome=("cancelled" if stopped else run.outcome),
+                        completion_outcome=(
+                            "cancelled" if stopped else run.outcome
+                        ),
                         verification=verification,
                         file_count=len(files),
                     )
@@ -651,7 +653,9 @@ class SharedTaskExecutionRunner:
                         execution.execution_id,
                         cancelled=self.workflow.stopped(task.task_id, task.attempt),
                         completion_outcome=(
-                            "cancelled" if isinstance(exc, TaskCancelled) else "failed"
+                            "cancelled"
+                            if isinstance(exc, TaskCancelled)
+                            else "failed"
                         ),
                         verification=verification,
                         file_count=len(files),
@@ -667,7 +671,9 @@ class SharedTaskExecutionRunner:
                     # A diverged batch settles without an answer, so a
                     # response that cannot be finished must not block it.
                     with suppress(ValueError, LlmCoordError):
-                        self._finish_interrupted_response(fresh, batch.state, driver)
+                        self._finish_interrupted_response(
+                            fresh, batch.state, driver
+                        )
                     self.coordinator.settle_shared_execution(
                         execution.execution_id, outcome=batch.state
                     )
@@ -739,15 +745,10 @@ class SharedTaskExecutionRunner:
             return
         saved = self.store.get_execution_checkpoint(execution.execution_id)
         state = checkpoint_finalization(saved.checkpoint) if saved else None
-        if (
-            saved is None
-            or state is None
-            or state.status
-            in {
-                "completed",
-                "interrupted",
-            }
-        ):
+        if saved is None or state is None or state.status in {
+            "completed",
+            "interrupted",
+        }:
             return
         bound = state.facts or facts
         request = FinalizationRequest(
@@ -777,7 +778,9 @@ class SharedTaskExecutionRunner:
         except Exception as exc:
             # Settlement must still complete; the task keeps its files and
             # states that its answer is missing rather than inventing one.
-            broker.emit("model.finalization_failed", {"error": type(exc).__name__})
+            broker.emit(
+                "model.finalization_failed", {"error": type(exc).__name__}
+            )
             return
         # The run was recorded before settlement; a rewrite adds tokens.
         self.store.record_execution_usage(execution.execution_id, finished.usage)
@@ -860,7 +863,9 @@ class SharedTaskExecutionRunner:
                         execution.execution_id,
                         cancelled=bool(workflow["stop_requested"]),
                         completion_outcome=(
-                            "cancelled" if workflow["stop_requested"] else "completed"
+                            "cancelled"
+                            if workflow["stop_requested"]
+                            else "completed"
                         ),
                         verification=verification,
                         file_count=len(files),
@@ -929,15 +934,10 @@ class SharedTaskExecutionRunner:
             return
         saved = self.store.get_execution_checkpoint(execution.execution_id)
         state = checkpoint_finalization(saved.checkpoint) if saved else None
-        if (
-            saved is None
-            or state is None
-            or state.status
-            in {
-                "completed",
-                "interrupted",
-            }
-        ):
+        if saved is None or state is None or state.status in {
+            "completed",
+            "interrupted",
+        }:
             return
         workflow = self.workflow.get(execution.task_id, execution.task_attempt)
         launch = self.store.get_execution_launch(
