@@ -646,8 +646,7 @@ retention in execution records, post-review deadline enforcement, and restarts
 before/after review. Disabling the review gate makes
 both publication/repair regressions fail. Independent read-only review found
 no additional defects and its separate run passed all 26 review tests. Ruff
-and mypy pass. Full-suite validation and a separately scheduled live
-planted-bug run are in progress; no live-quality result is claimed here yet.
+and mypy pass; full-suite validation is in progress.
 
 The live benchmark suite is version 3 (separate from the session experiment's
 version). `independent-review-planted-bug` deliberately seeds an off-by-one
@@ -662,6 +661,22 @@ uv run --all-extras python scripts/live_benchmark.py --profile explore-eval \
   --set review_effort=low --set explore=false \
   --only independent-review-planted-bug --out /tmp/loupe-review-benchmark.json
 ```
+
+The [live acceptance record](experiments/wave2-independent-review-2026-10-14.json)
+reports one successful Codex `gpt-6-sol`/`xhigh` run with review effort `low`,
+from benchmark source `26bb129` (product source identical to `6653b0e`). It
+recorded exactly one task, one completed review, one finding, two finish
+attempts, two check runs and two edits, with no questions or exploration
+helpers. The repaired checkout passed its two smoke tests and the hidden
+acceptance test. Total usage was 32,753 prompt and 769 output tokens; the
+review's included share was 1,187 prompt and 97 output tokens.
+
+The observed duration was 44 seconds while full test suites ran on the same
+machine, so it is not a comparative performance result. An initial run was
+excluded because a multiline piped prompt submitted three tasks; the prompt
+is now one physical line and its scoring/prompt tests pass (31 tests). This
+controlled example demonstrates the finding/repair gate. Broader bug-detection
+quality and cost savings remain unmeasured. Review remains off by default.
 
 ## Next executable slice
 

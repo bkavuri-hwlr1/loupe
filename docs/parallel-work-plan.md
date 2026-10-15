@@ -168,7 +168,11 @@ handback, read-only helper, usage accounting and review notices are implemented.
 Scripted tests cover publication, failures, cancellation and restart; the
 `independent-review-planted-bug` live task requires an observed successful
 review with findings rather than trusting the final answer's claims. Its live
-run remains a separate billed validation after the v3 session measurements.
+acceptance run passed: exactly one review found the planted pagination bug,
+the original agent repaired it, and the hidden test passed. See the sanitized
+[measurement record](experiments/wave2-independent-review-2026-10-14.json).
+The initial multiline-prompt run was excluded; the single-prompt regression
+is now covered. Timing is not comparative because full suites ran concurrently.
 
 ### B2. Exploration helpers can run commands and fetch pages
 

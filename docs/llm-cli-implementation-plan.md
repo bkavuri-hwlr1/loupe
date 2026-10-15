@@ -883,7 +883,11 @@ Default coding workflow:
 7. **Ready/integration** — record summary and wait for explicit policy/user
    integration.
 
-Independent review defaults to `off` until measured. Its optional
+Independent review defaults to `off` while broader quality and cost are
+unmeasured. A controlled live pagination case found one planted defect,
+returned one repair, and passed hidden acceptance; its sanitized record is
+[`experiments/wave2-independent-review-2026-10-14.json`](experiments/wave2-independent-review-2026-10-14.json).
+Its optional
 `agent.review_effort` defaults to `low`; `"task"` uses the task's effort, and
 the provider caps any configured level at the task's own level. The review
 has at most 20 file-read calls, reserves five calls for the original agent,
