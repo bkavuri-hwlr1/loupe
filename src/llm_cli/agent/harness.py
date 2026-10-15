@@ -635,6 +635,12 @@ class CodingAgentHarness:
                 # Do not put provider/request exception contents in notices.
                 reviewed = ReviewResult(failure="the review snapshot was unavailable")
             record_review_usage()
+            if self.clock() >= deadline:
+                persist_review()
+                raise LlmCoordError(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "the agent exceeded its wall-clock budget for this task",
+                )
             review_state.update(
                 status="failed"
                 if reviewed.failure
