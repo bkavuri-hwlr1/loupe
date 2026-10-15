@@ -733,13 +733,24 @@ class SharedToolBroker(ToolBroker):
         refresh = arguments.get("refresh", False)
         if not isinstance(refresh, bool):
             return _error("refresh must be a boolean")
+        pinned = (partial_request or relative in self._partial_reads) and not refresh
+        prepared = (
+            self._batch is not None
+            and self._batch.kept(("observe", relative)) is not None
+        )
+        # A private/pinned view is not a new observation of the checkout. A
+        # prefetched disk read was registered when captured under its barrier.
+        fresh_source = (
+            relative not in self._contents
+            and (not pinned or relative not in self._observations)
+            and not prepared
+        )
         content = self._read(
-            relative,
-            pin_observation=(partial_request or relative in self._partial_reads)
-            and not refresh,
-            charge=not partial_request,
+            relative, pin_observation=pinned, charge=not partial_request
         )
         if content is None:
+            if fresh_source and self.on_read is not None:
+                self.on_read(relative, self._observations[relative].base)
             # An explicit refresh with no private candidate adopts the current
             # ABSENT identity just as a successful full-file refresh adopts new
             # content. The model has now seen the whole current state, so a
@@ -765,7 +776,7 @@ class SharedToolBroker(ToolBroker):
             self._partial_reads.discard(relative)
         else:
             self._partial_reads.add(relative)
-        if not result.is_error and self.on_read is not None:
+        if fresh_source and not result.is_error and self.on_read is not None:
             self.on_read(relative, self._observations[relative].base)
         return result
 
@@ -810,7 +821,18 @@ class SharedToolBroker(ToolBroker):
             if answers.get(relative, True) or relative in self._contents:
                 continue
             try:
-                found: object = self._observe(relative, check_ignored=False)
+                identity, content = self._observe(relative, check_ignored=False)
+                found: object = (identity, content)
+                # Register the actual source capture, never its delayed replay.
+                # Screening happened in _observe; binary content stays opaque.
+                if self.on_read is not None:
+                    try:
+                        if content is not None:
+                            content.decode("utf-8")
+                    except UnicodeDecodeError:
+                        pass
+                    else:
+                        self.on_read(relative, identity)
             except Exception as exc:
                 found = exc
             batch.keep(("observe", relative), found)
@@ -932,9 +954,7 @@ class SharedToolBroker(ToolBroker):
                 return finish(stop_reason="scanned_file_limit; narrow path")
         return finish()
 
-    def _batch_observation(
-        self, relative: str
-    ) -> tuple[FileIdentity, bytes | None]:
+    def _batch_observation(self, relative: str) -> tuple[FileIdentity, bytes | None]:
         batch = self._batch
         found = batch.kept(("observe", relative)) if batch is not None else None
         if found is None:
@@ -1084,9 +1104,6 @@ class SharedToolBroker(ToolBroker):
                     tofile="/dev/null" if content is None else f"b/{relative}",
                 )
             )
-        if self.on_read is not None:
-            for relative in self._contents:
-                self.on_read(relative, self._observations[relative].base)
         paths = "\n".join(f"  {relative}" for relative in sorted(self._contents))
         return _ok(
             f"Pending candidate paths:\n{paths}\n\n{''.join(diffs)}", self.limits
