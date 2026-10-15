@@ -557,6 +557,51 @@ conflict, which may account for part of its extra time. Version 3 puts a
 comment line between the flags so the parts merge cleanly; it has not been
 measured yet.
 
+## Wave 2 B1: independent review before settlement
+
+`agent.review = "on"` enables one fresh read-only review after candidate
+reconciliation and required checks pass. The setting defaults to `off`.
+`agent.review_effort` defaults to `low`; `"task"` uses the task's effort,
+and any requested level is capped at that effort.
+
+The runner supplies the exact pending diff and complete original/candidate
+text, plus check results tied to the candidate/source/configuration digests.
+The reviewer returns explicit no-findings or changed-file/line findings.
+Findings return to the original conversation once for bounded repair and the
+usual required checks run again. There is no second review. A failed,
+interrupted, malformed or oversized review produces a visible notice and
+continues through the existing verification/publication rules. Normal-mode
+proposals still require the user's `/apply`.
+
+The reviewer has only file-read tools, a reserved budget of at most 20 calls,
+the task's cancellation/deadline, separate read observations and screened
+input/output. Its tokens count toward task totals and separate `review_*`
+usage. Checkpoints preserve the single attempt and any findings not yet
+delivered, so a restart neither bills a second review nor loses the handback.
+
+Validation so far: 57 focused review/benchmark tests pass, including finding
+repair, natural answers, check failures, reviewer failures, off/plan/no-edit
+paths, secret/oversized inputs, write-authority separation, cancellation token
+retention, and restarts before/after review. Disabling the review gate makes
+both publication/repair regressions fail. Independent read-only review found
+no additional defects and its separate run passed all 26 review tests. Ruff
+and mypy pass; full-suite and live planted-bug validation are pending the v3
+session benchmark's host/profile reservation.
+
+The live benchmark suite is version 3 (separate from the session experiment's
+version). `independent-review-planted-bug` deliberately seeds an off-by-one
+pagination proposal that passes its incomplete smoke checks, calls the review
+gate, then repairs findings. Scoring requires exactly one observed completed
+review with at least one finding. A hidden acceptance test fails on the
+seeded proposal and passes on its repair. Run only with a non-default profile:
+
+```console
+uv run --all-extras python scripts/live_benchmark.py --profile explore-eval \
+  --provider codex --model gpt-6-sol --effort xhigh --set review=on \
+  --set review_effort=low --set explore=false \
+  --only independent-review-planted-bug --out /tmp/loupe-review-benchmark.json
+```
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
@@ -566,8 +611,8 @@ remaining harness gaps into packages that separate sessions can run at once.
 2. Add isolated mode with explicit environment hydration and publication
    through the same batch protocol, building on the check-snapshot runner.
    Symlinks and binary file operations still need dedicated recovery semantics.
-3. Add an independent review of the exact diff before publication, at the
-   session-aware harness boundary. Plan mode and bounded repair already exist.
+3. Measure the opt-in independent review's planted-bug task and keep review
+   disabled by default until its quality and cost are understood.
 4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
    lifecycle, with `none` and exact-search fallbacks before optional vector
    acceleration.

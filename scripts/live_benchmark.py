@@ -94,6 +94,8 @@ class Task:
     max_main_turns: int | None = None
     # "cancel" or "crash", applied after the task's first edit.
     interrupt: str | None = None
+    # Require one completed independent review with at least this many findings.
+    min_review_findings: int | None = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,7 @@ def load_suite(path: Path = TASKS) -> Suite:
             min_answer_characters=int(raw.get("min_answer_characters", 0)),
             max_main_turns=raw.get("max_main_turns"),
             interrupt=raw.get("interrupt"),
+            min_review_findings=raw.get("min_review_findings"),
         )
         _validate(task)
         tasks.append(task)
@@ -191,6 +194,12 @@ def _validate(task: Task) -> None:
         raise refuse(f"interrupt must be one of {sorted(_INTERRUPTS)}")
     if task.interrupt is not None and task.mode == "plan":
         raise refuse("an interrupt needs an edit, which plan mode cannot make")
+    if task.min_review_findings is not None and (
+        type(task.min_review_findings) is not int
+        or not 0 <= task.min_review_findings <= 10
+        or task.mode == "plan"
+    ):
+        raise refuse("min_review_findings needs an edit mode and a count from 0 to 10")
 
 
 def fact_coverage(
@@ -224,6 +233,8 @@ class Metrics:
     repeated_results: int = 0
     repeated_answers: int = 0
     resumed: bool = False
+    review_attempts: int = 0
+    reviews: list[dict[str, object]] = field(default_factory=list)
 
 
 def awaiting_answer(events: Iterable[tuple[str, Mapping[str, Any]]]) -> bool:
@@ -293,6 +304,21 @@ def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics
             metrics.verification = payload.get("status")
         elif kind == "explore.started":
             efforts[payload.get("exploration_id")] = payload.get("effort")
+        elif kind == "review.started":
+            metrics.review_attempts += 1
+        elif kind == "review.finished" and len(metrics.reviews) < 8:
+            count = payload.get("findings")
+            state = payload.get("state")
+            metrics.reviews.append(
+                {
+                    "state": (
+                        state
+                        if isinstance(state, str) and state in {"completed", "failed"}
+                        else "invalid"
+                    ),
+                    "findings": count if type(count) is int and 0 <= count <= 10 else 0,
+                }
+            )
         elif kind == "explore.finished":
             metrics.explorations.append(
                 {
@@ -372,6 +398,13 @@ def checks(
         result["edits_kept"] = bool(metrics.files_kept)
     elif task.interrupt == "crash":
         result["resumed"] = metrics.resumed
+    if task.min_review_findings is not None:
+        result["independent_review"] = (
+            metrics.review_attempts == 1
+            and len(metrics.reviews) == 1
+            and metrics.reviews[0]["state"] == "completed"
+            and int(metrics.reviews[0]["findings"]) >= task.min_review_findings
+        )
     return result
 
 
@@ -409,6 +442,10 @@ def task_result(
         "cached_tokens": usage.get("cache_read_input_tokens", 0),
         "helper_prompt_tokens": usage.get("explore_prompt_tokens", 0),
         "explorations": metrics.explorations,
+        "review_attempts": metrics.review_attempts,
+        "reviews": metrics.reviews,
+        "review_prompt_tokens": usage.get("review_prompt_tokens", 0),
+        "review_output_tokens": usage.get("review_output_tokens", 0),
         "answer_characters": len(metrics.answer),
         "questions": metrics.questions,
         "edits": metrics.edits,

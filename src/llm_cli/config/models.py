@@ -63,6 +63,9 @@ class Settings:
     # Helpers never use more effort than the task. Low effort halved helper
     # time in live runs without visibly weaker reports.
     agent_explore_effort: str | None = "low"
+    # One independent read-only review before finishing an edit task.
+    agent_review: str = "off"
+    agent_review_effort: str | None = "low"
     # Read-only web_fetch: "ask" needs approval for each new domain in a task,
     # "allow" fetches any public page, "off" never offers the tool. Domains in
     # agent_web_domains ("docs.python.org", "*.readthedocs.io") need no
