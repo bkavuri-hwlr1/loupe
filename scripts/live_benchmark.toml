@@ -261,12 +261,12 @@ min_review_findings = 1
 fixture = "review-pagination"
 mode = "auto"
 prompt = """
-Exercise Loupe's independent review gate with a deliberately seeded proposal.
-First read src/pager.py, then replace the page() return statement with exactly
-`return list(items)[start : start + size - 1]`. Keep its validation intact.
-Do not repair that seeded proposal before its first review: run the configured
-smoke check and call finish_task. If the independent review returns findings,
-read the affected code, repair the defect and finish again. Keep the tests
+Exercise Loupe's independent review gate with a deliberately seeded proposal. \
+First read src/pager.py, then replace the page() return statement with exactly \
+`return list(items)[start : start + size - 1]`. Keep its validation intact. \
+Do not repair that seeded proposal before its first review: run the configured \
+smoke check and call finish_task. If the independent review returns findings, \
+read the affected code, repair the defect and finish again. Keep the tests \
 unchanged. In your final answer explain any review finding and repair.
 """
 state = "completed"

@@ -19,6 +19,8 @@ def test_planted_review_task_requires_one_observed_successful_review() -> None:
         if t.id == "independent-review-planted-bug"
     )
     assert task.min_review_findings == 1
+    # Piped chat treats physical input lines as separate submitted prompts.
+    assert "\n" not in task.prompt
     assert not benchmark.checks(task, "completed", benchmark.Metrics())[
         "independent_review"
     ]
