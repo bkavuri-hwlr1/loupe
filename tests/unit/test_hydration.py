@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import socket
 from collections.abc import Callable
@@ -85,16 +86,141 @@ def test_virtualenv_requires_rebuild_without_opening_absolute_shebangs(
     assert ".venv/bin/python" not in entries
 
 
-def test_node_modules_is_walked_per_entry_including_unknown_runtime(
+def test_ignored_node_modules_is_deferred_without_enumerating_descendants(
     checkout: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (checkout / "node_modules/pkg").mkdir(parents=True)
     (checkout / "node_modules/pkg/index.js").write_text("module.exports = 1")
-    entries = _entries(plan_hydration(checkout))
-    assert entries["node_modules"].action == "create_directory"
-    assert entries["node_modules"].directory_entries == 1
-    assert entries["node_modules/pkg"].directory_entries == 1
-    assert entries["node_modules/pkg/index.js"].action == "clone_or_copy"
+    original = os.scandir
+    dependency_inode = (checkout / "node_modules").stat().st_ino
+
+    def no_dependency_scan(descriptor: Any) -> Any:
+        if isinstance(descriptor, int):
+            assert os.fstat(descriptor).st_ino != dependency_inode
+        return original(descriptor)
+
+    monkeypatch.setattr(os, "scandir", no_dependency_scan)
+    plan = plan_hydration(checkout)
+    entry = _entries(plan)["node_modules"]
+    assert plan.complete
+    assert entry.action == "needs_rebuild"
+    assert entry.requires_decision
+    assert entry.descendants_inventoried is False
+    assert entry.directory_entries is None
+    assert "unknown" in entry.reason
+    assert not any(item.path.startswith("node_modules/") for item in plan.entries)
+
+
+def test_large_dependency_directory_does_not_disable_independent_candidates(
+    checkout: Path,
+) -> None:
+    dependencies = checkout / "node_modules"
+    dependencies.mkdir()
+    for index in range(20_001):
+        (dependencies / f"entry-{index:05d}").touch()
+    (checkout / "runtime").mkdir()
+    (checkout / "runtime/data").write_text("small independent runtime")
+    plan = plan_hydration(checkout)
+    entries = _entries(plan)
+    assert plan.complete
+    assert not plan.issues
+    assert plan.scanned_entries < 20
+    assert entries["node_modules"].action == "needs_rebuild"
+    assert entries["runtime/data"].action == "clone_or_copy"
+    assert plan.planned_apparent_bytes == len("small independent runtime")
+
+
+def test_nonignored_node_modules_is_still_inventoried(
+    checkout: Path,
+) -> None:
+    (checkout / ".gitignore").write_text("node_modules/*\n!node_modules/source\n")
+    (checkout / "node_modules").mkdir()
+    (checkout / "node_modules/source").write_text("ordinary source")
+    (checkout / "node_modules/cache").write_text("ignored runtime")
+    plan = plan_hydration(checkout)
+    assert plan.complete
+    assert _entries(plan)["node_modules/cache"].action == "clone_or_copy"
+    assert "node_modules/source" not in _entries(plan)
+
+
+def test_deferred_dependency_ignore_rule_change_invalidates_copy_candidates(
+    checkout: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import llm_cli.workspace.hydration as hydration
+
+    (checkout / ".gitignore").write_text("runtime/\n")
+    external_rules = tmp_path / "global-ignore"
+    external_rules.write_text("node_modules/\n")
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[core]\nexcludesFile = {external_rules}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    (checkout / "node_modules").mkdir()
+    (checkout / "runtime").mkdir()
+    (checkout / "runtime/data").touch()
+    original = hydration._ignored_paths
+    changed = False
+
+    def remove_dependency_rule(*args: Any, **kwargs: Any) -> set[str]:
+        nonlocal changed
+        result = original(*args, **kwargs)
+        if result == {"node_modules"} and not changed:
+            changed = True
+            external_rules.write_text("")
+        return result
+
+    monkeypatch.setattr(hydration, "_ignored_paths", remove_dependency_rule)
+    plan = plan_hydration(checkout)
+    assert changed
+    assert not plan.complete
+    assert "ignore_policy_changed" in plan.issues
+    assert _entries(plan)["runtime/data"].action == "needs_rescan"
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "nested_repository"])
+def test_dependency_deferral_preserves_unsafe_entry_refusals(
+    checkout: Path,
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    path = checkout / "node_modules"
+    if kind == "symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        path.symlink_to(outside, target_is_directory=True)
+    elif kind == "fifo":
+        os.mkfifo(path)
+    else:
+        path.mkdir()
+        (path / ".git").write_text("gitdir: /outside\n")
+    plan = plan_hydration(checkout)
+    expected = "refuse_special" if kind == "fifo" else f"refuse_{kind}"
+    assert _entries(plan)["node_modules"].action == expected
+    assert not any(entry.path.startswith("node_modules/") for entry in plan.entries)
+
+
+def test_dependency_ignore_query_limit_keeps_descendants_explicitly_unknown(
+    checkout: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import llm_cli.workspace.hydration as hydration
+
+    (checkout / "node_modules").mkdir()
+    original = hydration._ignored_paths
+
+    def exhaust_query(root: Path, paths: list[str], **kwargs: Any) -> set[str]:
+        if paths == ["node_modules"]:
+            raise hydration._BudgetExceeded("time_budget_exceeded")
+        return original(root, paths, **kwargs)
+
+    monkeypatch.setattr(hydration, "_ignored_paths", exhaust_query)
+    plan = plan_hydration(checkout)
+    assert not plan.complete
+    assert "time_budget_exceeded" in plan.issues
+    assert _entries(plan)["node_modules"].descendants_inventoried is False
+    assert not any(entry.action == "clone_or_copy" for entry in plan.entries)
 
 
 def test_contained_escaping_absolute_and_parent_symlinks_are_not_followed(
@@ -252,7 +378,15 @@ def test_preview_cli_never_contacts_daemon_or_creates_profile(
 
     (checkout / ".env").write_text("opaque")
     arguments = build_parser().parse_args(
-        ["workspace", "hydrate", str(checkout), "--plan", "--approve-secret", ".env"]
+        [
+            "--json",
+            "workspace",
+            "hydrate",
+            str(checkout),
+            "--plan",
+            "--approve-secret",
+            ".env",
+        ]
     )
     before = sorted(tmp_path.iterdir())
     result = dispatch(arguments, cast(DaemonClient, NoDaemon()))
@@ -401,6 +535,90 @@ def test_cli_json_entrypoint_does_not_create_a_profile(
     )
     assert json.loads(capsys.readouterr().out)["preview_only"]
     assert sorted(tmp_path.iterdir()) == before
+
+
+@pytest.mark.parametrize("plain", [False, True])
+def test_large_hydration_cli_is_bounded_and_json_keeps_full_details(
+    checkout: Path,
+    capsys: pytest.CaptureFixture[str],
+    plain: bool,
+) -> None:
+    from llm_cli.cli.app import main
+
+    (checkout / "runtime").mkdir()
+    for index in range(600):
+        (checkout / "runtime" / f"cache-{index:04d}.dat").write_bytes(b"x")
+    (checkout / ".env").write_text("private-value-never-in-output")
+    (checkout / "node_modules").mkdir()
+    expected = json.loads(json.dumps(plan_hydration(checkout).to_dict()))
+    command = ["workspace", "hydrate", str(checkout), "--plan"]
+    assert main([*(["--plain"] if plain else []), *command]) is None
+    human = capsys.readouterr().out
+    assert len(human.encode()) < 8_000
+    assert max(map(len, human.splitlines())) < 500
+    assert "600 Copy candidates" in human
+    assert "1 Consent needed" in human
+    assert "1 Rebuild needed" in human
+    assert "clone_or_copy" not in human
+    assert "needs_consent" not in human
+    assert ".env" in human
+    assert "node_modules" in human
+    assert "unknown" in human
+    assert "omitted" in human
+    assert "--json" in human
+    assert "materialization" not in human
+    assert "private-value-never-in-output" not in human
+    assert "mtime_ns" not in human
+    assert main(["--json", *command]) is None
+    structured = capsys.readouterr().out
+    assert len(structured.encode()) > 350_000
+    assert json.loads(structured) == expected
+    assert len(json.loads(structured)["entries"]) == 604
+
+
+def test_incomplete_hydration_cli_explains_limits_and_decisions(
+    checkout: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from llm_cli.cli.app import main
+
+    (checkout / "runtime").mkdir()
+    for index in range(20):
+        (checkout / "runtime" / str(index)).touch()
+    assert (
+        main(
+            [
+                "workspace",
+                "hydrate",
+                str(checkout),
+                "--plan",
+                "--max-entries",
+                "10",
+            ]
+        )
+        is None
+    )
+    human = capsys.readouterr().out
+    assert "incomplete" in human
+    assert "entry_budget_exceeded" in human
+    assert "no copy candidates" in human
+    assert "--json" in human
+    assert len(human.encode()) < 8_000
+
+
+def test_hydration_human_samples_escape_path_newlines(
+    checkout: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from llm_cli.cli.app import main
+
+    (checkout / "runtime").mkdir()
+    (checkout / "runtime" / "name\nforged heading\x1b[31m").touch()
+    assert main(["workspace", "hydrate", str(checkout), "--plan"]) is None
+    human = capsys.readouterr().out
+    assert "\\nforged heading" in human
+    assert "\nforged heading" not in human
+    assert "\x1b" not in human
 
 
 def test_copy_allocation_budget_counts_source_blocks_conservatively(
