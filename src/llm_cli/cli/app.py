@@ -119,6 +119,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prune.add_argument("--apply", action="store_true", help="delete output and VACUUM")
 
+    config = commands.add_parser("config", help="inspect and edit validated settings")
+    config_commands = config.add_subparsers(dest="config_command", required=True)
+    config_commands.add_parser("show")
+    config_set = config_commands.add_parser("set")
+    config_set.add_argument("key", help="dotted key, such as agent.commands")
+    config_set.add_argument("value", help="text or TOML value, such as allow or true")
+
     repository = commands.add_parser("repo", help="register and inspect repositories")
     repository_commands = repository.add_subparsers(dest="repo_command", required=True)
     add = repository_commands.add_parser("add")
@@ -421,6 +428,12 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 },
             )
         return client.call(f"db.{arguments.db_command}")
+    if command == "config":
+        if arguments.config_command == "show":
+            return client.call("config.show")
+        return client.call(
+            "config.set", {"key": arguments.key, "value": arguments.value}
+        )
     if command == "repo":
         action = arguments.repo_command
         if action == "add":

@@ -28,6 +28,11 @@ from llm_cli.agent.registry import DriverRegistry
 from llm_cli.agent.tools import MAX_QUESTION_CHARACTERS, TaskCancelled
 from llm_cli.build import code_identity
 from llm_cli.config.models import Settings
+from llm_cli.config.operations import (
+    effective_config,
+    initial_sources,
+    set_config_value,
+)
 from llm_cli.coordination.coordinator import RepositoryCoordinator
 from llm_cli.coordination.models import (
     CheckoutRecord,
@@ -170,9 +175,15 @@ class DaemonService:
         shutdown: asyncio.Event,
         *,
         boot_id: str,
+        config_sources: Mapping[str, str] | None = None,
     ) -> None:
         self.paths = paths
         self.settings = settings
+        self.config_sources = (
+            dict(config_sources)
+            if config_sources is not None
+            else initial_sources(paths.config_file, settings)
+        )
         self.shutdown = shutdown
         self.boot_id = boot_id
         self.store = ControlStore(paths.control_db)
@@ -527,6 +538,21 @@ class DaemonService:
                 self.store,
                 older_than=_optional_string(params, "older_than") or "30d",
                 apply=apply,
+            )
+        if method == "config.show":
+            return await asyncio.to_thread(
+                effective_config,
+                self.paths.config_file,
+                self.settings,
+                self.config_sources,
+            )
+        if method == "config.set":
+            return await asyncio.to_thread(
+                set_config_value,
+                self.paths.config_file,
+                profile_id=self.paths.profile_id,
+                key=_string(params, "key"),
+                value=_string(params, "value"),
             )
         if method == "repo.add":
             return await self._repo_add(params)
