@@ -1,0 +1,57 @@
+{
+  "validated_on_america_new_york": "2026-10-14",
+  "validated_on_utc": "2026-10-15",
+  "scope": "Wave 2 B1, B2, C1 and C4; local implementation, no Phase 2 merge",
+  "baseline_commit": "47d145158395a8d022dadbb8448b80e7a3e9ac03",
+  "tested_integration_commit": "51f504841898a37cdc38aca51025f8058d67ce0c",
+  "package_tips": {
+    "B1": "0aea4de02a4287e7fa6e9d93542140b8098aec58",
+    "B2": "c8ad3ac64b4540add390fcaf8be1bc5af12f9664",
+    "C1": "936e0b01b33e37d307caf64588628dd06893764e",
+    "C4": "f6d61bd18df675f2e26272ca89d44b12ca496953"
+  },
+  "runtime": "Python 3.14.8; new noneditable matching wheel; locked offline all-extras and dev dependencies",
+  "source_files": 107,
+  "package_source_fingerprint": "fc8b49aef9d24e17ff948a0b0514032771cb530b96dd12f6318b8715179bf2a7",
+  "snapshot_files_verified_unchanged": 325,
+  "installed_wheel_verified_unchanged_after_tests": true,
+  "checks": {
+    "pytest": {
+      "passed": 2316,
+      "failed": 0,
+      "skipped": 1,
+      "expected_skips": [
+        "test_case_aliases_invalidate_all_copy_actions"
+      ]
+    },
+    "ruff": "passed",
+    "mypy": {
+      "result": "passed",
+      "source_files": 107
+    },
+    "selected_regressions": {
+      "test_reviewer_refuses_mutation_commands_web_and_nested_helpers": "passed",
+      "test_quiet_advance_is_not_checkpointed_until_model_response_succeeds": "passed",
+      "test_external_edit_is_never_overwritten_or_partially_published[replace]": "passed",
+      "test_pinned_batch_cannot_hide_outside_changes": "passed",
+      "test_own_publication_uses_checkout_case_rules": "passed"
+    }
+  },
+  "integration_fixes": [
+    "Quiet cursor advances explicitly assert unchanged visible facts after complete event validation, retaining bootstrap and consume-after-success guards.",
+    "Only fresh screened source captures register reads; private/pinned/diff/cached replay cannot reset external-change deduplication.",
+    "Pinned-only batches cannot hide outside edits; valid explicit refresh captures current source under its barrier.",
+    "Change events require canonical exact paths while intentions retain scope syntax."
+  ],
+  "live_evidence": {
+    "toolkit_v3": "wave1-toolkit-v3-2026-10-14.json",
+    "independent_review": "wave2-independent-review-2026-10-14.json"
+  },
+  "limits": [
+    "Review remains off by default; one planted case does not establish general review quality.",
+    "C1 previews hydration only; copying and isolated sessions remain C2/C3.",
+    "C4 tracks observed-path net changes, not every intermediate write or Git operation.",
+    "E2 live Anthropic/OpenAI checks remain deferred.",
+    "Local validation is recorded here; GitHub Phase 2 CI and merges have not run."
+  ]
+}

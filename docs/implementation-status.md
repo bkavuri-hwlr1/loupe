@@ -703,3 +703,17 @@ remaining harness gaps into packages that separate sessions can run at once.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
+
+
+## Wave 2 local validation (October 14, 2026)
+
+B1 independent review, B2 helper commands/fetches, C1 hydration preview and C4
+external-change notices are implemented locally. The combined frozen candidate
+`51f5048` passed **2,316 tests**, with one expected case-sensitive
+filesystem skip on macOS. Ruff and mypy (107 source files) passed. A matching
+noneditable all-extras wheel and every original snapshot file were verified.
+The [validation record](experiments/wave2-validation-2026-10-14.json) records
+the tested commits, source fingerprint and required integration regressions.
+The corrected B1 live check found and repaired its planted bug before
+publication; the revised toolkit v3 benchmark completed all twelve runs.
+Phase 2 is not merged, and E2 remains deferred.

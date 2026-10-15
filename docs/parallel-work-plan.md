@@ -323,7 +323,9 @@ each sees the other's published work, and neither loses edits.
 **Implementation (Wave 2).** Durable bounded observations, periodic scans and
 model-boundary refreshes now emit path-only notices for sessions that read a
 changed path. Source identities are screened; ignored/secret paths remain
-opaque, and own publications are deduplicated. Full validation is in progress.
+opaque, and own publications are deduplicated. The combined Wave 2 candidate
+passed 2,316 tests with one expected filesystem skip; see the
+[validation record](experiments/wave2-validation-2026-10-14.json).
 Native watchers and Git-operation reconciliation remain later work.
 
 **Why.** #41 merges edits onto files changed outside Loupe when the agent
