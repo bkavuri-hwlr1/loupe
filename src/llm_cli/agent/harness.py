@@ -686,7 +686,20 @@ class CodingAgentHarness:
                 or type(update.sequence) is not int
                 or update.sequence < (coordination_sequence or 0)
                 or (update.text is not None and not isinstance(update.text, str))
-                or (update.sequence != coordination_sequence and not update.text)
+                or type(update.facts_unchanged) is not bool
+                or (
+                    update.facts_unchanged
+                    and (
+                        coordination_sequence is None
+                        or update.sequence <= coordination_sequence
+                        or update.text is not None
+                    )
+                )
+                or (
+                    update.sequence != coordination_sequence
+                    and not update.text
+                    and not update.facts_unchanged
+                )
             ):
                 raise ValueError("coordination refresh returned an invalid update")
             if update.text is not None and (

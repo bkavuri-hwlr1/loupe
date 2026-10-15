@@ -1183,3 +1183,117 @@ def test_helper_read_callback_tracks_safe_partial_and_search_reads(
         "write_file", {"path": "docs/guide.md", "content": "changed"}
     ).is_error
     assert broker.candidates() == ()
+
+
+def test_private_helper_overlay_and_diff_never_replay_source_read_callback(
+    checkout: Path,
+) -> None:
+    from llm_cli.workspace.identity import identify_path
+
+    seen: list[tuple[str, object]] = []
+
+    def callback(path: str, identity: object) -> None:
+        seen.append((path, identity))
+
+    parent, _ = _shared(checkout, on_read=callback)
+    assert not parent.invoke("read_file", {"path": "docs/guide.md"}).is_error
+    original = seen.copy()
+    assert not parent.invoke(
+        "write_file", {"path": "docs/guide.md", "content": "private proposal\n"}
+    ).is_error
+    helper = parent.read_only_view(parent.limits)
+    (checkout / "docs/guide.md").write_text("published peer edit\n")
+    for _ in range(2):
+        assert helper.invoke("read_file", {"path": "docs/guide.md"}).content == (
+            "private proposal\n"
+        )
+        assert not helper.invoke("read_diff", {}).is_error
+        assert not parent.invoke("read_diff", {}).is_error
+    assert seen == original
+    # A real later checkout read wins even if an older private helper replays.
+    fresh, _ = _shared(checkout, on_read=callback)
+    assert not fresh.invoke("read_file", {"path": "docs/guide.md"}).is_error
+    newest = ("docs/guide.md", identify_path(checkout / "docs/guide.md"))
+    assert seen[-1] == newest
+    count = len(seen)
+    helper.invoke("read_file", {"path": "docs/guide.md"})
+    assert len(seen) == count and seen[-1] == newest
+
+
+def test_pinned_partial_read_does_not_downgrade_latest_source_callback(
+    checkout: Path,
+) -> None:
+    from llm_cli.workspace.identity import identify_path
+
+    (checkout / "docs/guide.md").write_text("original guide\nanother line\n")
+    seen: list[tuple[str, object]] = []
+    parent, _ = _shared(
+        checkout, on_read=lambda path, identity: seen.append((path, identity))
+    )
+    helper = parent.read_only_view(parent.limits)
+    arguments = {"path": "docs/guide.md", "start_line": 1, "end_line": 1}
+    assert not helper.invoke("read_file", arguments).is_error
+    assert len(seen) == 1
+    (checkout / "docs/guide.md").write_text("new checkout\n")
+    assert "original" in helper.invoke("read_file", arguments).content
+    assert "original" in helper.invoke("read_file", {"path": "docs/guide.md"}).content
+    assert len(seen) == 1
+    assert not helper.invoke("read_file", {**arguments, "refresh": True}).is_error
+    assert seen[-1] == ("docs/guide.md", identify_path(checkout / "docs/guide.md"))
+    assert len(seen) == 2
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_fresh_absent_source_callback_tracks_later_creation(
+    checkout: Path, batched: bool
+) -> None:
+    from llm_cli.workspace.identity import ABSENT, identify_path
+
+    seen: list[tuple[str, object]] = []
+    parent, _ = _shared(
+        checkout, on_read=lambda path, identity: seen.append((path, identity))
+    )
+    helper = parent.read_only_view(parent.limits)
+    missing = {"path": "docs/missing.md"}
+    if batched:
+        outcomes = helper.invoke_reads(
+            [("read_file", missing), ("read_file", {"path": "docs/guide.md"})]
+        )
+        assert outcomes[0].is_error and not outcomes[1].is_error
+    else:
+        assert helper.invoke("read_file", missing).is_error
+    assert ("docs/missing.md", ABSENT) in seen
+    assert sum(path == "docs/missing.md" for path, _ in seen) == 1
+    (checkout / "docs/missing.md").write_text("created outside\n")
+    assert not helper.invoke("read_file", missing).is_error
+    assert seen[-1] == ("docs/missing.md", identify_path(checkout / "docs/missing.md"))
+
+
+def test_batch_source_callbacks_happen_at_capture_and_not_cached_replay(
+    checkout: Path,
+) -> None:
+    seen: list[tuple[str, object, str]] = []
+
+    class ChangedAfterCapture(SharedToolBroker):
+        def _match_searches(self, *args: Any) -> Any:
+            ready = super()._match_searches(*args)
+            (checkout / "docs/guide.md").write_text("later checkout\n")
+            return ready
+
+    broker = ChangedAfterCapture(
+        checkout,
+        ("*",),
+        on_read=lambda path, identity: seen.append(
+            (path, identity, (checkout / "docs/guide.md").read_text())
+        ),
+    )
+    outcomes = broker.invoke_reads(
+        [
+            ("read_file", {"path": "docs/guide.md"}),
+            ("read_file", {"path": "src/app.py"}),
+        ]
+    )
+    assert all(not result.is_error for result in outcomes)
+    assert outcomes[0].content == "original guide\n"
+    assert len(seen) == 2
+    assert all(content == "original guide\n" for _, _, content in seen)
