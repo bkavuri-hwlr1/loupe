@@ -646,7 +646,12 @@ retention in execution records, post-review deadline enforcement, and restarts
 before/after review. Disabling the review gate makes
 both publication/repair regressions fail. Independent read-only review found
 no additional defects and its separate run passed all 26 review tests. Ruff
-and mypy pass; full-suite validation is in progress.
+and mypy pass (105 source files). Frozen product source `6653b0e` passed all
+2,210 tests with every extra installed on Python 3.14.8, using a noneditable
+wheel from an immutable snapshot. The later prompt, regression-test and
+documentation commits leave product source unchanged; their targeted follow-up
+checks pass. Independent review of the cancellation/deadline follow-up also
+found no defects and reran both added regressions successfully.
 
 The live benchmark suite is version 3 (separate from the session experiment's
 version). `independent-review-planted-bug` deliberately seeds an off-by-one
