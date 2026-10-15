@@ -46,6 +46,23 @@
     "own_tests_passed": true,
     "own_test_count": 2
   },
+  "automated_validation": {
+    "product_source_commit": "6653b0ec19088f5b1980ebd85dc7bfc3e498dfca",
+    "python": "3.14.8",
+    "all_extras": true,
+    "noneditable_wheel": true,
+    "immutable_source_snapshot": true,
+    "full_suite_passed": 2210,
+    "full_suite_failed": 0,
+    "ruff": "passed",
+    "mypy": "passed",
+    "mypy_source_files": 105,
+    "focused_review_and_benchmark_passed": 59,
+    "single_prompt_scoring_followup_passed": 31,
+    "parent_capability_regression_passed": 1,
+    "independent_review_tests_passed": 26,
+    "independent_cancellation_deadline_followup_passed": 2
+  },
   "excluded_runs": [
     {
       "benchmark_commit": "9ac51cfdf924a8b72ee5ddf5b2852b3501570d2d",

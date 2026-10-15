@@ -173,6 +173,8 @@ the original agent repaired it, and the hidden test passed. See the sanitized
 [measurement record](experiments/wave2-independent-review-2026-10-14.json).
 The initial multiline-prompt run was excluded; the single-prompt regression
 is now covered. Timing is not comparative because full suites ran concurrently.
+Frozen product source passed all 2,210 all-extras tests, Ruff and mypy;
+subsequent prompt/test-only follow-ups passed their targeted regressions.
 
 ### B2. Exploration helpers can run commands and fetch pages
 
