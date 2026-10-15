@@ -18,7 +18,10 @@ This decision selects its first independently useful piece: a read-only plan.
    `loupe workspace hydrate [PATH] --plan` inventories the selected repository's
    actual filesystem and current Git ignore rules, including local/global
    excludes. It works without a daemon, account, registered checkout, or saved
-   profile. `--json` exposes the same structured plan. It creates no directories,
+   profile. Human output summarizes all action counts, planned candidate bytes,
+   unknown descendant sizes, and incomplete reasons, with bounded path samples.
+   `--json` exposes the complete structured plan, including every entry and its
+   observations and budgets. It creates no directories,
    writes no files or databases, copies no content, and records no consent.
    The already approved Wave 2 scope accepts these conservative minimum rules;
    no additional setup approval is required to inspect a plan.
@@ -44,7 +47,8 @@ This decision selects its first independently useful piece: a read-only plan.
    | Actual entry | Preview decision |
    | --- | --- |
    | Ordinary ignored regular file | Prefer a verified COW clone; otherwise a private byte copy within all budgets. |
-   | Ordinary ignored directory | A private container only; inventory every child independently. `node_modules` receives no blanket exception. |
+   | Ordinary ignored directory | A private container only; inventory every child independently, except explicit deferred runtime trees below. |
+   | Git-ignored `node_modules` directory | Require a rebuild or trusted directory-level adapter without enumerating descendants. Child counts and bytes are unknown; none of its contents are copy candidates. A nonignored directory with this name is inventoried normally. |
    | Likely secret by path | Require exact-file consent; an approved file plans a private copy with mode at most `0600`, under `0700` containers. |
    | `.venv` or `venv` directory | Require a rebuild or trusted portability adapter; absolute shebangs and embedded primary paths cannot be generically rewritten. Do not read files to guess portability. |
    | Any symlink | Refuse in this minimum version; explain whether it is absolute, escaping, or contained without following it. Contained-link recreation is deferred. |
@@ -54,6 +58,13 @@ This decision selects its first independently useful piece: a read-only plan.
    | Git or coordinator administration | Exclude `.git`, `.loupe`, `.llm-coord`, `.codex`, and `.agents` wherever encountered, without descending. |
 
    A refused directory explicitly reports `descendants_inventoried: false`.
+   Its `directory_entries` is unknown (`null`), rather than an invented zero.
+   File byte fields describe observed regular files only, never recursive
+   directory sizes. Deferred descendants are excluded from planned copy totals;
+   a complete policy plan may still contain explicit unexamined directories and
+   require decisions. Deferring an ignored dependency tree does not consume the
+   global budget or disable independent candidates. Mount, repository, symlink,
+   and metadata-race checks still apply before a dependency directory is deferred.
    No directory-level secret approval authorizes its descendants. Repeated
    `--approve-secret PATH` flags only preview consent for the exact file in
    this invocation. Name classification is conservative, not proof that an
@@ -87,6 +98,16 @@ This decision selects its first independently useful piece: a read-only plan.
    metadata preview's semantic recheck; it cannot authorize a later copy. C2
    also owns destination collisions, actual allocation/free-space checks,
    protected-source handling, journals, and creation/recovery/cleanup.
+
+   A directory-level rebuild decision is not permission to copy its opaque
+   contents, follow links, or run an install command. C2 must either leave the
+   runtime directory absent with an explicit user-visible decision, or obtain
+   an approved trusted adapter/rebuild policy under the normal command and
+   secret boundaries. Copying instead requires a fresh complete descendant
+   inventory with per-entry secret/special-file/symlink decisions and all byte,
+   allocation, time, and metadata limits. A larger tree cannot silently inherit
+   blanket secret consent or bypass those limits. Tracked source under the same
+   path remains part of ordinary source materialization and collision checks.
 
 6. **Execution and publication retain existing boundaries.**
    Future hydration bytes are runtime-only: exclude them from model tools,

@@ -8,7 +8,7 @@ import shlex
 import sys
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from llm_cli import __version__
 from llm_cli.agent.modes import AGENT_MODES, resolve_agent_mode
@@ -34,6 +34,9 @@ from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.ids import new_id
 from llm_cli.paths import AppPaths
 from llm_cli.protocol.client import DaemonClient
+
+if TYPE_CHECKING:
+    from llm_cli.workspace.hydration import HydrationEntry, HydrationPlan
 
 # Commands that write their own output as it arrives have nothing left for the
 # emitter, and a plain None would be indistinguishable from a null result.
@@ -374,6 +377,88 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _hydration_preview_text(plan: HydrationPlan) -> str:
+    """Bound human output independently of inventory size; JSON stays complete."""
+
+    def display(value: str, limit: int = 140) -> str:
+        # Quote controls/newlines before clipping so paths cannot forge lines or
+        # inject terminal sequences. JSON retains the exact, unabridged paths.
+        escaped = json.dumps(value, ensure_ascii=True)[1:-1]
+        return escaped if len(escaped) <= limit else escaped[: limit - 3] + "..."
+
+    groups: dict[str, list[HydrationEntry]] = {}
+    for entry in plan.entries:
+        groups.setdefault(entry.action, []).append(entry)
+    copies = len(groups.get("clone_or_copy", [])) + len(groups.get("private_copy", []))
+    decisions = sum(entry.requires_decision for entry in plan.entries)
+    unknown = sum(
+        entry.kind == "directory"
+        and entry.descendants_inventoried is False
+        and entry.action != "exclude_administration"
+        for entry in plan.entries
+    )
+    state = "complete" if plan.complete else "incomplete; no copy candidates"
+    lines = [
+        f"Hydration preview: {state}. Decisions needed: {decisions}.",
+        f"Checkout: {display(plan.checkout, 180)}",
+        f"Inventory: {plan.scanned_entries} entries scanned; "
+        f"{len(plan.entries)} policy entries; "
+        f"{plan.inventory_metadata_bytes} metadata bytes charged.",
+        f"Copy candidates: {copies} files; "
+        f"{plan.planned_apparent_bytes} logical bytes; "
+        f"{plan.planned_estimated_copy_bytes} estimated copy bytes (COW unprobed).",
+    ]
+    if unknown:
+        lines.append(
+            f"Uninspected directories: {unknown}; descendant counts/bytes are unknown "
+            "and excluded from totals."
+        )
+    lines.append("Totals cover only inventoried candidate files.")
+    if plan.issues:
+        lines.append(f"Incomplete reasons ({len(plan.issues)}):")
+        lines.extend(f"  {display(issue)}" for issue in plan.issues[:5])
+        if len(plan.issues) > 5:
+            lines.append(f"  ... {len(plan.issues) - 5} reasons omitted")
+        lines.append("Resolve these reasons and repeat the bounded preview.")
+    lines.append("Actions (all counts; up to 2 sample paths each, 8 total):")
+    labels = {
+        "clone_or_copy": "Copy candidates",
+        "private_copy": "Approved private copies",
+        "create_directory": "Directory containers",
+        "exclude_administration": "Administration excluded",
+        "needs_consent": "Consent needed",
+        "needs_rebuild": "Rebuild needed",
+        "needs_budget": "Budget decision needed",
+        "needs_rescan": "Rescan needed",
+        "refuse_symlink": "Symlinks refused",
+        "refuse_special": "Special files refused",
+        "refuse_nested_repository": "Nested repositories refused",
+        "refuse_mount": "Mounts refused",
+        "refuse_path_alias": "Path aliases refused",
+    }
+    remaining = 8
+    for action in sorted(
+        groups, key=lambda action: (not groups[action][0].requires_decision, action)
+    ):
+        group = groups[action]
+        lines.append(f"  {len(group)} {labels.get(action, action.replace('_', ' '))}")
+        samples = group[: min(2, remaining)]
+        for entry in samples:
+            lines.append(f"    {display(entry.path, 100)}: {display(entry.reason)}")
+        remaining -= len(samples)
+        if len(group) > len(samples):
+            lines.append(f"    ... {len(group) - len(samples)} entries omitted")
+    lines.extend(
+        [
+            "Full entries, observations and limits: "
+            "loupe --json workspace hydrate PATH --plan",
+            "Preview only; nothing copied. A fresh validated plan is required "
+            "before files can be copied.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
     command = arguments.command
     if command == "chat" or (
@@ -518,7 +603,7 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
         if arguments.workspace_command == "hydrate":
             from llm_cli.workspace.hydration import HydrationBudgets, plan_hydration
 
-            return plan_hydration(
+            plan = plan_hydration(
                 Path(arguments.path),
                 budgets=HydrationBudgets(
                     max_entries=arguments.max_entries,
@@ -530,7 +615,10 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                     max_seconds=arguments.max_seconds,
                 ),
                 approved_secret_paths=arguments.approve_secret,
-            ).to_dict()
+            )
+            return (
+                plan.to_dict() if arguments.as_json else _hydration_preview_text(plan)
+            )
         if arguments.workspace_command == "status":
             return client.call(
                 "workspace.status",

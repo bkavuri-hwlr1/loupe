@@ -313,7 +313,8 @@ class _Observed:
 
 
 class _Inventory:
-    def __init__(self, budgets: HydrationBudgets, deadline: float) -> None:
+    def __init__(self, root: Path, budgets: HydrationBudgets, deadline: float) -> None:
+        self.root = root
         self.budgets = budgets
         self.deadline = deadline
         self.entries: list[_Observed] = []
@@ -321,6 +322,7 @@ class _Inventory:
         self.scanned = 0
         self.metadata_bytes = 0
         self.aliases: dict[str, _Observed] = {}
+        self.deferred_ignored_paths: set[str] = set()
 
     def remaining(self) -> None:
         if time.monotonic() >= self.deadline:
@@ -420,10 +422,10 @@ class _Inventory:
         return child_count
 
     def directory(self, parent: int, name: str, entry: _Observed, depth: int) -> None:
+        entry.descendants_inventoried = False
         if depth >= self.budgets.max_depth:
             entry.refusal = "needs_rescan"
             entry.reason = "depth budget exceeded"
-            entry.descendants_inventoried = False
             self.issues.append("depth_budget_exceeded")
             return
         child = os.open(
@@ -448,6 +450,19 @@ class _Inventory:
                 entry.reason = (
                     "virtual environments may embed absolute checkout paths; "
                     "rebuild or approve a portability adapter"
+                )
+            elif name.casefold() == "node_modules" and entry.path in _ignored_paths(
+                self.root,
+                [entry.path],
+                deadline=self.deadline,
+                limit=self.budgets.max_metadata_bytes,
+            ):
+                self.deferred_ignored_paths.add(entry.path)
+                entry.refusal = "needs_rebuild"
+                entry.reason = (
+                    "ignored dependency tree not inventoried; child counts/bytes "
+                    "unknown; rebuild or use a trusted adapter; "
+                    "no copying of unexamined contents"
                 )
             else:
                 initial_issues = len(self.issues)
@@ -596,7 +611,7 @@ def plan_hydration(
             ErrorCode.REPOSITORY_UNSAFE,
             "this platform cannot inventory directories without following links",
         )
-    inventory = _Inventory(limits, deadline)
+    inventory = _Inventory(requested, limits, deadline)
     root = requested
     entries: list[HydrationEntry] = []
     planned_bytes = estimated_bytes = 0
@@ -613,6 +628,7 @@ def plan_hydration(
                 "hydration preview needs a non-bare Git checkout",
             )
         root = Path(os.fsdecode(output.removesuffix(b"\n"))).resolve(strict=True)
+        inventory = _Inventory(root, limits, deadline)
         descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             root_evidence = _evidence(os.fstat(descriptor))
@@ -635,7 +651,11 @@ def plan_hydration(
                 for entry in inventory.entries
                 if PurePosixPath(entry.path).name == ".gitignore"
             )
-            if ignored != repeated or rules_changed:
+            if (
+                ignored != repeated
+                or rules_changed
+                or not inventory.deferred_ignored_paths.issubset(ignored)
+            ):
                 inventory.issues.append("ignore_policy_changed")
             if root_evidence != _evidence(
                 os.fstat(descriptor)
