@@ -396,7 +396,9 @@ it is not yet a comparison of coding quality or throughput against one agent.
 real model: one session given every part, and one session per part working
 at once in one shared checkout. The `shop` experiment (`live_sessions.toml`)
 asks for discount codes and stock limits, which both edit the cart, its tests,
-and the changelog. A "disrupted" scenario also appends a function to the cart
+and the changelog. The `toolkit` experiment instead divides text and numeric
+helpers into independent modules, with separate flags in one shared registry.
+A "disrupted" scenario also appends a function to the cart or registry
 by hand once an agent has edited it, as someone in an editor would, and kills
 and restarts the background service once every session has edited. The script
 plays the operator: it answers questions and, when a session's work is not
@@ -453,10 +455,58 @@ The same experiment after pending edits learned to follow changed files
   changelog -- the model resolved the conflict markers, its checks passed,
   and it published. The hand edit survived both disrupted runs, and both
   crashed runs resumed with each tool result recorded once.
-- **Two sessions are still not faster on this task.** Both parts edit the same
+- **Two sessions were slower in these single runs.** Both parts edit the same
   three files, so the second session resolves the overlap and each session
   reads the code for itself: about twice one agent's tokens, and slightly
-  more wall time. Parallel sessions should pay off on parts that overlap less.
+  more wall time. These runs motivated measuring a second fixture with less
+  shared code and repeating both experiments.
+
+Wave 1 A2 repeats both experiments three times per arm and scenario
+(2026-10-13 UTC), using Codex `gpt-6-sol` at `xhigh` effort through the
+non-default `explore-eval` profile. Loupe ran from the `b5b0b2a` baseline,
+which includes the pending-edit merge fix; experiment version 2 and the new
+fixture came from `96f0c45`. Arm order alternated between repetitions.
+
+```console
+uv run --all-extras python scripts/live_sessions.py --profile explore-eval \
+  --provider codex --model gpt-6-sol --effort xhigh --repeat 3
+```
+
+Each table value is the median of three completed runs. Tokens are reported
+prompt plus output tokens, including cached input; they do not estimate cost.
+The [measurement record](experiments/wave1-live-sessions-2026-10-13.json)
+preserves every run's timing, usage, disruptions and acceptance counts.
+
+| Experiment | Scenario | Arm | Median wall time | Median tokens | Interventions | Hidden tests in every run |
+| --- | --- | --- | --- | --- | --- | --- |
+| shop | clean | one agent | 108.3 s | 130,730 | 0 | 16/16 |
+| shop | clean | two sessions | 102.4 s | 282,324 | 0 | 16/16 |
+| shop | disrupted | one agent | 109.8 s | 176,916 | 0 | 17/17 |
+| shop | disrupted | two sessions | 105.8 s | 301,907 | 0 | 17/17 |
+| toolkit | clean | one agent | 72.4 s | 76,102 | 0 | 15/15 |
+| toolkit | clean | two sessions | 78.4 s | 126,735 | 0 | 15/15 |
+| toolkit | disrupted | one agent | 75.8 s | 76,594 | 0 | 16/16 |
+| toolkit | disrupted | two sessions | 91.8 s | 149,761 | 0 | 16/16 |
+
+All 24 final checkouts passed every hidden acceptance test and their own
+tests. All 12 disrupted runs exercised the manual edit and daemon restart;
+the operator's function survived each time. Every lane applied, with no
+recorded question answers, follow-ups, rejected batches or timeouts.
+
+The medians show no consistent speed benefit: two sessions were about 4–5%
+faster on `shop` and 8–21% slower on `toolkit`, while using 1.7–2.2 times the
+reported tokens. These small fixtures and three repetitions do not establish
+a general throughput result. One single-agent shop run encountered a provider
+retry, and other validation jobs ran on the same machine. The new experiment
+separates the code edits, but its shorter tasks still did not amortize the
+additional session work in these measurements.
+
+These runs used experiment version 2, whose toolkit registry put the two
+flags on adjacent lines. A three-way merge treats adjacent changed lines as
+one conflict, so every two-session toolkit run had to resolve a registry
+conflict, which may account for part of its extra time. Version 3 puts a
+comment line between the flags so the parts merge cleanly; it has not been
+measured yet.
 
 ## Next executable slice
 
