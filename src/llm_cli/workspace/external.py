@@ -218,6 +218,7 @@ class ExternalWorkspaceScanner:
         with self.store.connection() as connection:
             binding = connection.execute(
                 "SELECT s.workspace_id, s.checkout_id, c.canonical_path, "
+                "c.path_case_insensitive, "
                 "w.workspace_revision, h.next_event_sequence FROM sessions s "
                 "JOIN workspaces w ON w.workspace_id=s.workspace_id "
                 "JOIN checkouts c ON c.checkout_id=s.checkout_id "
@@ -282,11 +283,14 @@ class ExternalWorkspaceScanner:
                 if identity is not None and previous is not None
                 else stamp != row["stamp"]
             )
+            publication_key = (
+                path.casefold() if binding["path_case_insensitive"] else path
+            )
             if (
                 identity is not None
-                and path in published
-                and published[path][0] > int(row["sequence"] or 0)
-                and published[path][1] == identity
+                and publication_key in published
+                and published[publication_key][0] > int(row["sequence"] or 0)
+                and published[publication_key][1] == identity
             ):
                 changed = False
             # Opaque stamps get a non-digest sentinel to enable the cheap path.
@@ -366,6 +370,10 @@ class ExternalWorkspaceScanner:
     ) -> dict[str, tuple[int, str]]:
         sequence = min(int(row["sequence"] or 0) for row in rows)
         results: dict[str, tuple[int, str]] = {}
+
+        def key(path: str) -> str:
+            return path.casefold() if binding["path_case_insensitive"] else path
+
         batches = connection.execute(
             "SELECT checkout_event_sequence, length(CAST(request_json AS BLOB)), "
             "CASE WHEN length(CAST(request_json AS BLOB))<=1048576 "
@@ -386,7 +394,7 @@ class ExternalWorkspaceScanner:
                     raise ValueError("invalid publication paths")
                 for item in files:
                     result = item["result"]
-                    results[item["relative_path"]] = (
+                    results[key(item["relative_path"])] = (
                         int(row[0]),
                         _encode([result["kind"], result["mode"], result["digest"]]),
                     )
@@ -406,8 +414,9 @@ class ExternalWorkspaceScanner:
         if len(singles) > 1_000:
             raise _incomplete("publication history exceeds external scan budget")
         for row in singles:
-            if row[0] not in results or results[row[0]][0] < row[4]:
-                results[row[0]] = (row[4], _encode([row[1], row[2], row[3]]))
+            path = key(str(row[0]))
+            if path not in results or results[path][0] < row[4]:
+                results[path] = (row[4], _encode([row[1], row[2], row[3]]))
         return results
 
 
