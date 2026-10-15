@@ -181,15 +181,13 @@ def test_failed_fetch_releases_waiters_and_can_be_retried(
     with ThreadPoolExecutor(max_workers=2) as workers:
         owner = workers.submit(web.page, url, allowed=lambda *args: None)
         assert downloading.wait(5)
-        with web._lock:
-            future = web._in_flight[url]
-        original_result = future.result
+        original_wait = web._wait_for_page
 
         def joined(*args: Any, **kwargs: Any) -> Page:
             checking.set()
-            return original_result(*args, **kwargs)
+            return original_wait(*args, **kwargs)
 
-        monkeypatch.setattr(future, "result", joined)
+        monkeypatch.setattr(web, "_wait_for_page", joined)
         waiter = workers.submit(web.page, url, allowed=lambda *args: None)
         assert checking.wait(1)
         release.set()
@@ -198,3 +196,25 @@ def test_failed_fetch_releases_waiters_and_can_be_retried(
                 pending.result(timeout=5)
     assert web.page(url, allowed=lambda *args: None) == (_page(url), True)
     assert downloads == [url, url]
+
+
+def test_owner_completed_at_timeout_wakeup_is_returned_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import Future
+
+    page = _page("https://same.example/")
+    future: Future[Page] = Future()
+    future.set_result(page)
+    original_result = future.result
+
+    def expired_wait(timeout: float | None = None) -> Page:
+        # Model the interleaving where a timed result wait expired just before
+        # the owner completed. Readiness polling must consume the available
+        # result without confusing that wakeup with an owner failure.
+        if timeout is not None:
+            raise TimeoutError
+        return original_result()
+
+    monkeypatch.setattr(future, "result", expired_wait)
+    assert WebAccess("allow")._wait_for_page(future, None) == page
