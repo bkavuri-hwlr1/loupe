@@ -69,6 +69,8 @@ class Settings:
     # approval.
     agent_web_fetch: str = "ask"
     agent_web_domains: tuple[str, ...] = field(default=())
+    # HTTP CONNECT proxy; None uses HTTP_PROXY/HTTPS_PROXY. NO_PROXY still applies.
+    agent_web_proxy: str | None = None
     mcp_servers: tuple[McpServerConfig, ...] = field(default=())
     hooks: tuple[HookConfig, ...] = field(default=())
     launch_lease_ms: int = 10 * 60 * 1_000

@@ -34,6 +34,7 @@ class WebAccess:
         tls: ssl.SSLContext | None = None,
         timeout: float = _TIMEOUT_SECONDS,
         max_bytes: int = _MAX_PAGE_BYTES,
+        proxy: str | None = None,
     ) -> None:
         self.mode = mode
         self.domains = tuple(domains)
@@ -41,6 +42,7 @@ class WebAccess:
         self._tls = tls
         self._timeout = timeout
         self._max_bytes = max_bytes
+        self._proxy = proxy
         self._approved: set[str] = set()
         self._pages: dict[str, Page] = {}
 
@@ -75,6 +77,7 @@ class WebAccess:
             allowed=allowed,
             resolver=self._resolver,
             tls=self._tls,
+            proxy=self._proxy,
         )
         if len(self._pages) >= _MAX_CACHED_PAGES:
             self._pages.pop(next(iter(self._pages)))

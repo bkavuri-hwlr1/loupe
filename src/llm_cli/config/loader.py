@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from llm_cli.config.models import HookConfig, McpServerConfig, Settings
 from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
+from llm_cli.web.fetch import WebFetchError, check_proxy
 
 _ROOT_KEYS = {"agent", "core", "hooks", "leases", "mcp"}
 _HOOK_KINDS = ("pre_tool", "post_edit")
@@ -53,6 +54,7 @@ _AGENT_KEYS = {
     "explore_effort",
     "web_fetch",
     "web_domains",
+    "web_proxy",
 }
 # A hostname, optionally led by "*." for its subdomains.
 _WEB_DOMAIN = re.compile(
@@ -144,6 +146,16 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
             "agent.web_domains must list at most 64 lowercase hostnames, each "
             'optionally starting with "*."',
         )
+    web_proxy = agent.get("web_proxy", settings.agent_web_proxy)
+    if web_proxy is not None:
+        if not isinstance(web_proxy, str) or len(web_proxy) > 2_048:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, "agent.web_proxy must be an HTTP proxy URL"
+            )
+        try:
+            check_proxy(web_proxy)
+        except WebFetchError as exc:
+            raise LlmCoordError(ErrorCode.CONFIG_INVALID, str(exc)) from None
     updates: dict[str, Any] = {
         "coordination_mode": mode,
         "agent_provider": provider,
@@ -153,6 +165,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "agent_explore_effort": explore_effort,
         "agent_web_fetch": web_fetch,
         "agent_web_domains": tuple(web_domains),
+        "agent_web_proxy": web_proxy,
         "mcp_servers": _mcp_servers(_table(data, "mcp")),
         "hooks": _hooks(_table(data, "hooks")),
     }

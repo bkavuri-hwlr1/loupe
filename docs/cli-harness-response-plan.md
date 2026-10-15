@@ -766,13 +766,26 @@ lists hosts or `*.` subdomain patterns that need no approval. Only http(s)
 URLs without credentials or recognized secrets are fetched; every resolved
 address must be public, the connection is pinned to the checked address, and
 each of up to five redirects is checked and approved the same way. Requests
-are GET with no cookies, credentials, or proxies, a 20-second timeout, and a
+are GET with no cookies or target credentials, a 20-second timeout, and a
 2 MiB download limit; only text types are read. HTML becomes readable text
 with headings and links kept; long pages are read in parts through `offset`
 from a per-task cache; output is labelled as external content and screened
 for secrets. It is offered in plan mode, since it reads, but not to
 exploration helpers. `web.fetched` events record the domain and size only.
-Remaining gaps: proxy support and fetching through exploration helpers.
+HTTP CONNECT proxies are selected from `HTTP_PROXY` / `HTTPS_PROXY` (lowercase
+forms take precedence), or explicitly with `agent.web_proxy = "http://proxy:8080"`.
+`NO_PROXY` / `no_proxy` bypass either selection for matching hosts. Proxy URLs
+must use HTTP and contain no credentials, path, query, or fragment. Every target
+is still checked as public before contacting the proxy; CONNECT names its checked
+IP address, while HTTPS verifies the original hostname. Redirects repeat these
+checks and select the proxy for their own scheme and host. Proxy connection
+errors never echo the proxy URL. The proxy is trusted user configuration, never
+page content. Known limits: naming the IP address in CONNECT keeps DNS pinning
+but defeats proxies that allow sites by hostname; proxies that restrict CONNECT
+to port 443 refuse plain HTTP pages; and an environment proxy URL containing
+credentials makes every fetch fail rather than bypassing the proxy.
+Remaining gaps: fetching through exploration helpers, and proxies that need
+authentication.
 
 **11. Token usage display (implemented).** Adapters now report `prompt_tokens`
 with one meaning for every provider: all prompt tokens, cached or not

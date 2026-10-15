@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import select
+import socket
+import ssl
 import threading
 from collections.abc import Iterator, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,6 +19,7 @@ from llm_cli.errors import LlmCoordError
 from llm_cli.web.access import WebAccess, domain_matches
 from llm_cli.web.fetch import (
     WebFetchError,
+    check_proxy,
     check_url,
     fetch,
     html_to_text,
@@ -82,9 +86,205 @@ def _fetch(url: str, **kwargs: Any) -> Any:
         "timeout": 5.0,
         "allowed": lambda host, url: None,
         "resolver": _resolver,
+        "environ": {},
     }
     options.update(kwargs)
     return fetch(url, **options)
+
+
+@pytest.fixture
+def proxy() -> Iterator[tuple[int, list[str]]]:
+    tunnels: list[str] = []
+
+    class ProxyHandler(BaseHTTPRequestHandler):
+        def do_CONNECT(self) -> None:
+            tunnels.append(self.path)
+            host, _, port = self.path.rpartition(":")
+            with socket.create_connection((host.strip("[]"), int(port)), 2) as peer:
+                self.send_response(200)
+                self.end_headers()
+                sockets = [self.connection, peer]
+                while True:
+                    readable, _, _ = select.select(sockets, [], [], 2)
+                    if not readable:
+                        return
+                    for source in readable:
+                        data = source.recv(65_536)
+                        if not data:
+                            return
+                        destination = (
+                            peer if source is self.connection else self.connection
+                        )
+                        destination.sendall(data)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield httpd.server_address[1], tunnels
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def test_connect_proxy_fetches_checked_ip_and_follows_redirects(
+    server: int, proxy: tuple[int, list[str]]
+) -> None:
+    port, tunnels = proxy
+    page = _fetch(
+        f"http://docs.test:{server}/redirect",
+        environ={"HTTP_PROXY": f"http://127.0.0.1:{port}"},
+    )
+    assert page.text.startswith("# Guide")
+    assert tunnels == [f"127.0.0.1:{server}"] * 2
+
+
+def test_https_proxy_keeps_target_tls_identity(
+    server: int, proxy: tuple[int, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The CONNECT tunnel is real; inspect TLS's hostname before wrapping rather
+    # than needing a certificate authority for the local plaintext fixture.
+    names: list[str | None] = []
+
+    def wrap(
+        context: ssl.SSLContext, sock: socket.socket, *, server_hostname: str | None
+    ) -> socket.socket:
+        names.append(server_hostname)
+        return sock
+
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", wrap)
+    port, tunnels = proxy
+    page = _fetch(
+        f"https://docs.test:{server}/plain.txt",
+        environ={"HTTPS_PROXY": f"http://127.0.0.1:{port}"},
+    )
+    assert page.text == "café"
+    assert names == ["docs.test"]
+    assert tunnels == [f"127.0.0.1:{server}"]
+
+
+def test_ipv6_connect_request_and_host_use_bracketed_authority() -> None:
+    seen: list[tuple[str, str | None]] = []
+
+    class ConnectResponder(Handler):
+        protocol_version = "HTTP/1.1"
+
+        def do_CONNECT(self) -> None:
+            seen.append((self.path, self.headers.get("Host")))
+            self.send_response(200)
+            self.end_headers()
+            self.close_connection = False
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ConnectResponder)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        page = _fetch(
+            "http://docs.test:8080/plain.txt",
+            resolver=lambda host, port: ["2606:4700:4700::1111"],
+            proxy=f"http://127.0.0.1:{httpd.server_address[1]}",
+        )
+        assert page.text == "café"
+        assert seen == [
+            ("[2606:4700:4700::1111]:8080", "[2606:4700:4700::1111]:8080")
+        ]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_proxy_never_receives_private_targets_or_denied_redirects(
+    server: int, proxy: tuple[int, list[str]]
+) -> None:
+    port, tunnels = proxy
+    options = {"environ": {"HTTP_PROXY": f"http://127.0.0.1:{port}"}}
+    with pytest.raises(WebFetchError, match="not a public address"):
+        _fetch("http://private.test/secret", **options)
+    assert tunnels == []
+    with pytest.raises(WebFetchError, match=r"private\.test is not allowed"):
+        _fetch(
+            f"http://docs.test:{server}/away",
+            allowed=lambda host, url: (
+                None if host == "docs.test" else f"{host} is not allowed"
+            ),
+            **options,
+        )
+    assert tunnels == [f"127.0.0.1:{server}"]
+
+
+@pytest.mark.parametrize(
+    "bypass", ["docs.test", "test", "*", "elsewhere.test,docs.test"]
+)
+def test_no_proxy_bypasses_environment_and_explicit_proxy(
+    server: int, bypass: str
+) -> None:
+    for explicit in (None, "http://127.0.0.1:1"):
+        page = _fetch(
+            f"http://docs.test:{server}/plain.txt",
+            proxy=explicit,
+            environ={"HTTP_PROXY": "http://127.0.0.1:1", "NO_PROXY": bypass},
+        )
+        assert page.text == "café"
+
+
+def test_explicit_proxy_overrides_environment(
+    server: int, proxy: tuple[int, list[str]]
+) -> None:
+    page = _fetch(
+        f"http://docs.test:{server}/plain.txt",
+        proxy=f"http://127.0.0.1:{proxy[0]}",
+        environ={"HTTP_PROXY": "http://127.0.0.1:1"},
+    )
+    assert page.text == "café"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://proxy.test",
+        "http://user:secret@proxy.test",
+        "http://proxy.test/path",
+        "http://proxy.test?token=secret",
+        "http://proxy.test:99999",
+        "http://proxy.test:0",
+        "http://proxy.test\n",
+    ],
+)
+def test_invalid_proxy_configuration_is_refused_without_echoing_secrets(
+    tmp_path: Path, url: str
+) -> None:
+    import json
+
+    with pytest.raises(WebFetchError) as error:
+        check_proxy(url)
+    assert "secret" not in str(error.value)
+    path = tmp_path / "config.toml"
+    path.write_text(f"[agent]\nweb_proxy = {json.dumps(url)}\n")
+    with pytest.raises(LlmCoordError):
+        load_settings(path)
+
+
+def test_configured_proxy_reaches_the_task_web_policy(tmp_path: Path) -> None:
+    from llm_cli.coordination.coordinator import RepositoryCoordinator
+    from llm_cli.execution.runner import TaskExecutionRunner
+    from llm_cli.storage.control import ControlStore
+
+    path = tmp_path / "config.toml"
+    path.write_text('[agent]\nweb_proxy = "http://proxy.test:8080"\n')
+    settings = load_settings(path)
+    assert settings.agent_web_proxy == "http://proxy.test:8080"
+    store = ControlStore(tmp_path / "control.sqlite3")
+    runner = TaskExecutionRunner(
+        store,
+        RepositoryCoordinator(store),
+        managed_worktree_root=tmp_path / "worktrees",
+        boot_id="test",
+    )
+    runner.web_fetch = "allow"
+    runner.web_proxy = settings.agent_web_proxy
+    web = runner.web_access()
+    assert web is not None and web._proxy == settings.agent_web_proxy
 
 
 def test_pages_are_fetched_as_text_and_redirects_followed(server: int) -> None:

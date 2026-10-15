@@ -228,6 +228,7 @@ class DaemonService:
         )
         self.runner.web_fetch = settings.agent_web_fetch
         self.runner.web_domains = settings.agent_web_domains
+        self.runner.web_proxy = settings.agent_web_proxy
         self.shared_runner.mcp_servers = settings.mcp_servers
         self.shared_runner.hooks = settings.hooks
         # Registries separate the durable harness identity from the model
