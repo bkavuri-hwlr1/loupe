@@ -11,11 +11,12 @@ import pytest
 
 from llm_cli.agent.reviewer import REVIEW_TOOLS, Reviewer
 from llm_cli.agent.shared_tools import SharedToolBroker
-from llm_cli.agent.tools import TaskCancelled
+from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.cli.render import EventRenderer, render_event
 from llm_cli.config.loader import load_settings
 from llm_cli.errors import LlmCoordError
 from llm_cli.providers.base import ModelTurn, ToolCallRequest, ToolCallResult
+from llm_cli.web.access import WebAccess
 
 
 class Provider:
@@ -56,20 +57,49 @@ class Provider:
 def test_reviewer_refuses_mutation_commands_web_and_nested_helpers(
     tmp_path: Path,
     repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = repository_factory(tmp_path, {"a.py": "unchanged\n"})
-    broker = SharedToolBroker(worktree=root, scopes=("a.py",))
+    web = WebAccess("allow")
+
+    def forbidden_fetch(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the independent reviewer reached web fetching")
+
+    def forbidden_command(argv: list[str], cwd: str, timeout: int) -> ToolOutcome:
+        raise AssertionError("the independent reviewer reached command execution")
+
+    monkeypatch.setattr(web, "page", forbidden_fetch)
+    broker = SharedToolBroker(
+        worktree=root,
+        scopes=("a.py",),
+        command_runner=forbidden_command,
+        command_approval="allow",
+        web=web,
+    )
+    assert {"run_command", "web_fetch"} <= set(broker.tool_names())
     provider = Provider(
         [
             ModelTurn(
                 text="",
-                tool_calls=tuple(
+                tool_calls=(
                     ToolCallRequest(
-                        str(index), name, {"path": "a.py", "content": "bad"}
-                    )
-                    for index, name in enumerate(
-                        ("write_file", "run_command", "web_fetch", "explore")
-                    )
+                        "write", "write_file", {"path": "a.py", "content": "bad"}
+                    ),
+                    ToolCallRequest(
+                        "command",
+                        "run_command",
+                        {
+                            "argv": ["python", "-c", "print(1)"],
+                            "cwd": ".",
+                            "timeout": 1,
+                        },
+                    ),
+                    ToolCallRequest(
+                        "fetch", "web_fetch", {"url": "https://docs.python.org"}
+                    ),
+                    ToolCallRequest(
+                        "nested", "explore", {"task": "inspect", "label": "x"}
+                    ),
                 ),
                 stop_reason="tool_use",
                 usage={"prompt_tokens": 4},
