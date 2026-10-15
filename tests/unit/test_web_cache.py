@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
 
 from llm_cli.agent.tools import TaskCancelled
+from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.web.access import WebAccess
 from llm_cli.web.fetch import Page, WebFetchError
 
@@ -132,7 +134,7 @@ def test_coalesced_waiter_can_cancel_without_canceling_owner(
         assert owner.result(timeout=5) == (_page(url), True)
 
 
-def test_coalesced_waiter_has_a_bounded_timeout_and_owner_can_finish(
+def test_coalesced_waiter_honors_task_deadline_and_owner_can_finish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     downloading = threading.Event()
@@ -149,9 +151,17 @@ def test_coalesced_waiter_has_a_bounded_timeout_and_owner_can_finish(
     with ThreadPoolExecutor(max_workers=1) as workers:
         owner = workers.submit(web.page, url, allowed=lambda *args: None)
         assert downloading.wait(5)
+        deadline = time.monotonic() + 0.02
+
+        def check_deadline() -> None:
+            if time.monotonic() >= deadline:
+                raise LlmCoordError(ErrorCode.PROVIDER_UNAVAILABLE, "task deadline")
+
         try:
-            with pytest.raises(WebFetchError, match="waiting for the page"):
-                web.page(url, allowed=lambda *args: None)
+            with pytest.raises(LlmCoordError, match="task deadline"):
+                web.page(
+                    url, allowed=lambda *args: None, check_cancelled=check_deadline
+                )
             assert not owner.done()
         finally:
             release.set()

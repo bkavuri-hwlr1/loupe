@@ -237,6 +237,8 @@ class SharedToolBroker(ToolBroker):
     )
 
     def invoke(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
+        if self.pending_parent_notice() is not None:
+            return ToolBroker.invoke(self, name, arguments)
         # Hooks run outside the publication lock: a slow hook must not hold
         # every other session's read barrier.
         if self.hooks is not None and name in self.tool_names():
@@ -517,6 +519,8 @@ class SharedToolBroker(ToolBroker):
 
         def wrapped(*args: P.args, **kwargs: P.kwargs) -> ToolOutcome:
             note = self.catch_up().note()
+            if note and self.helper_call_active():
+                self.notify_parent(note)
             unresolved = self.unresolved()
             if unresolved:
                 return _error(_joined(note, _resolve_first(unresolved)))
