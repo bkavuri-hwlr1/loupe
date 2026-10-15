@@ -60,10 +60,37 @@ _user_excludes_cache: ContextVar[dict[Path, str] | None] = ContextVar(
 _known_exclusions: ContextVar[tuple[Path, Mapping[str, bool]] | None] = ContextVar(
     "loupe_known_exclusions", default=None
 )
+# A synchronous helper may have a shorter deadline than an individual source
+# operation. Keep it local to that call, including nested exclusion checks.
+_source_remaining: ContextVar[Callable[[], float] | None] = ContextVar(
+    "loupe_source_remaining", default=None
+)
 # User rules are evaluated in an empty repository; one per process suffices
 # because nothing ever writes to it.
 _empty_lock = threading.Lock()
 _empty_repository_directory: tempfile.TemporaryDirectory[str] | None = None
+
+
+def _combined_remaining(
+    explicit: Callable[[], float] | None,
+) -> Callable[[], float] | None:
+    scoped = _source_remaining.get()
+    if scoped is None:
+        return explicit
+    if explicit is None:
+        return scoped
+    return lambda: min(scoped(), explicit())
+
+
+@contextmanager
+def source_deadline(remaining: Callable[[], float]) -> Iterator[None]:
+    """Bound source metadata by both its caller's and a helper's deadlines."""
+
+    token = _source_remaining.set(_combined_remaining(remaining))
+    try:
+        yield
+    finally:
+        _source_remaining.reset(token)
 
 
 @contextmanager
@@ -183,7 +210,7 @@ def _scoped_user_excludes_file(
 
 def _empty_repository(remaining: Callable[[], float] | None) -> Path:
     global _empty_repository_directory
-    with _empty_lock:
+    with _exclusion_repository_lock(remaining):
         directory = _empty_repository_directory
         if directory is not None and not (Path(directory.name) / ".git/HEAD").is_file():
             # A temporary-file cleaner removed it; start a fresh one.
@@ -204,6 +231,23 @@ def _empty_repository(remaining: Callable[[], float] | None) -> Path:
                 raise
             _empty_repository_directory = directory
         return Path(directory.name)
+
+
+@contextmanager
+def _exclusion_repository_lock(
+    remaining: Callable[[], float] | None,
+) -> Iterator[None]:
+    if remaining is None:
+        _empty_lock.acquire()
+    else:
+        while not _empty_lock.acquire(timeout=min(0.05, remaining())):
+            pass
+    try:
+        if remaining is not None:
+            remaining()
+        yield
+    finally:
+        _empty_lock.release()
 
 
 def _ignored(
@@ -234,6 +278,9 @@ def excluded_paths(
     *,
     remaining: Callable[[], float] | None = None,
 ) -> set[str]:
+    remaining = _combined_remaining(remaining)
+    if remaining is not None:
+        remaining()
     if not relative_paths:
         return set()
     known = _known_exclusions.get()
