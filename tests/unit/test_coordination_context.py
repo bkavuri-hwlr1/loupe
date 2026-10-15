@@ -362,3 +362,27 @@ def test_invalid_binding_or_uninterpretable_workspace_state_fails_closed(
         else ErrorCode.CHECKOUT_RECOVERY_REQUIRED
     )
     assert caught.value.code == expected
+
+
+def test_exact_directory_changes_preserve_directory_and_repository_intents(
+    ledger: tuple[ControlStore, str, str],
+) -> None:
+    store, checkout, workspace = ledger
+    _open(store, checkout, workspace, "directory-writer")
+    _open(store, checkout, workspace, "repository-writer")
+    store.set_session_intent("directory-writer", paths=("docs/",))
+    store.set_session_intent("repository-writer", paths=("*",))
+    context = SharedCoordinationContext(store, "reader", ("*",))
+    first = context(None)
+    _event(
+        store,
+        checkout,
+        "workspace.batch_published",
+        {"paths": ["docs"], "workspace_revision": 1},
+    )
+    packet = _packet(context(first.sequence))
+    assert packet["changes"][0]["paths"] == [{"path": "docs", "overlaps_scope": True}]
+    assert {item["session_id"]: item["paths"] for item in packet["intents"]} == {
+        "directory-writer": [{"path": "docs/", "overlaps_scope": True}],
+        "repository-writer": [{"path": "*", "overlaps_scope": True}],
+    }

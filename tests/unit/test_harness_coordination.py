@@ -404,7 +404,9 @@ def test_context_marks_only_validated_irrelevant_replay_as_unchanged(
     assert SharedCoordinationContext(store, "reader", ("docs/",))(None).text
 
 
-@pytest.mark.parametrize("path", [None, [], "../outside"])
+@pytest.mark.parametrize(
+    "path", [None, [], "../outside", "*", "docs/", "docs\\guide.md", " docs/guide.md "]
+)
 def test_irrelevant_external_metadata_is_validated_before_quiet_advance(
     ledger: tuple[ControlStore, str, str],
     path: object,

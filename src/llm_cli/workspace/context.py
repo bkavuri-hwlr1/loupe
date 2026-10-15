@@ -15,7 +15,11 @@ from collections.abc import Sequence
 from typing import Any
 
 from llm_cli.agent.driver import CoordinationUpdate
-from llm_cli.coordination.scopes import normalize_scopes, scope_sets_overlap
+from llm_cli.coordination.scopes import (
+    normalize_changed_path,
+    normalize_scopes,
+    scope_sets_overlap,
+)
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.external import ExternalWorkspaceScanner
@@ -298,6 +302,14 @@ class SharedCoordinationContext:
             raise _invalid_metadata()
         if len(paths) > _MAX_INTENT_PATHS:
             raise _too_large("a committed change has too many paths to deliver safely")
+        try:
+            if any(
+                not isinstance(path, str) or normalize_changed_path(path) != path
+                for path in paths
+            ):
+                raise ValueError("change events require canonical exact paths")
+        except ValueError as exc:
+            raise _invalid_metadata() from exc
         result: dict[str, object] = {
             "sequence": int(row["sequence"]),
             "event_type": str(row["event_type"]),
