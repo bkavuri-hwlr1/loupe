@@ -79,6 +79,9 @@ def run_session(
 
 # A summary waits for a model response, which can take minutes.
 _COMPACT_TIMEOUT_SECONDS = 600.0
+# Applying first runs any missing or stale required checks, each bounded by its
+# own timeout of up to two hours, so wait for the daemon's answer.
+APPLY_TIMEOUT_SECONDS = 24 * 60 * 60.0
 
 # A request the daemon validated and refused cannot have created a session;
 # anything else -- a lost connection, an unavailable daemon, an internal fault
@@ -222,14 +225,16 @@ def _verify_session_mode(value: dict[str, Any], expected: str) -> None:
         )
 
 
-def _patient(client: DaemonClient) -> DaemonClient:
-    """A client that waits for a model response, which can take minutes."""
+def _patient(
+    client: DaemonClient, timeout_seconds: float = _COMPACT_TIMEOUT_SECONDS
+) -> DaemonClient:
+    """A client that waits for slow daemon work, such as a model response."""
 
     if not isinstance(client, DaemonClient):
         return client
     return DaemonClient(
         client.paths,
-        timeout_seconds=max(client.timeout_seconds, _COMPACT_TIMEOUT_SECONDS),
+        timeout_seconds=max(client.timeout_seconds, timeout_seconds),
     )
 
 

@@ -574,9 +574,25 @@ class ChatShell:
             if not task_id:
                 raise ValueError("Specify a task ID or run a task first.")
             method = "cancel" if command == "/stop" else command[1:]
-            result = self.client.call(
-                "task." + method, {"task_id": task_id, "allow_unverified": allow}
-            )
+            if method != "apply":
+                result = self.client.call(
+                    "task." + method, {"task_id": task_id, "allow_unverified": allow}
+                )
+                emit(result, as_json=False, stream=self.stream)
+                return True
+            if not allow:
+                self.ui.notice("Applying; required checks run first if needed.")
+            try:
+                result = session._patient(
+                    self.client, session.APPLY_TIMEOUT_SECONDS
+                ).call("task.apply", {"task_id": task_id, "allow_unverified": allow})
+            except KeyboardInterrupt as exc:
+                self.composer.interrupts.handle(exc)
+                self.ui.notice(
+                    "Stopped waiting; the apply continues. "
+                    f"Use /checks {task_id} to follow it."
+                )
+                return True
             emit(result, as_json=False, stream=self.stream)
             return True
         if command in {"/exit", "/quit"}:

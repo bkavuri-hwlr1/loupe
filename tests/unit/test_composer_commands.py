@@ -219,7 +219,8 @@ def test_filtering_after_browsing_uses_typed_query_and_resets_selection(
     with editing(monkeypatch) as editor:
         editor.send("/mo\x1b[Bd")
         editor.expect_draft("/mod", menu=True)
-        assert editor.composer._picker_index == 0
+        # The prompt thread publishes text before its change handlers finish.
+        wait_until(lambda: editor.composer._picker_index == 0)
         editor.send("\x7f\x7f")
         editor.expect_draft("/m", menu=True)
         editor.send("\x7f")

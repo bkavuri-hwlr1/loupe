@@ -155,8 +155,15 @@ def test_peer_publish_during_required_check_invalidates_evidence(
             assert service._task_view("first")["state"] == "awaiting_review"
             _assert_released(service, "first")
             assert service.workflow.inspect("first")["paths"] == ["a.py"]
-            with pytest.raises(LlmCoordError, match="stale"):
+            expected_error = (
+                "Conflict" if overlapping else "Required checks did not pass"
+            )
+            with pytest.raises(LlmCoordError, match=expected_error):
                 await service.handle(_request("task.apply", {"task_id": "first"}))
+            if not overlapping:
+                # Apply reruns verification against the peer's newer b.py,
+                # where this check's baseline assertion deliberately fails.
+                assert service.workflow.checks("first")[-1]["state"] == "failed"
             assert (root / "a.py").read_text() == (
                 "peer\n" if overlapping else "base a\n"
             )
@@ -291,16 +298,14 @@ def test_simultaneous_review_applies_publish_whole_batches(
                 for i, result in enumerate(results)
                 if not isinstance(result, BaseException)
             ]
-            assert len(winners) == (1 if overlapping or required_checks else 2), results
+            assert len(winners) == (1 if overlapping else 2), results
             for index, name in enumerate(names):
                 if index in winners:
                     _assert_completed(service, name)
                     assert (root / f"{name}.py").read_text() == f"{name} private\n"
                 else:
                     assert isinstance(results[index], LlmCoordError)
-                    assert ("stale" if required_checks else "Conflict") in str(
-                        results[index]
-                    )
+                    assert "Conflict" in str(results[index])
                     assert (root / f"{name}.py").read_text() == f"base {name}\n"
                     assert service._task_view(name)["state"] == "awaiting_review"
                     assert "private" in service.workflow.inspect(name)["diff"]
@@ -309,6 +314,8 @@ def test_simultaneous_review_applies_publish_whole_batches(
                 names[winners[0]] if overlapping else "base\n"
             )
             assert _revision(service, sessions[0]) == len(winners)
+            if required_checks and not overlapping:
+                assert max(len(service.workflow.checks(n)) for n in names) == 2
             assert (git_run(root, "show-ref"), git_run(root, "write-tree")) == before
         finally:
             await _drain(tasks)
