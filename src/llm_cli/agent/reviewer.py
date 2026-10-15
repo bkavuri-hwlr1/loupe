@@ -14,7 +14,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from functools import partial
 
-from llm_cli.agent.source_policy import contains_secret_material
+from llm_cli.agent.source_policy import contains_secret_material, source_deadline
 from llm_cli.agent.tools import TaskCancelled, ToolBroker, tool_schemas
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.providers.base import (
@@ -114,6 +114,12 @@ class Reviewer:
                     max_read_bytes=min(parent.limits.max_read_bytes, 384 * 1024),
                 )
             )
+
+            def review_tool_cancelled() -> bool:
+                self._guard()
+                return False
+
+            view.cancelled = review_tool_cancelled
             self._guard()
             if self.effort is not None:
                 # EffortCappedProvider's protocol carries this keyword.
@@ -173,7 +179,10 @@ class Reviewer:
                             )
                         )
                         continue
-                    result = view.invoke(call.name, call.arguments)
+                    # Tools stay synchronous: an abandoned worker must never
+                    # read source or mutate broker observations after return.
+                    with source_deadline(self._checked_remaining):
+                        result = view.invoke(call.name, call.arguments)
                     if contains_secret_material(result.content):
                         results.append(
                             ToolCallResult(
@@ -208,9 +217,14 @@ class Reviewer:
             parent.release_calls(budget - used)
 
     def _guard(self) -> None:
+        self._checked_remaining()
+
+    def _checked_remaining(self) -> float:
         self.broker.check_cancelled()
-        if self._remaining() <= 0:
+        remaining = self._remaining()
+        if remaining <= 0:
             raise _ReviewTimedOut
+        return remaining
 
     def _remaining(self) -> float:
         return min(self.deadline - self.clock(), self._expires_at - time.monotonic())

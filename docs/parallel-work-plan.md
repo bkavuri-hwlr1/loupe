@@ -179,7 +179,9 @@ subsequent prompt/test-only follow-ups passed their targeted regressions.
 Review accepts a standalone JSON code fence and retains valid, anchored findings
 when other findings are malformed. Optional review has a 120-second total cap
 and reserves 10% of the task budget for completion (minimum one second, maximum
-30 seconds); repair still uses the original task deadline. A timed-out review
+30 seconds); repair still uses the original task deadline. Reviewer searches
+and source-exclusion Git calls share this cap, including exclusion setup lock
+waits. A timed-out review
 produces a visible incomplete-review notice and permits normal checked
 settlement. Synchronous transports without cancellation can leave at most one
 private daemon request running per durable review attempt; its late response
