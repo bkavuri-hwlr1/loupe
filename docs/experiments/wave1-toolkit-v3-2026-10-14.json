@@ -1,0 +1,605 @@
+{
+  "measured_on_utc": "2026-10-15",
+  "measured_on_america_new_york": "2026-10-14",
+  "implementation_commit": "47d145158395a8d022dadbb8448b80e7a3e9ac03",
+  "fixture_commit": "47d145158395a8d022dadbb8448b80e7a3e9ac03",
+  "source_fingerprint": "4d796f8e44e6f2b79b8dc54b927e2c127d388f63e9e4e718b765f10a81f317b1",
+  "experiment_version": 3,
+  "settings": {
+    "set": [],
+    "provider": "codex",
+    "model": "gpt-6-sol",
+    "effort": "xhigh"
+  },
+  "protocol": {
+    "matrix": "single/pair x clean/disrupted x 3 repetitions",
+    "order": "single/pair order alternates by repetition",
+    "runtime": "matching noneditable all-extras Python3.14 wheel; source unchanged during all measurements",
+    "host_load": "full test suites held during measurement; implementation and short focused checks continued",
+    "tokens": "prompt plus output; cached tokens already included in prompt; not currency cost"
+  },
+  "limitations": [
+    "Three samples per cell, one model/provider, one fixture; no statistical speedup claim.",
+    "Prior v2 used implementation b5b0b2a; v3 uses final Wave1 code47d1451, so v2/v3 comparisons do not isolate fixture changes.",
+    "Parallel helpers and the independent reviewer are off in this baseline; these compare independent sessions.",
+    "E2 live Anthropic/OpenAI validation is deferred."
+  ],
+  "medians": [
+    {
+      "experiment": "toolkit",
+      "scenario": "clean",
+      "arm": "single",
+      "samples": 3,
+      "wall_seconds": 62.4,
+      "tokens": 70197,
+      "hidden_passed": 15,
+      "hidden_total": 15
+    },
+    {
+      "experiment": "toolkit",
+      "scenario": "clean",
+      "arm": "pair",
+      "samples": 3,
+      "wall_seconds": 74.4,
+      "tokens": 124159,
+      "hidden_passed": 15,
+      "hidden_total": 15
+    },
+    {
+      "experiment": "toolkit",
+      "scenario": "disrupted",
+      "arm": "single",
+      "samples": 3,
+      "wall_seconds": 79.8,
+      "tokens": 84108,
+      "hidden_passed": 16,
+      "hidden_total": 16
+    },
+    {
+      "experiment": "toolkit",
+      "scenario": "disrupted",
+      "arm": "pair",
+      "samples": 3,
+      "wall_seconds": 84.0,
+      "tokens": 162268,
+      "hidden_passed": 16,
+      "hidden_total": 16
+    }
+  ],
+  "runs": [
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "clean",
+      "repetition": 1,
+      "wall_seconds": 62.4,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 66902,
+      "output_tokens": 2240,
+      "cached_tokens": 53376,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "clean",
+      "repetition": 1,
+      "wall_seconds": 74.4,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 112660,
+      "output_tokens": 2993,
+      "cached_tokens": 96384,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "disrupted",
+      "repetition": 1,
+      "wall_seconds": 79.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 86556,
+      "output_tokens": 2523,
+      "cached_tokens": 70272,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 31.5,
+      "crash_seconds": 29.5,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 1,
+      "wall_seconds": 84.0,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 158656,
+      "output_tokens": 3612,
+      "cached_tokens": 131584,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 20.1,
+      "crash_seconds": 45.7,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "clean",
+      "repetition": 2,
+      "wall_seconds": 86.5,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 128726,
+      "output_tokens": 2838,
+      "cached_tokens": 102912,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "clean",
+      "repetition": 2,
+      "wall_seconds": 62.3,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 67856,
+      "output_tokens": 2341,
+      "cached_tokens": 49408,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 2,
+      "wall_seconds": 96.1,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 188994,
+      "output_tokens": 4038,
+      "cached_tokens": 154624,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 33.6,
+      "crash_seconds": 31.6,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "disrupted",
+      "repetition": 2,
+      "wall_seconds": 79.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 81596,
+      "output_tokens": 2512,
+      "cached_tokens": 70912,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 45.6,
+      "crash_seconds": 35.6,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "clean",
+      "repetition": 3,
+      "wall_seconds": 70.4,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 70205,
+      "output_tokens": 2222,
+      "cached_tokens": 56320,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "clean",
+      "repetition": 3,
+      "wall_seconds": 64.4,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 121054,
+      "output_tokens": 3105,
+      "cached_tokens": 100608,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": null,
+      "crash_seconds": null,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 15,
+        "total": 15,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "single",
+      "scenario": "disrupted",
+      "repetition": 3,
+      "wall_seconds": 77.9,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 79385,
+      "output_tokens": 2292,
+      "cached_tokens": 64512,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 39.6,
+      "crash_seconds": 31.6,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "all": true
+      }
+    },
+    {
+      "experiment": "toolkit",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 3,
+      "wall_seconds": 69.8,
+      "suspended_seconds": 0.0,
+      "prompt_tokens": 111694,
+      "output_tokens": 3178,
+      "cached_tokens": 89472,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 16.1,
+      "crash_seconds": 25.5,
+      "diverged_batches": 0,
+      "timed_out": false,
+      "acceptance": {
+        "passed": 16,
+        "total": 16,
+        "own_tests_passed": true,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ]
+        }
+      },
+      "lanes_applied": {
+        "text": true,
+        "numbers": true
+      }
+    }
+  ]
+}
