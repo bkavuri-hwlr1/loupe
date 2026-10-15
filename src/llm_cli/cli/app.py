@@ -108,6 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
     database_commands = database.add_subparsers(dest="db_command", required=True)
     database_commands.add_parser("status")
     database_commands.add_parser("check")
+    backup = database_commands.add_parser(
+        "backup", help="write verified online backups"
+    )
+    backup.add_argument("--out", type=Path, help="parent of a fresh backup directory")
 
     repository = commands.add_parser("repo", help="register and inspect repositories")
     repository_commands = repository.add_subparsers(dest="repo_command", required=True)
@@ -393,6 +397,15 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 )
             return _with_code_match(client.call("system.ping"))
     if command == "db":
+        if arguments.db_command == "backup":
+            return client.call(
+                "db.backup",
+                {
+                    "out": str(arguments.out.expanduser().absolute())
+                    if arguments.out
+                    else None
+                },
+            )
         return client.call(f"db.{arguments.db_command}")
     if command == "repo":
         action = arguments.repo_command

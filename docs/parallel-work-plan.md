@@ -334,6 +334,12 @@ the three databases and printing their paths and integrity results. Done when
 a backup taken while the daemon runs opens, passes `PRAGMA integrity_check`,
 and holds the latest tasks.
 
+**Implemented:** `db.backup` runs through the daemon and creates a new private
+timestamped directory, including the latest committed WAL state. A real-daemon
+CLI integration test checks all three integrity results, owner-only modes,
+latest-task visibility, repeat backups, and output directories reached
+through a symlink, as `/tmp` is on macOS.
+
 ### D2. Retention: prune old task output
 
 The default profile's control database is 18 MB after a few weeks; nothing
