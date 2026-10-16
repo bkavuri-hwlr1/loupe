@@ -9,6 +9,7 @@ its frozen before/after states.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -34,6 +35,7 @@ from llm_cli.workspace.batches import (
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
     WorkspaceBrokerError,
+    _open_publication_parent,
     atomic_delete_file,
     atomic_replace_regular_file,
     atomic_replace_symlink,
@@ -303,7 +305,24 @@ class IsolatedSynchronizer:
             )
         if not files:
             return SyncResult(sequence=int(state["source_sequence"]))
-        # Retain source artifacts before the journal, including outside edits.
+        # Source scans contain leaves; explicit parent operations make a newly
+        # added source subtree replayable in a different physical worktree.
+        added = {file.relative_path for file in files}
+        directories = []
+        for file in files:
+            if file.content is None:
+                continue
+            for parent in Path(file.relative_path).parents:
+                relative = parent.as_posix()
+                if relative == "." or relative in baseline or relative in added:
+                    continue
+                directories.append(BatchFile(relative, ABSENT, b"", DIRECTORY_MODE))
+                added.add(relative)
+        files = [*directories, *files]
+        # Retain source artifacts before the journal, including empty directory bodies.
+        for file in files:
+            if file.content is not None:
+                store_candidate_content(self.publisher.candidate_dir, file.content)
         request = _request("isolated-source-refresh", files, ("*",), False)
         report = self._prepare(workspace_id, int(state["source_sequence"]), request)
         self.recover(workspace_id)
@@ -331,6 +350,13 @@ class IsolatedSynchronizer:
             theirs = self._body(result)
             current, ours = read_candidate_path(
                 candidate_target(root, path), max_bytes=MAX_SHARED_TEXT_BYTES
+            )
+            if ours is not None:
+                ensure_safe_content(ours)
+            local_hash = (
+                store_candidate_content(self.publisher.candidate_dir, ours)
+                if ours is not None
+                else None
             )
             after = current
             content_hash: str | None = None
@@ -393,6 +419,7 @@ class IsolatedSynchronizer:
                 {
                     "path": path,
                     "before": _identity_json(current),
+                    "local_content_hash": local_hash,
                     "after": _identity_json(after),
                     "content_hash": content_hash,
                     "disposition": disposition,
@@ -474,9 +501,14 @@ class IsolatedSynchronizer:
                         raise WorkspaceBrokerError(
                             "isolated path changed during synchronization"
                         )
+                    staging_id = hashlib.sha256(
+                        f"isolated:{workspace_id}:{journal['generation']}:{ordinal}".encode()
+                    ).hexdigest()
                     if after.absent:
                         if before.kind is ObjectKind.DIRECTORY_MARKER:
-                            target.rmdir()
+                            _directory_transition(
+                                root, step["path"], before, create=False
+                            )
                         else:
                             atomic_delete_file(
                                 root=root,
@@ -485,7 +517,7 @@ class IsolatedSynchronizer:
                             )
                         _sync_parent(target)
                     elif after.kind is ObjectKind.DIRECTORY_MARKER:
-                        target.mkdir(mode=0o700)
+                        _directory_transition(root, step["path"], before, create=True)
                         _sync_parent(target)
                     elif after.kind is ObjectKind.REGULAR:
                         body = self._body(
@@ -498,8 +530,9 @@ class IsolatedSynchronizer:
                             relative_path=step["path"],
                             content=body,
                             mode=after.mode,
-                            publication_id=f"isolated-{workspace_id}-{journal['sequence']}-{journal['generation']}-{ordinal}",
+                            publication_id=staging_id,
                             permissions=after.permissions,
+                            expected_base=before,
                         )
                     elif after.kind is ObjectKind.SYMLINK:
                         body = self._body(
@@ -511,7 +544,7 @@ class IsolatedSynchronizer:
                             git_common_dir=Path(state["git_common_dir"]),
                             relative_path=step["path"],
                             content=body,
-                            publication_id=f"isolated-link-{workspace_id}-{journal['generation']}-{ordinal}",
+                            publication_id=staging_id,
                             expected_base=before,
                         )
                     else:
@@ -674,6 +707,31 @@ class IsolatedSynchronizer:
 def _sync_parent(path: Path) -> None:
     descriptor = os.open(path.parent, os.O_RDONLY)
     try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _directory_transition(
+    root: Path, relative: str, before: FileIdentity, *, create: bool
+) -> None:
+    target = candidate_target(root, relative)
+    descriptor = _open_publication_parent(root, relative)
+    try:
+        current, _ = read_candidate_path(target)
+        parent = target.parent.stat()
+        opened = os.fstat(descriptor)
+        if current != before or (parent.st_dev, parent.st_ino) != (
+            opened.st_dev,
+            opened.st_ino,
+        ):
+            raise WorkspaceBrokerError(
+                "isolated directory changed during synchronization"
+            )
+        if create:
+            os.mkdir(target.name, 0o700, dir_fd=descriptor)
+        else:
+            os.rmdir(target.name, dir_fd=descriptor)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)

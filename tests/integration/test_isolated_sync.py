@@ -13,7 +13,11 @@ import pytest
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace import isolated_sync
 from llm_cli.workspace.batches import BatchFile, SharedBatchPublisher
-from llm_cli.workspace.broker import WorkspaceBrokerError, store_candidate_content
+from llm_cli.workspace.broker import (
+    WorkspaceBrokerError,
+    read_candidate_path,
+    store_candidate_content,
+)
 from llm_cli.workspace.identity import REGULAR_MODE, identify_path, read_identified_path
 from llm_cli.workspace.isolated_sync import IsolatedSynchronizer, Manifest, _entry
 
@@ -90,8 +94,12 @@ def env(
     def capture(root: Path) -> Manifest:
         manifest: Manifest = {}
         for path in root.rglob("*"):
-            if path.is_file() and ".git" not in path.parts and path.name != ".env":
-                identity, body = read_identified_path(path)
+            if (
+                (path.is_file() or path.is_symlink())
+                and ".git" not in path.parts
+                and path.name != ".env"
+            ):
+                identity, body = read_candidate_path(path)
                 assert body is not None
                 manifest[path.relative_to(root).as_posix()] = _entry(
                     identity, store_candidate_content(publisher.candidate_dir, body)
@@ -221,3 +229,70 @@ def test_freeze_combines_physical_edits_and_overlay(env: Environment) -> None:
     assert files[0].original == b"first\nmiddle\nlast\n"
     assert files[0].base == identify_path(env.primary / "a.txt")
     assert (env.primary / "a.txt").read_text() == "first\nmiddle\nlast\n"
+
+
+def test_outside_source_changes_reconcile_without_a_batch(env: Environment) -> None:
+    (env.local / "a.txt").write_text("local\nmiddle\nlast\n")
+    (env.primary / "a.txt").write_text("first\nmiddle\nremote\n")
+    (env.primary / "new").mkdir()
+    (env.primary / "new" / "file.txt").write_text("new source\n")
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.merged == ("a.txt",)
+    assert (env.local / "new" / "file.txt").read_text() == "new source\n"
+    assert (env.local / "a.txt").read_text() == "local\nmiddle\nremote\n"
+    assert [
+        file.relative_path for file in env.sync.publication_files(env.workspace_id, ())
+    ] == ["a.txt"]
+
+
+def test_binary_flag_prevents_text_merge_and_survives_freezing(
+    env: Environment,
+) -> None:
+    (env.local / "a.txt").write_text("local\nmiddle\nlast\n")
+    base, original = read_identified_path(env.primary / "a.txt")
+    assert (
+        env.publisher.publish(
+            "binary",
+            "shared",
+            (
+                BatchFile(
+                    "a.txt",
+                    base,
+                    b"first\nmiddle\nremote\n",
+                    REGULAR_MODE,
+                    original,
+                    binary=True,
+                ),
+            ),
+            ("*",),
+        ).state
+        == "published"
+    )
+    assert env.sync.synchronize(env.workspace_id).conflicted == ("a.txt",)
+    assert (env.local / "a.txt").read_text() == "local\nmiddle\nlast\n"
+    local_base, local_body = read_identified_path(env.local / "a.txt")
+    resolved = BatchFile(
+        "a.txt",
+        local_base,
+        b"resolved\nmiddle\nlast\n",
+        REGULAR_MODE,
+        local_body,
+        binary=True,
+    )
+    files = env.sync.publication_files(env.workspace_id, (resolved,))
+    assert files[0].binary is True
+    assert files[0].original == b"first\nmiddle\nremote\n"
+
+
+def test_incoming_symlink_is_recreated_without_following_its_target(
+    env: Environment,
+) -> None:
+    from llm_cli.workspace.identity import ABSENT, SYMLINK_MODE
+
+    item = BatchFile("source-link", ABSENT, b"a.txt", SYMLINK_MODE)
+    assert env.publisher.publish("link", "shared", (item,), ("*",)).state == "published"
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.applied == ("source-link",)
+    assert (env.local / "source-link").is_symlink()
+    assert (env.local / "source-link").readlink() == Path("a.txt")
+    assert env.sync.publication_files(env.workspace_id, ()) == ()

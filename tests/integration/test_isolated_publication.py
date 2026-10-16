@@ -188,3 +188,48 @@ def test_isolated_publication_merges_primary_edit_after_checks_and_rechecks(
             service.close()
 
     asyncio.run(scenario())
+
+
+def test_publication_preserves_private_edit_made_after_candidate_freeze(
+    tmp_path: Path,
+    repository_factory: Any,
+    service_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "original\n"})
+        provider = ScriptedProvider(
+            "isolated",
+            [
+                _tools(
+                    _call("read_file", path="a.py"),
+                    _call("write_file", path="a.py", content="published\n"),
+                ),
+                _finish(),
+            ],
+        )
+        service = service_factory(tmp_path)
+        _register(service, provider)
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(root)}))
+        credentials, private = await open_session(service, root, provider.model)
+        publish = service.shared_runner.publisher.publish
+
+        def after_publish(*args: Any, **kwargs: Any) -> Any:
+            result = publish(*args, **kwargs)
+            if result.state == "published":
+                (private / "a.py").write_text("later private edit\n")
+            return result
+
+        monkeypatch.setattr(service.shared_runner.publisher, "publish", after_publish)
+        try:
+            await asyncio.wait_for(
+                await _start(service, root, credentials, "task", ("*",)), 30
+            )
+            _assert_completed(service, "task")
+            assert (root / "a.py").read_text() == "published\n"
+            assert (private / "a.py").read_text() == "later private edit\n"
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
