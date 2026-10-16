@@ -15,7 +15,7 @@ import stat
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -190,7 +190,12 @@ def _store_source(candidate_dir: Path, body: bytes) -> str:
     return digest
 
 
-def capture_source(root: Path, candidate_dir: Path) -> dict[str, dict[str, Any]]:
+def capture_source(
+    root: Path,
+    candidate_dir: Path,
+    *,
+    protected_paths: Sequence[str] = (),
+) -> dict[str, dict[str, Any]]:
     """Capture ordinary current working bytes, including dirty/untracked files.
 
     Missing tracked files retain an absent identity. Protected source requires
@@ -199,11 +204,22 @@ def capture_source(root: Path, candidate_dir: Path) -> dict[str, dict[str, Any]]
     """
     manifest: dict[str, dict[str, Any]] = {}
     total = 0
-    for relative in _source_paths(root):
+    source_paths = _source_paths(root)
+    excluded = excluded_paths(root, list(source_paths))
+    for relative in source_paths:
         if runtime_path(root, relative):
             continue
-        if _private_path(relative) or any(
-            part in _ADMIN for part in Path(relative).parts
+        if any(
+            relative == path or relative.startswith(path + "/")
+            for path in protected_paths
+        ):
+            raise _error(
+                "runtime path became source; explicit reclassification is required"
+            )
+        if (
+            relative in excluded
+            or _private_path(relative)
+            or any(part in _ADMIN for part in Path(relative).parts)
         ):
             raise _error(f"protected source cannot be snapshotted: {relative}")
         try:
