@@ -436,3 +436,23 @@ def test_idle_isolated_session_catches_up_across_multiple_event_pages(
             == result.sequence
         )
     assert env.sync.synchronize(env.workspace_id).applied == ()
+
+
+def test_runtime_alias_overlay_is_refused_before_retaining_its_body(
+    env: Environment,
+) -> None:
+    from llm_cli.workspace.identity import ABSENT
+
+    with env.store.connection() as con:
+        con.execute(
+            "UPDATE isolated_sync_state SET runtime_paths_json=?",
+            ('["local.data"]',),
+        )
+    private = b"private unknown-format runtime value"
+    artifact = env.publisher.candidate_dir / hashlib.sha256(private).hexdigest()
+    with pytest.raises(WorkspaceBrokerError, match="runtime data"):
+        env.sync.publication_files(
+            env.workspace_id,
+            (BatchFile("LOCAL.DATA", ABSENT, private, REGULAR_MODE),),
+        )
+    assert not artifact.exists()

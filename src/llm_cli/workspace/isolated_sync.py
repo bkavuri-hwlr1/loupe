@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
+from llm_cli.agent.source_policy import (
+    ensure_safe_content,
+    excluded_paths,
+    runtime_path_matches,
+)
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
 from llm_cli.storage.connection import immediate_transaction
@@ -212,10 +216,7 @@ class IsolatedSynchronizer:
 
     @staticmethod
     def _runtime(path: str, state: Mapping[str, Any]) -> bool:
-        return any(
-            path == p or path.startswith(p + "/")
-            for p in json.loads(state["runtime_paths_json"])
-        )
+        return runtime_path_matches(path, json.loads(state["runtime_paths_json"]))
 
     def synchronize(self, workspace_id: str) -> SyncResult:
         """Apply complete ordered incoming batches at a caller-owned safe point."""
