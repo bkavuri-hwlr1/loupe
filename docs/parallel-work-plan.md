@@ -376,6 +376,14 @@ recovery tests.
 **Done when.** Each operation publishes, rolls back, and recovers after a
 crash like text edits do; an escaping symlink is refused.
 
+**Implemented.** Shared and isolated brokers now provide bounded base64 binary
+replacement and contained symlink creation, retargeting, and deletion. Typed
+candidates retain exact bases through checks, checkpoints, publication, undo,
+and crash recovery; binary edits never merge. Exploration helpers can read the
+typed parent overlay without gaining write access or authorizing parent writes.
+Focused regressions cover limits, scope and target validation, stale bases,
+parent-path races, recovery, and helper permissions.
+
 ## Lane D — operations
 
 Run D1 → D2 → D3 in one session, in order: they share `cli/app.py`.

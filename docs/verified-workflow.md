@@ -120,6 +120,10 @@ following them. Publication and undo preserve object kinds, compare exact bases,
 and recover interrupted journaled operations; unrecognized external changes
 require attention rather than being overwritten.
 
+Exploration helpers can use `read_binary` and `read_symlink` to inspect the
+parent's pending edits. Helpers cannot edit those files, and a helper's read
+does not authorize the parent to replace a file it has not read itself.
+
 Nested repositories, recursive directory deletion, type-changing replacements,
 and case-only renames remain unavailable. All edits remain private until the
 daemon validates and journals publication.
