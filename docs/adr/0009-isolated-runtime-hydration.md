@@ -137,11 +137,13 @@ This decision selects its first independently useful piece: a read-only plan.
 The session materializer now implements exact ordinary-source snapshots,
 private ignored-file hydration, exact-file secret consent, pinned source-policy
 identities, descriptor-based stable copies, a disposable same-device COW probe,
-allocation/free-space checks, and durable creation/recovery intents. Interrupted
-known creations move verified output into retained private recovery archives and
-remove only empty directories. Late replacements and open-descriptor writes remain
-recoverable; ambiguous paths are preserved and quarantined with the archive
-location. Ready workspaces restore frozen runtime exclusions
+allocation/free-space checks, and durable creation/recovery intents. Closing a
+session retires its worktree and registration once running tasks and held
+proposals release its runtime. Recovery archives retain ordinary source evidence,
+including late replacements and open-descriptor writes, but copied runtime,
+dependency roots, and screened source are disposed through no-follow descriptors.
+Ambiguous source paths are preserved and quarantined with the archive location.
+Ready workspaces restore frozen runtime exclusions
 on restart. Source symlinks use the C5 contained-link policy; runtime symlinks
 remain deferred.
 

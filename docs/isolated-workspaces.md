@@ -98,27 +98,37 @@ runtime hydrated, then ready. After a daemon crash, a ready workspace is reopene
 only when its exact registered worktree, base HEAD, lock, and private ownership
 marker still match. Runtime exclusions are restored before model access.
 
-An incomplete creation is retired only when its existing paths are recognized
-creation output: source matches its retained ordinary artifacts and runtime
-matches the primary input still available for comparison. A crash between Git
-registration and the private ownership marker can be recovered when the worktree
-is empty apart from its Git pointer and has the expected private lock reason.
+Closing a conversation retires its private worktree and Git registration once
+no task is running and no held proposal or unresolved publication still needs it.
+A held proposal keeps its private runtime across close and daemon restart so
+`/apply` can rerun its checks. Applying or discarding the last held proposal lets
+cleanup proceed. Published undo history uses retained source changes and does not
+need to keep runtime copies.
 
-Recovery first moves recognized files through no-follow directory descriptors
+An incomplete creation is retired only when its existing source paths are
+recognized creation output. A crash between Git registration and the private
+ownership marker can be recovered when the worktree is empty apart from its Git
+pointer and has the expected private lock reason. Copied runtime, dependency
+roots, and screened source fixtures are disposable Loupe-owned files: cleanup
+unlinks them through no-follow descriptors, including copies in owned recovery
+archives. It never copies runtime changes back to the primary checkout.
+
+Recovery moves ordinary source evidence through no-follow directory descriptors
 into a private `.recovery-WORKSPACE_ID/files/` archive under Loupe's managed
-worktree directory. It retains these bytes, including later writes through an
-already-open file descriptor, and removes only empty directories. A crash after
-moving a nested file can resume from the archive without requiring the original
-name to remain present. The archive persists after successful retirement and is
-not automatically deleted; it may contain private runtime inputs. It is outside
-source artifacts and model tools, under a directory accessible only to its owner.
+worktree directory. This preserves later writes through an already-open source
+file descriptor and removes only empty source directories. A crash after moving
+a nested source file can resume from the archive. The source evidence persists
+after retirement, outside source artifacts and model tools, under an owner-only
+directory. Copied private runtime and screened source are not retained there.
+Startup also scrubs recognizable private inputs from older owned archives.
 
-Unknown files, directories, links, changed bytes, or ambiguous ownership stop
-recovery. The worktree and any already-archived files are preserved, and the
-workspace is quarantined with the archive location in its reason. Newly added
-files and replacements discovered during cleanup are preserved too. Recovery
-never recursively removes a worktree. Known retired creations can be retried
-with the same session ID; ambiguous states need operator inspection.
+Unknown files, directories, links, changed creation bytes, or ambiguous ownership
+stop retirement. The remaining worktree and ordinary source evidence are
+preserved, and the workspace is quarantined with the archive location in its
+reason. Newly added files and replacements discovered during cleanup are
+preserved too. Recovery never recursively removes the source worktree. Known
+retired creations can be retried with the same session ID; ambiguous states need
+operator inspection.
 
 The private worktree is a cooperative filesystem boundary. Shell programs with
 arbitrary same-user capabilities are not treated as hostile code. Normal command
