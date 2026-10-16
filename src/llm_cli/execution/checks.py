@@ -921,16 +921,17 @@ def supervised_run(
         nonlocal withheld
         line = "".join(partial_line)
         partial_line.clear()
-        if private_pattern is not None:
-            # Match only original output. Never revisit generated placeholders,
-            # which can themselves contain another (especially short) value.
-            line = private_pattern.sub("[private value]", line)
         try:
+            # Recognized signatures must be checked before substitutions: a
+            # short private value must not hide a token prefix from screening.
             ensure_safe_content(line)
         except LlmCoordError:
             withheld = True
             emit_safe("[Remaining output withheld: recognized secret material.]\n")
         else:
+            if private_pattern is not None:
+                # Match only original output. Never revisit placeholders.
+                line = private_pattern.sub("[private value]", line)
             emit_safe(line)
 
     def collect(text: str) -> None:

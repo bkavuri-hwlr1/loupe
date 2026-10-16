@@ -658,3 +658,32 @@ def test_rendered_redaction_and_events_respect_capture_byte_budget(
     assert len(output.encode()) <= 4096
     assert len("".join(events).encode()) <= 4096
     assert "z" not in output + repr(events)
+
+
+def test_short_private_value_cannot_hide_recognized_token_signature(
+    tmp_path: Path,
+) -> None:
+    from llm_cli.agent.source_policy import contains_secret_material
+
+    (tmp_path / ".env").write_text("PROMPT_SUFFIX=p\n")
+    values = private_output_values(tmp_path, (".env",))
+    body = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    assert contains_secret_material("ghp_" + body)
+    events: list[str] = []
+    code, output, clipped, stopped = supervised_run(
+        [
+            sys.executable,
+            "-c",
+            "print('ghp_' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')",
+        ],
+        cwd=tmp_path,
+        env={"PATH": os.defpath},
+        deadline=time.monotonic() + 20,
+        remaining=4096,
+        cancelled=lambda: False,
+        on_output=events.append,
+        sensitive_values=values,
+    )
+    assert code == 0 and stopped == "error" and clipped
+    assert body not in output + repr(events)
+    assert "recognized secret material" in output
