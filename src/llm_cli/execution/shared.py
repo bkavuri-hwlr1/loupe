@@ -195,6 +195,16 @@ class SharedTaskExecutionRunner:
             workspace_id=workspace.workspace_id,
         )
         row = self.workflow.ensure(task.task_id)
+        runtime_files = isolated_state.runtime_files if isolated_state else ()
+        if runtime_files:
+            config = json.loads(row["config_json"])
+            config["runtime_paths"] = sorted(
+                set(config.get("runtime_paths", [])) | set(runtime_files)
+            )
+            row["config_json"] = json.dumps(config, sort_keys=True)
+            self.workflow.update(
+                task.task_id, task.attempt, config_json=row["config_json"]
+            )
         self.workflow.update(
             task.task_id, task.attempt, execution_id=execution.execution_id
         )
@@ -260,6 +270,7 @@ class SharedTaskExecutionRunner:
                 self.publisher.lock,
                 deadline_at=deadline_at,
                 on_result=broker.record_check,
+                suppress_output=bool(runtime_files),
             )
             checked = bool(checker.config.get("checks"))
             if row["agent_mode"] != "plan":
@@ -302,6 +313,8 @@ class SharedTaskExecutionRunner:
                         *checker.config.get("runtime_paths", []),
                     ),
                     deadline_at=deadline_at,
+                    runtime_files=runtime_files,
+                    suppress_output=bool(runtime_files),
                 )
                 broker.command_runner = broker.catching_up(commands.run)
                 broker.command_approval = self.commands.approval
@@ -332,6 +345,8 @@ class SharedTaskExecutionRunner:
                                 *checker.config.get("runtime_paths", []),
                             ),
                             deadline_at=deadline_at,
+                            runtime_files=runtime_files,
+                            suppress_output=bool(runtime_files),
                         ).run_hook,
                         broker.emit,
                     )
