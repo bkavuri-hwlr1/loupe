@@ -35,15 +35,19 @@ from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
     WorkspaceBrokerError,
     atomic_replace_regular_file,
+    atomic_replace_symlink,
+    read_candidate_path,
     load_candidate_content,
     store_candidate_content,
 )
 from llm_cli.workspace.identity import (
     ABSENT,
     DIRECTORY_MODE,
+    REGULAR_MODE,
+    EXECUTABLE_MODE,
+    SYMLINK_MODE,
     FileIdentity,
     ObjectKind,
-    read_identified_path,
 )
 from llm_cli.workspace.merge import has_conflict_markers, merge_text
 
@@ -54,18 +58,55 @@ def _encode(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _entry(identity: FileIdentity, content_hash: str | None) -> dict[str, Any]:
-    return {**_identity_json(identity), "content_hash": content_hash}
+def _entry(
+    identity: FileIdentity, content_hash: str | None, binary: bool = False
+) -> dict[str, Any]:
+    return {
+        **_identity_json(identity),
+        "content_hash": content_hash,
+        **({"binary": True} if binary else {}),
+    }
 
 
 def _identity(entry: Mapping[str, Any] | None) -> FileIdentity:
-    return (
-        ABSENT
-        if entry is None
-        else _identity_from_json(
-            {key: value for key, value in entry.items() if key != "content_hash"}
-        )
+    if entry is None:
+        return ABSENT
+    # Initial source manifests can include large unchanged files. Batch limits
+    # apply to changed paths, not to merely retaining their accepted identity.
+    identity = FileIdentity(
+        ObjectKind(entry["kind"]),
+        entry["mode"],
+        entry["digest"],
+        entry["size"],
+        entry.get("permissions"),
     )
+    modes = {
+        ObjectKind.ABSENT: {""},
+        ObjectKind.REGULAR: {REGULAR_MODE, EXECUTABLE_MODE},
+        ObjectKind.SYMLINK: {SYMLINK_MODE},
+        ObjectKind.DIRECTORY_MARKER: {DIRECTORY_MODE},
+    }
+    if (
+        identity.mode not in modes.get(identity.kind, set())
+        or type(identity.size) is not int
+        or not 0 <= identity.size <= 256 * 1024 * 1024
+        or len(identity.digest) != 64
+        or any(c not in "0123456789abcdef" for c in identity.digest)
+    ):
+        raise WorkspaceBrokerError("isolated manifest identity is invalid")
+    if identity.absent and identity != ABSENT:
+        raise WorkspaceBrokerError("isolated absent identity is invalid")
+    return identity
+
+
+def _binary(body: bytes | None) -> bool:
+    if body is None:
+        return False
+    try:
+        body.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return b"\0" in body
 
 
 @dataclass(frozen=True)
@@ -251,6 +292,8 @@ class IsolatedSynchronizer:
                     _identity(after).mode,
                     self._body(before),
                     _identity(after).permissions,
+                    bool((after or {}).get("binary") or (before or {}).get("binary"))
+                    or _binary(self._body(after)),
                 )
             )
         if not files:
@@ -279,9 +322,9 @@ class IsolatedSynchronizer:
                 )
             accepted = manifest.get(path)
             original = self._body(accepted)
-            result = _entry(incoming.result, incoming.content_hash)
+            result = _entry(incoming.result, incoming.content_hash, incoming.binary)
             theirs = self._body(result)
-            current, ours = read_identified_path(
+            current, ours = read_candidate_path(
                 candidate_target(root, path), max_bytes=MAX_SHARED_TEXT_BYTES
             )
             after = current
@@ -297,6 +340,8 @@ class IsolatedSynchronizer:
                 applied.append(path)
             elif (
                 incoming.base == _identity(accepted)
+                and not incoming.binary
+                and not bool(accepted and accepted.get("binary"))
                 and current.kind is ObjectKind.REGULAR
                 and incoming.result.kind is ObjectKind.REGULAR
                 and original is not None
@@ -383,7 +428,7 @@ class IsolatedSynchronizer:
                         raise WorkspaceBrokerError(
                             "isolated journal overlaps runtime data"
                         )
-                    current, _ = read_identified_path(
+                    current, _ = read_candidate_path(
                         candidate_target(root, path), max_bytes=MAX_SHARED_TEXT_BYTES
                     )
                     if current not in (
@@ -414,7 +459,7 @@ class IsolatedSynchronizer:
                         _identity_from_json(step["before"]),
                         _identity_from_json(step["after"]),
                     )
-                    current, _ = read_identified_path(
+                    current, _ = read_candidate_path(
                         target, max_bytes=MAX_SHARED_TEXT_BYTES
                     )
                     if current == after:
@@ -446,13 +491,25 @@ class IsolatedSynchronizer:
                             publication_id=f"isolated-{workspace_id}-{journal['sequence']}-{journal['generation']}-{ordinal}",
                             permissions=after.permissions,
                         )
+                    elif after.kind is ObjectKind.SYMLINK:
+                        body = self._body(
+                            {**step["after"], "content_hash": step["content_hash"]}
+                        )
+                        assert body is not None
+                        atomic_replace_symlink(
+                            checkout_root=root,
+                            git_common_dir=Path(state["git_common_dir"]),
+                            relative_path=step["path"],
+                            content=body,
+                            publication_id=f"isolated-link-{workspace_id}-{journal['generation']}-{ordinal}",
+                        )
                     else:
                         raise WorkspaceBrokerError(
                             "isolated synchronization cannot materialize this path kind"
                         )
                 with self.store.connection() as con, immediate_transaction(con):
                     for step in steps:
-                        current, _ = read_identified_path(
+                        current, _ = read_candidate_path(
                             candidate_target(root, step["path"]),
                             max_bytes=MAX_SHARED_TEXT_BYTES,
                         )
@@ -553,6 +610,10 @@ class IsolatedSynchronizer:
                         _identity(after).mode,
                         self._body(before),
                         _identity(after).permissions,
+                        bool(
+                            (after or {}).get("binary") or (before or {}).get("binary")
+                        )
+                        or _binary(content),
                     )
                 )
             added = {file.relative_path for file in files}
