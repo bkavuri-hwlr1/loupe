@@ -11,11 +11,12 @@ import difflib
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from llm_cli.agent.modes import publication_mode, validate_agent_mode
 from llm_cli.agent.source_policy import ensure_safe_content
 from llm_cli.coordination.coordinator import RepositoryCoordinator
+from llm_cli.coordination.models import SessionRecord, WorkspaceRecord
 from llm_cli.errors import LlmCoordError
 from llm_cli.ids import new_id
 from llm_cli.storage.control import ControlStore
@@ -34,6 +35,9 @@ from llm_cli.workspace.identity import (
     read_identified_path,
 )
 from llm_cli.workspace.merge import has_conflict_markers, merge_text
+
+if TYPE_CHECKING:
+    from llm_cli.workspace.isolated_sync import IsolatedSynchronizer
 
 
 def encode_files(files: tuple[BatchFile, ...]) -> str:
@@ -85,6 +89,7 @@ class TaskWorkflow:
         publisher: SharedBatchPublisher,
     ) -> None:
         self.store, self.coordinator, self.publisher = store, coordinator, publisher
+        self.isolated_sync: IsolatedSynchronizer | None = None
 
     def reconcile(self) -> None:
         """Repair disposition after journal settlement without replaying actions."""
@@ -422,6 +427,59 @@ class TaskWorkflow:
             )
         return {"state": "discarded", "task_id": task_id}
 
+    def _publication_workspace(
+        self, session: SessionRecord, *, allow_removed: bool = False
+    ) -> tuple[WorkspaceRecord, Path | None, str | None]:
+        """Resolve a retained action to shared source and its private runtime.
+
+        A held proposal is frozen. Later isolated edits are preserved locally,
+        never swept into this action. Checks therefore materialize current shared
+        source plus only that proposal, while copying the owning session's runtime.
+        """
+        workspace = self.store.get_workspace(session.workspace_id or "")
+        if workspace is None:
+            raise ValueError("The task's workspace is unavailable.")
+        if session.workspace_mode != "isolated":
+            return workspace, None, None
+        if self.isolated_sync is None:
+            raise ValueError(
+                "Isolated publication requires the isolated batch publisher."
+            )
+        with self.store.connection() as con:
+            active = con.execute(
+                "SELECT 1 FROM claims c JOIN tasks t ON t.task_id=c.task_id "
+                "JOIN sessions s ON s.session_id=t.session_id "
+                "WHERE s.workspace_id=? AND c.state IN "
+                "('active_work','publishing','active_integration') LIMIT 1",
+                (workspace.workspace_id,),
+            ).fetchone()
+        if active is not None:
+            raise ValueError(
+                "Wait for the isolated session's active task before "
+                "applying or undoing."
+            )
+        with self.store.connection() as con:
+            binding = con.execute(
+                "SELECT source_workspace_id FROM workspaces WHERE workspace_id=?",
+                (workspace.workspace_id,),
+            ).fetchone()
+        source = self.store.get_workspace(str(binding[0])) if binding else None
+        if (
+            source is None
+            or source.mode != "shared"
+            or source.state != "active"
+            or source.checkout_id != workspace.checkout_id
+        ):
+            raise ValueError("The isolated workspace's shared checkout is unavailable.")
+        if workspace.state == "removed":
+            if allow_removed:
+                # Undo uses the retained published batch's exact identities;
+                # no private files or runtime remain necessary after close.
+                return source, None, None
+            raise ValueError("The isolated proposal's private workspace was removed.")
+        self.isolated_sync.synchronize(workspace.workspace_id)
+        return source, Path(workspace.canonical_path), workspace.workspace_id
+
     def apply(
         self, task_id: str, *, undo: bool = False, allow_unverified: bool = False
     ) -> dict[str, Any]:
@@ -446,8 +504,21 @@ class TaskWorkflow:
             session = self.store.get_session(task.session_id or "")
             if session is None:
                 raise ValueError("Apply currently requires a shared-session task.")
-            workspace = self.store.get_workspace(session.workspace_id or "")
-            assert workspace is not None
+            workspace, runtime_root, _ = self._publication_workspace(session)
+            sensitive_paths: tuple[str, ...] = ()
+            if runtime_root is not None:
+                with self.store.connection() as con:
+                    private = con.execute(
+                        "SELECT source_manifest_json FROM isolated_workspaces "
+                        "WHERE workspace_id=?",
+                        (session.workspace_id,),
+                    ).fetchone()
+                assert private is not None
+                sensitive_paths = tuple(
+                    path
+                    for path, entry in json.loads(private[0]).items()
+                    if entry.get("screened")
+                )
             root = Path(workspace.canonical_path)
             files = self._merge_proposal(root, decode_files(row["proposal_json"]))
 
@@ -455,7 +526,14 @@ class TaskWorkflow:
             from llm_cli.execution.checks import check_retained_proposal
 
             # Configured commands must never hold the shared publication lock.
-            failure = check_retained_proposal(self, row, root, files)
+            failure = check_retained_proposal(
+                self,
+                row,
+                root,
+                files,
+                runtime_root=runtime_root,
+                sensitive_paths=sensitive_paths,
+            )
             if failure is not None:
                 raise ValueError(failure)
         with self.publisher.lock:
@@ -560,8 +638,9 @@ class TaskWorkflow:
         session = self.store.get_session(task.session_id or "")
         if session is None:
             raise ValueError("Apply and undo currently require a shared-session task.")
-        workspace = self.store.get_workspace(session.workspace_id or "")
-        assert workspace is not None
+        workspace, runtime_root, isolated_workspace_id = self._publication_workspace(
+            session, allow_removed=undo
+        )
         root = Path(workspace.canonical_path)
         files = prepared if prepared is not None else decode_files(row["proposal_json"])
         if not files:
@@ -601,7 +680,9 @@ class TaskWorkflow:
         elif not allow_unverified:
             from llm_cli.execution.checks import verification_current
 
-            if not verification_current(self.store, row, root, files):
+            if not verification_current(
+                self.store, row, root, files, runtime_root=runtime_root
+            ):
                 raise ValueError(
                     "Required checks became stale during apply; retry apply, "
                     "or use --allow-unverified."
@@ -704,6 +785,22 @@ class TaskWorkflow:
             self.update(
                 task_id, row["attempt"], status="undone" if undo else "published"
             )
+            if isolated_workspace_id is not None:
+                assert self.isolated_sync is not None
+                try:
+                    self.isolated_sync.synchronize(isolated_workspace_id)
+                except (ValueError, OSError, LlmCoordError):
+                    self.store.record_task_event(
+                        claim_id=None,
+                        task_id=task_id,
+                        event_type="workspace.isolated_sync_pending",
+                        payload={
+                            "message": (
+                                "Published to the shared checkout; private "
+                                "synchronization needs recovery."
+                            )
+                        },
+                    )
         self.store.record_task_event(
             claim_id=None,
             task_id=child.task_id,

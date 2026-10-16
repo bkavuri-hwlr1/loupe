@@ -92,8 +92,8 @@ Advisory checks run when requested by the agent and do not gate publication.
 Without configured required checks, publication remains available and is not
 a claim that the source was tested.
 
-Shared tools support regular UTF-8 file creation, deletion, renaming, and
-source-directory creation inside the task's scope. Rename destinations must
+Shared and isolated tools support regular UTF-8 file creation, deletion,
+renaming, and source-directory creation inside the task's scope. Rename destinations must
 be absent. They also provide these typed operations:
 
 | Tool | Behavior |
@@ -132,7 +132,7 @@ daemon validates and journals publication.
 | --- | --- | --- |
 | `/diff [TASK_ID]` | `loupe task diff TASK_ID` | Inspect the task's changes and check status |
 | `/checks [TASK_ID]` | `loupe task checks TASK_ID` | List check outcomes |
-| `/apply TASK_ID` | `loupe task apply TASK_ID` | Apply a retained shared-session proposal |
+| `/apply TASK_ID` | `loupe task apply TASK_ID` | Apply a retained shared or isolated proposal |
 | `/undo TASK_ID` | `loupe task undo TASK_ID` | Revert one published task |
 | `/stop [TASK_ID]` | `loupe task cancel TASK_ID` | Stop work and retain private edits |
 
@@ -161,6 +161,13 @@ not apply to conversation tasks. To explicitly apply despite failed or missing c
 ```console
 loupe task apply TASK_ID --allow-unverified
 ```
+
+For isolated conversations, apply checks the frozen proposal on current shared
+source using runtime files from the owning private worktree. Private changes made
+after the proposal was held stay private. Successful apply and undo receive their
+published batch into that worktree; a private synchronization issue is recorded
+without reversing an already confirmed publication. See
+[isolated workspaces](isolated-workspaces.md).
 
 This override is recorded and cannot bypass scope checks, changed-file conflicts,
 or unresolved recovery journals. Check-generated source changes are discarded;

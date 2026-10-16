@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import functools
+import hashlib
 import itertools
 import json
 import time
@@ -60,10 +61,15 @@ from llm_cli.execution.runner import TaskExecutionRunner
 from llm_cli.execution.sandbox import available_sandbox
 from llm_cli.mcp.tools import McpToolset
 from llm_cli.storage.connection import immediate_transaction
-from llm_cli.workspace.batches import SharedBatchPublisher
+from llm_cli.workspace.batches import BatchFile, SharedBatchPublisher
 from llm_cli.workspace.context import SharedCoordinationContext
-from llm_cli.workspace.identity import FileIdentity
-from llm_cli.workspace.isolated import IsolatedWorkspaceManager
+from llm_cli.workspace.identity import SYMLINK_MODE, FileIdentity
+from llm_cli.workspace.isolated import (
+    IsolatedWorkspaceManager,
+    SourceCaptureCache,
+    capture_source,
+)
+from llm_cli.workspace.isolated_sync import IsolatedSynchronizer
 from llm_cli.workspace.workflow import TaskWorkflow, decode_files, encode_files
 
 
@@ -84,6 +90,26 @@ class SharedTaskExecutionRunner:
         self.publisher = publisher
         self.isolated: IsolatedWorkspaceManager | None = None
         self.workflow = TaskWorkflow(self.store, self.coordinator, publisher)
+        capture_cache = SourceCaptureCache()
+        self.isolated_sync = IsolatedSynchronizer(
+            self.store,
+            publisher,
+            lambda root, protected: capture_source(
+                root,
+                publisher.candidate_dir,
+                protected_paths=protected,
+                cache=capture_cache,
+            ),
+            self._validate_isolated,
+            refresh_capture=lambda root, protected: capture_source(
+                root,
+                publisher.candidate_dir,
+                protected_paths=protected,
+                cache=capture_cache,
+                defer_changed=True,
+            ),
+        )
+        self.workflow.isolated_sync = self.isolated_sync
         self.is_shutting_down: Callable[[], bool] = lambda: False
         # Set by the daemon. Without it, or without a working OS sandbox,
         # tasks are never offered model-chosen commands.
@@ -93,7 +119,32 @@ class SharedTaskExecutionRunner:
         # User hooks, run in a sandbox around each task's tool calls.
         self.hooks: tuple[HookConfig, ...] = ()
 
+    def _validate_isolated(self, workspace_id: str) -> object:
+        if self.isolated is None:
+            raise ClaimConflict("isolated workspace manager is unavailable")
+        return self.isolated.validate(workspace_id)
+
+    def _prepare_isolated(self, workspace_id: str) -> None:
+        if self.isolated is None:
+            raise ClaimConflict("isolated workspace manager is unavailable")
+        state = self.isolated.validate(workspace_id)
+        self.isolated_sync.register(
+            workspace_id,
+            state.source_manifest,
+            state.source_sequence,
+            state.runtime_paths,
+        )
+        self.isolated_sync.recover(workspace_id)
+
     def ensure_available(self, workspace_id: str) -> None:
+        with self.store.connection() as connection:
+            source = connection.execute(
+                "SELECT source_workspace_id FROM workspaces WHERE workspace_id=? "
+                "AND mode='isolated'",
+                (workspace_id,),
+            ).fetchone()
+        if source is not None:
+            workspace_id = str(source[0])
         if self.publisher.blocks_workspace(workspace_id):
             raise LlmCoordError(
                 ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
@@ -170,6 +221,9 @@ class SharedTaskExecutionRunner:
             if self.isolated is None:
                 raise ClaimConflict("isolated workspace manager is unavailable")
             isolated_state = self.isolated.validate(workspace.workspace_id)
+            self._prepare_isolated(workspace.workspace_id)
+            self.ensure_available(workspace.workspace_id)
+            self.isolated_sync.synchronize(workspace.workspace_id)
         existing = self.store.get_execution(task.task_id, task.attempt)
         if existing is not None and (
             existing.workspace_id != workspace.workspace_id
@@ -259,18 +313,55 @@ class SharedTaskExecutionRunner:
                     or self.is_shutting_down()
                 ),
             )
+
+            def candidate_files() -> tuple[BatchFile, ...]:
+                files = broker.candidates()
+                if row["agent_mode"] == "plan":
+                    return files
+                return (
+                    self.isolated_sync.publication_files(workspace.workspace_id, files)
+                    if isolated
+                    else files
+                )
+
+            def safe_point(
+                *, reconcile: bool = True, refresh_source: bool = True
+            ) -> str:
+                if not isolated:
+                    return ""
+                self.ensure_available(workspace.workspace_id)
+                report = self.isolated_sync.synchronize(
+                    workspace.workspace_id, refresh_source=refresh_source
+                )
+                note = report.note()
+                if note:
+                    broker.emit("workspace.isolated_synchronized", {"notice": note})
+                if reconcile:
+                    pending = broker.reconcile()
+                    if pending:
+                        broker.emit("edits.reconciled", pending.payload())
+                        note += "\n" + pending.note()
+                note = note.strip()
+                if note and broker.helper_call_active():
+                    broker.notify_parent(note)
+                return note
+
             deadline_value = saved.checkpoint.get("deadline_at") if saved else None
             deadline_at = (
                 float(deadline_value)
                 if isinstance(deadline_value, (float, int))
                 else time.time() + self.lifecycle.limits.wall_clock_seconds
             )
+            verification_root = (
+                Path(checkout.canonical_path) if isolated else broker.worktree
+            )
+            runtime_root = broker.worktree if isolated else None
             checker = CheckRunner(
                 self.workflow,
                 row,
-                broker.worktree,
+                verification_root,
                 self.lifecycle.managed_worktree_root.parent / "check-worktrees",
-                broker.candidates,
+                candidate_files,
                 lambda: (
                     self.workflow.stopped(task.task_id, task.attempt)
                     or self.is_shutting_down()
@@ -279,6 +370,7 @@ class SharedTaskExecutionRunner:
                 self.publisher.lock,
                 deadline_at=deadline_at,
                 on_result=broker.record_check,
+                runtime_root=runtime_root,
                 sensitive_paths=sensitive_paths,
             )
             checked = bool(checker.config.get("checks"))
@@ -286,13 +378,21 @@ class SharedTaskExecutionRunner:
                 # Before checks and finishing, pending edits are moved onto
                 # files other sessions changed, so they verify what would
                 # actually be published.
-                broker.finish_gate = functools.partial(
-                    broker.finish_gate_with,
-                    checker.gate if checked else None,
-                    checker.current if checked else lambda: True,
-                )
+                def finish_gate() -> ToolOutcome | None:
+                    safe_point()
+                    return broker.finish_gate_with(
+                        checker.gate if checked else None,
+                        checker.current if checked else lambda: True,
+                    )
+
+                broker.finish_gate = finish_gate
             if checked and row["agent_mode"] != "plan":
-                broker.check_runner = broker.catching_up(checker.run)
+
+                def run_check(name: str) -> ToolOutcome:
+                    safe_point()
+                    return broker.catching_up(checker.run)(name)
+
+                broker.check_runner = run_check
                 instructions += "\nConfigured checks: " + ", ".join(
                     checker.config["checks"]
                 )
@@ -325,7 +425,12 @@ class SharedTaskExecutionRunner:
                     runtime_files=runtime_files,
                     sensitive_paths=sensitive_paths,
                 )
-                broker.command_runner = broker.catching_up(commands.run)
+
+                def run_command(argv: list[str], cwd: str, timeout: int) -> ToolOutcome:
+                    safe_point()
+                    return broker.catching_up(commands.run)(argv, cwd, timeout)
+
+                broker.command_runner = run_command
                 broker.command_approval = self.commands.approval
             if self.hooks and self.commands is not None:
                 hook_sandbox = available_sandbox()
@@ -371,23 +476,27 @@ class SharedTaskExecutionRunner:
             )
             broker.mcp = mcp
             context = SharedCoordinationContext(
-                self.store, session.session_id, claim.scopes
+                self.store,
+                session.session_id,
+                claim.scopes,
+                scan_external=not isolated,
             )
 
             def refresh_coordination(after_sequence: int | None) -> CoordinationUpdate:
+                note = safe_point()
                 with self.publisher.lock:
                     self.ensure_available(workspace.workspace_id)
-                    if isolated:
-                        return CoordinationUpdate(
-                            sequence=(
-                                isolated_state.source_sequence if isolated_state else 0
-                            ),
-                            text=(
-                                "Isolated source snapshot. Publication requires "
-                                "the isolated batch publisher."
+                    update = context(after_sequence)
+                    return (
+                        replace(
+                            update,
+                            text="\n".join(
+                                part for part in (update.text, note) if part
                             ),
                         )
-                    return context(after_sequence)
+                        if note
+                        else update
+                    )
 
             def review_context() -> Mapping[str, object]:
                 # This snapshot is runner-authored after the finish gate has
@@ -395,7 +504,7 @@ class SharedTaskExecutionRunner:
                 # diff text or check claims, or silently truncate the diff.
                 with self.publisher.lock:
                     self.ensure_available(workspace.workspace_id)
-                    files = broker.candidates()
+                    files = candidate_files()
                     if not checker.current() or broker.stale_paths():
                         raise ValueError("the candidate/check snapshot changed")
                     sections: list[str] = []
@@ -405,6 +514,28 @@ class SharedTaskExecutionRunner:
                         before, after = file.original or b"", file.content or b""
                         ensure_safe_content(before)
                         ensure_safe_content(after)
+                        if (
+                            file.binary
+                            or file.mode == SYMLINK_MODE
+                            or file.base.mode == SYMLINK_MODE
+                        ):
+                            contents.append(
+                                {
+                                    "path": file.relative_path,
+                                    "kind": "binary" if file.binary else "symlink",
+                                    "before_digest": file.base.digest,
+                                    "after_digest": hashlib.sha256(after).hexdigest(),
+                                    "before_size": len(before),
+                                    "after_size": len(after),
+                                    "mode": file.mode,
+                                }
+                            )
+                            line_counts[file.relative_path] = 0
+                            sections.append(
+                                f"Path {file.relative_path}: typed replacement "
+                                f"({len(before)} -> {len(after)} bytes)\n"
+                            )
+                            continue
                         contents.append(
                             {
                                 "path": file.relative_path,
@@ -432,7 +563,9 @@ class SharedTaskExecutionRunner:
                             )
                         )
                     candidate = digest(encode_files(files))
-                    source = verification_identity(broker.worktree, checker.config)
+                    source = verification_identity(
+                        verification_root, checker.config, runtime_root=runtime_root
+                    )
                     with self.store.connection() as connection:
                         checks = connection.execute(
                             "SELECT name,state,exit_code,output,truncated FROM "
@@ -502,7 +635,7 @@ class SharedTaskExecutionRunner:
                 tool_calls=run.tool_calls,
                 usage=run.usage,
             )
-            files = broker.candidates()
+            files = candidate_files()
             if row["agent_mode"] == "plan" and files:
                 raise ValueError("plan tasks cannot publish file changes")
             self.workflow.retain(
@@ -514,12 +647,15 @@ class SharedTaskExecutionRunner:
                     gave_up = not self._catch_up(
                         task, claim, broker, checker.gate if checked else None
                     )
-                    files = broker.candidates()
+                    if not gave_up or not isolated:
+                        files = candidate_files()
                     self.workflow.retain(
                         task.task_id, task.attempt, execution.execution_id, files
                     )
+                safe_point(reconcile=False)
                 with self.publisher.lock:
                     self.ensure_available(workspace.workspace_id)
+                    safe_point(reconcile=False, refresh_source=False)
                     stopped = self.workflow.stopped(task.task_id, task.attempt)
                     incomplete = run.outcome != "completed"
                     if incomplete and not files and not stopped:
@@ -556,31 +692,42 @@ class SharedTaskExecutionRunner:
                         and bool(
                             broker.stale_paths()
                             or not verification_current(
-                                self.store, row, broker.worktree, files
+                                self.store,
+                                row,
+                                verification_root,
+                                files,
+                                runtime_root=runtime_root,
                             )
                         )
                     )
                     if behind:
                         continue
-                    hold = stopped or incomplete or (isolated and bool(files)) or bool(
-                        files
-                        and (
-                            row["publish_mode"] == "review"
-                            or not verification_current(
-                                self.store, row, broker.worktree, files
+                    hold = (
+                        stopped
+                        or incomplete
+                        or (isolated and gave_up)
+                        or bool(
+                            files
+                            and (
+                                row["publish_mode"] == "review"
+                                or not verification_current(
+                                    self.store,
+                                    row,
+                                    verification_root,
+                                    files,
+                                    runtime_root=runtime_root,
+                                )
                             )
                         )
                     )
                     verification = verification_status(
-                        self.store, row, broker.worktree, files
+                        self.store,
+                        row,
+                        verification_root,
+                        files,
+                        runtime_root=runtime_root,
                     )
                     outcome = "held_for_review"
-                    if isolated and files:
-                        broker.emit(
-                            "workspace.publication_unavailable",
-                            {"notice": "Isolated edits retained; publication requires "
-                             "the isolated batch publisher."},
-                        )
                     if not hold:
                         broker.emit("workflow.verification", {"status": verification})
                         self.coordinator.reserve_shared_publication(
@@ -591,7 +738,9 @@ class SharedTaskExecutionRunner:
                         if not files:
                             outcome = "no_changes"
                         else:
-                            publication = self.publisher.publish(
+                            publication = (
+                                self.isolated_sync if isolated else self.publisher
+                            ).publish(
                                 execution.execution_id,
                                 session.session_id,
                                 files,
@@ -698,7 +847,11 @@ class SharedTaskExecutionRunner:
                         task.task_id, task.attempt, execution.execution_id, files
                     )
                     verification = verification_status(
-                        self.store, row, broker.worktree, files
+                        self.store,
+                        row,
+                        verification_root,
+                        files,
+                        runtime_root=runtime_root,
                     )
                     self.workflow.hold(
                         task.task_id,
@@ -870,7 +1023,17 @@ class SharedTaskExecutionRunner:
             execution = self.store.execution_from_row(row)
             resolution = "operator_attention"
             try:
+                workspace = self.store.get_workspace(execution.workspace_id or "")
                 batch = self.publisher.get(execution.execution_id)
+                if (
+                    workspace
+                    and workspace.mode == "isolated"
+                    and not (
+                        batch is not None and batch.state in {"published", "diverged"}
+                    )
+                ):
+                    self._prepare_isolated(workspace.workspace_id)
+                    self.isolated_sync.synchronize(workspace.workspace_id)
                 if batch is not None and batch.state in {"published", "diverged"}:
                     self._finish_interrupted_response(
                         execution,
@@ -883,6 +1046,14 @@ class SharedTaskExecutionRunner:
                     resolution = (
                         "confirmed" if batch.state == "published" else "failed_safe"
                     )
+                    if (
+                        workspace
+                        and workspace.mode == "isolated"
+                        and batch.state == "published"
+                    ):
+                        self.isolated_sync.after_publication(
+                            execution.execution_id, workspace.workspace_id
+                        )
                 elif batch is not None:
                     self.store.update_execution(
                         execution.execution_id,
@@ -1076,7 +1247,15 @@ class SharedTaskExecutionRunner:
             execution.task_id,
             execution.task_attempt,
             execution.execution_id,
-            broker.candidates(),
+            self.isolated_sync.publication_files(
+                execution.workspace_id, broker.candidates()
+            )
+            if (
+                execution.workspace_id
+                and (workspace := self.store.get_workspace(execution.workspace_id))
+                and workspace.mode == "isolated"
+            )
+            else broker.candidates(),
         )
 
     def _can_resume(
@@ -1110,17 +1289,25 @@ class SharedTaskExecutionRunner:
             and task.current_claim_id == execution.claim_id
             and session
             and session.workspace_id == execution.workspace_id
-            and session.workspace_mode == "shared"
+            and session.workspace_mode in {"shared", "isolated"}
             and session.state in {"active", "disconnected"}
             and workspace
-            and workspace.kind == "shared_checkout"
-            and workspace.mode == "shared"
+            and workspace.kind
+            == (
+                "linked_worktree"
+                if session.workspace_mode == "isolated"
+                else "shared_checkout"
+            )
+            and workspace.mode == session.workspace_mode
             and workspace.state == "active"
             and workspace.checkout_id == session.checkout_id
             and workspace.canonical_path == execution.worktree_path
             and checkout
             and checkout.repository_id == task.repository_id
-            and checkout.canonical_path == workspace.canonical_path
+            and (
+                session.workspace_mode == "isolated"
+                or checkout.canonical_path == workspace.canonical_path
+            )
             and claim
             and claim.task_id == execution.task_id
             and claim.task_attempt == execution.task_attempt

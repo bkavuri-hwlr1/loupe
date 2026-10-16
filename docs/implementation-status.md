@@ -32,9 +32,25 @@ the remaining planned capabilities are listed below.
   check records, and hook returns. Closing removes the private worktree and Git
   registration once running work and held proposals release it. Recovery preserves
   ordinary source evidence and late user changes while scrubbing owned runtime
-  and screened-source copies from archives. C2 holds proposals for the C3
-  publisher. See [isolated workspaces](isolated-workspaces.md) for supported
+  and screened-source copies from archives. See
+  [isolated workspaces](isolated-workspaces.md) for supported
   layouts, bounded adapters, and recovery behavior.
+
+- Isolated source publication and incoming synchronization (Wave 3 C3): shared
+  batches and current primary source reach the private worktree at safe points.
+  Metadata-assisted scans skip unchanged bodies outside the publication lock;
+  a racing publication invalidates the scan before it can apply. Source saves or
+  unavailable paths defer synchronization with a bounded path-only notice while
+  preserving the last accepted version and allowing the task to continue.
+  Three-way text merges retain local edits; overlapping, binary, symlink, and
+  nonempty-directory conflicts remain durable without blocking unrelated incoming
+  paths. Checked source deltas publish through the shared batch journal, while
+  runtime stays excluded. Normal-mode proposals freeze independently of later
+  private edits; apply and undo support restart and private runtime checks.
+  A closed session retains its runtime through held apply, then retires it;
+  exact-base undo remains available after that private cleanup.
+  Incoming journals recognize exact before/after states, and a private catch-up
+  failure cannot turn confirmed primary publication into a failed task.
 
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
@@ -225,7 +241,7 @@ the remaining planned capabilities are listed below.
   model-visible event cursor. The cursor is checkpointed with successful model
   history and promoted to later session prompts; it never acknowledges terminal
   delivery. Oversized updates and event gaps stop the request explicitly.
-- Bounded shared batch journals: up to 50 regular UTF-8 files, 256 KiB per file,
+- Bounded shared batch journals: up to 50 typed paths, 256 KiB per regular file,
   and 4 MiB of retained base and candidate bytes in the tool overlay. A batch
   changes one workspace revision and appends one checkout event, preserving
   HEAD, index, and refs. A preflight conflict retains the whole proposal
@@ -459,7 +475,9 @@ revision. Shared sessions bind to it; isolated sessions bind to a private linked
 worktree whose source workspace is that shared record. `llm-coord workspace
 status` reports the workspace and mode limits. Ignored-runtime hydration has a
 read-only preview, and C2 implements private materialization and runtime-aware
-execution. Isolated publication remains the C3 dependency.
+execution. Isolated tasks now publish through the shared batch journal and
+receive incoming source at safe points; the private baseline and transition
+journal retain unresolved local divergence across restart.
 
 The manual shared-workspace broker remains available for one UTF-8 regular
 file at a time. A brokered read records an exact versioned identity. A session
@@ -722,8 +740,8 @@ quality and cost savings remain unmeasured. Review remains off by default.
 remaining harness gaps into packages that separate sessions can run at once.
 
 1. Validate the remaining multi-profile authority and migration guarantees.
-2. Complete isolated publication and incoming shared batches (C3) on top of
-   C2's private creation and runtime-aware check snapshots.
+2. Extend isolated runtime support with explicit dependency rebuild adapters,
+   runtime refresh, and per-terminal environment handling from the workspace plan.
 3. Broaden independent-review quality and cost measurements beyond the completed
    planted-bug acceptance run; keep review disabled by default.
 4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
@@ -771,4 +789,20 @@ approval. Hydration's default output is a short summary, and `--json` retains
 full details. Git-ignored `node_modules` directories are explicit rebuild
 decisions with unknown contents rather than enumerated copy candidates,
 preserving unrelated candidates. C2 now implements bounded private copying as
-noted above; publication remains C3. E2 remains deferred.
+noted above, and C3 adds checked source publication and incoming synchronization.
+E2 remains deferred.
+
+
+## Wave 3 validation follow-up (October 16, 2026)
+
+The first combined frozen run finished with 2,484 passing tests, five failures,
+and one expected case-sensitive-filesystem skip. All five failures exercised one
+shared-session settlement regression: isolated catch-up handling had changed
+unmergeable shared proposals from durable divergence to held review. The fix
+limits that handling to isolated sessions.
+
+The corrected revision passed 64 focused orchestration-stress, catch-up,
+isolated synchronization/publication/held-workflow, OpenAI publication-refusal,
+and shared-finalization tests, including all five failing cases. Ruff, mypy, and
+source-distribution/wheel builds passed. Current cross-platform CI results are
+recorded on [PR #55](https://github.com/bkavuri-hwlr1/loupe/pull/55).
