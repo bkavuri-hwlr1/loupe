@@ -28,6 +28,7 @@ from llm_cli.agent.source_policy import (
     excluded_paths,
     register_runtime_paths,
     runtime_path,
+    runtime_path_matches,
 )
 from llm_cli.coordination.models import CheckoutRecord, WorkspaceRecord
 from llm_cli.coordination.scopes import normalize_changed_path
@@ -214,10 +215,7 @@ def capture_source(
     for relative in source_paths:
         if runtime_path(root, relative):
             continue
-        if any(
-            relative == path or relative.startswith(path + "/")
-            for path in protected_paths
-        ):
+        if runtime_path_matches(relative, protected_paths):
             raise _error(
                 "runtime path became source; explicit reclassification is required"
             )

@@ -138,8 +138,10 @@ The session materializer now implements exact ordinary-source snapshots,
 private ignored-file hydration, exact-file secret consent, pinned source-policy
 identities, descriptor-based stable copies, a disposable same-device COW probe,
 allocation/free-space checks, and durable creation/recovery intents. Interrupted
-known creations are cleaned only after their output is verified; ambiguous paths
-are preserved and quarantined. Ready workspaces restore frozen runtime exclusions
+known creations move verified output into retained private recovery archives and
+remove only empty directories. Late replacements and open-descriptor writes remain
+recoverable; ambiguous paths are preserved and quarantined with the archive
+location. Ready workspaces restore frozen runtime exclusions
 on restart. Source symlinks use the C5 contained-link policy; runtime symlinks
 remain deferred.
 
