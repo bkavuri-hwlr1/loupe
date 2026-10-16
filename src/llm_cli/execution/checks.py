@@ -294,6 +294,8 @@ def verification_status(
     workflow: dict[str, Any],
     root: Path,
     files: tuple[BatchFile, ...],
+    *,
+    runtime_root: Path | None = None,
 ) -> str:
     """Describe the verification evidence for this exact source and proposal.
 
@@ -311,7 +313,7 @@ def verification_status(
     ]
     if not required:
         return "not_applicable"
-    source = verification_identity(root, config)
+    source = verification_identity(root, config, runtime_root=runtime_root)
     candidate = digest(encode_files(files))
     config_digest = digest(workflow["config_json"])
     saw_stale = False
