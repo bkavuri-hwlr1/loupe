@@ -213,6 +213,7 @@ class TaskWorkflow:
 
     def update(self, task_id: str, attempt: int, **fields: Any) -> None:
         allowed = {
+            "config_json",
             "execution_id",
             "proposal_json",
             "status",

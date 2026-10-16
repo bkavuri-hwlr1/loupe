@@ -25,6 +25,7 @@ from typing import Any
 from llm_cli.agent.source_policy import (
     _private_path,
     ensure_safe_content,
+    excluded_paths,
     register_runtime_paths,
     runtime_path,
 )
@@ -40,13 +41,19 @@ from llm_cli.git.worktrees import (
 from llm_cli.ids import new_id
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.storage.control import ControlStore
+from llm_cli.workspace.broker import validate_symlink_target
 from llm_cli.workspace.hydration import (
     HydrationEntry,
     _bounded_git,
     _evidence,
     plan_hydration,
 )
-from llm_cli.workspace.identity import ABSENT, ObjectKind, content_identity
+from llm_cli.workspace.identity import (
+    ABSENT,
+    SYMLINK_MODE,
+    ObjectKind,
+    content_identity,
+)
 
 _MAX_SOURCE_FILE = 256 * 1024 * 1024
 _ADMIN = frozenset({".git", ".loupe", ".llm-coord", ".codex", ".agents"})
@@ -199,12 +206,21 @@ def capture_source(root: Path, candidate_dir: Path) -> dict[str, dict[str, Any]]
         ):
             raise _error(f"protected source cannot be snapshotted: {relative}")
         try:
-            with _source(root, relative) as descriptor:
-                before = os.fstat(descriptor)
-                body = _read(descriptor, _MAX_SOURCE_FILE)
-                if _evidence(before) != _evidence(os.fstat(descriptor)):
-                    raise _error("source changed during isolated snapshot")
             with _parent(root, relative) as (parent, name):
+                before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                is_link = stat.S_ISLNK(before.st_mode)
+                if is_link:
+                    body = os.fsencode(os.readlink(name, dir_fd=parent))
+                    destination = validate_symlink_target(root, relative, body)
+                    if excluded_paths(root, [destination]):
+                        raise _error("source link points at protected or runtime input")
+                else:
+                    with _source(root, relative) as descriptor:
+                        if _evidence(before) != _evidence(os.fstat(descriptor)):
+                            raise _error("source changed before isolated snapshot")
+                        body = _read(descriptor, _MAX_SOURCE_FILE)
+                        if _evidence(before) != _evidence(os.fstat(descriptor)):
+                            raise _error("source changed during isolated snapshot")
                 if _evidence(before) != _evidence(
                     os.stat(name, dir_fd=parent, follow_symlinks=False)
                 ):
@@ -227,17 +243,19 @@ def capture_source(root: Path, candidate_dir: Path) -> dict[str, dict[str, Any]]
         if total > 1024**3:
             raise _error("isolated source exceeds its 1 GiB budget")
         content_hash = _store_source(candidate_dir, body)
+        kind = ObjectKind.SYMLINK if is_link else ObjectKind.REGULAR
+        mode = (
+            SYMLINK_MODE
+            if is_link
+            else ("100755" if before.st_mode & 0o111 else "100644")
+        )
         manifest[relative] = {
-            "kind": "regular",
-            "mode": "100755" if before.st_mode & 0o111 else "100644",
-            "digest": content_identity(
-                ObjectKind.REGULAR,
-                "100755" if before.st_mode & 0o111 else "100644",
-                body,
-            ),
+            "kind": str(kind),
+            "mode": mode,
+            "digest": content_identity(kind, mode, body),
             "content_hash": content_hash,
             "size": len(body),
-            "permissions": stat.S_IMODE(before.st_mode) & 0o777,
+            "permissions": None if is_link else stat.S_IMODE(before.st_mode) & 0o777,
         }
     return manifest
 
@@ -671,7 +689,8 @@ class IsolatedWorkspaceManager:
                 f"Runtime omitted: {entry.path} ({entry.reason}). "
                 "No setup command was run."
                 for entry in plan.entries
-                if entry.action
+                if entry.path not in source
+                and entry.action
                 not in {
                     "private_copy",
                     "clone_or_copy",
@@ -685,6 +704,7 @@ class IsolatedWorkspaceManager:
                         entry.path
                         for entry in plan.entries
                         if entry.action != "exclude_administration"
+                        and entry.path not in source
                         and not any(
                             path.startswith(entry.path + "/") for path in source
                         )
@@ -772,7 +792,12 @@ class IsolatedWorkspaceManager:
                     if hashlib.sha256(body).hexdigest() != entry["content_hash"]:
                         raise _error("isolated source artifact changed")
                     with _parent(managed.path, relative, create=True) as (parent, name):
-                        _write_body(parent, name, body, int(entry["permissions"]))
+                        if entry["kind"] == "symlink":
+                            validate_symlink_target(managed.path, relative, body)
+                            os.symlink(os.fsdecode(body), name, dir_fd=parent)
+                            os.fsync(parent)
+                        else:
+                            _write_body(parent, name, body, int(entry["permissions"]))
                 if capture_source(managed.path, self.candidate_dir) != source:
                     raise _error("isolated materialized source manifest did not match")
                 self._stage(workspace_id, "materialized")

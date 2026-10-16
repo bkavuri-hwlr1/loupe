@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import hmac
 import json
 import os
 import selectors
@@ -17,7 +18,11 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from llm_cli.agent.source_policy import ensure_safe_content
+from llm_cli.agent.source_policy import (
+    ensure_safe_content,
+    register_runtime_paths,
+    runtime_path,
+)
 from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
@@ -39,6 +44,10 @@ from llm_cli.workspace.identity import (
 )
 from llm_cli.workspace.workflow import TaskWorkflow, encode_files
 
+# Runtime equality evidence must not reveal guessable hashes of private inputs.
+# A fresh process invalidates old runtime-dependent checks; source-only checks
+# retain their previous identity across restarts.
+_RUNTIME_EVIDENCE_KEY = os.urandom(32)
 _OUTPUT_LIMIT = 10 * 1024 * 1024
 # Attempts at building a check's snapshot when Git fails while doing so.
 _PREPARE_ATTEMPTS = 3
@@ -135,7 +144,11 @@ def source_snapshot(
         root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
     )
     assert isinstance(result.stdout, str)
-    paths = sorted(set(filter(None, result.stdout.split("\0"))))
+    paths = sorted(
+        path
+        for path in set(filter(None, result.stdout.split("\0")))
+        if not runtime_path(root, path)
+    )
     if len(paths) > 100_000:
         raise ValueError("source snapshot exceeds 100,000 paths")
     manifest: list[tuple[str, str, str, str]] = []
@@ -207,13 +220,18 @@ def runtime_identity(root: Path, paths: list[str]) -> str:
             if total > 5 * 1024**3:
                 raise ValueError("runtime snapshot exceeds 5 GiB")
             manifest.append((entry.relative_to(root).as_posix(), identity.digest))
-    return digest(json.dumps(manifest))
+    encoded = json.dumps(manifest)
+    if not paths:
+        return digest(encoded)
+    return hmac.new(_RUNTIME_EVIDENCE_KEY, encoded.encode(), "sha256").hexdigest()
 
 
-def verification_identity(root: Path, config: dict[str, Any]) -> str:
+def verification_identity(
+    root: Path, config: dict[str, Any], *, runtime_root: Path | None = None
+) -> str:
     return digest(
         source_snapshot(root)[0]
-        + runtime_identity(root, config.get("runtime_paths", []))
+        + runtime_identity(runtime_root or root, config.get("runtime_paths", []))
     )
 
 
@@ -222,6 +240,8 @@ def verification_current(
     workflow: dict[str, Any],
     root: Path,
     files: tuple[BatchFile, ...],
+    *,
+    runtime_root: Path | None = None,
 ) -> bool:
     config = json.loads(workflow["config_json"])
     required = [
@@ -229,7 +249,7 @@ def verification_current(
     ]
     if not required:
         return True
-    source = verification_identity(root, config)
+    source = verification_identity(root, config, runtime_root=runtime_root)
     candidate = digest(encode_files(files))
     config_digest = digest(workflow["config_json"])
     with store.connection() as con:
@@ -354,8 +374,10 @@ class CheckRunner:
         on_result: Callable[[str, str, str], None] | None = None,
         runtime_paths: tuple[str, ...] | None = None,
         suppress_output: bool = False,
+        runtime_root: Path | None = None,
     ) -> None:
         self.workflow, self.row, self.root = workflow, row, root
+        self.runtime_root = runtime_root or root
         # Told (name, state, output) after every run, for repair limits.
         self.on_result = on_result
         self.store = workflow.store
@@ -407,7 +429,9 @@ class CheckRunner:
 
     def _passed(self, name: str) -> bool:
         files = self.candidates()
-        source = verification_identity(self.root, self.config)
+        source = verification_identity(
+            self.root, self.config, runtime_root=self.runtime_root
+        )
         with self.store.connection() as con:
             row = con.execute(
                 (
@@ -586,7 +610,9 @@ class CheckRunner:
         nothing is left behind: a worktree it created is removed again.
         """
 
-        runtime = runtime_identity(self.root, self.config.get("runtime_paths", []))
+        runtime = runtime_identity(
+            self.runtime_root, self.config.get("runtime_paths", [])
+        )
         for _ in range(3):
             with self.lock:
                 source, bodies = source_snapshot(self.root, contents=True)
@@ -635,8 +661,13 @@ class CheckRunner:
                 materialize_snapshot_file(snapshot, f.relative_path, f.content, f.mode)
             for path in self.config.get("runtime_paths", []):
                 self._copy_runtime(path, snapshot)
+            register_runtime_paths(
+                snapshot, tuple(self.config.get("runtime_paths", []))
+            )
             if (
-                runtime_identity(self.root, self.config.get("runtime_paths", []))
+                runtime_identity(
+                    self.runtime_root, self.config.get("runtime_paths", [])
+                )
                 != runtime
                 or runtime_identity(snapshot, self.config.get("runtime_paths", []))
                 != runtime
@@ -656,9 +687,14 @@ class CheckRunner:
         return worktree, digest(source + runtime)
 
     def _copy_runtime(self, path: str, snapshot: Path) -> None:
-        source = candidate_target(self.root, path)
+        if runtime_path(self.runtime_root, path):
+            from llm_cli.workspace.isolated import copy_pinned_runtime_file
+
+            copy_pinned_runtime_file(self.runtime_root, snapshot, path)
+            return
+        source = candidate_target(self.runtime_root, path)
         target = candidate_target(snapshot, path)
-        ignored = run_git(self.root, ["check-ignore", "--", path], check=False)
+        ignored = run_git(self.runtime_root, ["check-ignore", "--", path], check=False)
         if ignored.returncode != 0:
             raise ValueError(f"runtime_paths must name ignored paths: {path}")
         if not source.exists() or target.exists():
@@ -705,6 +741,9 @@ def check_retained_proposal(
     row: dict[str, Any],
     root: Path,
     files: tuple[BatchFile, ...],
+    *,
+    runtime_root: Path | None = None,
+    suppress_output: bool = False,
 ) -> str | None:
     """Refresh required evidence for a manual apply's captured candidate.
 
@@ -726,6 +765,8 @@ def check_retained_proposal(
         lambda: False,
         emit,
         workflow.publisher.lock,
+        runtime_root=runtime_root,
+        suppress_output=suppress_output,
     )
     outcome = runner.gate()
     return outcome.content if outcome else None
