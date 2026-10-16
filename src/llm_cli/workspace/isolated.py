@@ -24,6 +24,7 @@ from typing import Any
 
 from llm_cli.agent.source_policy import (
     _private_path,
+    contains_secret_material,
     ensure_safe_content,
     excluded_paths,
     register_runtime_paths,
@@ -196,6 +197,33 @@ def _store_source(candidate_dir: Path, body: bytes) -> str:
     return digest
 
 
+class _SourceChanged(Exception):
+    """A source save crossed a no-follow snapshot boundary; retry it later."""
+
+
+def _capture_path(root: Path, relative: str) -> tuple[bytes, os.stat_result, bool]:
+    with _parent(root, relative) as (parent, name):
+        before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        is_link = stat.S_ISLNK(before.st_mode)
+        if is_link:
+            body = os.fsencode(os.readlink(name, dir_fd=parent))
+            destination = validate_symlink_target(root, relative, body)
+            if excluded_paths(root, [destination]):
+                raise _error("source link points at protected or runtime input")
+        else:
+            with _source(root, relative) as descriptor:
+                if _evidence(before) != _evidence(os.fstat(descriptor)):
+                    raise _SourceChanged
+                body = _read(descriptor, _MAX_SOURCE_FILE)
+                if _evidence(before) != _evidence(os.fstat(descriptor)):
+                    raise _SourceChanged
+        if _evidence(before) != _evidence(
+            os.stat(name, dir_fd=parent, follow_symlinks=False)
+        ):
+            raise _SourceChanged
+    return body, before, is_link
+
+
 def capture_source(
     root: Path,
     candidate_dir: Path,
@@ -204,9 +232,9 @@ def capture_source(
 ) -> dict[str, dict[str, Any]]:
     """Capture ordinary current working bytes, including dirty/untracked files.
 
-    Missing tracked files retain an absent identity. Protected source requires
-    a dedicated protected-source adapter, so this minimum refuses it before
-    placing any of its contents into ordinary artifacts.
+    Missing tracked files retain an absent identity. Screened source retains
+    only its identity: creation may copy it privately, but its bytes never enter
+    ordinary artifacts or model-facing proposals.
     """
     manifest: dict[str, dict[str, Any]] = {}
     total = 0
@@ -225,44 +253,37 @@ def capture_source(
             or any(part in _ADMIN for part in Path(relative).parts)
         ):
             raise _error(f"protected source cannot be snapshotted: {relative}")
-        try:
-            with _parent(root, relative) as (parent, name):
-                before = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                is_link = stat.S_ISLNK(before.st_mode)
-                if is_link:
-                    body = os.fsencode(os.readlink(name, dir_fd=parent))
-                    destination = validate_symlink_target(root, relative, body)
-                    if excluded_paths(root, [destination]):
-                        raise _error("source link points at protected or runtime input")
-                else:
-                    with _source(root, relative) as descriptor:
-                        if _evidence(before) != _evidence(os.fstat(descriptor)):
-                            raise _error("source changed before isolated snapshot")
-                        body = _read(descriptor, _MAX_SOURCE_FILE)
-                        if _evidence(before) != _evidence(os.fstat(descriptor)):
-                            raise _error("source changed during isolated snapshot")
-                if _evidence(before) != _evidence(
-                    os.stat(name, dir_fd=parent, follow_symlinks=False)
-                ):
-                    raise _error("source path changed during isolated snapshot")
-        except FileNotFoundError:
-            manifest[relative] = {
-                "kind": "absent",
-                "mode": ABSENT.mode,
-                "digest": ABSENT.digest,
-                "content_hash": None,
-                "size": 0,
-                "permissions": None,
-            }
+        for attempt in range(3):
+            try:
+                body, before, is_link = _capture_path(root, relative)
+                break
+            except _SourceChanged:
+                if attempt == 2:
+                    raise _error(
+                        f"source kept changing during isolated snapshot: {relative}; "
+                        "retry after the current save finishes"
+                    ) from None
+            except FileNotFoundError:
+                manifest[relative] = {
+                    "kind": "absent",
+                    "mode": ABSENT.mode,
+                    "digest": ABSENT.digest,
+                    "content_hash": None,
+                    "size": 0,
+                    "permissions": None,
+                }
+                break
+            except OSError as exc:
+                raise _error(
+                    "source requires a link, submodule, or special adapter: " + relative
+                ) from exc
+        if relative in manifest:
             continue
-        except OSError as exc:
-            raise _error(
-                f"source requires a link, submodule, or special adapter: {relative}"
-            ) from exc
         total += len(body)
         if total > 1024**3:
             raise _error("isolated source exceeds its 1 GiB budget")
-        content_hash = _store_source(candidate_dir, body)
+        screened = contains_secret_material(body)
+        content_hash = None if screened else _store_source(candidate_dir, body)
         kind = ObjectKind.SYMLINK if is_link else ObjectKind.REGULAR
         mode = (
             SYMLINK_MODE
@@ -276,6 +297,7 @@ def capture_source(
             "content_hash": content_hash,
             "size": len(body),
             "permissions": None if is_link else stat.S_IMODE(before.st_mode) & 0o777,
+            **({"screened": True} if screened else {}),
         }
     return manifest
 
@@ -581,7 +603,12 @@ class IsolatedWorkspaceManager:
             with _source(root, relative) as descriptor:
                 body = _read(descriptor, _MAX_SOURCE_FILE)
         if expected is not None:
-            return bool(expected["content_hash"] == hashlib.sha256(body).hexdigest())
+            return bool(
+                expected["digest"]
+                == content_identity(
+                    ObjectKind(expected["kind"]), expected["mode"], body
+                )
+            )
         if relative in state.runtime_files:
             with _source(primary, relative) as descriptor:
                 return _read(descriptor, _MAX_SOURCE_FILE) == body
@@ -994,12 +1021,28 @@ class IsolatedWorkspaceManager:
                 for relative, entry in source.items():
                     if entry["kind"] == "absent":
                         continue
-                    with _source(
-                        self.candidate_dir, entry["content_hash"]
-                    ) as descriptor:
-                        body = _read(descriptor, _MAX_SOURCE_FILE)
-                    if hashlib.sha256(body).hexdigest() != entry["content_hash"]:
-                        raise _error("isolated source artifact changed")
+                    if entry.get("screened"):
+                        # Screened fixtures are usable by local checks, but never
+                        # retained in the shared artifact store or shown to models.
+                        if entry["kind"] == "symlink":
+                            with _parent(root, relative) as (parent, name):
+                                body = os.fsencode(os.readlink(name, dir_fd=parent))
+                        else:
+                            with _source(root, relative) as descriptor:
+                                body = _read(descriptor, _MAX_SOURCE_FILE)
+                        if content_identity(
+                            ObjectKind(entry["kind"]), entry["mode"], body
+                        ) != entry["digest"]:
+                            raise _error(
+                                "source changed during isolated creation: " + relative
+                            )
+                    else:
+                        with _source(
+                            self.candidate_dir, entry["content_hash"]
+                        ) as descriptor:
+                            body = _read(descriptor, _MAX_SOURCE_FILE)
+                        if hashlib.sha256(body).hexdigest() != entry["content_hash"]:
+                            raise _error("isolated source artifact changed")
                     with _parent(managed.path, relative, create=True) as (parent, name):
                         if entry["kind"] == "symlink":
                             validate_symlink_target(managed.path, relative, body)

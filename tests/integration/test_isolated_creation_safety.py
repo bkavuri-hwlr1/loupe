@@ -161,3 +161,56 @@ def test_runtime_fifo_is_rejected_without_waiting_for_a_writer(tmp_path: Path) -
         isolated._source(tmp_path, "runtime.pipe"),
     ):
         pytest.fail("a FIFO cannot become a runtime input")
+
+
+def test_screened_source_fixture_copies_privately_without_model_artifacts(
+    batch_env: BatchEnvironment, tmp_path: Path, git_run: Any
+) -> None:
+    from llm_cli.agent.shared_tools import SharedToolBroker
+
+    env = batch_env
+    body = b'FAKE_AWS = "' + b"AKIA" + b"EXAMPLE000000000" + b'"\n'
+    fixture = env.repository / "fixture.py"
+    fixture.write_bytes(body)
+    git_run(env.repository, "add", "fixture.py")
+    isolate = manager(env, tmp_path)
+    workspace, _ = isolate.open(checkout(env), "screened-fixture")
+    private = Path(workspace.canonical_path)
+    assert (private / "fixture.py").read_bytes() == body
+    state = isolate.get(workspace.workspace_id)
+    assert state is not None
+    assert state.source_manifest["fixture.py"]["screened"] is True
+    assert state.source_manifest["fixture.py"]["content_hash"] is None
+    broker = SharedToolBroker(worktree=private, scopes=("*",))
+    result = broker.invoke("read_file", {"path": "fixture.py"})
+    assert result.is_error and "recognized secret" in result.content
+    assert broker.candidates() == ()
+    assert all(
+        body not in path.read_bytes() for path in env.publisher.candidate_dir.iterdir()
+    )
+    with env.store.connection() as con:
+        rows = con.execute("SELECT * FROM isolated_workspaces").fetchall()
+    assert body.decode().strip() not in repr([tuple(row) for row in rows])
+
+
+def test_creation_retries_a_concurrent_source_save(
+    batch_env: BatchEnvironment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = batch_env
+    original = isolated._capture_path
+    raced = False
+
+    def moving_save(root: Path, path: str) -> tuple[bytes, os.stat_result, bool]:
+        nonlocal raced
+        if path == "a.txt" and not raced:
+            raced = True
+            (root / path).write_text("saved while opening\n")
+            raise isolated._SourceChanged
+        return original(root, path)
+
+    monkeypatch.setattr(isolated, "_capture_path", moving_save)
+    workspace, _ = manager(env, tmp_path).open(checkout(env), "moving-save")
+    assert raced
+    assert (Path(workspace.canonical_path) / "a.txt").read_text() == (
+        "saved while opening\n"
+    )
