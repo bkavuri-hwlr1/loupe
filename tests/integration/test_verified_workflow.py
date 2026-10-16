@@ -1070,3 +1070,87 @@ def test_apply_runs_checks_outside_lock_and_refuses_checkout_changed_during_chec
         assert service.workflow.get("task")["action_task_id"] is None
 
     asyncio.run(scenario())
+
+
+def test_typed_candidates_pass_required_checks_publish_and_undo(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(
+            tmp_path, {"a.py": "value = 1\n", "other.txt": "other\n"}
+        )
+        (root / "data.bin").write_bytes(b"\x00\xffbefore")
+        (root / "retarget").symlink_to("a.py")
+        (root / "delete-link").symlink_to("a.py")
+        service = service_factory(tmp_path)
+        provider = ScriptedProvider(
+            "workflow-session",
+            [
+                _tools(
+                    _call("read_binary", path="data.bin"),
+                    _call(
+                        "write_binary", path="data.bin", content_base64="AP9hZnRlcg=="
+                    ),
+                    _call("write_symlink", path="new-link", target="other.txt"),
+                    _call("read_symlink", path="retarget"),
+                    _call("write_symlink", path="retarget", target="other.txt"),
+                    _call("delete_file", path="delete-link"),
+                ),
+                _finish(),
+            ],
+        )
+        creds = await setup(
+            service,
+            root,
+            provider,
+            code=(
+                "from pathlib import Path; import os; "
+                "assert Path('data.bin').read_bytes() == bytes([0,255]) + b'after'; "
+                "assert os.readlink('new-link') == 'other.txt'; "
+                "assert os.readlink('retarget') == 'other.txt'; "
+                "assert not Path('delete-link').is_symlink()"
+            ),
+        )
+        await await_task(service, root, creds)
+        _assert_completed(service, "task")
+        view = await service.handle(_request("task.diff", {"task_id": "task"}))
+        assert "Binary change data.bin" in view["diff"]
+        assert "Symlink retarget" in view["diff"]
+        assert view["checks"][0]["state"] == "passed"
+        assert (root / "data.bin").read_bytes() == b"\x00\xffafter"
+        assert (root / "new-link").readlink() == Path("other.txt")
+        undo = await service.handle(_request("task.undo", {"task_id": "task"}))
+        assert undo["state"] == "published"
+        assert (root / "data.bin").read_bytes() == b"\x00\xffbefore"
+        assert not (root / "new-link").is_symlink()
+        assert (root / "retarget").readlink() == Path("a.py")
+        assert (root / "delete-link").readlink() == Path("a.py")
+
+    asyncio.run(scenario())
+
+
+def test_held_ascii_binary_proposal_keeps_exact_base_after_encoding(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+) -> None:
+    from llm_cli.workspace.batches import BatchFile
+    from llm_cli.workspace.identity import REGULAR_MODE, identify_path
+    from llm_cli.workspace.workflow import TaskWorkflow, encode_files
+
+    root = repository_factory(tmp_path, {"data.bin": "one\ntwo\nthree\n"})
+    before = (root / "data.bin").read_bytes()
+    candidate = BatchFile(
+        "data.bin",
+        identify_path(root / "data.bin"),
+        b"ONE\ntwo\nthree\n",
+        REGULAR_MODE,
+        before,
+        binary=True,
+    )
+    restored = decode_files(encode_files((candidate,)))
+    (root / "data.bin").write_text("one\ntwo\nTHREE\n")
+    with pytest.raises(ValueError, match="Conflict"):
+        TaskWorkflow._merge_proposal(root, restored)
+    assert (root / "data.bin").read_text() == "one\ntwo\nTHREE\n"

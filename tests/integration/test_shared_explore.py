@@ -165,6 +165,8 @@ def test_helper_sees_pending_edits_and_reports_through_the_daemon(
             "read_file",
             "search_text",
             "read_diff",
+            "read_binary",
+            "read_symlink",
         )
         assert provider.helper.results[0][0].content == "edited\n"
         (report,) = provider.main.results[1]
