@@ -7,7 +7,8 @@ import re
 import subprocess
 import tempfile
 import threading
-from collections.abc import Callable, Iterator, Mapping
+import unicodedata
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -61,10 +62,24 @@ def register_runtime_paths(root: Path, paths: tuple[str, ...]) -> None:
         _runtime_roots[root.resolve()] = paths
 
 
+def runtime_path_matches(relative: str, paths: Iterable[str]) -> bool:
+    """Keep spelling aliases private on every supported filesystem.
+
+    Conservatively reserve case and Unicode-normalization aliases even on a
+    case-sensitive volume, without probing or depending on mutable Git config.
+    """
+    candidate = unicodedata.normalize("NFD", relative).casefold()
+    for path in paths:
+        protected = unicodedata.normalize("NFD", path).casefold()
+        if candidate == protected or candidate.startswith(protected + "/"):
+            return True
+    return False
+
+
 def runtime_path(root: Path, relative: str) -> bool:
     with _runtime_lock:
         paths = _runtime_roots.get(root.resolve(), ())
-    return any(relative == path or relative.startswith(path + "/") for path in paths)
+    return runtime_path_matches(relative, paths)
 
 
 # Within one tool call, each root's user exclusion setting is read once.

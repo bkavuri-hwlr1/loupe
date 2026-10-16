@@ -456,3 +456,40 @@ def test_cleanup_retains_later_writes_through_an_open_source_descriptor(
         os.close(descriptor)
     assert (archive / "files/a.txt").read_bytes() == b"late open-descriptor write"
     assert not private.exists()
+
+
+@pytest.mark.parametrize(
+    "alias", ["LOCAL.DATA", "Données/LOCAL.DATA", "Donne\u0301es/LOCAL.DATA"]
+)
+def test_runtime_spelling_alias_cannot_enter_model_tools_or_source_artifacts(
+    batch_env: BatchEnvironment, tmp_path: Path, alias: str
+) -> None:
+    from llm_cli.agent.shared_tools import SharedToolBroker
+    from llm_cli.agent.source_policy import excluded_paths, register_runtime_paths
+    from llm_cli.errors import LlmCoordError
+    from llm_cli.workspace.isolated import capture_source
+
+    env = batch_env
+    protected = "local.data" if "/" not in alias else "données"
+    private = b"opaque runtime spelling alias bytes"
+    target = env.repository / alias
+    target.parent.mkdir(exist_ok=True)
+    target.write_bytes(private)
+    # Explicit durable protection applies before a primary path is registered.
+    with pytest.raises(LlmCoordError, match="runtime path became source"):
+        capture_source(
+            env.repository, env.publisher.candidate_dir, protected_paths=(protected,)
+        )
+    register_runtime_paths(env.repository, (protected,))
+    # No ignore rule remains to protect the alias. Frozen policy must do so.
+    assert excluded_paths(env.repository, [alias]) == {alias}
+    broker = SharedToolBroker(worktree=env.repository, scopes=("*",))
+    result = broker.invoke("read_file", {"path": alias})
+    assert result.is_error
+    assert private.decode() not in result.content
+    assert alias not in capture_source(env.repository, env.publisher.candidate_dir)
+    assert all(
+        private not in path.read_bytes()
+        for path in env.publisher.candidate_dir.glob("*")
+        if path.is_file()
+    )
