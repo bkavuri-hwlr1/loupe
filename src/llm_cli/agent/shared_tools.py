@@ -56,12 +56,15 @@ from llm_cli.workspace.batches import BatchFile, candidate_target
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
     WorkspaceBrokerError,
+    read_candidate_path,
+    validate_symlink_target,
 )
 from llm_cli.workspace.identity import (
     ABSENT,
     DIRECTORY_MODE,
     EXECUTABLE_MODE,
     REGULAR_MODE,
+    SYMLINK_MODE,
     FileIdentity,
     IdentityError,
     ObjectKind,
@@ -229,12 +232,20 @@ class SharedToolBroker(ToolBroker):
     _observations: dict[str, _Observation] = field(default_factory=dict, init=False)
     _contents: dict[str, bytes | None] = field(default_factory=dict, init=False)
 
+    _binary: set[str] = field(default_factory=set, init=False)
     _modes: dict[str, str] = field(default_factory=dict, init=False)
     _permissions: dict[str, int] = field(default_factory=dict, init=False)
     # While a batch of reads prepares its answers: work its searches share.
     _batch: _ReadBatch | None = field(
         default=None, init=False, repr=False, compare=False
     )
+
+    def tool_names(self) -> tuple[str, ...]:
+        names = super(SharedToolBroker, self).tool_names()
+        extra: tuple[str, ...] = ("read_binary", "read_symlink")
+        if self.agent_mode != "plan" and self._helper_tools is None:
+            extra += ("write_binary", "write_symlink")
+        return (*names, *extra)
 
     def invoke(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
         if self.pending_parent_notice() is not None:
@@ -316,6 +327,8 @@ class SharedToolBroker(ToolBroker):
                 if name
                 in {
                     "write_file",
+                    "write_binary",
+                    "write_symlink",
                     "apply_patch",
                     "delete_file",
                     "rename_file",
@@ -365,6 +378,7 @@ class SharedToolBroker(ToolBroker):
         )
         self._configure_read_only_view(view)
         with self.publication_lock:
+            view._binary = set(self._binary)
             view._contents = dict(self._contents)
             view._modes = dict(self._modes)
             view._permissions = dict(self._permissions)
@@ -389,6 +403,7 @@ class SharedToolBroker(ToolBroker):
                     ),
                     original=self._observations[relative].content,
                     permissions=self._permissions.get(relative),
+                    binary=relative in self._binary,
                 )
                 for relative, content in sorted(self._contents.items())
             )
@@ -419,15 +434,23 @@ class SharedToolBroker(ToolBroker):
                 observed = self._observations[relative]
                 result = None
                 try:
-                    target = self._target(relative)
+                    target = self._target(relative, allow_symlink=True)
                     if modes.get(relative) == DIRECTORY_MODE:
                         if target.is_dir():
                             contents.pop(relative)
                             modes.pop(relative, None)
                             adopted.append(relative)
                         continue
-                    current, theirs = self._observe(relative, screen=False)
+                    current, theirs = self._observe(relative, screen=False, typed=True)
                     if current == observed.base:
+                        continue
+                    if (
+                        relative in self._binary
+                        or modes.get(relative) == SYMLINK_MODE
+                        or observed.base.kind is ObjectKind.SYMLINK
+                        or current.kind is ObjectKind.SYMLINK
+                    ):
+                        unmerged.append(relative)
                         continue
                     ensure_safe_content(theirs or b"")
                     if ours is not None and theirs is not None:
@@ -483,7 +506,9 @@ class SharedToolBroker(ToolBroker):
             return sorted(
                 relative
                 for relative, content in self._contents.items()
-                if has_conflict_markers(content)
+                if relative not in self._binary
+                and self._modes.get(relative) != SYMLINK_MODE
+                and has_conflict_markers(content)
             )
 
     def stale_paths(self) -> list[str]:
@@ -498,7 +523,7 @@ class SharedToolBroker(ToolBroker):
 
     def _at_base(self, candidate: BatchFile) -> bool:
         try:
-            target = self._target(candidate.relative_path)
+            target = self._target(candidate.relative_path, allow_symlink=True)
             return read_identified_path(target)[0] == candidate.base
         except (WorkspaceBrokerError, IdentityError, LlmCoordError):
             # A path tools may no longer read cannot be at its base.
@@ -596,6 +621,7 @@ class SharedToolBroker(ToolBroker):
                         "pending": relative in self._contents,
                         "mode": self._modes.get(relative),
                         "permissions": self._permissions.get(relative),
+                        **({"binary": True} if relative in self._binary else {}),
                     }
                     for relative, observation in sorted(self._observations.items())
                 ],
@@ -613,6 +639,7 @@ class SharedToolBroker(ToolBroker):
                 self._contents = {}
                 self._modes = {}
                 self._permissions = {}
+                self._binary = set()
                 return
             if (
                 not isinstance(state, dict)
@@ -629,8 +656,9 @@ class SharedToolBroker(ToolBroker):
             contents: dict[str, bytes | None] = {}
             modes: dict[str, str] = {}
             permissions: dict[str, int] = {}
+            binary: set[str] = set()
             for item in files:
-                if not isinstance(item, dict) or set(item) != (
+                if not isinstance(item, dict) or set(item) - {"binary"} != (
                     {
                         "path",
                         "base",
@@ -648,7 +676,11 @@ class SharedToolBroker(ToolBroker):
                     or relative in observations
                 ):
                     raise ValueError("saved shared workspace path is invalid")
-                self._target(relative)
+                self._target(relative, allow_symlink=True)
+                if type(item.get("binary", False)) is not bool:
+                    raise ValueError("saved binary flag is invalid")
+                if item.get("binary", False):
+                    binary.add(relative)
                 original = _decode(item["read_content"])
                 ensure_safe_content(original or b"")
                 base = _restore_identity(item["base"], original)
@@ -671,8 +703,16 @@ class SharedToolBroker(ToolBroker):
                     mode = item.get("mode") or (base.mode or REGULAR_MODE)
                     if content is None:
                         mode = ""
-                    if mode not in {"", DIRECTORY_MODE, REGULAR_MODE, EXECUTABLE_MODE}:
+                    if mode not in {
+                        "",
+                        DIRECTORY_MODE,
+                        REGULAR_MODE,
+                        EXECUTABLE_MODE,
+                        SYMLINK_MODE,
+                    }:
                         raise ValueError("invalid candidate mode")
+                    if mode == SYMLINK_MODE:
+                        self._validate_link(relative, content or b"")
                     modes[relative] = mode
                     outside = uncovered_paths(
                         self.scopes,
@@ -692,6 +732,7 @@ class SharedToolBroker(ToolBroker):
             self._contents = contents
             self._modes = modes
             self._permissions = permissions
+            self._binary = binary
 
     def _list_files(self, arguments: Mapping[str, object]) -> ToolOutcome:
         directory = self._directory(_string(arguments, "path", default="."))
@@ -1072,6 +1113,124 @@ class SharedToolBroker(ToolBroker):
                         found += 1
         return tree
 
+    def _typed_read(self, relative: str, *, symlink: bool = False) -> bytes | None:
+        self._target(relative, allow_symlink=symlink)
+        if self.usage.files_read >= self.limits.max_read_files:
+            raise WorkspaceBrokerError("this execution reached its file-read limit")
+        identity, content = self._observe(relative, typed=True)
+        if relative in self._contents:
+            content = self._contents[relative]
+            kind = (
+                ObjectKind.SYMLINK
+                if self._modes.get(relative) == SYMLINK_MODE
+                else ObjectKind.REGULAR
+            )
+        else:
+            kind = identity.kind
+        if kind not in {
+            ObjectKind.ABSENT,
+            ObjectKind.SYMLINK if symlink else ObjectKind.REGULAR,
+        }:
+            raise WorkspaceBrokerError("path has a different object type")
+        ensure_safe_content(content or b"")
+        if self.usage.bytes_read + len(content or b"") > self.limits.max_read_bytes:
+            raise WorkspaceBrokerError(
+                "this execution reached its total read-size limit"
+            )
+        self._remember(relative, identity, content)
+        self.usage.files_read += 1
+        self.usage.bytes_read += len(content or b"")
+        if self.on_read is not None:
+            self.on_read(relative, identity)
+        return content
+
+    def _read_binary(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        relative = normalize_changed_path(_string(arguments, "path"))
+        content = self._typed_read(relative)
+        if content is None:
+            return _error("file is absent")
+        result = _ok(base64.b64encode(content).decode("ascii"), self.limits)
+        self._binary.add(relative)
+        if len(base64.b64encode(content)) > self.limits.max_tool_output_bytes:
+            self._partial_reads.add(relative)
+        else:
+            self._partial_reads.discard(relative)
+        return result
+
+    def _read_symlink(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        relative = normalize_changed_path(_string(arguments, "path"))
+        content = self._typed_read(relative, symlink=True)
+        if content is None:
+            return _error("symlink is absent")
+        return _ok(content.decode("utf-8"), self.limits)
+
+    def _write_binary(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        relative = normalize_changed_path(_string(arguments, "path"))
+        encoded = _string(arguments, "content_base64")
+        if len(encoded) > 4 * (
+            (min(MAX_SHARED_TEXT_BYTES, self.limits.max_write_bytes) + 2) // 3
+        ):
+            return _error("binary content exceeds the per-file size limit")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            return _error("content_base64 must contain valid base64")
+        denied = self._write_denial(relative)
+        if denied:
+            return denied
+        if relative in self._partial_reads:
+            return _error(
+                "read the complete binary with read_binary before replacing it"
+            )
+        self._target(relative)
+        if relative not in self._observations:
+            identity, original = self._observe(relative, typed=True)
+            if not identity.absent:
+                return _error(
+                    "read the existing file with read_binary before replacing it"
+                )
+            self._remember(relative, identity, original)
+        if self._observations[relative].base.kind not in {
+            ObjectKind.ABSENT,
+            ObjectKind.REGULAR,
+        }:
+            return _error("binary replacement requires a regular file")
+        self._parents(relative)
+        result = self._stage(relative, content)
+        if not result.is_error:
+            self._binary.add(relative)
+        return result
+
+    def _validate_link(self, relative: str, content: bytes) -> None:
+        destination = validate_symlink_target(self.worktree, relative, content)
+        denied = self._write_denial(destination)
+        if denied is not None:
+            raise WorkspaceBrokerError("symlink target must be within scope")
+        self._target(destination)
+
+    def _write_symlink(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        relative = normalize_changed_path(_string(arguments, "path"))
+        content = _string(arguments, "target").encode("utf-8")
+        denied = self._write_denial(relative)
+        if denied:
+            return denied
+        self._target(relative, allow_symlink=True)
+        self._validate_link(relative, content)
+        if relative not in self._observations:
+            identity, original = self._observe(relative, typed=True)
+            if not identity.absent:
+                return _error(
+                    "read the existing link with read_symlink before retargeting it"
+                )
+            self._remember(relative, identity, original)
+        if self._observations[relative].base.kind not in {
+            ObjectKind.ABSENT,
+            ObjectKind.SYMLINK,
+        }:
+            return _error("symlink replacement requires an absent path or symlink")
+        self._parents(relative)
+        return self._stage(relative, content, mode=SYMLINK_MODE)
+
     def _write_file(self, arguments: Mapping[str, object]) -> ToolOutcome:
         relative = normalize_changed_path(_string(arguments, "path"))
         if relative in self._partial_reads:
@@ -1129,10 +1288,28 @@ class SharedToolBroker(ToolBroker):
             return _ok("(no changes yet)", self.limits)
         diffs: list[str] = []
         for relative, content in sorted(self._contents.items()):
-            self._target(relative)
+            self._target(relative, allow_symlink=True)
             observed = self._observations[relative]
             ensure_safe_content(observed.content or b"")
             ensure_safe_content(content or b"")
+            if (
+                relative in self._binary
+                or _binary_content(observed.content)
+                or _binary_content(content)
+            ):
+                diffs.append(
+                    f"Binary change {relative}: {len(observed.content or b'')} -> "
+                    f"{len(content or b'')} bytes\n"
+                )
+                continue
+            if (
+                observed.base.kind is ObjectKind.SYMLINK
+                or self._modes.get(relative) == SYMLINK_MODE
+            ):
+                diffs.append(
+                    f"Symlink {relative}: {observed.content!r} -> {content!r}\n"
+                )
+                continue
             diffs.extend(
                 difflib.unified_diff(
                     (observed.content or b"").decode("utf-8").splitlines(keepends=True),
@@ -1158,7 +1335,9 @@ class SharedToolBroker(ToolBroker):
             denial = self._write_denial(candidate.relative_path)
             if denial is not None:
                 return denial
-            identity, _ = read_identified_path(self._target(candidate.relative_path))
+            identity, _ = read_identified_path(
+                self._target(candidate.relative_path, allow_symlink=True)
+            )
             if identity != candidate.base:
                 conflicts.append(candidate.relative_path)
         if conflicts:
@@ -1220,11 +1399,18 @@ class SharedToolBroker(ToolBroker):
         denied = self._write_denial(relative)
         if denied:
             return denied
+        identity, _ = self._observe(relative, typed=True)
         if (
-            self._read(relative, pin_observation=relative in self._partial_reads)
+            self._typed_read(
+                relative,
+                symlink=self._modes.get(relative) == SYMLINK_MODE
+                or identity.kind is ObjectKind.SYMLINK,
+            )
             is None
         ):
             return _error("file is absent")
+        if _binary_content(self._observations[relative].content):
+            self._binary.add(relative)
         return self._stage(relative, None)
 
     def _rename_file(self, arguments: Mapping[str, object]) -> ToolOutcome:
@@ -1288,6 +1474,12 @@ class SharedToolBroker(ToolBroker):
                     content.decode("utf-8")
                 except UnicodeDecodeError as exc:
                     raise WorkspaceBrokerError(f"{relative} is not UTF-8 text") from exc
+        if self._modes.get(relative) == SYMLINK_MODE or (
+            identity is not None and identity.kind is ObjectKind.SYMLINK
+        ):
+            raise WorkspaceBrokerError("use read_symlink for link targets")
+        if _binary_content(content):
+            raise WorkspaceBrokerError("use read_binary for binary content")
         ensure_safe_content(content or b"")
         size = len(content) if content is not None else 0
         if charge and self.usage.bytes_read + size > self.limits.max_read_bytes:
@@ -1322,7 +1514,9 @@ class SharedToolBroker(ToolBroker):
         ):
             return _error("that content exceeds the shared per-file size limit")
         proposed = dict(self._contents)
-        if content == self._observations[relative].content:
+        if content == self._observations[relative].content and (
+            mode is None or mode == self._observations[relative].base.mode
+        ):
             proposed.pop(relative, None)
         else:
             proposed[relative] = content
@@ -1345,15 +1539,24 @@ class SharedToolBroker(ToolBroker):
         )
 
     def _observe(
-        self, relative: str, *, check_ignored: bool = True, screen: bool = True
+        self,
+        relative: str,
+        *,
+        check_ignored: bool = True,
+        screen: bool = True,
+        typed: bool = False,
     ) -> tuple[FileIdentity, bytes | None]:
         """Read one path; ``screen=False`` leaves secret screening to the caller."""
 
-        identity, content = read_identified_path(
-            self._target(relative, check_ignored=check_ignored),
+        identity, content = read_candidate_path(
+            self._target(relative, check_ignored=check_ignored, allow_symlink=typed),
             max_bytes=MAX_SHARED_TEXT_BYTES,
         )
-        if identity.kind not in {ObjectKind.ABSENT, ObjectKind.REGULAR}:
+        if identity.kind not in {
+            ObjectKind.ABSENT,
+            ObjectKind.REGULAR,
+            *([ObjectKind.SYMLINK] if typed else []),
+        }:
             raise WorkspaceBrokerError(f"{relative} is not a regular source file")
         if screen:
             ensure_safe_content(content or b"")
@@ -1365,6 +1568,7 @@ class SharedToolBroker(ToolBroker):
         *,
         check_ignored: bool = True,
         remaining: Callable[[], float] | None = None,
+        allow_symlink: bool = False,
     ) -> Path:
         target = candidate_target(self.worktree, relative)
         current = self.worktree
@@ -1372,7 +1576,7 @@ class SharedToolBroker(ToolBroker):
             current /= component
             if (current / ".git").exists():
                 raise WorkspaceBrokerError("tools cannot enter a nested repository")
-        if target.is_symlink():
+        if target.is_symlink() and not allow_symlink:
             raise WorkspaceBrokerError("tools cannot follow repository symlinks")
         if check_ignored and relative in self._ignored_paths(
             [relative], remaining=remaining
@@ -1502,9 +1706,8 @@ def _decode(value: object) -> bytes | None:
         raise ValueError("saved shared workspace content is invalid or too large")
     try:
         content = base64.b64decode(value, validate=True)
-        content.decode("utf-8")
-    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
-        raise ValueError("saved shared workspace content is not encoded UTF-8") from exc
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("saved shared workspace content is not valid base64") from exc
     if len(content) > MAX_SHARED_TEXT_BYTES:
         raise ValueError("saved shared workspace content exceeds its file limit")
     return content
@@ -1548,14 +1751,30 @@ def _restore_identity(value: object, content: bytes | None) -> FileIdentity:
             raise ValueError("saved absent file identity is inconsistent")
         return ABSENT
     if (
-        kind != str(ObjectKind.REGULAR)
-        or mode not in (REGULAR_MODE, EXECUTABLE_MODE)
+        kind not in (str(ObjectKind.REGULAR), str(ObjectKind.SYMLINK))
+        or (
+            kind == str(ObjectKind.REGULAR)
+            and mode not in (REGULAR_MODE, EXECUTABLE_MODE)
+        )
+        or (kind == str(ObjectKind.SYMLINK) and mode != SYMLINK_MODE)
         or content is None
         or size != len(content)
-        or digest != content_identity(ObjectKind.REGULAR, mode, content)
+        or digest != content_identity(ObjectKind(kind), mode, content)
     ):
         raise ValueError("saved shared file identity does not match its read content")
-    return FileIdentity(ObjectKind.REGULAR, mode, digest, size, permissions)
+    return FileIdentity(ObjectKind(kind), mode, digest, size, permissions)
 
 
 __all__ = ["SharedToolBroker"]
+
+
+def _binary_content(content: bytes | None) -> bool:
+    if content is None:
+        return False
+    if b"\x00" in content:
+        return True
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False

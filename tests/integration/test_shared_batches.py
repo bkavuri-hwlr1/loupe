@@ -441,3 +441,105 @@ def test_unreadable_or_nontext_preflight_is_durable_divergence(
     assert (env.repository / "a.txt").read_bytes() == b"old a\n"
     assert (env.repository / "docs/b.txt").read_bytes() == b"\xff"
     assert _events(env) == 0
+
+
+@pytest.mark.parametrize(
+    "operation", ["link_create", "link_retarget", "link_delete", "binary"]
+)
+def test_typed_publication_crash_recovery_and_reverse_batch(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    from llm_cli.workspace.batches import result_identity
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    path = env.repository / "typed"
+    original: bytes | None = None
+    if operation in {"link_retarget", "link_delete"}:
+        path.symlink_to("a.txt")
+        original = b"a.txt"
+    elif operation == "binary":
+        original = b"\x00\xffbefore"
+        path.write_bytes(original)
+    content = (
+        None
+        if operation == "link_delete"
+        else b"\xff\x00after"
+        if operation == "binary"
+        else b"docs/b.txt"
+    )
+    mode = (
+        ""
+        if content is None
+        else REGULAR_MODE
+        if operation == "binary"
+        else SYMLINK_MODE
+    )
+    candidate = BatchFile(
+        "typed",
+        identify_path(path),
+        content,
+        mode,
+        original,
+        binary=operation == "binary",
+    )
+    with monkeypatch.context() as patch:
+
+        def crash(*args: Any) -> None:
+            raise RuntimeError("crash before journal confirmation")
+
+        patch.setattr(env.publisher, "_confirm", crash)
+        with pytest.raises(RuntimeError):
+            env.publisher.publish("typed", "first", (candidate,), ("*",))
+    assert env.publisher.recover("typed")[0].state == "published"
+    assert identify_path(path) == result_identity(candidate)
+    inverse = BatchFile(
+        "typed",
+        result_identity(candidate),
+        original,
+        candidate.base.mode,
+        content,
+        binary=operation == "binary",
+    )
+    assert (
+        env.publisher.publish("undo-typed", "first", (inverse,), ("*",)).state
+        == "published"
+    )
+    assert identify_path(path) == candidate.base
+
+
+@pytest.mark.parametrize(
+    "target", [b"../outside", b"/tmp/outside", b".git/config", b"jump/file"]
+)
+def test_symlink_publisher_rejects_escaping_or_chained_targets(
+    batch_env: BatchEnvironment, target: bytes
+) -> None:
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    (env.repository / "jump").symlink_to(env.repository.parent)
+    item = BatchFile("link", ABSENT, target, SYMLINK_MODE)
+    with pytest.raises(WorkspaceBrokerError):
+        env.publisher.publish("escape", "first", (item,), ("*",))
+    assert not (env.repository / "link").is_symlink()
+
+
+def test_symlink_recovery_refuses_changed_target_parent(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    item = BatchFile("link", ABSENT, b"docs/b.txt", SYMLINK_MODE)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            batches,
+            "atomic_replace_symlink",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("crash")),
+        )
+        with pytest.raises(RuntimeError):
+            env.publisher.publish("link", "first", (item,), ("*",))
+    (env.repository / "docs").rename(env.repository / "old-docs")
+    (env.repository / "docs").symlink_to(env.repository.parent)
+    assert env.publisher.recover("link")[0].state == "operator_attention"
+    assert not (env.repository / "link").is_symlink()
