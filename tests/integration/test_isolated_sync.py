@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,10 +47,9 @@ def env(
     primary = repository_factory(
         tmp_path, {"a.txt": "first\nmiddle\nlast\n", "b.txt": "before\n"}
     )
-    local = tmp_path / "isolated"
-    local.mkdir()
-    for path in ("a.txt", "b.txt"):
-        (local / path).write_bytes((primary / path).read_bytes())
+    local = repository_factory(
+        tmp_path / "private", {"a.txt": "first\nmiddle\nlast\n", "b.txt": "before\n"}
+    )
     store = ControlStore(tmp_path / "control.sqlite3")
     store.initialize()
     registered = store.register_repository(
@@ -91,7 +90,7 @@ def env(
         )
     publisher = SharedBatchPublisher(store, tmp_path / "candidates", threading.RLock())
 
-    def capture(root: Path) -> Manifest:
+    def capture(root: Path, protected_paths: Sequence[str] = ()) -> Manifest:
         manifest: Manifest = {}
         for path in root.rglob("*"):
             if (
@@ -296,3 +295,20 @@ def test_incoming_symlink_is_recreated_without_following_its_target(
     assert (env.local / "source-link").is_symlink()
     assert (env.local / "source-link").readlink() == Path("a.txt")
     assert env.sync.publication_files(env.workspace_id, ()) == ()
+
+
+def test_incoming_policy_exclusion_precedes_local_secret_artifact_read(
+    env: Environment, tmp_path: Path, git_run: Callable[..., str]
+) -> None:
+    protected = b"unknown-private-value-after-policy-change"
+    (env.local / "a.txt").write_bytes(protected)
+    excludes = tmp_path / "source-excludes"
+    excludes.write_text("a.txt\n")
+    git_run(env.local, "config", "core.excludesFile", str(excludes))
+    env.publish("incoming", {"a.txt": b"shared source update\n"})
+    artifact = env.publisher.candidate_dir / hashlib.sha256(protected).hexdigest()
+    assert not artifact.exists()
+    with pytest.raises(WorkspaceBrokerError, match="excluded"):
+        env.sync.synchronize(env.workspace_id)
+    assert not artifact.exists()
+    assert (env.local / "a.txt").read_bytes() == protected

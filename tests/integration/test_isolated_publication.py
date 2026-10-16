@@ -233,3 +233,98 @@ def test_publication_preserves_private_edit_made_after_candidate_freeze(
             service.close()
 
     asyncio.run(scenario())
+
+
+def test_declassified_hydrated_runtime_is_refused_before_source_artifact_capture(
+    tmp_path: Path, repository_factory: Any, service_factory: Any
+) -> None:
+    from llm_cli.errors import LlmCoordError
+
+    async def scenario() -> None:
+        root = repository_factory(
+            tmp_path, {"a.py": "source\n", ".gitignore": "settings.local\n"}
+        )
+        runtime = b"unknown-private-runtime-value"
+        (root / "settings.local").write_bytes(runtime)
+        provider = ScriptedProvider("isolated", [])
+        service = service_factory(tmp_path)
+        _register(service, provider)
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(root)}))
+        credentials, private = await open_session(service, root, provider.model)
+        try:
+            session = service.store.get_session(credentials["session_id"])
+            assert session is not None and session.workspace_id is not None
+            service.shared_runner._prepare_isolated(session.workspace_id)
+            (root / ".gitignore").write_text("")
+            artifact = (
+                service.shared_runner.publisher.candidate_dir
+                / hashlib.sha256(runtime).hexdigest()
+            )
+            assert not artifact.exists()
+            with pytest.raises(LlmCoordError, match="runtime"):
+                service.shared_runner.isolated_sync.synchronize(session.workspace_id)
+            assert not artifact.exists()
+            assert (private / "settings.local").read_bytes() == runtime
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
+
+
+def test_private_sync_failure_does_not_fail_confirmed_publication_or_recovery(
+    tmp_path: Path,
+    repository_factory: Any,
+    service_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_cli.workspace.broker import WorkspaceBrokerError
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "original\n"})
+        provider = ScriptedProvider(
+            "isolated",
+            [
+                _tools(
+                    _call("read_file", path="a.py"),
+                    _call("write_file", path="a.py", content="published\n"),
+                ),
+                _finish(),
+            ],
+        )
+        service = service_factory(tmp_path)
+        _register(service, provider)
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(root)}))
+        credentials, private = await open_session(service, root, provider.model)
+        synchronize = service.shared_runner.isolated_sync.synchronize
+
+        def sync(workspace_id: str) -> Any:
+            if (root / "a.py").read_text() == "published\n":
+                raise WorkspaceBrokerError("private writer needs recovery")
+            return synchronize(workspace_id)
+
+        monkeypatch.setattr(service.shared_runner.isolated_sync, "synchronize", sync)
+        try:
+            await asyncio.wait_for(
+                await _start(service, root, credentials, "task", ("*",)), 30
+            )
+            _assert_completed(service, "task")
+            assert (root / "a.py").read_text() == "published\n"
+            assert (private / "a.py").read_text() == "original\n"
+            assert any(
+                event.event_type == "workspace.isolated_sync_pending"
+                for event in service.store.list_task_events("task")
+            )
+            with service.store.connection() as con:
+                con.execute(
+                    "UPDATE task_executions SET state='publishing',"
+                    "boot_id='prior-boot' WHERE task_id='task'"
+                )
+            outcomes = service.shared_runner.recover(lambda driver: None)
+            assert len(outcomes) == 1 and outcomes[0].resolution == "confirmed"
+            _assert_completed(service, "task")
+        finally:
+            service.close()
+
+    asyncio.run(scenario())

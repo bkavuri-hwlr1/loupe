@@ -17,8 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from llm_cli.agent.source_policy import ensure_safe_content
+from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
 from llm_cli.coordination.scopes import normalize_changed_path
+from llm_cli.errors import LlmCoordError
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.batches import (
@@ -141,7 +142,7 @@ class IsolatedSynchronizer:
         self,
         store: ControlStore,
         publisher: SharedBatchPublisher,
-        capture: Callable[[Path], Manifest],
+        capture: Callable[[Path, Sequence[str]], Manifest],
         validate: Callable[[str], object] | None = None,
     ) -> None:
         self.store = store
@@ -278,7 +279,9 @@ class IsolatedSynchronizer:
         """Reconcile exact source bytes changed without a reconstructible batch."""
         state = self._state(workspace_id)
         baseline: Manifest = json.loads(state["manifest_json"])
-        primary = self.capture(Path(state["source_path"]))
+        primary = self.capture(
+            Path(state["source_path"]), tuple(json.loads(state["runtime_paths_json"]))
+        )
         files = []
         for path in sorted(baseline.keys() | primary.keys()):
             if self._runtime(path, state):
@@ -338,7 +341,12 @@ class IsolatedSynchronizer:
         applied: list[str] = []
         merged: list[str] = []
         conflicts: list[str] = []
-        for incoming in _journal_files(request_json):
+        incoming_files = _journal_files(request_json)
+        if excluded_paths(root, [item.relative_path for item in incoming_files]):
+            raise WorkspaceBrokerError(
+                "incoming source is excluded by the current isolated policy"
+            )
+        for incoming in incoming_files:
             path = incoming.relative_path
             if self._runtime(path, state):
                 raise WorkspaceBrokerError(
@@ -589,7 +597,10 @@ class IsolatedSynchronizer:
         with self.publisher.lock:
             state = self._state(workspace_id)
             baseline: Manifest = json.loads(state["manifest_json"])
-            local = self.capture(Path(state["canonical_path"]))
+            local = self.capture(
+                Path(state["canonical_path"]),
+                tuple(json.loads(state["runtime_paths_json"])),
+            )
             for item in overlay:
                 if self._runtime(item.relative_path, state):
                     raise WorkspaceBrokerError("isolated edit overlaps runtime data")
@@ -700,8 +711,31 @@ class IsolatedSynchronizer:
             if publication.state == "published":
                 session = self.store.get_session(session_id)
                 assert session is not None and session.workspace_id is not None
-                self.synchronize(session.workspace_id)
+                self.after_publication(batch_id, session.workspace_id)
             return publication
+
+    def after_publication(self, batch_id: str, workspace_id: str) -> None:
+        """Private catch-up cannot turn a confirmed shared publication into failure."""
+        try:
+            self.synchronize(workspace_id)
+        except (ValueError, OSError, LlmCoordError):
+            with self.store.connection() as con:
+                execution = con.execute(
+                    "SELECT task_id FROM task_executions WHERE execution_id=?",
+                    (batch_id,),
+                ).fetchone()
+            if execution is not None:
+                self.store.record_task_event(
+                    claim_id=None,
+                    task_id=str(execution["task_id"]),
+                    event_type="workspace.isolated_sync_pending",
+                    payload={
+                        "message": (
+                            "Published to the shared checkout; "
+                            "private synchronization needs recovery."
+                        )
+                    },
+                )
 
 
 def _sync_parent(path: Path) -> None:

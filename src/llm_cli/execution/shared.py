@@ -89,7 +89,9 @@ class SharedTaskExecutionRunner:
         self.isolated_sync = IsolatedSynchronizer(
             self.store,
             publisher,
-            lambda root: capture_source(root, publisher.candidate_dir),
+            lambda root, protected: capture_source(
+                root, publisher.candidate_dir, protected_paths=protected
+            ),
             self._validate_isolated,
         )
         self.workflow.isolated_sync = self.isolated_sync
@@ -984,10 +986,16 @@ class SharedTaskExecutionRunner:
             resolution = "operator_attention"
             try:
                 workspace = self.store.get_workspace(execution.workspace_id or "")
-                if workspace and workspace.mode == "isolated":
+                batch = self.publisher.get(execution.execution_id)
+                if (
+                    workspace
+                    and workspace.mode == "isolated"
+                    and not (
+                        batch is not None and batch.state in {"published", "diverged"}
+                    )
+                ):
                     self._prepare_isolated(workspace.workspace_id)
                     self.isolated_sync.synchronize(workspace.workspace_id)
-                batch = self.publisher.get(execution.execution_id)
                 if batch is not None and batch.state in {"published", "diverged"}:
                     self._finish_interrupted_response(
                         execution,
@@ -1000,6 +1008,14 @@ class SharedTaskExecutionRunner:
                     resolution = (
                         "confirmed" if batch.state == "published" else "failed_safe"
                     )
+                    if (
+                        workspace
+                        and workspace.mode == "isolated"
+                        and batch.state == "published"
+                    ):
+                        self.isolated_sync.after_publication(
+                            execution.execution_id, workspace.workspace_id
+                        )
                 elif batch is not None:
                     self.store.update_execution(
                         execution.execution_id,
