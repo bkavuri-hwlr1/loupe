@@ -1146,12 +1146,28 @@ class SharedToolBroker(ToolBroker):
 
     def _read_binary(self, arguments: Mapping[str, object]) -> ToolOutcome:
         relative = normalize_changed_path(_string(arguments, "path"))
+        metadata_only = arguments.get("metadata_only", False)
+        if not isinstance(metadata_only, bool):
+            return _error("metadata_only must be a boolean")
         content = self._typed_read(relative)
         if content is None:
             return _error("file is absent")
-        result = _ok(base64.b64encode(content).decode("ascii"), self.limits)
+        rendered = (
+            json.dumps(
+                {
+                    "path": relative,
+                    "bytes": len(content),
+                    "base_identity": self._observations[relative].base.digest,
+                    "encoding": "binary",
+                    "replacement_base_captured": True,
+                }
+            )
+            if metadata_only
+            else base64.b64encode(content).decode("ascii")
+        )
+        result = _ok(rendered, self.limits)
         self._binary.add(relative)
-        if len(base64.b64encode(content)) > self.limits.max_tool_output_bytes:
+        if len(rendered.encode("utf-8")) > self.limits.max_tool_output_bytes:
             self._partial_reads.add(relative)
         else:
             self._partial_reads.discard(relative)
@@ -1228,6 +1244,8 @@ class SharedToolBroker(ToolBroker):
             ObjectKind.SYMLINK,
         }:
             return _error("symlink replacement requires an absent path or symlink")
+        if self._observations[relative].base.kind is ObjectKind.SYMLINK:
+            self._validate_link(relative, self._observations[relative].content or b"")
         self._parents(relative)
         return self._stage(relative, content, mode=SYMLINK_MODE)
 
@@ -1409,6 +1427,8 @@ class SharedToolBroker(ToolBroker):
             is None
         ):
             return _error("file is absent")
+        if self._observations[relative].base.kind is ObjectKind.SYMLINK:
+            self._validate_link(relative, self._observations[relative].content or b"")
         if _binary_content(self._observations[relative].content):
             self._binary.add(relative)
         return self._stage(relative, None)

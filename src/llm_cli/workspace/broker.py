@@ -147,6 +147,13 @@ def validate_symlink_target(root: Path, relative_path: str, content: bytes) -> s
         raise WorkspaceBrokerError(
             "symlink target escapes the checkout or a protected path"
         ) from exc
+    from llm_cli.agent.source_policy import _private_path
+
+    if _private_path(destination) or any(
+        part in {".loupe", ".llm-coord", ".codex", ".agents"}
+        for part in Path(destination).parts
+    ):
+        raise WorkspaceBrokerError("symlink target is a protected path")
     target = root
     for part in Path(destination).parts:
         target /= part
@@ -190,7 +197,7 @@ def atomic_replace_symlink(
         temporary.unlink()
     elif temporary.exists():
         raise WorkspaceBrokerError("symlink staging path has an unexpected type")
-    parent_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    parent_fd = _open_publication_parent(checkout_root, relative_path)
     try:
         os.symlink(os.fsdecode(content), temporary)
         _fsync_directory(stage_root)
@@ -273,8 +280,10 @@ def atomic_replace_regular_file(
         raise WorkspaceBrokerError(
             "a prior publication with this ID still needs recovery"
         ) from None
+    parent_fd: int | None = None
     try:
         with os.fdopen(descriptor, "wb") as handle:
+            parent_fd = _open_publication_parent(checkout_root, relative_path)
             handle.write(content)
             handle.flush()
             workspace_target(checkout_root, relative_path)
@@ -330,11 +339,59 @@ def atomic_replace_regular_file(
                 )
             ):
                 raise WorkspaceBrokerError("publication target changed during staging")
-            os.replace(temporary, target)
-        _fsync_directory(target.parent)
+            current_parent = target.parent.stat()
+            opened_parent = os.fstat(parent_fd)
+            if (current_parent.st_dev, current_parent.st_ino) != (
+                opened_parent.st_dev,
+                opened_parent.st_ino,
+            ):
+                raise WorkspaceBrokerError("publication parent changed during staging")
+            os.replace(temporary, target.name, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
     except BaseException:
         with suppress(FileNotFoundError):
             temporary.unlink()
+        raise
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
+def atomic_delete_file(root: Path, relative_path: str, expected: FileIdentity) -> None:
+    """Delete the observed leaf through pinned real parents, never its referent."""
+    target = workspace_target(root, relative_path)
+    parent_fd = _open_publication_parent(root, relative_path)
+    try:
+        if read_candidate_path(target)[0] != expected:
+            raise WorkspaceBrokerError("file base changed before deletion")
+        workspace_target(root, relative_path)
+        current_parent = target.parent.stat()
+        opened_parent = os.fstat(parent_fd)
+        if (current_parent.st_dev, current_parent.st_ino) != (
+            opened_parent.st_dev,
+            opened_parent.st_ino,
+        ):
+            raise WorkspaceBrokerError("publication parent changed before deletion")
+        os.unlink(target.name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _open_publication_parent(root: Path, relative_path: str) -> int:
+    """Pin every parent component without following replacement directory links."""
+    parts = Path(normalize_changed_path(relative_path)).parts[:-1]
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts:
+            child = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
+            )
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
         raise
 
 

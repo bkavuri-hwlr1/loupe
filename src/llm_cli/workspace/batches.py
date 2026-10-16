@@ -30,6 +30,7 @@ from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
     WorkspaceBrokerError,
+    atomic_delete_file,
     atomic_replace_regular_file,
     atomic_replace_symlink,
     candidate_content_hash,
@@ -286,6 +287,14 @@ def _request(
             != item.base.digest
         ):
             raise WorkspaceBrokerError("original bytes do not match the observed base")
+        if (
+            (item.binary or item.base.kind is ObjectKind.SYMLINK)
+            and not item.base.absent
+            and item.original is None
+        ):
+            raise WorkspaceBrokerError(
+                "typed edits must retain the original bytes for undo"
+            )
         body = item.content or b""
         if (item.content is None) != (item.mode == ""):
             raise WorkspaceBrokerError("deletion requires absent result mode")
@@ -309,6 +318,12 @@ def _request(
             raise WorkspaceBrokerError("batch exceeds the 4 MiB aggregate byte limit")
         result = result_identity(item)
         _validate_base(result)
+        if (
+            not item.base.absent
+            and not result.absent
+            and result.kind is not item.base.kind
+        ):
+            raise WorkspaceBrokerError("batch cannot change the object type in place")
         encoded.append(
             {
                 "relative_path": path,
@@ -481,10 +496,26 @@ class SharedBatchPublisher:
                     )
                 root = Path(str(binding["canonical_path"]))
                 for item in files:
+                    if item.base.kind is ObjectKind.SYMLINK:
+                        previous = validate_symlink_target(
+                            root, item.relative_path, item.original or b""
+                        )
+                        _require_link_source(root, previous)
+                        if uncovered_paths(
+                            scopes,
+                            (previous,),
+                            case_insensitive_filesystem=bool(
+                                binding["path_case_insensitive"]
+                            ),
+                        ):
+                            raise WorkspaceBrokerError(
+                                "original symlink target is outside scopes"
+                            )
                     if item.mode == SYMLINK_MODE:
                         destination = validate_symlink_target(
                             root, item.relative_path, item.content or b""
                         )
+                        _require_link_source(root, destination)
                         if uncovered_paths(
                             scopes,
                             (destination,),
@@ -700,7 +731,21 @@ class SharedBatchPublisher:
                     else b""
                 )
                 if item.result.kind is ObjectKind.SYMLINK:
-                    validate_symlink_target(root, item.relative_path, body)
+                    destination = validate_symlink_target(
+                        root, item.relative_path, body
+                    )
+                    _require_link_source(root, destination)
+                    scopes = json.loads(str(row["request_json"]))["scopes"]
+                    if uncovered_paths(
+                        scopes,
+                        (destination,),
+                        case_insensitive_filesystem=bool(
+                            binding["path_case_insensitive"]
+                        ),
+                    ):
+                        raise WorkspaceBrokerError(
+                            "stored symlink target is outside batch scopes"
+                        )
                 if item.result.kind in {ObjectKind.REGULAR, ObjectKind.SYMLINK} and (
                     len(body) != item.result.size
                     or content_identity(item.result.kind, item.result.mode, body)
@@ -754,7 +799,8 @@ class SharedBatchPublisher:
                     if item.base.kind is ObjectKind.DIRECTORY_MARKER:
                         target.rmdir()
                     else:
-                        target.unlink()
+                        atomic_delete_file(root, item.relative_path, item.base)
+                        continue
                     _sync_parent(target)
                     continue
                 if item.result.kind is ObjectKind.SYMLINK:
@@ -855,3 +901,10 @@ def _sync_parent(target: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _require_link_source(root: Path, destination: str) -> None:
+    from llm_cli.agent.source_policy import excluded_paths
+
+    if destination in excluded_paths(root, [destination]):
+        raise WorkspaceBrokerError("symlink target is excluded source")
