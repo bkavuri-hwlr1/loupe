@@ -565,6 +565,7 @@ class IsolatedSynchronizer:
                         store_candidate_content(
                             self.publisher.candidate_dir, item.content
                         ),
+                        item.binary,
                     )
             # Directory operations have identities in incoming batches, while
             # the source scanner inventories leaves. Keep existing directories.

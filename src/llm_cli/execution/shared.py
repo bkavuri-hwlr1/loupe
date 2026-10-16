@@ -317,10 +317,14 @@ class SharedTaskExecutionRunner:
                 if isinstance(deadline_value, (float, int))
                 else time.time() + self.lifecycle.limits.wall_clock_seconds
             )
+            verification_root = (
+                Path(checkout.canonical_path) if isolated else broker.worktree
+            )
+            runtime_root = broker.worktree if isolated else None
             checker = CheckRunner(
                 self.workflow,
                 row,
-                broker.worktree,
+                verification_root,
                 self.lifecycle.managed_worktree_root.parent / "check-worktrees",
                 candidate_files,
                 lambda: (
@@ -332,6 +336,7 @@ class SharedTaskExecutionRunner:
                 deadline_at=deadline_at,
                 on_result=broker.record_check,
                 suppress_output=bool(runtime_files),
+                runtime_root=runtime_root,
             )
             checked = bool(checker.config.get("checks"))
             if row["agent_mode"] != "plan":
@@ -523,7 +528,9 @@ class SharedTaskExecutionRunner:
                             )
                         )
                     candidate = digest(encode_files(files))
-                    source = verification_identity(broker.worktree, checker.config)
+                    source = verification_identity(
+                        verification_root, checker.config, runtime_root=runtime_root
+                    )
                     with self.store.connection() as connection:
                         checks = connection.execute(
                             "SELECT name,state,exit_code,output,truncated FROM "
@@ -649,7 +656,11 @@ class SharedTaskExecutionRunner:
                         and bool(
                             broker.stale_paths()
                             or not verification_current(
-                                self.store, row, broker.worktree, files
+                                self.store,
+                                row,
+                                verification_root,
+                                files,
+                                runtime_root=runtime_root,
                             )
                         )
                     )
@@ -664,13 +675,21 @@ class SharedTaskExecutionRunner:
                             and (
                                 row["publish_mode"] == "review"
                                 or not verification_current(
-                                    self.store, row, broker.worktree, files
+                                    self.store,
+                                    row,
+                                    verification_root,
+                                    files,
+                                    runtime_root=runtime_root,
                                 )
                             )
                         )
                     )
                     verification = verification_status(
-                        self.store, row, broker.worktree, files
+                        self.store,
+                        row,
+                        verification_root,
+                        files,
+                        runtime_root=runtime_root,
                     )
                     outcome = "held_for_review"
                     if not hold:
@@ -683,7 +702,9 @@ class SharedTaskExecutionRunner:
                         if not files:
                             outcome = "no_changes"
                         else:
-                            publication = (self.isolated_sync if isolated else self.publisher).publish(
+                            publication = (
+                                self.isolated_sync if isolated else self.publisher
+                            ).publish(
                                 execution.execution_id,
                                 session.session_id,
                                 files,
@@ -710,9 +731,7 @@ class SharedTaskExecutionRunner:
                     publication=outcome,
                     verification=verification,
                     completion="cancelled" if stopped else run.outcome,
-                    changed_paths=tuple(
-                        sorted(file.relative_path for file in files)
-                    ),
+                    changed_paths=tuple(sorted(file.relative_path for file in files)),
                 ),
             )
             with self.publisher.lock:
@@ -790,7 +809,11 @@ class SharedTaskExecutionRunner:
                         task.task_id, task.attempt, execution.execution_id, files
                     )
                     verification = verification_status(
-                        self.store, row, broker.worktree, files
+                        self.store,
+                        row,
+                        verification_root,
+                        files,
+                        runtime_root=runtime_root,
                     )
                     self.workflow.hold(
                         task.task_id,
@@ -798,9 +821,7 @@ class SharedTaskExecutionRunner:
                         execution.execution_id,
                         cancelled=self.workflow.stopped(task.task_id, task.attempt),
                         completion_outcome=(
-                            "cancelled"
-                            if isinstance(exc, TaskCancelled)
-                            else "failed"
+                            "cancelled" if isinstance(exc, TaskCancelled) else "failed"
                         ),
                         verification=verification,
                         file_count=len(files),
@@ -816,9 +837,7 @@ class SharedTaskExecutionRunner:
                     # A diverged batch settles without an answer, so a
                     # response that cannot be finished must not block it.
                     with suppress(ValueError, LlmCoordError):
-                        self._finish_interrupted_response(
-                            fresh, batch.state, driver
-                        )
+                        self._finish_interrupted_response(fresh, batch.state, driver)
                     self.coordinator.settle_shared_execution(
                         execution.execution_id, outcome=batch.state
                     )
