@@ -1,10 +1,11 @@
 # Isolated workspaces
 
 An isolated conversation uses a private linked worktree containing the selected
-checkout's current source. Opening it preserves dirty tracked files, staged
-versus working-tree differences, deleted files, ordinary untracked files,
-contained source symlinks, and binary source. It does not change the primary
-checkout's files, index, branch, or HEAD.
+checkout's current source. Opening it copies current working bytes, including
+dirty tracked files, deletions, ordinary untracked files, contained source
+symlinks, and binary source. The primary checkout's files, index, branch, and
+HEAD stay unchanged. The private index starts at the selected HEAD; it does
+not reproduce the primary checkout's staged-versus-unstaged split.
 
 ```sh
 loupe workspace hydrate . --plan
@@ -81,13 +82,27 @@ runtime hydrated, then ready. After a daemon crash, a ready workspace is reopene
 only when its exact registered worktree, base HEAD, lock, and private ownership
 marker still match. Runtime exclusions are restored before model access.
 
-An incomplete creation is cleaned only when all existing paths are recognized
+An incomplete creation is retired only when its existing paths are recognized
 creation output: source matches its retained ordinary artifacts and runtime
-matches the primary input still available for comparison. Unknown files,
-directories, links, changed runtime, or ownership ambiguity preserve the entire
-worktree and quarantine its record. Recovery never recursively deletes an
-unregistered user path. Successfully cleaned creations can be retried with the
-same session ID.
+matches the primary input still available for comparison. A crash between Git
+registration and the private ownership marker can be recovered when the worktree
+is empty apart from its Git pointer and has the expected private lock reason.
+
+Recovery first moves recognized files through no-follow directory descriptors
+into a private `.recovery-WORKSPACE_ID/files/` archive under Loupe's managed
+worktree directory. It retains these bytes, including later writes through an
+already-open file descriptor, and removes only empty directories. A crash after
+moving a nested file can resume from the archive without requiring the original
+name to remain present. The archive persists after successful retirement and is
+not automatically deleted; it may contain private runtime inputs. It is outside
+source artifacts and model tools, under a directory accessible only to its owner.
+
+Unknown files, directories, links, changed bytes, or ambiguous ownership stop
+recovery. The worktree and any already-archived files are preserved, and the
+workspace is quarantined with the archive location in its reason. Newly added
+files and replacements discovered during cleanup are preserved too. Recovery
+never recursively removes a worktree. Known retired creations can be retried
+with the same session ID; ambiguous states need operator inspection.
 
 The private worktree is a cooperative filesystem boundary. Shell programs with
 arbitrary same-user capabilities are not treated as hostile code. Normal command

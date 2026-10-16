@@ -306,7 +306,7 @@ portability adapter/rebuild without inspecting its bytes; contained symlink
 recreation is deferred along with escaping/absolute links. Refused directories
 explicitly mark descendants unexamined. Incomplete or changed inventories
 cannot propose copies. COW probing, pinned source/ignore-rule materialization,
-actual isolated workspaces and publication remain C2/C3 work.
+actual isolated workspaces and publication were left to C2/C3 below.
 
 ### C2. Isolated mode: sessions in their own worktree
 
@@ -322,6 +322,20 @@ crash. Publication still refuses with a clear message until C3.
 **Done when.** An isolated session can run its tests with the copied `.env`
 while the main checkout is untouched, and a daemon crash at each creation step
 recovers or cleans up without touching user paths.
+
+**Implemented (Wave 3 C2):** Isolated conversations now create private linked
+worktrees from current working bytes without changing the primary index or HEAD.
+Source policy and exact manifests are pinned across creation; ignored runtime
+receives a verified private copy or COW clone, with exact-file secret consent.
+Hydrated paths remain excluded from source tools, artifacts, and proposals even
+after ignore-rule changes. Checks and approved commands copy session runtime into
+disposable snapshots and withhold output before model or durable result delivery.
+Opaque dependency trees stay absent with visible notices; no rebuild is inferred.
+Creation recovery restores ready sessions or retains known interrupted output in
+private recovery archives; late user files and replacements are preserved. The
+focused creation/privacy/runtime/recovery/worktree/durable-session suite passed
+45 tests, with Ruff and mypy passing. Publication remains the C3 handoff. See
+[the isolated workspace guide](isolated-workspaces.md) for supported boundaries.
 
 ### C3. Isolated mode: publish and receive batches
 

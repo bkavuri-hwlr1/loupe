@@ -7,15 +7,28 @@ the remaining planned capabilities are listed below.
 
 ## Implemented
 
-- A metadata-only hydration preview for future isolated workspaces:
+- A metadata-only hydration preview for isolated workspaces:
   `loupe workspace hydrate [PATH] --plan` (or global `--json`) walks actual
   ignored runtime entries with bounded no-follow traversal and passive Git
   ignore classification. It reports sizes, copy/COW candidates, budgets and
   explicit secret-consent, virtualenv-portability, symlink, special-file and
   nested-repository refusals. Exact `--approve-secret PATH` flags preview
   per-file consent without saving it. Truncated or changing inventories
-  disable candidate copies. This command needs no daemon and copies nothing;
-  isolated sessions still await C2/C3. See [ADR 0009](adr/0009-isolated-runtime-hydration.md).
+  disable candidate copies. This command needs no daemon and copies nothing.
+  See [ADR 0009](adr/0009-isolated-runtime-hydration.md).
+
+- Isolated session creation and runtime execution (Wave 3 C2): `loupe chat` and
+  `loupe session open` accept `--workspace isolated` and repeatable exact-file
+  `--approve-secret PATH` consent. Each session gets a private linked worktree
+  containing current source working bytes; the primary checkout and index remain
+  unchanged. Safe ignored regular files are copied privately, protected inputs
+  require consent, and unsupported dependency trees stay absent with a notice.
+  Runtime exclusions survive ignore-rule changes and daemon restart. Checks and
+  approved commands use disposable copies and withhold runtime-visible output
+  before model results, events, or check records. Interrupted creation retains
+  private recovery archives and preserves unknown or late user changes. C2 holds
+  proposals for the C3 publisher. See [isolated workspaces](isolated-workspaces.md)
+  for recovery behavior, source-index semantics, and unsupported runtime adapters.
 
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
@@ -309,8 +322,9 @@ operations or reconstruct intermediate edits between scans.
 Exact-base checks still reject stale publication independently of model context.
 
 Sessionless background runs and the `fixture_write` driver retain the original
-linked-worktree lifecycle described below. This is separate from the planned
-hydrated `--workspace isolated` mode, which is still unavailable.
+linked-worktree lifecycle described below. Isolated conversations use the separate
+hydrated `--workspace isolated` lifecycle described in the
+[isolated workspace guide](isolated-workspaces.md).
 
 `llm-coord run --fixture-write PATH=CONTENT` returns after durably scheduling a
 deterministic execution rather than holding a CLI/RPC session open. Every
@@ -435,12 +449,11 @@ their target text rather than by what they point at, so a link and a copy are
 never confused.
 
 Each checkout has one shared workspace record carrying its mode, epoch, and
-revision, and every session on that checkout binds to it. `llm-coord workspace
-status` reports it together with the limits shared mode cannot exceed, which
-belong in front of an operator rather than only in the plan. `isolated` is
-accepted as a mode name and refused with an explanation rather than silently
-downgraded to shared. Ignored-runtime hydration has a read-only preview, but
-isolated materialization and publication remain C2/C3 work.
+revision. Shared sessions bind to it; isolated sessions bind to a private linked
+worktree whose source workspace is that shared record. `llm-coord workspace
+status` reports the workspace and mode limits. Ignored-runtime hydration has a
+read-only preview, and C2 implements private materialization and runtime-aware
+execution. Isolated publication remains the C3 dependency.
 
 The manual shared-workspace broker remains available for one UTF-8 regular
 file at a time. A brokered read records an exact versioned identity. A session
@@ -703,8 +716,8 @@ quality and cost savings remain unmeasured. Review remains off by default.
 remaining harness gaps into packages that separate sessions can run at once.
 
 1. Validate the remaining multi-profile authority and migration guarantees.
-2. Add isolated mode with explicit environment hydration and publication
-   through the same batch protocol, building on the check-snapshot runner.
+2. Complete isolated publication and incoming shared batches (C3) on top of
+   C2's private creation and runtime-aware check snapshots.
 3. Broaden independent-review quality and cost measurements beyond the completed
    planted-bug acceptance run; keep review disabled by default.
 4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
@@ -751,4 +764,5 @@ compaction; shared fetch waiters honor the task lifecycle while awaiting human
 approval. Hydration's default output is a short summary, and `--json` retains
 full details. Git-ignored `node_modules` directories are explicit rebuild
 decisions with unknown contents rather than enumerated copy candidates,
-preserving unrelated candidates. Actual copying remains C2/C3. E2 remains deferred.
+preserving unrelated candidates. C2 now implements bounded private copying as
+noted above; publication remains C3. E2 remains deferred.
