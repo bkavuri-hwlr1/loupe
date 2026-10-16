@@ -22,6 +22,7 @@ from llm_cli.cli.status import TaskStatusUI
 from llm_cli.cli.terminal import TerminalUI
 from llm_cli.cli.usage import format_tokens
 from llm_cli.coordination.models import EFFORT_LEVELS
+from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.ids import new_id
 from llm_cli.paths import AppPaths, reject_symlink_components
@@ -38,6 +39,7 @@ class _SessionCredentials:
     workspace_mode: str = "shared"
     effort: str | None = None
     agent_mode: str = "auto"
+    workspace_notices: tuple[str, ...] = ()
 
 
 def run_session(
@@ -49,6 +51,7 @@ def run_session(
     model: str | None = None,
     resume_session_id: str | None = None,
     workspace_mode: str | None = None,
+    approved_runtime_files: tuple[str, ...] = (),
     publication_mode: str | None = None,
     agent_mode: str | None = None,
     effort: str | None = None,
@@ -68,6 +71,7 @@ def run_session(
         model=model,
         resume_session_id=resume_session_id,
         workspace_mode=workspace_mode,
+        approved_runtime_files=approved_runtime_files,
         publication_mode=publication_mode,
         agent_mode=agent_mode,
         effort=effort,
@@ -104,10 +108,14 @@ def open_or_resume_session(
     model: str | None,
     resume_session_id: str | None,
     workspace_mode: str | None = None,
+    approved_runtime_files: tuple[str, ...] = (),
     publication_mode: str | None = None,
     agent_mode: str | None = None,
     effort: str | None = None,
 ) -> _SessionCredentials:
+    approved_runtime_files = validate_runtime_consent(
+        approved_runtime_files, workspace_mode, resume_session_id
+    )
     if resume_session_id is not None:
         secret = session_resume_secret(client.paths, resume_session_id)
         resumed = client.call(
@@ -147,6 +155,11 @@ def open_or_resume_session(
                 "model": model,
                 "workspace": workspace_mode,
                 "mode": selected_mode,
+                **(
+                    {"approved_runtime_files": list(approved_runtime_files)}
+                    if approved_runtime_files
+                    else {}
+                ),
                 **({"effort": effort} if effort is not None else {}),
             },
             idempotency_key=session_id,
@@ -183,6 +196,23 @@ def open_or_resume_session(
             "finish, run 'loupe daemon restart' and reopen Loupe. "
             f"The unused session can be resumed with --resume {session_id}",
         )
+    if workspace_mode == "isolated" and session.get("workspace_mode") != "isolated":
+        raise LlmCoordError(
+            ErrorCode.PROTOCOL_MISMATCH,
+            "the daemon did not confirm an isolated workspace; restart Loupe's "
+            f"daemon before starting work. Session: {session_id}",
+        )
+    if approved_runtime_files and opened.get("approved_runtime_files") != list(
+        approved_runtime_files
+    ):
+        raise LlmCoordError(
+            ErrorCode.PROTOCOL_MISMATCH,
+            "the daemon did not confirm the exact runtime-file consent; "
+            f"inspect the session before starting work: {session_id}",
+        )
+    notices = opened.get("workspace_notices", [])
+    if not isinstance(notices, list) or any(not isinstance(n, str) for n in notices):
+        raise LlmCoordError(ErrorCode.PROTOCOL_MISMATCH, "invalid workspace notices")
     bootstrap_sequence = _integer(opened, "bootstrap_sequence")
     acknowledged = client.call(
         "session.ack",
@@ -202,7 +232,24 @@ def open_or_resume_session(
         workspace_mode=str(session.get("workspace_mode", workspace_mode or "shared")),
         effort=_optional_effort(session),
         agent_mode=_session_mode(session),
+        workspace_notices=tuple(notices),
     )
+
+
+def validate_runtime_consent(
+    files: tuple[str, ...], workspace_mode: str | None, resume_session_id: str | None
+) -> tuple[str, ...]:
+    """Bind one-shot hydration consent to exact files in one new isolated session."""
+    if files and (workspace_mode != "isolated" or resume_session_id is not None):
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            "--approve-secret requires a new --workspace isolated session; "
+            "it cannot change a resumed session.",
+        )
+    try:
+        return tuple(sorted({normalize_changed_path(path) for path in files}))
+    except ValueError as exc:
+        raise LlmCoordError(ErrorCode.CONFIG_INVALID, str(exc)) from exc
 
 
 def _session_mode(value: dict[str, Any]) -> str:

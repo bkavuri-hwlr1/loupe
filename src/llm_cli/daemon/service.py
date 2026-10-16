@@ -105,6 +105,7 @@ from llm_cli.workspace.identity import (
     identify_path,
     read_identified_path,
 )
+from llm_cli.workspace.isolated import IsolatedWorkspaceManager
 
 # Section 15.1 requires these limits to be visible to operators rather than
 # living only in implementation notes.
@@ -213,6 +214,14 @@ class DaemonService:
         self.shared_runner = SharedTaskExecutionRunner(
             self.runner, self.workspace_batches
         )
+        self.isolated_workspaces = IsolatedWorkspaceManager(
+            self.store,
+            paths.data_dir / "isolated-worktrees",
+            paths.candidate_dir,
+            self.workspace_batches.lock,
+            self.shared_runner.ensure_available,
+        )
+        self.shared_runner.isolated = self.isolated_workspaces
         self.workflow = self.shared_runner.workflow
         self.shared_runner.is_shutting_down = self.shutdown.is_set
         self.shared_runner.commands = CommandSettings(
@@ -290,6 +299,7 @@ class DaemonService:
             cleanup_command_snapshots(self.paths.data_dir / "command-snapshots")
             self._session_recovery_done = True
         self._recover_shared_workspace_publications()
+        self.isolated_workspaces.recover()
         with closing(connect_knowledge(self.paths.knowledge_db)) as connection:
             apply_migrations(connection, KNOWLEDGE_MIGRATIONS)
         with closing(connect_vectors(self.paths.vectors_db)) as connection:
@@ -880,16 +890,27 @@ class DaemonService:
             model = self.settings.agent_model
         adapter = self.providers.create(provider, model, effort=effort)
         workspace_mode = _workspace_mode(params, self.settings.workspace_mode)
+        approved = params.get("approved_runtime_files", [])
+        if (
+            not isinstance(approved, list)
+            or len(approved) > 1000
+            or any(not isinstance(path, str) for path in approved)
+        ):
+            raise ValueError("approved_runtime_files must be exact relative paths")
+        if approved and workspace_mode != "isolated":
+            raise ValueError("runtime consent requires isolated mode")
+        notices: tuple[str, ...] = ()
         if workspace_mode == "isolated":
-            raise LlmCoordError(
-                ErrorCode.CONFIG_INVALID,
-                "isolated workspaces are not implemented yet; they need worktree "
-                "hydration of ignored runtime files, so the mode is refused "
-                "rather than silently downgraded to shared",
+            workspace, notices = await asyncio.to_thread(
+                self.isolated_workspaces.open,
+                checkout,
+                session_id,
+                approved_secrets=tuple(sorted(set(approved))),
             )
-        workspace = await asyncio.to_thread(
-            self.store.ensure_shared_workspace, checkout
-        )
+        else:
+            workspace = await asyncio.to_thread(
+                self.store.ensure_shared_workspace, checkout
+            )
         session, event, bootstrap_sequence = self.store.open_session(
             session_id=session_id,
             checkout_id=checkout.checkout_id,
@@ -907,6 +928,8 @@ class DaemonService:
             "workspace": asdict(workspace),
             "bootstrap_event": asdict(event),
             "bootstrap_sequence": bootstrap_sequence,
+            "workspace_notices": list(notices),
+            "approved_runtime_files": sorted(set(approved)),
         }
 
     async def _workspace_status(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1004,6 +1027,11 @@ class DaemonService:
         """Compare-and-swap one staged file under the short daemon barrier."""
 
         session = self._authenticated_session(params, require_active=True)
+        if session.workspace_mode == "isolated":
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "isolated publication requires the isolated batch publisher",
+            )
         candidate_id = _string(params, "candidate_id")
         candidate = self.store.get_workspace_candidate(candidate_id)
         if candidate is None:
@@ -2101,7 +2129,7 @@ class DaemonService:
             if provider != session.provider or model != session.model:
                 raise ValueError("stored session conversation provider/model mismatch")
             conversation = snapshot
-        if session.workspace_mode == "shared":
+        if session.workspace_mode in {"shared", "isolated"}:
             # The shared runner refreshes this at each model request, including
             # resumed requests. Avoid appending a second, launch-only snapshot.
             return conversation, None

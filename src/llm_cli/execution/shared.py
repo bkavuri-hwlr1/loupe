@@ -63,6 +63,7 @@ from llm_cli.storage.connection import immediate_transaction
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.context import SharedCoordinationContext
 from llm_cli.workspace.identity import FileIdentity
+from llm_cli.workspace.isolated import IsolatedWorkspaceManager
 from llm_cli.workspace.workflow import TaskWorkflow, decode_files, encode_files
 
 
@@ -81,6 +82,7 @@ class SharedTaskExecutionRunner:
         self.store = lifecycle.store
         self.coordinator = lifecycle.coordinator
         self.publisher = publisher
+        self.isolated: IsolatedWorkspaceManager | None = None
         self.workflow = TaskWorkflow(self.store, self.coordinator, publisher)
         self.is_shutting_down: Callable[[], bool] = lambda: False
         # Set by the daemon. Without it, or without a working OS sandbox,
@@ -132,16 +134,20 @@ class SharedTaskExecutionRunner:
         workspace = (
             self.store.get_workspace(session.workspace_id or "") if session else None
         )
+        isolated = session is not None and session.workspace_mode == "isolated"
         if (
             session is None
             or workspace is None
             or session.state not in {"active", "disconnected"}
-            or session.workspace_mode != "shared"
-            or workspace.kind != "shared_checkout"
-            or workspace.mode != "shared"
+            or session.workspace_mode not in {"shared", "isolated"}
+            or workspace.kind != ("linked_worktree" if isolated else "shared_checkout")
+            or workspace.mode != session.workspace_mode
             or workspace.checkout_id != session.checkout_id
             or workspace.state != "active"
-            or workspace.canonical_path != repository.main_worktree_path
+            or (
+                not isolated
+                and workspace.canonical_path != repository.main_worktree_path
+            )
             or (
                 claim.scheduling_mode == "optimistic"
                 and claim.workspace_id != workspace.workspace_id
@@ -156,9 +162,14 @@ class SharedTaskExecutionRunner:
         if (
             checkout is None
             or checkout.repository_id != repository.repository_id
-            or checkout.canonical_path != workspace.canonical_path
+            or (not isolated and checkout.canonical_path != workspace.canonical_path)
         ):
             raise ClaimConflict("shared execution checkout binding changed")
+        isolated_state = None
+        if isolated:
+            if self.isolated is None:
+                raise ClaimConflict("isolated workspace manager is unavailable")
+            isolated_state = self.isolated.validate(workspace.workspace_id)
         existing = self.store.get_execution(task.task_id, task.attempt)
         if existing is not None and (
             existing.workspace_id != workspace.workspace_id
@@ -204,6 +215,8 @@ class SharedTaskExecutionRunner:
                 raise ClaimConflict("shared execution has no durable checkpoint")
 
             def record_read(relative: str, identity: FileIdentity) -> None:
+                if isolated:
+                    return
                 self.store.record_workspace_read(
                     session_id=session.session_id,
                     relative_path=relative,
@@ -340,6 +353,16 @@ class SharedTaskExecutionRunner:
             def refresh_coordination(after_sequence: int | None) -> CoordinationUpdate:
                 with self.publisher.lock:
                     self.ensure_available(workspace.workspace_id)
+                    if isolated:
+                        return CoordinationUpdate(
+                            sequence=(
+                                isolated_state.source_sequence if isolated_state else 0
+                            ),
+                            text=(
+                                "Isolated source snapshot. Publication requires "
+                                "the isolated batch publisher."
+                            ),
+                        )
                     return context(after_sequence)
 
             def review_context() -> Mapping[str, object]:
@@ -429,7 +452,7 @@ class SharedTaskExecutionRunner:
                     execution_id=execution.execution_id,
                     driver=driver.name,
                 ),
-                workspace_mode="shared",
+                workspace_mode=session.workspace_mode,
                 agent_mode=row["agent_mode"],
                 refresh_coordination=refresh_coordination,
                 # An edit task's answer stays a draft until settlement, so
@@ -515,7 +538,7 @@ class SharedTaskExecutionRunner:
                     )
                     if behind:
                         continue
-                    hold = stopped or incomplete or bool(
+                    hold = stopped or incomplete or (isolated and bool(files)) or bool(
                         files
                         and (
                             row["publish_mode"] == "review"
@@ -528,6 +551,12 @@ class SharedTaskExecutionRunner:
                         self.store, row, broker.worktree, files
                     )
                     outcome = "held_for_review"
+                    if isolated and files:
+                        broker.emit(
+                            "workspace.publication_unavailable",
+                            {"notice": "Isolated edits retained; publication requires "
+                             "the isolated batch publisher."},
+                        )
                     if not hold:
                         broker.emit("workflow.verification", {"status": verification})
                         self.coordinator.reserve_shared_publication(

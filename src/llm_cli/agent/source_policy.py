@@ -51,6 +51,22 @@ _SECRET_PATTERNS = (
 )
 
 
+_runtime_roots: dict[Path, tuple[str, ...]] = {}
+_runtime_lock = threading.Lock()
+
+
+def register_runtime_paths(root: Path, paths: tuple[str, ...]) -> None:
+    """Pin hydrated paths independently of mutable repository ignore rules."""
+    with _runtime_lock:
+        _runtime_roots[root.resolve()] = paths
+
+
+def runtime_path(root: Path, relative: str) -> bool:
+    with _runtime_lock:
+        paths = _runtime_roots.get(root.resolve(), ())
+    return any(relative == path or relative.startswith(path + "/") for path in paths)
+
+
 # Within one tool call, each root's user exclusion setting is read once.
 _user_excludes_cache: ContextVar[dict[Path, str] | None] = ContextVar(
     "loupe_user_excludes", default=None
@@ -287,8 +303,16 @@ def excluded_paths(
     if known is not None and known[0] == root:
         answers = known[1]
         if all(path in answers for path in relative_paths):
-            return {path for path in relative_paths if answers[path]}
-    excluded = {path for path in relative_paths if _private_path(path)}
+            return {
+                path
+                for path in relative_paths
+                if answers[path] or runtime_path(root, path)
+            }
+    excluded = {
+        path
+        for path in relative_paths
+        if _private_path(path) or runtime_path(root, path)
+    }
     for start in range(0, len(relative_paths), _CHECK_BATCH):
         excluded.update(
             _ignored(

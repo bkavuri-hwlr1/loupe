@@ -1,0 +1,794 @@
+"""Durable isolated session creation from exact source and private runtime.
+
+Creation never commits the user's dirty tree or writes its index. Every phase
+has an intent in the control database. Recovery preserves ambiguous paths and
+quarantines an incomplete creation instead of recursively deleting evidence.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import hashlib
+import json
+import os
+import stat
+import sys
+import tempfile
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
+from pathlib import Path
+from threading import RLock
+from typing import Any
+
+from llm_cli.agent.source_policy import (
+    _private_path,
+    ensure_safe_content,
+    register_runtime_paths,
+    runtime_path,
+)
+from llm_cli.coordination.models import CheckoutRecord, WorkspaceRecord
+from llm_cli.coordination.scopes import normalize_changed_path
+from llm_cli.errors import ErrorCode, LlmCoordError
+from llm_cli.git.environment import run_git
+from llm_cli.git.worktrees import (
+    create_managed_worktree,
+    remove_managed_worktree,
+    resume_managed_worktree,
+)
+from llm_cli.ids import new_id
+from llm_cli.storage.connection import immediate_transaction
+from llm_cli.storage.control import ControlStore
+from llm_cli.workspace.hydration import (
+    HydrationEntry,
+    _bounded_git,
+    _evidence,
+    plan_hydration,
+)
+from llm_cli.workspace.identity import ABSENT, ObjectKind, content_identity
+
+_MAX_SOURCE_FILE = 256 * 1024 * 1024
+_ADMIN = frozenset({".git", ".loupe", ".llm-coord", ".codex", ".agents"})
+
+
+@dataclass(frozen=True, slots=True)
+class IsolatedState:
+    workspace_id: str
+    session_id: str
+    base_oid: str
+    source_sequence: int
+    source_manifest: dict[str, dict[str, Any]]
+    runtime_paths: tuple[str, ...]
+    notices: tuple[str, ...]
+    source_fingerprint: str
+    creation_token: str
+    stage: str
+
+
+def _error(message: str) -> LlmCoordError:
+    return LlmCoordError(ErrorCode.REPOSITORY_UNSAFE, message)
+
+
+@contextmanager
+def _parent(
+    root: Path, relative: str, *, create: bool = False
+) -> Iterator[tuple[int, str]]:
+    """Keep every ancestor pinned; no descendant symlink may be followed."""
+    normalized = normalize_changed_path(relative)
+    if normalized != relative or any(part in _ADMIN for part in Path(relative).parts):
+        raise _error("isolated source names an administrative or noncanonical path")
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parts = relative.split("/")
+        for part in parts[:-1]:
+            if create:
+                with suppress(FileExistsError):
+                    os.mkdir(part, 0o700, dir_fd=descriptor)
+            child = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = child
+        yield descriptor, parts[-1]
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _source(root: Path, relative: str) -> Iterator[int]:
+    with _parent(root, relative) as (parent, name):
+        descriptor = os.open(
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise _error("isolated input must be a regular file")
+            yield descriptor
+        finally:
+            os.close(descriptor)
+
+
+def _read(descriptor: int, limit: int) -> bytes:
+    if os.fstat(descriptor).st_size > limit:
+        raise _error("isolated source exceeds its file budget")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := os.read(descriptor, min(1024 * 1024, limit + 1 - total)):
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > limit:
+            raise _error("isolated input grew beyond its file budget")
+    return b"".join(chunks)
+
+
+def _passive(root: Path, arguments: list[str]) -> bytes:
+    code, data = _bounded_git(
+        root,
+        arguments,
+        deadline=time.monotonic() + 30,
+        limit=16 * 1024 * 1024,
+    )
+    if code not in {0, 1}:
+        raise _error("could not pin isolated source policy")
+    return data
+
+
+def _source_paths(root: Path) -> tuple[str, ...]:
+    raw = _passive(
+        root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+    )
+    paths = tuple(sorted({os.fsdecode(path) for path in raw.split(b"\0") if path}))
+    if len(paths) > 20_000:
+        raise _error("isolated source exceeds its 20,000-path budget")
+    return paths
+
+
+def _store_source(candidate_dir: Path, body: bytes) -> str:
+    ensure_safe_content(body)
+    digest = hashlib.sha256(body).hexdigest()
+    candidate_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if candidate_dir.is_symlink() or candidate_dir.stat().st_mode & 0o077:
+        raise _error("isolated source artifact directory must be private")
+    path = candidate_dir / digest
+    if path.exists():
+        with _source(candidate_dir, digest) as descriptor:
+            if _read(descriptor, _MAX_SOURCE_FILE) != body:
+                raise _error("isolated source artifact failed its digest check")
+        return digest
+    temporary = candidate_dir / ("." + new_id("source") + ".tmp")
+    try:
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(candidate_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+
+    return digest
+
+
+def capture_source(root: Path, candidate_dir: Path) -> dict[str, dict[str, Any]]:
+    """Capture ordinary current working bytes, including dirty/untracked files.
+
+    Missing tracked files retain an absent identity. Protected source requires
+    a dedicated protected-source adapter, so this minimum refuses it before
+    placing any of its contents into ordinary artifacts.
+    """
+    manifest: dict[str, dict[str, Any]] = {}
+    total = 0
+    for relative in _source_paths(root):
+        if runtime_path(root, relative):
+            continue
+        if _private_path(relative) or any(
+            part in _ADMIN for part in Path(relative).parts
+        ):
+            raise _error(f"protected source cannot be snapshotted: {relative}")
+        try:
+            with _source(root, relative) as descriptor:
+                before = os.fstat(descriptor)
+                body = _read(descriptor, _MAX_SOURCE_FILE)
+                if _evidence(before) != _evidence(os.fstat(descriptor)):
+                    raise _error("source changed during isolated snapshot")
+            with _parent(root, relative) as (parent, name):
+                if _evidence(before) != _evidence(
+                    os.stat(name, dir_fd=parent, follow_symlinks=False)
+                ):
+                    raise _error("source path changed during isolated snapshot")
+        except FileNotFoundError:
+            manifest[relative] = {
+                "kind": "absent",
+                "mode": ABSENT.mode,
+                "digest": ABSENT.digest,
+                "content_hash": None,
+                "size": 0,
+                "permissions": None,
+            }
+            continue
+        except OSError as exc:
+            raise _error(
+                f"source requires a link, submodule, or special adapter: {relative}"
+            ) from exc
+        total += len(body)
+        if total > 1024**3:
+            raise _error("isolated source exceeds its 1 GiB budget")
+        content_hash = _store_source(candidate_dir, body)
+        manifest[relative] = {
+            "kind": "regular",
+            "mode": "100755" if before.st_mode & 0o111 else "100644",
+            "digest": content_identity(
+                ObjectKind.REGULAR,
+                "100755" if before.st_mode & 0o111 else "100644",
+                body,
+            ),
+            "content_hash": content_hash,
+            "size": len(body),
+            "permissions": stat.S_IMODE(before.st_mode) & 0o777,
+        }
+    return manifest
+
+
+def source_fingerprint(root: Path) -> str:
+    """Pin config origins and full ignore/attribute/exclude file identities."""
+    config = _passive(root, ["config", "--null", "--show-origin", "--list"])
+    parts = config.split(b"\0")
+    paths: set[Path] = set()
+    for origin in parts[::2]:
+        if origin.startswith(b"file:"):
+            path = Path(os.fsdecode(origin[5:])).expanduser()
+            paths.add(path if path.is_absolute() else root / path)
+    common = run_git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    assert isinstance(common.stdout, str)
+    paths.update(
+        {
+            Path(common.stdout.strip()) / "info/exclude",
+            Path(common.stdout.strip()) / "info/attributes",
+        }
+    )
+    for setting in ("core.excludesfile", "core.attributesfile"):
+        value = _passive(root, ["config", "--null", "--path", "--get", setting]).rstrip(
+            b"\0"
+        )
+        if value:
+            path = Path(os.fsdecode(value)).expanduser()
+            paths.add(path if path.is_absolute() else root / path)
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    paths.update({config_home / "git/ignore", config_home / "git/attributes"})
+    paths.update(
+        root / path
+        for path in _source_paths(root)
+        if Path(path).name in {".gitignore", ".gitattributes"}
+    )
+    digest = hashlib.sha256(config)
+    for path in sorted(paths):
+        digest.update(os.fsencode(path))
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            digest.update(b"absent")
+            continue
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise _error("source policy file is not regular")
+            body = _read(descriptor, 4 * 1024 * 1024)
+            if _evidence(before) != _evidence(os.fstat(descriptor)) or _evidence(
+                before
+            ) != _evidence(path.lstat()):
+                raise _error("source policy changed during capture")
+            digest.update(json.dumps(_evidence(before), sort_keys=True).encode())
+            digest.update(body)
+        finally:
+            os.close(descriptor)
+    return digest.hexdigest()
+
+
+def _clone(source_fd: int, destination_parent: int, name: str) -> bool:
+    """Try a descriptor-based clone; no hardlinks or shared directory links."""
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        clone = getattr(libc, "fclonefileat", None)
+        if clone is None:
+            return False
+        clone.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        clone.restype = ctypes.c_int
+        return bool(clone(source_fd, destination_parent, os.fsencode(name), 0) == 0)
+    if sys.platform.startswith("linux"):
+        import fcntl
+
+        target = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=destination_parent,
+        )
+        try:
+            try:
+                fcntl.ioctl(target, 0x40049409, source_fd)
+                return True
+            except OSError:
+                os.unlink(name, dir_fd=destination_parent)
+                return False
+        finally:
+            os.close(target)
+    return False
+
+
+def _write_body(parent: int, name: str, body: bytes, permissions: int) -> None:
+    descriptor = os.open(
+        name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent
+    )
+    with os.fdopen(descriptor, "wb") as handle:
+        # Preserve sparse zero chunks without ever sharing mutable blocks.
+        for start in range(0, len(body), 1024 * 1024):
+            chunk = body[start : start + 1024 * 1024]
+            if chunk and not chunk.strip(b"\0"):
+                handle.seek(len(chunk), os.SEEK_CUR)
+            else:
+                handle.write(chunk)
+        handle.truncate(len(body))
+        handle.flush()
+        os.fchmod(handle.fileno(), permissions)
+        os.fsync(handle.fileno())
+    os.fsync(parent)
+
+
+def copy_runtime_file(source: Path, target: Path, entry: HydrationEntry) -> None:
+    """Copy one authorized file, compare stable bytes, persist no raw digest."""
+    with _source(source, entry.path) as descriptor:
+        before = os.fstat(descriptor)
+        if _evidence(before) != entry.observation:
+            raise _error("runtime changed since its hydration inventory")
+        body = _read(descriptor, _MAX_SOURCE_FILE)
+        with _parent(target, entry.path, create=True) as (parent, name):
+            cloned = False
+            if (
+                entry.action == "clone_or_copy"
+                and os.fstat(parent).st_dev == before.st_dev
+            ):
+                # Probe only daemon-owned bytes on the actual device pair.
+                # A broken clone implementation must never corrupt user input.
+                with tempfile.TemporaryDirectory(
+                    prefix=".loupe-cow-", dir=target
+                ) as temporary:
+                    probe_root = Path(temporary)
+                    probe_source = probe_root / "source"
+                    probe_source.write_bytes(b"loupe private clone probe")
+                    with _source(probe_root, "source") as probe_source_fd:
+                        probe_parent = os.open(
+                            probe_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                        )
+                        try:
+                            if _clone(probe_source_fd, probe_parent, "target"):
+                                (probe_root / "target").write_bytes(
+                                    b"changed destination"
+                                )
+                                if (
+                                    _read(probe_source_fd, 1024)
+                                    != b"loupe private clone probe"
+                                ):
+                                    raise _error(
+                                        "filesystem clone did not isolate writes"
+                                    )
+                                cloned = _clone(descriptor, parent, name)
+                        finally:
+                            os.close(probe_parent)
+            permissions = stat.S_IMODE(before.st_mode) & (
+                0o600 if entry.action == "private_copy" else 0o700
+            )
+            if cloned:
+                copied = os.open(name, os.O_RDWR | os.O_NOFOLLOW, dir_fd=parent)
+                try:
+                    os.fchmod(copied, permissions)
+                    if _read(copied, _MAX_SOURCE_FILE) != body:
+                        raise _error("runtime clone did not match its source")
+                    os.fsync(copied)
+                finally:
+                    os.close(copied)
+                os.fsync(parent)
+            else:
+                _write_body(parent, name, body, permissions)
+        if (
+            _evidence(before) != _evidence(os.fstat(descriptor))
+            or _read(descriptor, _MAX_SOURCE_FILE) != body
+        ):
+            raise _error("runtime changed while hydration copied it")
+        with _parent(source, entry.path) as (parent, name):
+            if _evidence(before) != _evidence(
+                os.stat(name, dir_fd=parent, follow_symlinks=False)
+            ):
+                raise _error("runtime path changed while hydration copied it")
+
+
+class IsolatedWorkspaceManager:
+    """Session-owned linked worktrees with conservative crash preservation."""
+
+    def __init__(
+        self,
+        store: ControlStore,
+        managed_root: Path,
+        candidate_dir: Path,
+        publication_lock: RLock,
+        ensure_available: Callable[[str], None],
+    ) -> None:
+        self.store = store
+        self.managed_root = managed_root
+        self.candidate_dir = candidate_dir
+        self.lock = publication_lock
+        self.ensure_available = ensure_available
+        self.fault: Callable[[str], None] = lambda stage: None
+
+    def get(self, workspace_id: str) -> IsolatedState | None:
+        with self.store.connection() as con:
+            row = con.execute(
+                "SELECT * FROM isolated_workspaces WHERE workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return IsolatedState(
+            workspace_id,
+            str(row["session_id"]),
+            str(row["base_oid"]),
+            int(row["source_sequence"]),
+            json.loads(row["source_manifest_json"]),
+            tuple(json.loads(row["runtime_paths_json"])),
+            tuple(json.loads(row["notices_json"])),
+            str(row["source_fingerprint"]),
+            str(row["creation_token"]),
+            str(row["stage"]),
+        )
+
+    def _stage(self, workspace_id: str, stage: str) -> None:
+        with self.store.connection() as con, immediate_transaction(con):
+            con.execute(
+                "UPDATE isolated_workspaces SET stage=? WHERE workspace_id=?",
+                (stage, workspace_id),
+            )
+        self.fault(stage)
+
+    def _quarantine(self, workspace_id: str) -> None:
+        with self.store.connection() as con, immediate_transaction(con):
+            con.execute(
+                "UPDATE isolated_workspaces SET stage='attention' WHERE workspace_id=?",
+                (workspace_id,),
+            )
+            con.execute(
+                "UPDATE workspaces SET state='quarantined', quarantine_reason=?, "
+                "state_version=state_version+1 WHERE workspace_id=?",
+                (
+                    "isolated creation interrupted; files preserved for recovery",
+                    workspace_id,
+                ),
+            )
+
+    def validate(self, workspace_id: str) -> IsolatedState:
+        state = self.get(workspace_id)
+        workspace = self.store.get_workspace(workspace_id)
+        if (
+            state is None
+            or workspace is None
+            or state.stage != "ready"
+            or workspace.state != "active"
+        ):
+            raise _error("isolated workspace needs recovery; its files were preserved")
+        checkout = self.store.get_checkout(workspace.checkout_id)
+        assert checkout is not None
+        managed = resume_managed_worktree(
+            Path(checkout.canonical_path),
+            managed_root=self.managed_root,
+            registered_path=Path(workspace.canonical_path),
+            task_id=workspace_id,
+            base_oid=state.base_oid,
+        )
+        marker = managed.git_dir / "loupe-isolated-owner"
+        with _source(managed.git_dir, marker.name) as descriptor:
+            if _read(descriptor, 1024).decode() != state.creation_token:
+                raise _error("isolated worktree ownership changed")
+        register_runtime_paths(managed.path, state.runtime_paths)
+        return state
+
+    def _clean_incomplete(self, workspace_id: str) -> bool:
+        state = self.get(workspace_id)
+        workspace = self.store.get_workspace(workspace_id)
+        assert state is not None and workspace is not None
+        path = Path(workspace.canonical_path)
+        checkout = self.store.get_checkout(workspace.checkout_id)
+        assert checkout is not None
+        if path.exists() or path.is_symlink():
+            managed = resume_managed_worktree(
+                Path(checkout.canonical_path),
+                managed_root=self.managed_root,
+                registered_path=path,
+                task_id=workspace_id,
+                base_oid=state.base_oid,
+            )
+            with _source(managed.git_dir, "loupe-isolated-owner") as descriptor:
+                if _read(descriptor, 1024).decode() != state.creation_token:
+                    return False
+            # Cleanup requires every existing byte to be an expected creation
+            # byte. User additions/changes, links, or changed primary runtime
+            # make ownership ambiguous and therefore preserve the whole tree.
+            for directory, directories, files in os.walk(path, followlinks=False):
+                base = Path(directory)
+                if any((base / name).is_symlink() for name in directories):
+                    return False
+                for name in files:
+                    relative = (base / name).relative_to(path).as_posix()
+                    if relative == ".git":
+                        continue
+                    with _source(path, relative) as descriptor:
+                        body = _read(descriptor, _MAX_SOURCE_FILE)
+                    expected = state.source_manifest.get(relative)
+                    if expected is not None:
+                        if expected["content_hash"] != hashlib.sha256(body).hexdigest():
+                            return False
+                    elif any(
+                        relative == item or relative.startswith(item + "/")
+                        for item in state.runtime_paths
+                    ):
+                        with _source(
+                            Path(checkout.canonical_path), relative
+                        ) as descriptor:
+                            if _read(descriptor, _MAX_SOURCE_FILE) != body:
+                                return False
+                    else:
+                        return False
+            remove_managed_worktree(
+                Path(checkout.canonical_path),
+                managed_root=self.managed_root,
+                registered_path=path,
+                force=True,
+            )
+        with self.store.connection() as con, immediate_transaction(con):
+            con.execute(
+                "UPDATE workspaces SET state='removed',"
+                "state_version=state_version+1 WHERE workspace_id=?",
+                (workspace_id,),
+            )
+            con.execute(
+                "DELETE FROM isolated_workspaces WHERE workspace_id=?", (workspace_id,)
+            )
+        return True
+
+    def recover(self) -> None:
+        with self.lock:
+            with self.store.connection() as con:
+                rows = con.execute(
+                    "SELECT workspace_id,stage FROM isolated_workspaces"
+                ).fetchall()
+            for row in rows:
+                workspace_id = str(row["workspace_id"])
+                if row["stage"] == "attention":
+                    continue
+                try:
+                    if row["stage"] == "ready":
+                        self.validate(workspace_id)
+                    elif not self._clean_incomplete(workspace_id):
+                        self._quarantine(workspace_id)
+                except (LlmCoordError, OSError, ValueError):
+                    self._quarantine(workspace_id)
+
+    def open(
+        self,
+        checkout: CheckoutRecord,
+        session_id: str,
+        *,
+        approved_secrets: tuple[str, ...] = (),
+    ) -> tuple[WorkspaceRecord, tuple[str, ...]]:
+        with self.lock:
+            with self.store.connection() as con:
+                prior = con.execute(
+                    "SELECT workspace_id FROM isolated_workspaces WHERE session_id=?",
+                    (session_id,),
+                ).fetchone()
+            if prior is not None:
+                state = self.validate(str(prior[0]))
+                workspace = self.store.get_workspace(state.workspace_id)
+                assert workspace is not None
+                return workspace, state.notices
+            shared = self.store.ensure_shared_workspace(checkout)
+            self.ensure_available(shared.workspace_id)
+            root = Path(checkout.canonical_path)
+            head = run_git(
+                root, ["rev-parse", "--verify", "HEAD^{commit}"], check=False
+            )
+            if head.returncode:
+                raise _error(
+                    "ISOLATED_UNBORN_UNSUPPORTED: commit an initial source baseline "
+                    "before opening isolated mode"
+                )
+            assert isinstance(head.stdout, str)
+            base_oid = head.stdout.strip()
+            fingerprint = source_fingerprint(root)
+            source = capture_source(root, self.candidate_dir)
+            plan = plan_hydration(root, approved_secret_paths=approved_secrets)
+            if not plan.complete:
+                raise _error(
+                    "isolated hydration inventory is incomplete: "
+                    + ", ".join(plan.issues)
+                )
+            consent = {
+                entry.path for entry in plan.entries if entry.action == "private_copy"
+            }
+            if set(approved_secrets) - consent:
+                raise _error(
+                    "--approve-secret must name an existing ignored secret regular "
+                    "file exactly"
+                )
+            missing = [
+                entry.path for entry in plan.entries if entry.action == "needs_consent"
+            ]
+            if missing:
+                raise _error(
+                    "isolated runtime requires exact-file consent via "
+                    "--approve-secret PATH:" + ", ".join(missing[:10])
+                )
+            copies = [
+                entry
+                for entry in plan.entries
+                if entry.action in {"private_copy", "clone_or_copy"}
+            ]
+            notices = tuple(
+                f"Runtime omitted: {entry.path} ({entry.reason}). "
+                "No setup command was run."
+                for entry in plan.entries
+                if entry.action
+                not in {
+                    "private_copy",
+                    "clone_or_copy",
+                    "create_directory",
+                    "exclude_administration",
+                }
+            )
+            runtime = tuple(
+                sorted(
+                    {
+                        entry.path
+                        for entry in plan.entries
+                        if entry.action != "exclude_administration"
+                        and not any(
+                            path.startswith(entry.path + "/") for path in source
+                        )
+                    }
+                )
+            )
+            workspace_id = new_id("workspace")
+            token = new_id("owner")
+            destination = self.managed_root.resolve() / workspace_id
+            now = self.store._now(None)
+            with self.store.connection() as con, immediate_transaction(con):
+                sequence = int(
+                    con.execute(
+                        "SELECT next_event_sequence FROM checkout_heads WHERE "
+                        "checkout_id=?",
+                        (checkout.checkout_id,),
+                    ).fetchone()[0]
+                )
+                con.execute(
+                    "INSERT INTO "
+                    "workspaces(workspace_id,checkout_id,kind,mode,state,canonical_path,"
+                    "source_workspace_id,workspace_revision,created_at,updated_at) "
+                    "VALUES (?,?,'linked_worktree','isolated','creating',?,?,?,?,?)",
+                    (
+                        workspace_id,
+                        checkout.checkout_id,
+                        str(destination),
+                        shared.workspace_id,
+                        shared.workspace_revision,
+                        now,
+                        now,
+                    ),
+                )
+                con.execute(
+                    "INSERT INTO isolated_workspaces VALUES "
+                    "(?,?,?,?,?,?,?,?,?,'planned')",
+                    (
+                        workspace_id,
+                        session_id,
+                        base_oid,
+                        sequence,
+                        json.dumps(source, sort_keys=True),
+                        json.dumps(runtime),
+                        json.dumps(notices),
+                        fingerprint,
+                        token,
+                    ),
+                )
+            self.fault("planned")
+            try:
+                managed = create_managed_worktree(
+                    root,
+                    managed_root=self.managed_root,
+                    task_id=workspace_id,
+                    base_oid=base_oid,
+                    checkout=False,
+                )
+                managed.path.chmod(0o700)
+                marker = managed.git_dir / "loupe-isolated-owner"
+                with _parent(managed.git_dir, marker.name) as (parent, name):
+                    _write_body(parent, name, token.encode(), 0o600)
+                with self.store.connection() as con:
+                    con.execute(
+                        "UPDATE workspaces SET git_dir=? WHERE workspace_id=?",
+                        (str(managed.git_dir), workspace_id),
+                    )
+                self._stage(workspace_id, "registered")
+                required = (
+                    sum(int(entry["size"]) for entry in source.values())
+                    + plan.planned_estimated_copy_bytes
+                )
+                space = os.statvfs(managed.path)
+                if required > space.f_bavail * space.f_frsize:
+                    raise _error(
+                        "insufficient free space for private source and runtime copies"
+                    )
+                for relative, entry in source.items():
+                    if entry["kind"] == "absent":
+                        continue
+                    with _source(
+                        self.candidate_dir, entry["content_hash"]
+                    ) as descriptor:
+                        body = _read(descriptor, _MAX_SOURCE_FILE)
+                    if hashlib.sha256(body).hexdigest() != entry["content_hash"]:
+                        raise _error("isolated source artifact changed")
+                    with _parent(managed.path, relative, create=True) as (parent, name):
+                        _write_body(parent, name, body, int(entry["permissions"]))
+                if capture_source(managed.path, self.candidate_dir) != source:
+                    raise _error("isolated materialized source manifest did not match")
+                self._stage(workspace_id, "materialized")
+                for runtime_entry in copies:
+                    copy_runtime_file(root, managed.path, runtime_entry)
+                self._stage(workspace_id, "hydrated")
+                if (
+                    source_fingerprint(root) != fingerprint
+                    or capture_source(root, self.candidate_dir) != source
+                ):
+                    raise _error(
+                        "source or ignore/attribute/config policy changed during "
+                        "isolated creation"
+                    )
+                fresh = plan_hydration(root, approved_secret_paths=approved_secrets)
+                if fresh != plan:
+                    raise _error("runtime inventory changed during isolated creation")
+                if (
+                    run_git(
+                        root, ["rev-parse", "--verify", "HEAD^{commit}"]
+                    ).stdout.strip()
+                    != base_oid
+                ):
+                    raise _error("HEAD changed during isolated creation")
+                register_runtime_paths(managed.path, runtime)
+                with self.store.connection() as con, immediate_transaction(con):
+                    con.execute(
+                        "UPDATE workspaces SET "
+                        "state='active',state_version=state_version+1,"
+                        "last_verified_at=? "
+                        "WHERE workspace_id=?",
+                        (now, workspace_id),
+                    )
+                    con.execute(
+                        "UPDATE isolated_workspaces SET stage='ready' WHERE "
+                        "workspace_id=?",
+                        (workspace_id,),
+                    )
+                self.fault("ready")
+            except Exception:
+                self._quarantine(workspace_id)
+                raise
+            workspace = self.store.get_workspace(workspace_id)
+            assert workspace is not None
+            return workspace, notices
