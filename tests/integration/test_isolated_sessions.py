@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -99,15 +101,61 @@ def test_typed_source_is_materialized_without_following_links(
     assert not any("source-link" in notice for notice in notices)
 
 
+@pytest.mark.parametrize("dependency", ["none", "python", "node"])
 def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
     tmp_path: Path,
     repository_factory: Any,
     service_factory: Any,
+    dependency: str,
 ) -> None:
     async def scenario() -> None:
         root = repository_factory(
-            tmp_path, {"a.py": "value = 1\n", ".gitignore": ".env\n"}
+            tmp_path,
+            {
+                "a.py": "value = 1\n",
+                ".gitignore": ".env\n.venv/\nnode_modules/\n",
+            },
         )
+        interpreter = sys.executable
+        if dependency == "python":
+            subprocess.run(
+                [sys.executable, "-m", "venv", "--without-pip", str(root / ".venv")],
+                check=True,
+            )
+            site = (
+                root
+                / ".venv/lib"
+                / (
+                    "python"
+                    + str(sys.version_info.major)
+                    + "."
+                    + str(sys.version_info.minor)
+                )
+                / "site-packages"
+            )
+            (site / "local_dependency.py").write_text("VALUE = 42\n")
+            interpreter = ".venv/bin/python"
+        if dependency == "node":
+            if shutil.which("npm") is None:
+                pytest.skip("npm is unavailable")
+            (root / "package.json").write_text(
+                '{"scripts":{"test":"local-runtime-check"}}'
+            )
+            (root / "node_modules/.bin").mkdir(parents=True)
+            (root / "node_modules/local").mkdir()
+            script = root / "node_modules/local/check.js"
+            script.write_text(
+                "#!/usr/bin/env node\n"
+                "const fs = require('node:fs');\n"
+                "if (fs.readFileSync('a.py','utf8') !== 'value = 2\\n') "
+                "process.exit(1);\n"
+                "console.log('useful assertion diagnostic');\n"
+                "console.log(fs.readFileSync('.env','utf8'));\n"
+            )
+            script.chmod(0o755)
+            (root / "node_modules/.bin/local-runtime-check").symlink_to(
+                "../local/check.js"
+            )
         secret = "opaque-test-runtime-value"
         (root / ".env").write_text(secret)
         service = service_factory(tmp_path)
@@ -147,6 +195,20 @@ def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
                 "session.ack", {**credentials, "sequence": opened["bootstrap_sequence"]}
             )
         )
+        code = (
+            "from pathlib import Path; "
+            "assert Path('a.py').read_text() == 'value = 2\\n'; "
+            "data = Path('.env').read_text(); "
+            "assert data; print('useful assertion diagnostic'); print(data); "
+            "Path('.env').write_text('changed only in check')"
+        )
+        if dependency == "python":
+            code = (
+                "import local_dependency; assert local_dependency.VALUE == 42; " + code
+            )
+        argv = [interpreter, "-c", code]
+        if dependency == "node":
+            argv = ["npm", "test", "--silent"]
         await service.handle(
             _request(
                 "checks.configure",
@@ -155,16 +217,7 @@ def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
                     "config": {
                         "checks": {
                             "runtime": {
-                                "argv": [
-                                    sys.executable,
-                                    "-c",
-                                    "from pathlib import Path; "
-                                    "assert Path('a.py').read_text() == "
-                                    "'value = 2\\n'; "
-                                    "data = Path('.env').read_text(); "
-                                    "assert data; print(data); "
-                                    "Path('.env').write_text('changed only in check')",
-                                ],
+                                "argv": argv,
                             }
                         }
                     },
@@ -176,6 +229,11 @@ def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
             await asyncio.wait_for(work, 30)
             rows = service.workflow.checks("isolated-task")
             assert rows and rows[0]["state"] == "passed", rows
+            with service.store.connection() as connection:
+                persisted_output = connection.execute(
+                    "SELECT output FROM check_runs WHERE task_id='isolated-task'"
+                ).fetchone()[0]
+            assert "useful assertion diagnostic" in persisted_output
             assert secret not in repr(rows)
             assert secret not in repr(service.store.list_task_events("isolated-task"))
             assert secret not in repr(provider.results)

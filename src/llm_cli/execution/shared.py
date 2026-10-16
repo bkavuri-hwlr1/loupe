@@ -250,6 +250,15 @@ class SharedTaskExecutionRunner:
         )
         row = self.workflow.ensure(task.task_id)
         runtime_files = isolated_state.runtime_files if isolated_state else ()
+        sensitive_paths = (
+            tuple(
+                path
+                for path, entry in isolated_state.source_manifest.items()
+                if entry.get("screened")
+            )
+            if isolated_state
+            else ()
+        )
         if runtime_files:
             config = json.loads(row["config_json"])
             config["runtime_paths"] = sorted(
@@ -361,8 +370,8 @@ class SharedTaskExecutionRunner:
                 self.publisher.lock,
                 deadline_at=deadline_at,
                 on_result=broker.record_check,
-                suppress_output=bool(runtime_files),
                 runtime_root=runtime_root,
+                sensitive_paths=sensitive_paths,
             )
             checked = bool(checker.config.get("checks"))
             if row["agent_mode"] != "plan":
@@ -414,7 +423,7 @@ class SharedTaskExecutionRunner:
                     ),
                     deadline_at=deadline_at,
                     runtime_files=runtime_files,
-                    suppress_output=bool(runtime_files),
+                    sensitive_paths=sensitive_paths,
                 )
 
                 def run_command(argv: list[str], cwd: str, timeout: int) -> ToolOutcome:
@@ -451,7 +460,7 @@ class SharedTaskExecutionRunner:
                             ),
                             deadline_at=deadline_at,
                             runtime_files=runtime_files,
-                            suppress_output=bool(runtime_files),
+                            sensitive_paths=sensitive_paths,
                         ).run_hook,
                         broker.emit,
                     )

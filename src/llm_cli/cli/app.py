@@ -439,6 +439,7 @@ def _hydration_preview_text(plan: HydrationPlan) -> str:
         lines.append("Resolve these reasons and repeat the bounded preview.")
     lines.append("Actions (all counts; up to 2 sample paths each, 8 total):")
     labels = {
+        "private_tree": "Private dependency trees",
         "clone_or_copy": "Copy candidates",
         "private_copy": "Approved private copies",
         "create_directory": "Directory containers",

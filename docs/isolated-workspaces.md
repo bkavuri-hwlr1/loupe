@@ -41,10 +41,20 @@ Ignored runtime is copied privately under the hydration policy:
   private copy with permissions no broader than `0600`, under private directories.
 - Every file is read through no-follow descriptors and checked for source/path
   changes. File, apparent-byte, allocation, inventory, and free-space limits apply.
-- Ignored `node_modules` and virtual environments are left absent with an explicit
-  notice. Loupe does not enumerate opaque dependency trees or run an installer.
-- Runtime symlinks, special files, nested repositories, and unsupported mounts
-  are omitted with a notice. Administrative paths are excluded entirely.
+- Ignored `node_modules`, `.venv`, and `venv` roots use a directory adapter.
+  The preview remains bounded without listing their descendants; materialization
+  streams up to 200,000 entries and 5 GiB through no-follow descriptors, under a
+  60-second copy budget. Files use private COW clones or copies, never hardlinks.
+  Relative dependency links must remain inside that dependency tree.
+- Virtualenv scripts and editable-install paths are relocated into each private
+  snapshot. An external Python interpreter link is allowed only when it resolves
+  to the daemon's exact base interpreter; command sandboxes expose that trusted
+  interpreter read-only. Environments built with another Python require an
+  explicit adapter. No installer runs automatically.
+- Credential-like files inside dependency trees are omitted with an exact-path
+  notice unless individually approved. Special files, escaping links, nested
+  repositories, and unsupported mounts are refused. Administrative paths are
+  excluded entirely.
 
 Hydrated paths remain runtime-only even if a task changes `.gitignore`. Runtime
 exclusions also reserve case and Unicode-normalization aliases: `LOCAL.DATA`
@@ -65,15 +75,17 @@ the isolated session's hydrated runtime files. Changing `.env` in a check does
 not change either the session's `.env` or the primary checkout. Command changes
 are discarded; file-tool edits remain the proposed source.
 
-When a command or check can read hydrated runtime, its output is withheld before
-model results, task events, check records, or hook file returns are exposed.
-The result still reports completion, exit status, and check status. Runtime
-verification uses a process-keyed fingerprint; a daemon restart safely makes
-old runtime check evidence stale. This conservative output policy also covers
-unknown secret formats that ordinary pattern matching would miss.
+Command and check output remains available when ignored cache or build files
+are present. Before output reaches the model, events, or check records, Loupe
+redacts actual copied credential-file values and sensitive configuration values.
+Known secret signatures are screened as well. Screening buffers complete lines,
+so a value split across stdout reads cannot escape. Hook file returns containing
+private values are refused. Private values are held only in memory for screening.
+Runtime verification uses a process-keyed fingerprint; a daemon restart safely
+makes old runtime check evidence stale.
 
 Commands retain Loupe's existing minimized child environment. The general
-per-terminal environment forwarding, virtualenv rebuilding, runtime refresh,
+per-terminal environment forwarding, automatic virtualenv rebuilding, runtime refresh,
 and long-running process interfaces in the workspace design are future work.
 An isolated session does not grant additional access to provider credentials.
 
@@ -130,27 +142,37 @@ runtime hydrated, then ready. After a daemon crash, a ready workspace is reopene
 only when its exact registered worktree, base HEAD, lock, and private ownership
 marker still match. Runtime exclusions are restored before model access.
 
-An incomplete creation is retired only when its existing paths are recognized
-creation output: source matches its retained ordinary artifacts and runtime
-matches the primary input still available for comparison. A crash between Git
-registration and the private ownership marker can be recovered when the worktree
-is empty apart from its Git pointer and has the expected private lock reason.
+Closing a conversation retires its private worktree and Git registration once
+no task is running and no held proposal or unresolved publication still needs it.
+A held proposal keeps its private runtime across close and daemon restart so
+`/apply` can rerun its checks. Applying or discarding the last held proposal lets
+cleanup proceed. Published undo history uses retained source changes and does not
+need to keep runtime copies.
 
-Recovery first moves recognized files through no-follow directory descriptors
+An incomplete creation is retired only when its existing source paths are
+recognized creation output. A crash between Git registration and the private
+ownership marker can be recovered when the worktree is empty apart from its Git
+pointer and has the expected private lock reason. Copied runtime, dependency
+roots, and screened source fixtures are disposable Loupe-owned files: cleanup
+unlinks them through no-follow descriptors, including copies in owned recovery
+archives. It never copies runtime changes back to the primary checkout.
+
+Recovery moves ordinary source evidence through no-follow directory descriptors
 into a private `.recovery-WORKSPACE_ID/files/` archive under Loupe's managed
-worktree directory. It retains these bytes, including later writes through an
-already-open file descriptor, and removes only empty directories. A crash after
-moving a nested file can resume from the archive without requiring the original
-name to remain present. The archive persists after successful retirement and is
-not automatically deleted; it may contain private runtime inputs. It is outside
-source artifacts and model tools, under a directory accessible only to its owner.
+worktree directory. This preserves later writes through an already-open source
+file descriptor and removes only empty source directories. A crash after moving
+a nested source file can resume from the archive. The source evidence persists
+after retirement, outside source artifacts and model tools, under an owner-only
+directory. Copied private runtime and screened source are not retained there.
+Startup also scrubs recognizable private inputs from older owned archives.
 
-Unknown files, directories, links, changed bytes, or ambiguous ownership stop
-recovery. The worktree and any already-archived files are preserved, and the
-workspace is quarantined with the archive location in its reason. Newly added
-files and replacements discovered during cleanup are preserved too. Recovery
-never recursively removes a worktree. Known retired creations can be retried
-with the same session ID; ambiguous states need operator inspection.
+Unknown files, directories, links, changed creation bytes, or ambiguous ownership
+stop retirement. The remaining worktree and ordinary source evidence are
+preserved, and the workspace is quarantined with the archive location in its
+reason. Newly added files and replacements discovered during cleanup are
+preserved too. Recovery never recursively removes the source worktree. Known
+retired creations can be retried with the same session ID; ambiguous states need
+operator inspection.
 
 The private worktree is a cooperative filesystem boundary. Shell programs with
 arbitrary same-user capabilities are not treated as hostile code. Normal command

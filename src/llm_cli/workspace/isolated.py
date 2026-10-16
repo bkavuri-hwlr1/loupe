@@ -555,11 +555,18 @@ def copy_runtime_file(source: Path, target: Path, entry: HydrationEntry) -> None
 
 def copy_pinned_runtime_file(source: Path, target: Path, relative: str) -> None:
     """Copy a pinned runtime input privately, independent of later ignore edits."""
+    from llm_cli.workspace.runtime import copy_dependency_tree
+
+    with _parent(source, relative) as (parent, name):
+        status = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if stat.S_ISDIR(status.st_mode):
+        copy_dependency_tree(source, target, relative, pinned_private=True)
+        return
     with _source(source, relative) as descriptor:
         before = os.fstat(descriptor)
         body = _read(descriptor, _MAX_SOURCE_FILE)
         with _parent(target, relative, create=True) as (parent, name):
-            _write_body(parent, name, body, stat.S_IMODE(before.st_mode) & 0o600)
+            _write_body(parent, name, body, stat.S_IMODE(before.st_mode) & 0o700)
         if _evidence(before) != _evidence(os.fstat(descriptor)):
             raise _error("isolated runtime changed during command snapshot")
         with _parent(source, relative) as (parent, name):
@@ -624,7 +631,7 @@ class IsolatedWorkspaceManager:
             )
         self.fault(stage)
 
-    def _quarantine(self, workspace_id: str) -> None:
+    def _quarantine(self, workspace_id: str, *, closed: bool = False) -> None:
         with self.store.connection() as con, immediate_transaction(con):
             con.execute(
                 "UPDATE isolated_workspaces SET stage='attention' WHERE workspace_id=?",
@@ -634,7 +641,13 @@ class IsolatedWorkspaceManager:
                 "UPDATE workspaces SET state='quarantined', quarantine_reason=?, "
                 "state_version=state_version+1 WHERE workspace_id=?",
                 (
-                    "isolated creation interrupted; files preserved in worktree or "
+                    (
+                        "closed isolated workspace needs cleanup; files preserved "
+                        "in worktree or "
+                        if closed
+                        else "isolated creation interrupted; files preserved "
+                        "in worktree or "
+                    )
                     + str(self.managed_root / (".recovery-" + workspace_id)),
                     workspace_id,
                 ),
@@ -721,7 +734,215 @@ class IsolatedWorkspaceManager:
                 result.append(relative)
         return tuple(sorted(result))
 
-    def _clean_incomplete(self, workspace_id: str) -> bool:
+    @staticmethod
+    def _remove_private_entry(parent: int, name: str) -> None:
+        """Unlink disposable private material without traversing any symlink."""
+        try:
+            before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(before.st_mode):
+            os.unlink(name, dir_fd=parent)
+        else:
+            child = os.open(
+                name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+            )
+            try:
+                pinned = os.fstat(child)
+                if (before.st_dev, before.st_ino) != (pinned.st_dev, pinned.st_ino):
+                    raise _error("private cleanup directory changed; preserving it")
+                for entry in os.listdir(child):
+                    IsolatedWorkspaceManager._remove_private_entry(child, entry)
+                current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino):
+                    raise _error("private cleanup directory changed; preserving it")
+                os.rmdir(name, dir_fd=parent)
+            finally:
+                os.close(child)
+
+    def _private_material(self, state: IsolatedState) -> set[str]:
+        paths = (
+            set(state.runtime_paths)
+            | set(state.runtime_files)
+            | {
+                relative
+                for relative, entry in state.source_manifest.items()
+                if entry.get("screened")
+            }
+        )
+        with self.store.connection() as con:
+            if con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='isolated_sync_state'"
+            ).fetchone():
+                synced = con.execute(
+                    "SELECT manifest_json,runtime_paths_json FROM isolated_sync_state "
+                    "WHERE workspace_id=?",
+                    (state.workspace_id,),
+                ).fetchone()
+                if synced:
+                    paths.update(json.loads(synced["runtime_paths_json"]))
+                    paths.update(
+                        relative
+                        for relative, entry in json.loads(
+                            synced["manifest_json"]
+                        ).items()
+                        if entry.get("screened")
+                    )
+        roots: list[str] = []
+        for relative in sorted(paths):
+            if roots and relative.startswith(roots[-1] + "/"):
+                continue
+            roots.append(relative)
+        return set(roots)
+
+    def _scrub_private(self, root: Path, state: IsolatedState) -> None:
+        # These paths were privately materialized by Loupe. They are disposable
+        # runtime, never recovery evidence or undo history. Screened source is
+        # likewise kept out of the ordinary source recovery archive.
+        paths = self._private_material(state)
+        for relative in sorted(paths, key=lambda item: (len(Path(item).parts), item)):
+            try:
+                with _parent(root, relative) as (parent, leaf):
+                    self._remove_private_entry(parent, leaf)
+                    os.fsync(parent)
+            except FileNotFoundError:
+                pass
+
+    def _scrub_removed_archives(self) -> None:
+        with self.store.connection() as con:
+            rows = con.execute(
+                "SELECT workspace_id,canonical_path FROM workspaces WHERE "
+                "mode='isolated' AND state='removed'"
+            ).fetchall()
+        for row in rows:
+            workspace_id = str(row["workspace_id"])
+            expected = self.managed_root.resolve() / workspace_id
+            if Path(row["canonical_path"]) != expected:
+                continue
+            archive = self.managed_root / (".recovery-" + workspace_id)
+            try:
+                if archive.is_symlink() or archive.stat().st_mode & 0o077:
+                    continue
+                with _source(archive, "owner.json") as descriptor:
+                    owner = json.loads(_read(descriptor, 32 * 1024 * 1024))
+                if not isinstance(owner, dict):
+                    continue
+                if not isinstance(owner.get("token"), str) or not owner[
+                    "token"
+                ].startswith("owner_"):
+                    continue
+                private_paths = owner.get("private_paths", [])
+                if not isinstance(private_paths, list) or any(
+                    not isinstance(relative, str)
+                    or normalize_changed_path(relative) != relative
+                    or any(part in _ADMIN for part in Path(relative).parts)
+                    for relative in private_paths
+                ):
+                    continue
+                paths = set(private_paths)
+                data = archive / "files"
+                if data.is_symlink():
+                    continue
+                # Older archives predate the pinned-path owner metadata. Only
+                # unmistakably private names can be retired without guessing
+                # which ordinary file was copied.
+                for directory, directories, files in os.walk(data, followlinks=False):
+                    base = Path(directory)
+                    for name in list(directories) + files:
+                        relative = (base / name).relative_to(data).as_posix()
+                        if _private_path(relative):
+                            paths.add(relative)
+                            if name in directories:
+                                directories.remove(name)
+                for relative in sorted(
+                    paths, key=lambda item: (len(Path(item).parts), item)
+                ):
+                    with (
+                        suppress(FileNotFoundError),
+                        _parent(data, relative) as (parent, leaf),
+                    ):
+                        self._remove_private_entry(parent, leaf)
+                        os.fsync(parent)
+            except (LlmCoordError, OSError, TypeError, ValueError):
+                # A corrupt or replaced archive is evidence, not authority to
+                # remove an arbitrary path.
+                continue
+
+    def _cleanup_needed(self, workspace_id: str, session_id: str) -> bool:
+        with self.store.connection() as con:
+            session = con.execute(
+                "SELECT state FROM sessions WHERE session_id=?", (session_id,)
+            ).fetchone()
+            if session is None or session[0] != "closed":
+                return False
+            if con.execute(
+                "SELECT 1 FROM tasks WHERE session_id=? AND "
+                "state NOT IN ('completed','failed','cancelled') LIMIT 1",
+                (session_id,),
+            ).fetchone():
+                return False
+            if con.execute(
+                "SELECT 1 FROM task_workflows w JOIN tasks t ON t.task_id=w.task_id "
+                "WHERE t.session_id=? AND w.proposal_json IS NOT NULL AND "
+                "w.status NOT IN ('published','undone','discarded') LIMIT 1",
+                (session_id,),
+            ).fetchone():
+                return False
+            if con.execute(
+                "SELECT 1 FROM task_executions e JOIN tasks t ON t.task_id=e.task_id "
+                "WHERE t.session_id=? AND "
+                "e.state NOT IN ('published','failed') LIMIT 1",
+                (session_id,),
+            ).fetchone():
+                return False
+            if (
+                con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='isolated_sync_journal'"
+                ).fetchone()
+                and con.execute(
+                    "SELECT 1 FROM isolated_sync_journal WHERE workspace_id=? "
+                    "AND state='prepared' LIMIT 1",
+                    (workspace_id,),
+                ).fetchone()
+            ):
+                return False
+            return (
+                con.execute(
+                    "SELECT 1 FROM workspace_batches WHERE workspace_id=? AND "
+                    "state IN ('applying','operator_attention') LIMIT 1",
+                    (workspace_id,),
+                ).fetchone()
+                is None
+            )
+
+    def cleanup_closed(self, session_id: str | None = None) -> None:
+        """Retire closed sessions only after proposals and live actions release them."""
+        with self.lock:
+            with self.store.connection() as con:
+                rows = con.execute(
+                    "SELECT workspace_id,session_id FROM isolated_workspaces "
+                    "WHERE stage='ready'" + (" AND session_id=?" if session_id else ""),
+                    (session_id,) if session_id else (),
+                ).fetchall()
+            for row in rows:
+                workspace_id = str(row["workspace_id"])
+                if not self._cleanup_needed(workspace_id, str(row["session_id"])):
+                    continue
+                with self.store.connection() as con:
+                    con.execute(
+                        "UPDATE workspaces SET state='cleaning', "
+                        "state_version=state_version+1 WHERE workspace_id=?",
+                        (workspace_id,),
+                    )
+                try:
+                    if not self._clean_incomplete(workspace_id, closed=True):
+                        self._quarantine(workspace_id, closed=True)
+                except (LlmCoordError, OSError, ValueError):
+                    self._quarantine(workspace_id, closed=True)
+
+    def _clean_incomplete(self, workspace_id: str, *, closed: bool = False) -> bool:
         state = self.get(workspace_id)
         workspace = self.store.get_workspace(workspace_id)
         assert state is not None and workspace is not None
@@ -734,9 +955,15 @@ class IsolatedWorkspaceManager:
         owner: dict[str, Any] | None = None
         if archive.exists() or archive.is_symlink():
             with _source(archive, "owner.json") as descriptor:
-                owner = json.loads(_read(descriptor, 4096))
-            if owner is None or owner.get("token") != state.creation_token:
+                owner = json.loads(_read(descriptor, 32 * 1024 * 1024))
+            if (
+                not isinstance(owner, dict)
+                or owner.get("token") != state.creation_token
+                or not isinstance(owner.get("root_identity"), list)
+                or len(owner["root_identity"]) != 2
+            ):
                 return False
+            self._scrub_private(archive_data, state)
         if path.exists() or path.is_symlink():
             root_status = path.lstat()
             if owner is not None:
@@ -779,17 +1006,39 @@ class IsolatedWorkspaceManager:
                     or set(os.listdir(path)) != {".git"}
                 ):
                     return False
+            self._scrub_private(path, state)
             known = set(state.source_manifest) | set(state.runtime_files)
+            if closed:
+                with self.store.connection() as con:
+                    known.update(
+                        str(row[0])
+                        for row in con.execute(
+                            "SELECT relative_path FROM workspace_candidates "
+                            "WHERE workspace_id=?",
+                            (workspace_id,),
+                        )
+                    )
+                    if con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='isolated_sync_state'"
+                    ).fetchone():
+                        synced = con.execute(
+                            "SELECT manifest_json FROM isolated_sync_state "
+                            "WHERE workspace_id=?",
+                            (workspace_id,),
+                        ).fetchone()
+                        if synced:
+                            known.update(json.loads(synced[0]))
             originals = self._cleanup_files(path, known, git_pointer=True)
             archived = self._cleanup_files(archive_data, known) if owner else ()
             if set(originals) & set(archived):
                 return False
-            if not all(
+            if not closed and not all(
                 self._creation_file_matches(path, item, state, primary)
                 for item in originals
             ):
                 return False
-            if not all(
+            if not closed and not all(
                 self._creation_file_matches(archive_data, item, state, primary)
                 for item in archived
             ):
@@ -815,6 +1064,7 @@ class IsolatedWorkspaceManager:
                     owner = {
                         "token": state.creation_token,
                         "root_identity": [root_status.st_dev, root_status.st_ino],
+                        "private_paths": sorted(self._private_material(state)),
                     }
                     archive_fd = os.open(
                         archive, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -856,7 +1106,7 @@ class IsolatedWorkspaceManager:
                         os.fsync(source_parent)
                         os.fsync(destination_parent)
                     self.fault("cleanup_archived")
-                    if not self._creation_file_matches(
+                    if not closed and not self._creation_file_matches(
                         archive_data, relative, state, primary
                     ):
                         return False
@@ -898,7 +1148,12 @@ class IsolatedWorkspaceManager:
                 "UPDATE workspaces SET state='removed',state_version=state_version+1,"
                 "quarantine_reason=? WHERE workspace_id=?",
                 (
-                    "Interrupted creation output retained at " + str(archive),
+                    (
+                        "Closed session source evidence retained at "
+                        if closed
+                        else "Interrupted creation output retained at "
+                    )
+                    + str(archive),
                     workspace_id,
                 ),
             )
@@ -909,6 +1164,8 @@ class IsolatedWorkspaceManager:
 
     def recover(self) -> None:
         with self.lock:
+            self._scrub_removed_archives()
+            self.cleanup_closed()
             with self.store.connection() as con:
                 rows = con.execute(
                     "SELECT workspace_id,stage FROM isolated_workspaces"
@@ -981,6 +1238,15 @@ class IsolatedWorkspaceManager:
             consent = {
                 entry.path for entry in plan.entries if entry.action == "private_copy"
             }
+            tree_roots = tuple(
+                entry.path for entry in plan.entries if entry.action == "private_tree"
+            )
+            for relative in set(approved_secrets) - consent:
+                if runtime_path_matches(relative, tree_roots) and _private_path(
+                    relative
+                ):
+                    with _source(root, relative):
+                        consent.add(relative)
             if set(approved_secrets) - consent:
                 raise _error(
                     "--approve-secret must name an existing ignored secret regular "
@@ -997,7 +1263,7 @@ class IsolatedWorkspaceManager:
             copies = [
                 entry
                 for entry in plan.entries
-                if entry.action in {"private_copy", "clone_or_copy"}
+                if entry.action in {"private_copy", "clone_or_copy", "private_tree"}
             ]
             notices = tuple(
                 f"Runtime omitted: {entry.path} ({entry.reason}). "
@@ -1008,6 +1274,7 @@ class IsolatedWorkspaceManager:
                 not in {
                     "private_copy",
                     "clone_or_copy",
+                    "private_tree",
                     "create_directory",
                     "exclude_administration",
                 }
@@ -1133,12 +1400,29 @@ class IsolatedWorkspaceManager:
                 self._stage(workspace_id, "materialized")
                 allocated = 0
                 for runtime_entry in copies:
+                    if runtime_entry.action == "private_tree":
+                        from llm_cli.workspace.runtime import copy_dependency_tree
+
+                        tree_notices = copy_dependency_tree(
+                            root,
+                            managed.path,
+                            runtime_entry.path,
+                            approved_secret_paths=approved_secrets,
+                        )
+                        notices += tree_notices
+                        continue
                     copy_runtime_file(root, managed.path, runtime_entry)
                     with _source(managed.path, runtime_entry.path) as descriptor:
                         status = os.fstat(descriptor)
                         allocated += getattr(status, "st_blocks", 0) * 512
                     if allocated > plan.budgets.max_allocated_bytes:
                         raise _error("runtime copies exceeded their allocation budget")
+                with self.store.connection() as con:
+                    con.execute(
+                        "UPDATE isolated_workspaces SET notices_json=? "
+                        "WHERE workspace_id=?",
+                        (json.dumps(notices), workspace_id),
+                    )
                 self._stage(workspace_id, "hydrated")
                 if (
                     source_fingerprint(root, policy_paths) != fingerprint

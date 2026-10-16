@@ -310,6 +310,7 @@ class DaemonService:
         shared_recovery = self._recover_shared_executions()
         legacy_recovery = self.reconciler.reconcile()
         self.workflow.reconcile()
+        self.isolated_workspaces.cleanup_closed()
         self.startup_recovery = RecoveryReport(
             boot_id=self.boot_id,
             outcomes=shared_recovery + legacy_recovery.outcomes,
@@ -403,6 +404,7 @@ class DaemonService:
                 async with self._authority_lock:
                     await asyncio.to_thread(self.coordinator.reconcile_expired)
                     await asyncio.to_thread(self.workflow.reconcile)
+                    await asyncio.to_thread(self.isolated_workspaces.cleanup_closed)
                     if time.monotonic() >= self._check_cleanup_ready_at:
                         from llm_cli.execution.checks import cleanup_interrupted_checks
 
@@ -667,6 +669,9 @@ class DaemonService:
                 session.session_id,
                 reason=_optional_string(params, "reason") or "operator_exit",
             )
+            await asyncio.to_thread(
+                self.isolated_workspaces.cleanup_closed, session.session_id
+            )
             return {
                 "session": asdict(closed),
                 "event": asdict(event) if event is not None else None,
@@ -739,6 +744,7 @@ class DaemonService:
                 undo=method == "task.undo",
                 allow_unverified=bool(params.get("allow_unverified", False)),
             )
+            await asyncio.to_thread(self.isolated_workspaces.cleanup_closed)
             self._schedule_ready_launches()
             return workflow_result
         if method in {"checks.configure", "checks.list"}:
@@ -781,6 +787,7 @@ class DaemonService:
         if method == "task.discard":
             held = self.workflow.discard(_string(params, "task_id"))
             if held is not None:
+                await asyncio.to_thread(self.isolated_workspaces.cleanup_closed)
                 return held
             result = self.coordinator.discard_integration(_string(params, "task_id"))
             self._schedule_ready_launches()

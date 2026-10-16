@@ -1114,11 +1114,17 @@ class SharedToolBroker(ToolBroker):
                         found += 1
         return tree
 
-    def _typed_read(self, relative: str, *, symlink: bool = False) -> bytes | None:
+    def _typed_read(
+        self, relative: str, *, symlink: bool = False, pin_observation: bool = False
+    ) -> bytes | None:
         self._target(relative, allow_symlink=symlink)
         if self.usage.files_read >= self.limits.max_read_files:
             raise WorkspaceBrokerError("this execution reached its file-read limit")
-        identity, content = self._observe(relative, typed=True)
+        if pin_observation and relative in self._observations:
+            observation = self._observations[relative]
+            identity, content = observation.base, observation.content
+        else:
+            identity, content = self._observe(relative, typed=True)
         if relative in self._contents:
             content = self._contents[relative]
             kind = (
@@ -1418,12 +1424,20 @@ class SharedToolBroker(ToolBroker):
         denied = self._write_denial(relative)
         if denied:
             return denied
-        identity, _ = self._observe(relative, typed=True)
+        # Deletion is authorized against the version already read by this
+        # task, including a partial or restored read. Observing the disk here
+        # would silently authorize deletion of a concurrent replacement.
+        observation = self._observations.get(relative)
+        if observation is None:
+            identity, _ = self._observe(relative, typed=True)
+        else:
+            identity = observation.base
         if (
             self._typed_read(
                 relative,
                 symlink=self._modes.get(relative) == SYMLINK_MODE
                 or identity.kind is ObjectKind.SYMLINK,
+                pin_observation=True,
             )
             is None
         ):
