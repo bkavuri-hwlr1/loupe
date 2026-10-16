@@ -47,11 +47,11 @@ This decision selects its first independently useful piece: a read-only plan.
    | Actual entry | Preview decision |
    | --- | --- |
    | Ordinary ignored regular file | Prefer a verified COW clone; otherwise a private byte copy within all budgets. |
-   | Ordinary ignored directory | A private container only; inventory every child independently, except explicit deferred runtime trees below. |
-   | Git-ignored `node_modules` directory | Require a rebuild or trusted directory-level adapter without enumerating descendants. Child counts and bytes are unknown; none of its contents are copy candidates. A nonignored directory with this name is inventoried normally. |
+   | Ordinary ignored directory | A private container; inventory children independently except dependency trees handled by their directory-level adapter below. |
+   | Git-ignored `node_modules` directory | Select the private directory-level adapter without previewing descendants. Counts and bytes remain unknown until bounded materialization; no installer runs. Nonignored source is inventoried normally. |
    | Likely secret by path | Require exact-file consent; an approved file plans a private copy with mode at most `0600`, under `0700` containers. |
-   | `.venv` or `venv` directory | Require a rebuild or trusted portability adapter; absolute shebangs and embedded primary paths cannot be generically rewritten. Do not read files to guess portability. |
-   | Any symlink | Refuse in this minimum version; explain whether it is absolute, escaping, or contained without following it. Contained-link recreation is deferred. |
+   | Git-ignored `.venv` or `venv` directory | Select the bounded private portability adapter. Materialization verifies base-interpreter metadata and relocates supported launchers/configuration; the preview does not read file contents. |
+   | Runtime symlink outside a supported dependency adapter | Refuse and describe its shape without following it. The dependency adapter separately validates contained links and narrowly pinned base-Python executable links. |
    | FIFO, socket, device, or other special file | Refuse and report its kind. |
    | Nested repository/worktree or recognizable bare repository | Refuse and mark descendants unexamined; no implicit submodule fetch or adapter. |
    | Cross-device directory | Require a dedicated adapter; do not recurse across mounts. |
@@ -62,8 +62,9 @@ This decision selects its first independently useful piece: a read-only plan.
    File byte fields describe observed regular files only, never recursive
    directory sizes. Deferred descendants are excluded from planned copy totals;
    a complete policy plan may still contain explicit unexamined directories and
-   require decisions. Deferring an ignored dependency tree does not consume the
-   global budget or disable independent candidates. Mount, repository, symlink,
+   require decisions. Selecting an ignored dependency tree's adapter does not
+   consume its descendants from the global preview inventory budget or disable
+   independent candidates. Mount, repository, symlink,
    and metadata-race checks still apply before a dependency directory is deferred.
    No directory-level secret approval authorizes its descendants. Repeated
    `--approve-secret PATH` flags only preview consent for the exact file in
@@ -99,15 +100,14 @@ This decision selects its first independently useful piece: a read-only plan.
    also owns destination collisions, actual allocation/free-space checks,
    protected-source handling, journals, and creation/recovery/cleanup.
 
-   A directory-level rebuild decision is not permission to copy its opaque
-   contents, follow links, or run an install command. C2 must either leave the
-   runtime directory absent with an explicit user-visible decision, or obtain
-   an approved trusted adapter/rebuild policy under the normal command and
-   secret boundaries. Copying instead requires a fresh complete descendant
-   inventory with per-entry secret/special-file/symlink decisions and all byte,
-   allocation, time, and metadata limits. A larger tree cannot silently inherit
-   blanket secret consent or bypass those limits. Tracked source under the same
-   path remains part of ordinary source materialization and collision checks.
+   An opaque-directory decision does not grant blanket secret consent or
+   permission to run an install command. C2 materializes supported dependency
+   trees through a fresh bounded, no-follow walk, with per-entry secret, special
+   node, link, allocation, time, and stability checks. Likely credential files
+   require exact-file consent; an approved descendant does not authorize its
+   siblings. Unsupported layouts fail with a path-specific adapter message.
+   Tracked source under the same path remains ordinary source and is never
+   silently treated as ignored runtime.
 
 6. **Execution and publication retain existing boundaries.**
    Future hydration bytes are runtime-only: exclude them from model tools,
@@ -131,3 +131,32 @@ This decision selects its first independently useful piece: a read-only plan.
 - Exact source materialization, COW capability probing, content stability,
   protected command output, durable consent, runtime refresh, and crash recovery
   remain work for C2/C3; a complete preview alone enables none of them.
+
+## C2 implementation (Wave 3)
+
+The session materializer now implements exact ordinary-source snapshots,
+private ignored-file hydration, exact-file secret consent, pinned source-policy
+identities, descriptor-based stable copies, a disposable same-device COW probe,
+allocation/free-space checks, and durable creation/recovery intents. Closing a
+session retires its worktree and registration once running tasks and held
+proposals release its runtime. Recovery archives retain ordinary source evidence,
+including late replacements and open-descriptor writes, but copied runtime,
+dependency roots, and screened source are disposed through no-follow descriptors.
+Ambiguous source paths are preserved and quarantined with the archive location.
+Ready workspaces restore frozen runtime exclusions
+on restart. Source symlinks use the C5 contained-link policy; runtime symlinks
+remain deferred.
+
+Checks and command snapshots copy hydrated runtime privately. Supported
+virtualenvs and Node dependency trees use bounded private adapters; launcher and
+configuration relocation never rewrites arbitrary data. Legitimate ordinary
+source fixtures that trigger secret screening copy privately without ordinary
+artifacts or model access. Output filters actual copied credential values before
+streaming, durable records, and hook file returns, preserving other diagnostics.
+Runtime check evidence is process-keyed, so restarting invalidates that evidence
+without storing raw runtime digests. No installer runs automatically. Per-tab
+environment forwarding, additional protected-source adapters, runtime refresh,
+and managed background processes remain outside this package. Publication is the
+C3 dependency.
+
+See [Isolated workspaces](../isolated-workspaces.md) for usage and limits.

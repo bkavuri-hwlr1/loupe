@@ -620,6 +620,34 @@ class SharedBatchPublisher:
     def _binding(
         connection: sqlite3.Connection, session_id: str, *, require_active: bool
     ) -> sqlite3.Row:
+        owner = connection.execute(
+            "SELECT s.workspace_id,s.workspace_mode,s.checkout_id,w.kind,w.mode,"
+            "w.state,w.canonical_path,w.source_workspace_id FROM sessions s "
+            "JOIN workspaces w ON w.workspace_id=s.workspace_id WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        isolated = owner is not None and owner["workspace_mode"] == "isolated"
+        target_workspace = owner["workspace_id"] if owner is not None else None
+        if isolated:
+            assert owner is not None
+            source = connection.execute(
+                "SELECT 1 FROM isolated_workspaces WHERE workspace_id=? "
+                "AND session_id=? AND stage='ready'",
+                (owner["workspace_id"], session_id),
+            ).fetchone()
+            local_root = Path(str(owner["canonical_path"]))
+            if (
+                owner["kind"] != "linked_worktree"
+                or owner["mode"] != "isolated"
+                or owner["state"] != "active"
+                or source is None
+                or local_root.resolve(strict=True) != local_root
+                or not local_root.is_dir()
+            ):
+                raise WorkspaceBrokerError(
+                    "isolated publication binding is unavailable"
+                )
+            target_workspace = owner["source_workspace_id"]
         binding = connection.execute(
             """
             SELECT workspaces.*, checkouts.git_common_dir,
@@ -628,11 +656,11 @@ class SharedBatchPublisher:
                 sessions.state AS session_state, sessions.workspace_mode,
                 sessions.checkout_id AS session_checkout_id
             FROM sessions JOIN workspaces
-                ON workspaces.workspace_id = sessions.workspace_id
+                ON workspaces.workspace_id = ?
             JOIN checkouts ON checkouts.checkout_id = workspaces.checkout_id
             WHERE sessions.session_id = ?
             """,
-            (session_id,),
+            (target_workspace, session_id),
         ).fetchone()
         if (
             binding is None
@@ -643,7 +671,7 @@ class SharedBatchPublisher:
             or binding["state"] != "active"
             or binding["kind"] != "shared_checkout"
             or binding["mode"] != "shared"
-            or binding["workspace_mode"] != "shared"
+            or binding["workspace_mode"] != ("isolated" if isolated else "shared")
             or binding["checkout_id"] != binding["session_checkout_id"]
             or binding["canonical_path"] != binding["checkout_path"]
         ):

@@ -367,33 +367,26 @@ def test_every_session_on_one_checkout_shares_its_workspace(tmp_path: Path) -> N
     asyncio.run(scenario())
 
 
-def test_isolated_mode_is_refused_rather_than_silently_downgraded(
-    tmp_path: Path,
-) -> None:
+def test_isolated_mode_uses_a_separate_worktree(tmp_path: Path) -> None:
     async def scenario() -> None:
         repository = _repository(tmp_path)
         service = _service(tmp_path)
         service.initialize()
         await service.handle(_request("repo.add", {"path": str(repository)}))
-
-        # Hydration of ignored runtime files does not exist yet. Quietly giving
-        # the operator a shared workspace instead would break exactly the
-        # isolation they asked for.
-        with pytest.raises(LlmCoordError) as failure:
-            await service.handle(
-                _request(
-                    "session.open",
-                    {
-                        "session_id": "isolated-session",
-                        "path": str(repository),
-                        "resume_token_hash": hashlib.sha256(b"iso").hexdigest(),
-                        "workspace": "isolated",
-                    },
-                )
+        opened = await service.handle(
+            _request(
+                "session.open",
+                {
+                    "session_id": "isolated-session",
+                    "path": str(repository),
+                    "resume_token_hash": hashlib.sha256(b"iso").hexdigest(),
+                    "workspace": "isolated",
+                },
             )
-
-        assert "not implemented" in failure.value.message
-        assert service.store.get_session("isolated-session") is None
+        )
+        assert opened["workspace"]["mode"] == "isolated"
+        assert Path(opened["workspace"]["canonical_path"]) != repository
+        assert opened["session"]["workspace_mode"] == "isolated"
         service.close()
 
     asyncio.run(scenario())

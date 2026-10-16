@@ -53,6 +53,19 @@ _EFFORT_HELP = (
 )
 
 
+def _runtime_consent_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--approve-secret",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "allow a private copy of this exact ignored runtime file in one new "
+            "isolated session; repeat for more files (never recursive)"
+        ),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="loupe",
@@ -226,6 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="where this session prepares edits; defaults to the shared checkout",
     )
 
+    _runtime_consent_argument(chat)
+
     checks = commands.add_parser("checks", help="configure named verification commands")
     check_actions = checks.add_subparsers(dest="checks_command", required=True)
     for action in ("configure", "list"):
@@ -290,6 +305,8 @@ def build_parser() -> argparse.ArgumentParser:
     open_session.add_argument("--provider")
     open_session.add_argument("--model")
     open_session.add_argument("--publish", choices=("auto", "review"))
+    open_session.add_argument("--workspace", choices=("shared", "isolated"))
+    _runtime_consent_argument(open_session)
     open_session.add_argument(
         "--mode", dest="agent_mode", choices=AGENT_MODES, default=argparse.SUPPRESS
     )
@@ -422,6 +439,7 @@ def _hydration_preview_text(plan: HydrationPlan) -> str:
         lines.append("Resolve these reasons and repeat the bounded preview.")
     lines.append("Actions (all counts; up to 2 sample paths each, 8 total):")
     labels = {
+        "private_tree": "Private dependency trees",
         "clone_or_copy": "Copy candidates",
         "private_copy": "Approved private copies",
         "create_directory": "Directory containers",
@@ -694,6 +712,7 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             model=arguments.model,
             resume_session_id=arguments.resume,
             workspace_mode=arguments.workspace,
+            approved_runtime_files=tuple(arguments.approve_secret),
             publication_mode=arguments.publish,
             agent_mode=arguments.agent_mode,
             effort=arguments.effort,
@@ -883,6 +902,8 @@ def _dispatch_session(arguments: argparse.Namespace, client: DaemonClient) -> An
             provider=arguments.provider,
             model=arguments.model,
             resume_session_id=None,
+            workspace_mode=arguments.workspace,
+            approved_runtime_files=tuple(arguments.approve_secret),
             publication_mode=arguments.publish,
             agent_mode=arguments.agent_mode,
         )
@@ -892,6 +913,8 @@ def _dispatch_session(arguments: argparse.Namespace, client: DaemonClient) -> An
             "model": credentials.model,
             "cursor": credentials.cursor,
             "agent_mode": credentials.agent_mode,
+            "workspace_mode": credentials.workspace_mode,
+            "workspace_notices": list(credentials.workspace_notices),
         }
     if action == "list":
         params: dict[str, Any] = {"state": arguments.state}

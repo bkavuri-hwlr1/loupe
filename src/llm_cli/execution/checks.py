@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import hmac
 import json
 import os
+import posixpath
+import re
 import selectors
 import shutil
 import subprocess
@@ -17,7 +20,11 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from llm_cli.agent.source_policy import ensure_safe_content
+from llm_cli.agent.source_policy import (
+    ensure_safe_content,
+    register_runtime_paths,
+    runtime_path,
+)
 from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
@@ -39,6 +46,10 @@ from llm_cli.workspace.identity import (
 )
 from llm_cli.workspace.workflow import TaskWorkflow, encode_files
 
+# Runtime equality evidence must not reveal guessable hashes of private inputs.
+# A fresh process invalidates old runtime-dependent checks; source-only checks
+# retain their previous identity across restarts.
+_RUNTIME_EVIDENCE_KEY = os.urandom(32)
 _OUTPUT_LIMIT = 10 * 1024 * 1024
 # Attempts at building a check's snapshot when Git fails while doing so.
 _PREPARE_ATTEMPTS = 3
@@ -135,7 +146,11 @@ def source_snapshot(
         root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
     )
     assert isinstance(result.stdout, str)
-    paths = sorted(set(filter(None, result.stdout.split("\0"))))
+    paths = sorted(
+        path
+        for path in set(filter(None, result.stdout.split("\0")))
+        if not runtime_path(root, path)
+    )
     if len(paths) > 100_000:
         raise ValueError("source snapshot exceeds 100,000 paths")
     manifest: list[tuple[str, str, str, str]] = []
@@ -184,6 +199,24 @@ def materialize_snapshot_file(
         target.chmod(0o755 if mode == "100755" else 0o644)
 
 
+# A check fingerprints the same private runtime several times; a dependency tree
+# can hold thousands of files. Unchanged files, by exact path and full stat
+# signature, reuse their digest; any write changes ctime and rehashes.
+_RUNTIME_DIGESTS: dict[str, tuple[tuple[int, ...], str, int]] = {}
+_RUNTIME_DIGESTS_LIMIT = 400_000
+
+
+def _stat_signature(status: os.stat_result) -> tuple[int, ...]:
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+    )
+
+
 def runtime_identity(root: Path, paths: list[str]) -> str:
     """Bind copied inputs to evidence without exposing their contents."""
     manifest: list[tuple[str, str]] = []
@@ -195,25 +228,70 @@ def runtime_identity(root: Path, paths: list[str]) -> str:
             raise ValueError("runtime snapshot exceeds 200,000 entries")
         for entry in sorted(entries):
             if entry.is_symlink():
-                raise ValueError(
-                    "runtime snapshot contains symlinks; use setup instead"
-                )
+                link = os.readlink(entry)
+                if Path(link).is_absolute():
+                    from llm_cli.workspace.runtime import _trusted_python
+
+                    executable = _trusted_python(
+                        root, entry.relative_to(root).as_posix(), link
+                    )
+                    identity, _ = read_identified_path(executable)
+                    manifest.append(
+                        (
+                            entry.relative_to(root).as_posix() + ":base-python",
+                            identity.digest,
+                        )
+                    )
+                else:
+                    destination = posixpath.normpath(
+                        posixpath.join(entry.parent.relative_to(root).as_posix(), link)
+                    )
+                    if destination != path and not destination.startswith(path + "/"):
+                        from llm_cli.workspace.runtime import workspace_dependency_link
+
+                        workspace_dependency_link(
+                            root, entry.relative_to(root).as_posix(), link
+                        )
+                manifest.append((entry.relative_to(root).as_posix(), digest(link)))
+                continue
             if entry.is_dir():
                 continue
-            identity, _ = read_identified_path(entry)
-            if identity.kind is not ObjectKind.REGULAR:
-                raise ValueError("runtime snapshot contains an absent or special file")
-            total += identity.size
+            key = os.fsdecode(entry)
+            before = _stat_signature(entry.lstat())
+            cached = _RUNTIME_DIGESTS.get(key)
+            if cached is not None and cached[0] == before:
+                file_digest, size = cached[1], cached[2]
+            else:
+                identity, body = read_identified_path(entry)
+                if identity.kind is not ObjectKind.REGULAR or body is None:
+                    raise ValueError(
+                        "runtime snapshot contains an absent or special file"
+                    )
+                from llm_cli.workspace.runtime import relocated_venv_text
+
+                if relocated_venv_text(entry.relative_to(root).as_posix(), body):
+                    body = body.replace(os.fsencode(root), b"<private-runtime-root>")
+                file_digest, size = hashlib.sha256(body).hexdigest(), identity.size
+                if _stat_signature(entry.lstat()) == before:
+                    if len(_RUNTIME_DIGESTS) >= _RUNTIME_DIGESTS_LIMIT:
+                        _RUNTIME_DIGESTS.clear()
+                    _RUNTIME_DIGESTS[key] = (before, file_digest, size)
+            total += size
             if total > 5 * 1024**3:
                 raise ValueError("runtime snapshot exceeds 5 GiB")
-            manifest.append((entry.relative_to(root).as_posix(), identity.digest))
-    return digest(json.dumps(manifest))
+            manifest.append((entry.relative_to(root).as_posix(), file_digest))
+    encoded = json.dumps(manifest)
+    if not paths:
+        return digest(encoded)
+    return hmac.new(_RUNTIME_EVIDENCE_KEY, encoded.encode(), "sha256").hexdigest()
 
 
-def verification_identity(root: Path, config: dict[str, Any]) -> str:
+def verification_identity(
+    root: Path, config: dict[str, Any], *, runtime_root: Path | None = None
+) -> str:
     return digest(
         source_snapshot(root)[0]
-        + runtime_identity(root, config.get("runtime_paths", []))
+        + runtime_identity(runtime_root or root, config.get("runtime_paths", []))
     )
 
 
@@ -222,6 +300,8 @@ def verification_current(
     workflow: dict[str, Any],
     root: Path,
     files: tuple[BatchFile, ...],
+    *,
+    runtime_root: Path | None = None,
 ) -> bool:
     config = json.loads(workflow["config_json"])
     required = [
@@ -229,7 +309,7 @@ def verification_current(
     ]
     if not required:
         return True
-    source = verification_identity(root, config)
+    source = verification_identity(root, config, runtime_root=runtime_root)
     candidate = digest(encode_files(files))
     config_digest = digest(workflow["config_json"])
     with store.connection() as con:
@@ -274,6 +354,8 @@ def verification_status(
     workflow: dict[str, Any],
     root: Path,
     files: tuple[BatchFile, ...],
+    *,
+    runtime_root: Path | None = None,
 ) -> str:
     """Describe the verification evidence for this exact source and proposal.
 
@@ -291,7 +373,7 @@ def verification_status(
     ]
     if not required:
         return "not_applicable"
-    source = verification_identity(root, config)
+    source = verification_identity(root, config, runtime_root=runtime_root)
     candidate = digest(encode_files(files))
     config_digest = digest(workflow["config_json"])
     saw_stale = False
@@ -354,8 +436,11 @@ class CheckRunner:
         on_result: Callable[[str, str, str], None] | None = None,
         runtime_paths: tuple[str, ...] | None = None,
         suppress_output: bool = False,
+        runtime_root: Path | None = None,
+        sensitive_paths: tuple[str, ...] = (),
     ) -> None:
         self.workflow, self.row, self.root = workflow, row, root
+        self.runtime_root = runtime_root or root
         # Told (name, state, output) after every run, for repair limits.
         self.on_result = on_result
         self.store = workflow.store
@@ -371,6 +456,8 @@ class CheckRunner:
                 set(self.config.get("runtime_paths", [])) | set(runtime_paths)
             )
         self.suppress_output = suppress_output
+        self.sensitive_paths = sensitive_paths
+        self.sensitive_values: tuple[str, ...] = ()
         self.deadline_at = deadline_at or (time.time() + 7200)
 
     def gate(self) -> ToolOutcome | None:
@@ -407,7 +494,9 @@ class CheckRunner:
 
     def _passed(self, name: str) -> bool:
         files = self.candidates()
-        source = verification_identity(self.root, self.config)
+        source = verification_identity(
+            self.root, self.config, runtime_root=self.runtime_root
+        )
         with self.store.connection() as con:
             row = con.execute(
                 (
@@ -484,7 +573,7 @@ class CheckRunner:
             private = snapshot.parent / (run_id + "-runtime")
             private.mkdir(mode=0o700)
             env = {
-                "PATH": os.defpath,
+                "PATH": os.environ.get("PATH", os.defpath),
                 "HOME": str(private),
                 "TMPDIR": str(private),
                 "XDG_CACHE_HOME": str(private / "cache"),
@@ -493,6 +582,13 @@ class CheckRunner:
                 "LC_ALL": "C.UTF-8",
             }
             env.update(spec["env"])
+            from llm_cli.workspace.runtime import private_output_values
+
+            self.sensitive_values = private_output_values(
+                snapshot,
+                tuple(sorted(set(self.config.get("runtime_paths", [])))),
+                source_paths=tuple(sorted(set(self.sensitive_paths))),
+            )
             before = source_snapshot(snapshot)[0]
             commands = [*self.config.get("setup", []), spec["argv"]]
             for index, argv in enumerate(commands):
@@ -586,7 +682,9 @@ class CheckRunner:
         nothing is left behind: a worktree it created is removed again.
         """
 
-        runtime = runtime_identity(self.root, self.config.get("runtime_paths", []))
+        runtime = runtime_identity(
+            self.runtime_root, self.config.get("runtime_paths", [])
+        )
         for _ in range(3):
             with self.lock:
                 source, bodies = source_snapshot(self.root, contents=True)
@@ -635,8 +733,13 @@ class CheckRunner:
                 materialize_snapshot_file(snapshot, f.relative_path, f.content, f.mode)
             for path in self.config.get("runtime_paths", []):
                 self._copy_runtime(path, snapshot)
+            register_runtime_paths(
+                snapshot, tuple(self.config.get("runtime_paths", []))
+            )
             if (
-                runtime_identity(self.root, self.config.get("runtime_paths", []))
+                runtime_identity(
+                    self.runtime_root, self.config.get("runtime_paths", [])
+                )
                 != runtime
                 or runtime_identity(snapshot, self.config.get("runtime_paths", []))
                 != runtime
@@ -656,9 +759,38 @@ class CheckRunner:
         return worktree, digest(source + runtime)
 
     def _copy_runtime(self, path: str, snapshot: Path) -> None:
-        source = candidate_target(self.root, path)
+        if runtime_path(self.runtime_root, path):
+            from llm_cli.workspace.isolated import copy_pinned_runtime_file
+            from llm_cli.workspace.runtime import dependency_path
+
+            source = candidate_target(self.runtime_root, path)
+            if (
+                source.is_dir()
+                and not source.is_symlink()
+                and not dependency_path(path)
+            ):
+                # Configured directory roots overlap the exact session-pinned
+                # files added to this config. Those exact entries copy below;
+                # recursing this root would widen consent to new private files.
+                if any(
+                    other.startswith(path + "/")
+                    for other in self.config.get("runtime_paths", [])
+                ):
+                    return
+                with os.scandir(source) as runtime_entries:
+                    if next(runtime_entries, None) is not None:
+                        raise ValueError(
+                            "runtime directory has no exact pinned file inputs: " + path
+                        )
+                candidate_target(snapshot, path).mkdir(
+                    parents=True, exist_ok=True, mode=0o700
+                )
+                return
+            copy_pinned_runtime_file(self.runtime_root, snapshot, path)
+            return
+        source = candidate_target(self.runtime_root, path)
         target = candidate_target(snapshot, path)
-        ignored = run_git(self.root, ["check-ignore", "--", path], check=False)
+        ignored = run_git(self.runtime_root, ["check-ignore", "--", path], check=False)
         if ignored.returncode != 0:
             raise ValueError(f"runtime_paths must name ignored paths: {path}")
         if not source.exists() or target.exists():
@@ -692,6 +824,7 @@ class CheckRunner:
             deadline=deadline,
             remaining=remaining,
             cancelled=self.cancelled,
+            sensitive_values=self.sensitive_values,
             on_output=lambda text: (
                 None
                 if self.suppress_output
@@ -705,6 +838,10 @@ def check_retained_proposal(
     row: dict[str, Any],
     root: Path,
     files: tuple[BatchFile, ...],
+    *,
+    runtime_root: Path | None = None,
+    suppress_output: bool = False,
+    sensitive_paths: tuple[str, ...] = (),
 ) -> str | None:
     """Refresh required evidence for a manual apply's captured candidate.
 
@@ -726,6 +863,9 @@ def check_retained_proposal(
         lambda: False,
         emit,
         workflow.publisher.lock,
+        runtime_root=runtime_root,
+        suppress_output=suppress_output,
+        sensitive_paths=sensitive_paths,
     )
     outcome = runner.gate()
     return outcome.content if outcome else None
@@ -741,6 +881,7 @@ def supervised_run(
     cancelled: Callable[[], bool],
     on_output: Callable[[str], None],
     reaper: bool = False,
+    sensitive_values: tuple[str, ...] = (),
 ) -> tuple[int, str, bool, str | None]:
     """Run argv under the process-group supervisor, screening its output.
 
@@ -755,6 +896,17 @@ def supervised_run(
     output pipe.
     """
 
+    private_pattern = (
+        re.compile(
+            "|".join(
+                re.escape(value)
+                for value in sorted(set(sensitive_values), key=len, reverse=True)
+                if value
+            )
+        )
+        if any(sensitive_values)
+        else None
+    )
     process = subprocess.Popen(
         [
             sys.executable,
@@ -772,12 +924,19 @@ def supervised_run(
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     chunks: list[str] = []
+    rendered_remaining = remaining
     partial_line: list[str] = []
     withheld = False
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     clipped, stopped = False, None
 
     def emit_safe(text: str) -> None:
+        nonlocal clipped, rendered_remaining
+        encoded = text.encode("utf-8")
+        allowed = encoded[: max(0, rendered_remaining)]
+        clipped |= len(allowed) < len(encoded)
+        text = allowed.decode("utf-8", errors="ignore")
+        rendered_remaining -= len(text.encode("utf-8"))
         for start in range(0, len(text), 4096):
             chunk = text[start : start + 4096]
             chunks.append(chunk)
@@ -788,11 +947,16 @@ def supervised_run(
         line = "".join(partial_line)
         partial_line.clear()
         try:
+            # Recognized signatures must be checked before substitutions: a
+            # short private value must not hide a token prefix from screening.
             ensure_safe_content(line)
         except LlmCoordError:
             withheld = True
             emit_safe("[Remaining output withheld: recognized secret material.]\n")
         else:
+            if private_pattern is not None:
+                # Match only original output. Never revisit placeholders.
+                line = private_pattern.sub("[private value]", line)
             emit_safe(line)
 
     def collect(text: str) -> None:

@@ -32,6 +32,7 @@ class GitWorktreeRecord:
     path: Path
     head_oid: str | None
     locked: bool
+    lock_reason: str | None = None
 
 
 def create_managed_worktree(
@@ -41,6 +42,7 @@ def create_managed_worktree(
     task_id: str,
     base_oid: str,
     worktree_path: Path | None = None,
+    checkout: bool = True,
 ) -> ManagedWorktree:
     """Create and lock a detached linked worktree at one exact commit OID.
 
@@ -114,7 +116,12 @@ def create_managed_worktree(
         # Conditional includes can enable a filter only under the new Git
         # directory. Register first without materializing source, then let the
         # child-context guard inspect its effective config before checkout.
-        run_git(canonical_path, ["reset", "--hard", resolved_base])
+        if checkout:
+            run_git(canonical_path, ["reset", "--hard", resolved_base])
+        else:
+            # Populate only the private index. Source bytes are materialized
+            # from an exact working-tree manifest without filters or checkout.
+            run_git(canonical_path, ["read-tree", resolved_base])
 
         run_git(
             canonical_repository,
@@ -411,6 +418,7 @@ def list_git_worktrees(repository: Path) -> tuple[GitWorktreeRecord, ...]:
         path = Path(decoded_path).resolve(strict=False)
         head: str | None = None
         locked = False
+        lock_reason: str | None = None
         for record_field in fields[1:]:
             if record_field.startswith(b"HEAD "):
                 try:
@@ -422,7 +430,17 @@ def list_git_worktrees(repository: Path) -> tuple[GitWorktreeRecord, ...]:
                     ) from exc
             elif record_field == b"locked" or record_field.startswith(b"locked "):
                 locked = True
-        records.append(GitWorktreeRecord(path=path, head_oid=head, locked=locked))
+                lock_reason = (
+                    record_field.removeprefix(b"locked")
+                    .strip()
+                    .decode("utf-8", errors="replace")
+                    or None
+                )
+        records.append(
+            GitWorktreeRecord(
+                path=path, head_oid=head, locked=locked, lock_reason=lock_reason
+            )
+        )
         fields = []
     if fields or not records:
         raise LlmCoordError(

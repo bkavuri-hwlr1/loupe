@@ -105,6 +105,7 @@ from llm_cli.workspace.identity import (
     identify_path,
     read_identified_path,
 )
+from llm_cli.workspace.isolated import IsolatedWorkspaceManager
 
 # Section 15.1 requires these limits to be visible to operators rather than
 # living only in implementation notes.
@@ -213,6 +214,14 @@ class DaemonService:
         self.shared_runner = SharedTaskExecutionRunner(
             self.runner, self.workspace_batches
         )
+        self.isolated_workspaces = IsolatedWorkspaceManager(
+            self.store,
+            paths.data_dir / "isolated-worktrees",
+            paths.candidate_dir,
+            self.workspace_batches.lock,
+            self.shared_runner.ensure_available,
+        )
+        self.shared_runner.isolated = self.isolated_workspaces
         self.workflow = self.shared_runner.workflow
         self.shared_runner.is_shutting_down = self.shutdown.is_set
         self.shared_runner.commands = CommandSettings(
@@ -290,6 +299,7 @@ class DaemonService:
             cleanup_command_snapshots(self.paths.data_dir / "command-snapshots")
             self._session_recovery_done = True
         self._recover_shared_workspace_publications()
+        self.isolated_workspaces.recover()
         with closing(connect_knowledge(self.paths.knowledge_db)) as connection:
             apply_migrations(connection, KNOWLEDGE_MIGRATIONS)
         with closing(connect_vectors(self.paths.vectors_db)) as connection:
@@ -300,6 +310,7 @@ class DaemonService:
         shared_recovery = self._recover_shared_executions()
         legacy_recovery = self.reconciler.reconcile()
         self.workflow.reconcile()
+        self.isolated_workspaces.cleanup_closed()
         self.startup_recovery = RecoveryReport(
             boot_id=self.boot_id,
             outcomes=shared_recovery + legacy_recovery.outcomes,
@@ -393,6 +404,7 @@ class DaemonService:
                 async with self._authority_lock:
                     await asyncio.to_thread(self.coordinator.reconcile_expired)
                     await asyncio.to_thread(self.workflow.reconcile)
+                    await asyncio.to_thread(self.isolated_workspaces.cleanup_closed)
                     if time.monotonic() >= self._check_cleanup_ready_at:
                         from llm_cli.execution.checks import cleanup_interrupted_checks
 
@@ -657,6 +669,9 @@ class DaemonService:
                 session.session_id,
                 reason=_optional_string(params, "reason") or "operator_exit",
             )
+            await asyncio.to_thread(
+                self.isolated_workspaces.cleanup_closed, session.session_id
+            )
             return {
                 "session": asdict(closed),
                 "event": asdict(event) if event is not None else None,
@@ -729,6 +744,7 @@ class DaemonService:
                 undo=method == "task.undo",
                 allow_unverified=bool(params.get("allow_unverified", False)),
             )
+            await asyncio.to_thread(self.isolated_workspaces.cleanup_closed)
             self._schedule_ready_launches()
             return workflow_result
         if method in {"checks.configure", "checks.list"}:
@@ -771,6 +787,7 @@ class DaemonService:
         if method == "task.discard":
             held = self.workflow.discard(_string(params, "task_id"))
             if held is not None:
+                await asyncio.to_thread(self.isolated_workspaces.cleanup_closed)
                 return held
             result = self.coordinator.discard_integration(_string(params, "task_id"))
             self._schedule_ready_launches()
@@ -880,16 +897,27 @@ class DaemonService:
             model = self.settings.agent_model
         adapter = self.providers.create(provider, model, effort=effort)
         workspace_mode = _workspace_mode(params, self.settings.workspace_mode)
+        approved = params.get("approved_runtime_files", [])
+        if (
+            not isinstance(approved, list)
+            or len(approved) > 1000
+            or any(not isinstance(path, str) for path in approved)
+        ):
+            raise ValueError("approved_runtime_files must be exact relative paths")
+        if approved and workspace_mode != "isolated":
+            raise ValueError("runtime consent requires isolated mode")
+        notices: tuple[str, ...] = ()
         if workspace_mode == "isolated":
-            raise LlmCoordError(
-                ErrorCode.CONFIG_INVALID,
-                "isolated workspaces are not implemented yet; they need worktree "
-                "hydration of ignored runtime files, so the mode is refused "
-                "rather than silently downgraded to shared",
+            workspace, notices = await asyncio.to_thread(
+                self.isolated_workspaces.open,
+                checkout,
+                session_id,
+                approved_secrets=tuple(sorted(set(approved))),
             )
-        workspace = await asyncio.to_thread(
-            self.store.ensure_shared_workspace, checkout
-        )
+        else:
+            workspace = await asyncio.to_thread(
+                self.store.ensure_shared_workspace, checkout
+            )
         session, event, bootstrap_sequence = self.store.open_session(
             session_id=session_id,
             checkout_id=checkout.checkout_id,
@@ -907,6 +935,8 @@ class DaemonService:
             "workspace": asdict(workspace),
             "bootstrap_event": asdict(event),
             "bootstrap_sequence": bootstrap_sequence,
+            "workspace_notices": list(notices),
+            "approved_runtime_files": sorted(set(approved)),
         }
 
     async def _workspace_status(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1004,6 +1034,11 @@ class DaemonService:
         """Compare-and-swap one staged file under the short daemon barrier."""
 
         session = self._authenticated_session(params, require_active=True)
+        if session.workspace_mode == "isolated":
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "isolated publication requires the isolated batch publisher",
+            )
         candidate_id = _string(params, "candidate_id")
         candidate = self.store.get_workspace_candidate(candidate_id)
         if candidate is None:
@@ -2101,7 +2136,7 @@ class DaemonService:
             if provider != session.provider or model != session.model:
                 raise ValueError("stored session conversation provider/model mismatch")
             conversation = snapshot
-        if session.workspace_mode == "shared":
+        if session.workspace_mode in {"shared", "isolated"}:
             # The shared runner refreshes this at each model request, including
             # resumed requests. Avoid appending a second, launch-only snapshot.
             return conversation, None

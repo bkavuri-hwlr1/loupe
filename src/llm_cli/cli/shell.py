@@ -63,12 +63,16 @@ class ChatShell:
         publication_mode: str | None = None,
         agent_mode: str | None = None,
         effort: str | None = None,
+        approved_runtime_files: tuple[str, ...] = (),
     ) -> None:
         if effort is not None and resume_session_id:
             raise LlmCoordError(
                 ErrorCode.CONFIG_INVALID,
                 "--effort applies to new conversations; use /effort after resuming.",
             )
+        self.approved_runtime_files = session.validate_runtime_consent(
+            approved_runtime_files, workspace_mode, resume_session_id
+        )
         self.agent_mode = resolve_agent_mode(agent_mode, publication_mode)
         self.client = client
         self.repository = repository
@@ -295,8 +299,13 @@ class ChatShell:
             effort=self.effort,
             resume_session_id=None,
             workspace_mode=self.workspace_mode,
+            approved_runtime_files=self.approved_runtime_files,
             agent_mode=self.agent_mode,
         )
+        # This command-line consent belongs only to the first opened session.
+        self.approved_runtime_files = ()
+        for notice in self.credentials.workspace_notices:
+            self.ui.notice(notice)
         self.provider, self.model = self.credentials.provider, self.credentials.model
         self.effort = self.credentials.effort
         self.agent_mode = self.credentials.agent_mode

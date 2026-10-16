@@ -306,7 +306,7 @@ portability adapter/rebuild without inspecting its bytes; contained symlink
 recreation is deferred along with escaping/absolute links. Refused directories
 explicitly mark descendants unexamined. Incomplete or changed inventories
 cannot propose copies. COW probing, pinned source/ignore-rule materialization,
-actual isolated workspaces and publication remain C2/C3 work.
+actual isolated workspaces and publication were left to C2/C3 below.
 
 ### C2. Isolated mode: sessions in their own worktree
 
@@ -323,6 +323,26 @@ crash. Publication still refuses with a clear message until C3.
 while the main checkout is untouched, and a daemon crash at each creation step
 recovers or cleans up without touching user paths.
 
+**Implemented (Wave 3 C2):** Isolated conversations create private linked
+worktrees from current working bytes without changing the primary index or HEAD.
+Source policy and exact manifests are pinned across creation, with bounded retries
+when a save crosses a snapshot. Screened ordinary source fixtures copy privately
+without entering model tools or artifacts. Ignored runtime receives verified
+private copies or COW clones, with exact-file secret consent. Directory-level
+adapters support private dependency trees without exhausting the preview's
+per-entry inventory budget; supported virtualenv launchers and Node workspace
+links relocate into private snapshots. No installer runs automatically.
+Hydrated paths stay excluded from source tools, artifacts, and proposals even
+after ignore-rule changes. Commands and checks retain useful diagnostics while
+filtering actual copied private values before delivery or storage. Closing
+retires an idle workspace and Git registration; held proposals keep their runtime
+until applied or discarded. Recovery archives preserve ordinary source evidence
+and late writes while disposing of owned runtime and screened-source copies.
+Creation, privacy, dependency, output, close, and restart regressions are tracked
+with the current validation results on [PR #54](https://github.com/bkavuri-hwlr1/loupe/pull/54).
+Publication remains the C3 handoff. See
+[the isolated workspace guide](isolated-workspaces.md) for supported boundaries.
+
 ### C3. Isolated mode: publish and receive batches
 
 **Depends on C2.** Publish an isolated session's changes to the shared
@@ -332,6 +352,19 @@ isolated worktree at safe points, preserving local edits.
 
 **Done when.** A shared and an isolated session work on the same repository;
 each sees the other's published work, and neither loses edits.
+
+**Implemented (Wave 3 C3):** Isolated sessions freeze source deltas against a
+separate accepted manifest and publish through the validated shared batch
+publisher. Incoming batches replay at safe points, and exact primary scans catch
+outside edits. Clean text merges preserve local work; durable conflicts retain
+private bytes while unrelated paths advance. Runtime paths and their aliases
+are excluded before content retention. Normal-mode apply and undo check the
+frozen proposal against current shared source with private runtime inputs, even
+after restart, preserving later private edits. Journal recovery accepts only
+recorded before/after states; confirmed publication survives a private catch-up
+failure with a durable notice. The focused synchronization/publication/held-review
+suite passed 27 tests; Ruff and mypy passed. See
+[isolated workspaces](isolated-workspaces.md) for supported limits.
 
 ### C4. Track edits made outside Loupe while sessions work
 

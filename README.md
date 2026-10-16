@@ -424,9 +424,11 @@ independent of the selected provider.
 > multi-prompt sessions, interactive task stream, execution path, and crash
 > recovery work end to end. Shared chat sessions prepare private edits
 > concurrently, including overlapping scopes, and publish bounded multi-file
-> batches into the checkout. Hydrated isolated workspaces, retrieval, and graph
-> features remain ahead; live-model collaboration benchmarks have not been
-> completed.
+> batches into the checkout. [Isolated conversations](docs/isolated-workspaces.md)
+> use private worktrees with bounded runtime hydration and exchange source batches
+> with shared sessions. Retrieval and graph features remain ahead; measured live
+> collaboration results and their limits are in the
+> [implementation status](docs/implementation-status.md).
 
 The Python distribution remains `llm-coord` for compatibility; the user-facing
 product and terminal command are Loupe and `loupe`.
@@ -800,11 +802,13 @@ They do not apply results to the shared checkout.
 through -- its mode, epoch, and revision -- along with what shared mode cannot
 promise: only cooperative sessions honoring the publication barrier see a
 multi-file batch atomically, and an editor or test run reading paths directly
-may observe an apply in progress. `--workspace isolated` is refused with an
-explanation rather than silently downgraded, since isolated workspace
-materialization remains unavailable. `loupe workspace hydrate PATH --plan`
-previews runtime hydration without copying files; see the
-[hydration decision](docs/adr/0009-isolated-runtime-hydration.md).
+may observe an apply in progress. `loupe chat --workspace isolated` creates a
+private linked worktree from the checkout's current source and receives shared
+changes at safe points. Source proposals publish through the same checked batch
+journal; normal mode retains them for `/apply`. Runtime files remain private.
+`loupe workspace hydrate PATH --plan` previews runtime hydration without copying
+files. See [isolated workspaces](docs/isolated-workspaces.md) for exact-file secret
+consent, conflict resolution, recovery, and current runtime limits.
 
 The initial broker commands make that boundary inspectable:
 

@@ -932,6 +932,51 @@ CREATE TABLE workspace_external_observations (
 );
 """,
     ),
+    Migration(
+        21,
+        "isolated_workspace_creation",
+        """
+CREATE TABLE isolated_workspaces (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(workspace_id),
+    session_id TEXT NOT NULL UNIQUE,
+    base_oid TEXT NOT NULL,
+    source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0),
+    source_manifest_json TEXT NOT NULL,
+    runtime_paths_json TEXT NOT NULL,
+    runtime_files_json TEXT NOT NULL,
+    notices_json TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    creation_token TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK(stage IN (
+        'planned', 'registered', 'materialized', 'hydrated', 'ready', 'attention'
+    ))
+);
+""",
+    ),
+    Migration(
+        22,
+        "isolated_source_synchronization",
+        """
+CREATE TABLE isolated_sync_state (
+    workspace_id TEXT PRIMARY KEY
+        REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+    manifest_json TEXT NOT NULL,
+    source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0),
+    runtime_paths_json TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation >= 0)
+);
+CREATE TABLE isolated_sync_journal (
+    workspace_id TEXT NOT NULL
+        REFERENCES isolated_sync_state(workspace_id) ON DELETE RESTRICT,
+    sequence INTEGER NOT NULL CHECK(sequence >= 0),
+    generation INTEGER NOT NULL CHECK(generation >= 0),
+    manifest_json TEXT NOT NULL,
+    steps_json TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('prepared','applied')),
+    PRIMARY KEY(workspace_id, generation)
+);
+""",
+    ),
 )
 
 
