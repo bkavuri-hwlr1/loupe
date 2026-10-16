@@ -477,11 +477,18 @@ def copy_runtime_file(source: Path, target: Path, entry: HydrationEntry) -> None
 
 def copy_pinned_runtime_file(source: Path, target: Path, relative: str) -> None:
     """Copy a pinned runtime input privately, independent of later ignore edits."""
+    from llm_cli.workspace.runtime import copy_dependency_tree
+
+    with _parent(source, relative) as (parent, name):
+        status = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if stat.S_ISDIR(status.st_mode):
+        copy_dependency_tree(source, target, relative, pinned_private=True)
+        return
     with _source(source, relative) as descriptor:
         before = os.fstat(descriptor)
         body = _read(descriptor, _MAX_SOURCE_FILE)
         with _parent(target, relative, create=True) as (parent, name):
-            _write_body(parent, name, body, stat.S_IMODE(before.st_mode) & 0o600)
+            _write_body(parent, name, body, stat.S_IMODE(before.st_mode) & 0o700)
         if _evidence(before) != _evidence(os.fstat(descriptor)):
             raise _error("isolated runtime changed during command snapshot")
         with _parent(source, relative) as (parent, name):
@@ -903,6 +910,15 @@ class IsolatedWorkspaceManager:
             consent = {
                 entry.path for entry in plan.entries if entry.action == "private_copy"
             }
+            tree_roots = tuple(
+                entry.path for entry in plan.entries if entry.action == "private_tree"
+            )
+            for relative in set(approved_secrets) - consent:
+                if runtime_path_matches(relative, tree_roots) and _private_path(
+                    relative
+                ):
+                    with _source(root, relative):
+                        consent.add(relative)
             if set(approved_secrets) - consent:
                 raise _error(
                     "--approve-secret must name an existing ignored secret regular "
@@ -919,7 +935,7 @@ class IsolatedWorkspaceManager:
             copies = [
                 entry
                 for entry in plan.entries
-                if entry.action in {"private_copy", "clone_or_copy"}
+                if entry.action in {"private_copy", "clone_or_copy", "private_tree"}
             ]
             notices = tuple(
                 f"Runtime omitted: {entry.path} ({entry.reason}). "
@@ -930,6 +946,7 @@ class IsolatedWorkspaceManager:
                 not in {
                     "private_copy",
                     "clone_or_copy",
+                    "private_tree",
                     "create_directory",
                     "exclude_administration",
                 }
@@ -1030,9 +1047,12 @@ class IsolatedWorkspaceManager:
                         else:
                             with _source(root, relative) as descriptor:
                                 body = _read(descriptor, _MAX_SOURCE_FILE)
-                        if content_identity(
-                            ObjectKind(entry["kind"]), entry["mode"], body
-                        ) != entry["digest"]:
+                        if (
+                            content_identity(
+                                ObjectKind(entry["kind"]), entry["mode"], body
+                            )
+                            != entry["digest"]
+                        ):
                             raise _error(
                                 "source changed during isolated creation: " + relative
                             )
@@ -1055,12 +1075,29 @@ class IsolatedWorkspaceManager:
                 self._stage(workspace_id, "materialized")
                 allocated = 0
                 for runtime_entry in copies:
+                    if runtime_entry.action == "private_tree":
+                        from llm_cli.workspace.runtime import copy_dependency_tree
+
+                        tree_notices = copy_dependency_tree(
+                            root,
+                            managed.path,
+                            runtime_entry.path,
+                            approved_secret_paths=approved_secrets,
+                        )
+                        notices += tree_notices
+                        continue
                     copy_runtime_file(root, managed.path, runtime_entry)
                     with _source(managed.path, runtime_entry.path) as descriptor:
                         status = os.fstat(descriptor)
                         allocated += getattr(status, "st_blocks", 0) * 512
                     if allocated > plan.budgets.max_allocated_bytes:
                         raise _error("runtime copies exceeded their allocation budget")
+                with self.store.connection() as con:
+                    con.execute(
+                        "UPDATE isolated_workspaces SET notices_json=? "
+                        "WHERE workspace_id=?",
+                        (json.dumps(notices), workspace_id),
+                    )
                 self._stage(workspace_id, "hydrated")
                 if (
                     source_fingerprint(root, policy_paths) != fingerprint

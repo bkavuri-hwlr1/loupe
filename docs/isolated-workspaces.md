@@ -41,10 +41,20 @@ Ignored runtime is copied privately under the hydration policy:
   private copy with permissions no broader than `0600`, under private directories.
 - Every file is read through no-follow descriptors and checked for source/path
   changes. File, apparent-byte, allocation, inventory, and free-space limits apply.
-- Ignored `node_modules` and virtual environments are left absent with an explicit
-  notice. Loupe does not enumerate opaque dependency trees or run an installer.
-- Runtime symlinks, special files, nested repositories, and unsupported mounts
-  are omitted with a notice. Administrative paths are excluded entirely.
+- Ignored `node_modules`, `.venv`, and `venv` roots use a directory adapter.
+  The preview remains bounded without listing their descendants; materialization
+  streams up to 200,000 entries and 5 GiB through no-follow descriptors, under a
+  60-second copy budget. Files use private COW clones or copies, never hardlinks.
+  Relative dependency links must remain inside that dependency tree.
+- Virtualenv scripts and editable-install paths are relocated into each private
+  snapshot. An external Python interpreter link is allowed only when it resolves
+  to the daemon's exact base interpreter; command sandboxes expose that trusted
+  interpreter read-only. Environments built with another Python require an
+  explicit adapter. No installer runs automatically.
+- Credential-like files inside dependency trees are omitted with an exact-path
+  notice unless individually approved. Special files, escaping links, nested
+  repositories, and unsupported mounts are refused. Administrative paths are
+  excluded entirely.
 
 Hydrated paths remain runtime-only even if a task changes `.gitignore`. Runtime
 exclusions also reserve case and Unicode-normalization aliases: `LOCAL.DATA`
@@ -63,15 +73,17 @@ on that source, with exact copies of its hydrated runtime files. Changing `.env`
 in a check does not change either the session's `.env` or the primary checkout.
 Command changes are discarded; file-tool edits remain the proposed source.
 
-When a command or check can read hydrated runtime, its output is withheld before
-model results, task events, check records, or hook file returns are exposed.
-The result still reports completion, exit status, and check status. Runtime
-verification uses a process-keyed fingerprint; a daemon restart safely makes
-old runtime check evidence stale. This conservative output policy also covers
-unknown secret formats that ordinary pattern matching would miss.
+Command and check output remains available when ignored cache or build files
+are present. Before output reaches the model, events, or check records, Loupe
+redacts actual copied credential-file values and sensitive configuration values.
+Known secret signatures are screened as well. Screening buffers complete lines,
+so a value split across stdout reads cannot escape. Hook file returns containing
+private values are refused. Private values are held only in memory for screening.
+Runtime verification uses a process-keyed fingerprint; a daemon restart safely
+makes old runtime check evidence stale.
 
 Commands retain Loupe's existing minimized child environment. The general
-per-terminal environment forwarding, virtualenv rebuilding, runtime refresh,
+per-terminal environment forwarding, automatic virtualenv rebuilding, runtime refresh,
 and long-running process interfaces in the workspace design are future work.
 An isolated session does not grant additional access to provider credentials.
 

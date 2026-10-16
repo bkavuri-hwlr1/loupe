@@ -86,9 +86,11 @@ class CommandRunner:
         search_path: str | None = None,
         runtime_files: tuple[str, ...] = (),
         suppress_output: bool = False,
+        sensitive_paths: tuple[str, ...] = (),
     ) -> None:
         self.runtime_files = runtime_files
         self.suppress_output = suppress_output
+        self.sensitive_paths = sensitive_paths
         self.root = root.resolve()
         self.snapshot_root = snapshot_root
         self.candidates = candidates
@@ -184,6 +186,12 @@ class CommandRunner:
             if self.runtime_files:
                 copy_runtime_files(self.root, source, self.runtime_files)
             readable = () if self.runtime_files else self._link_dependencies(source)
+            from llm_cli.workspace.runtime import private_output_values
+
+            sensitive_values = private_output_values(
+                source,
+                tuple(sorted(set(self.runtime_files) | set(self.sensitive_paths))),
+            )
             source = source.resolve()
             home = home.resolve()
             directory = (source / relative_cwd).resolve()
@@ -208,6 +216,7 @@ class CommandRunner:
                 deadline=deadline,
                 remaining=_CAPTURE_BYTES,
                 cancelled=self.cancelled,
+                sensitive_values=sensitive_values,
                 on_output=(
                     (lambda text: None)
                     if self.suppress_output
@@ -221,8 +230,16 @@ class CommandRunner:
             # material; the command itself still ran to completion.
             state = "completed" if stopped is None or stopped == "error" else stopped
             if state == "completed" and not self.suppress_output:
-                files = {path: _read_back(source, path) for path in read_back}
-        except (OSError, ValueError, RuntimeError) as exc:
+                captured = {path: _read_back(source, path) for path in read_back}
+                for body in captured.values():
+                    if body is not None:
+                        ensure_safe_content(body)
+                        if any(value.encode() in body for value in sensitive_values):
+                            raise ValueError(
+                                "Hook return contained private runtime values."
+                            )
+                files = captured
+        except (OSError, ValueError, RuntimeError, LlmCoordError) as exc:
             state = "cancelled" if self.cancelled() else "error"
             output += f"\n{exc}"
         finally:

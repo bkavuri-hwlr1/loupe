@@ -45,7 +45,7 @@ _SECRET_NAMES = frozenset(
         "id_ed25519",
     }
 )
-_COPY_ACTIONS = frozenset({"clone_or_copy", "private_copy"})
+_COPY_ACTIONS = frozenset({"clone_or_copy", "private_copy", "private_tree"})
 _CHECK_BATCH = 256
 
 
@@ -445,24 +445,32 @@ class _Inventory:
                     "nested Git repository/worktree is not runtime; "
                     "no adapter is enabled"
                 )
-            elif name.casefold() in {".venv", "venv"}:
-                entry.refusal = "needs_rebuild"
-                entry.reason = (
-                    "virtual environments may embed absolute checkout paths; "
-                    "rebuild or approve a portability adapter"
-                )
-            elif name.casefold() == "node_modules" and entry.path in _ignored_paths(
+            elif name.casefold() in {
+                ".venv",
+                "venv",
+                "node_modules",
+            } and entry.path in _ignored_paths(
                 self.root,
                 [entry.path],
                 deadline=self.deadline,
                 limit=self.budgets.max_metadata_bytes,
             ):
+                code, tracked = _bounded_git(
+                    self.root,
+                    ["ls-files", "-z", "--", entry.path],
+                    deadline=self.deadline,
+                    limit=self.budgets.max_metadata_bytes,
+                )
+                if code or tracked:
+                    initial_issues = len(self.issues)
+                    entry.directory_entries = self.walk(child, entry.path, depth + 1)
+                    entry.descendants_inventoried = len(self.issues) == initial_issues
+                    return
                 self.deferred_ignored_paths.add(entry.path)
-                entry.refusal = "needs_rebuild"
+                entry.refusal = "private_tree"
                 entry.reason = (
-                    "ignored dependency tree not inventoried; child counts/bytes "
-                    "unknown; rebuild or use a trusted adapter; "
-                    "no copying of unexamined contents"
+                    "private dependency-tree adapter; descendants checked while "
+                    "copying, contained links recreated, no shared writable aliases"
                 )
             else:
                 initial_issues = len(self.issues)

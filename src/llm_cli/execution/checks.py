@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import posixpath
 import selectors
 import shutil
 import subprocess
@@ -208,18 +209,34 @@ def runtime_identity(root: Path, paths: list[str]) -> str:
             raise ValueError("runtime snapshot exceeds 200,000 entries")
         for entry in sorted(entries):
             if entry.is_symlink():
-                raise ValueError(
-                    "runtime snapshot contains symlinks; use setup instead"
-                )
+                link = os.readlink(entry)
+                if Path(link).is_absolute():
+                    from llm_cli.workspace.runtime import _trusted_python
+
+                    _trusted_python(root, entry.relative_to(root).as_posix(), link)
+                else:
+                    destination = posixpath.normpath(
+                        posixpath.join(entry.parent.relative_to(root).as_posix(), link)
+                    )
+                    if destination != path and not destination.startswith(path + "/"):
+                        raise ValueError(
+                            "runtime snapshot contains an escaping symlink"
+                        )
+                manifest.append((entry.relative_to(root).as_posix(), digest(link)))
+                continue
             if entry.is_dir():
                 continue
-            identity, _ = read_identified_path(entry)
-            if identity.kind is not ObjectKind.REGULAR:
+            identity, body = read_identified_path(entry)
+            if identity.kind is not ObjectKind.REGULAR or body is None:
                 raise ValueError("runtime snapshot contains an absent or special file")
             total += identity.size
             if total > 5 * 1024**3:
                 raise ValueError("runtime snapshot exceeds 5 GiB")
-            manifest.append((entry.relative_to(root).as_posix(), identity.digest))
+            if b"\0" not in body:
+                body = body.replace(os.fsencode(root), b"<private-runtime-root>")
+            manifest.append(
+                (entry.relative_to(root).as_posix(), hashlib.sha256(body).hexdigest())
+            )
     encoded = json.dumps(manifest)
     if not paths:
         return digest(encoded)
@@ -375,6 +392,7 @@ class CheckRunner:
         runtime_paths: tuple[str, ...] | None = None,
         suppress_output: bool = False,
         runtime_root: Path | None = None,
+        sensitive_paths: tuple[str, ...] = (),
     ) -> None:
         self.workflow, self.row, self.root = workflow, row, root
         self.runtime_root = runtime_root or root
@@ -393,6 +411,8 @@ class CheckRunner:
                 set(self.config.get("runtime_paths", [])) | set(runtime_paths)
             )
         self.suppress_output = suppress_output
+        self.sensitive_paths = sensitive_paths
+        self.sensitive_values: tuple[str, ...] = ()
         self.deadline_at = deadline_at or (time.time() + 7200)
 
     def gate(self) -> ToolOutcome | None:
@@ -508,7 +528,7 @@ class CheckRunner:
             private = snapshot.parent / (run_id + "-runtime")
             private.mkdir(mode=0o700)
             env = {
-                "PATH": os.defpath,
+                "PATH": os.environ.get("PATH", os.defpath),
                 "HOME": str(private),
                 "TMPDIR": str(private),
                 "XDG_CACHE_HOME": str(private / "cache"),
@@ -517,6 +537,17 @@ class CheckRunner:
                 "LC_ALL": "C.UTF-8",
             }
             env.update(spec["env"])
+            from llm_cli.workspace.runtime import private_output_values
+
+            self.sensitive_values = private_output_values(
+                snapshot,
+                tuple(
+                    sorted(
+                        set(self.config.get("runtime_paths", []))
+                        | set(self.sensitive_paths)
+                    )
+                ),
+            )
             before = source_snapshot(snapshot)[0]
             commands = [*self.config.get("setup", []), spec["argv"]]
             for index, argv in enumerate(commands):
@@ -728,6 +759,7 @@ class CheckRunner:
             deadline=deadline,
             remaining=remaining,
             cancelled=self.cancelled,
+            sensitive_values=self.sensitive_values,
             on_output=lambda text: (
                 None
                 if self.suppress_output
@@ -782,6 +814,7 @@ def supervised_run(
     cancelled: Callable[[], bool],
     on_output: Callable[[str], None],
     reaper: bool = False,
+    sensitive_values: tuple[str, ...] = (),
 ) -> tuple[int, str, bool, str | None]:
     """Run argv under the process-group supervisor, screening its output.
 
@@ -828,6 +861,8 @@ def supervised_run(
         nonlocal withheld
         line = "".join(partial_line)
         partial_line.clear()
+        for value in sensitive_values:
+            line = line.replace(value, "[private value]")
         try:
             ensure_safe_content(line)
         except LlmCoordError:

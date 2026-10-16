@@ -74,19 +74,19 @@ def test_secret_approval_is_exact_path_and_never_directory_recursive(
     assert entries[".aws/config"].action == "needs_consent"
 
 
-def test_virtualenv_requires_rebuild_without_opening_absolute_shebangs(
+def test_virtualenv_uses_private_adapter_without_opening_absolute_shebangs(
     checkout: Path,
 ) -> None:
     (checkout / ".venv/bin").mkdir(parents=True)
     (checkout / ".venv/bin/python").write_text("#!/private/primary/.venv/bin/python\n")
     entries = _entries(plan_hydration(checkout))
-    assert entries[".venv"].action == "needs_rebuild"
-    assert "absolute" in entries[".venv"].reason
+    assert entries[".venv"].action == "private_tree"
+    assert "private" in entries[".venv"].reason
     assert entries[".venv"].descendants_inventoried is False
     assert ".venv/bin/python" not in entries
 
 
-def test_ignored_node_modules_is_deferred_without_enumerating_descendants(
+def test_ignored_node_modules_uses_private_adapter_without_enumerating_descendants(
     checkout: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -104,11 +104,11 @@ def test_ignored_node_modules_is_deferred_without_enumerating_descendants(
     plan = plan_hydration(checkout)
     entry = _entries(plan)["node_modules"]
     assert plan.complete
-    assert entry.action == "needs_rebuild"
-    assert entry.requires_decision
+    assert entry.action == "private_tree"
+    assert not entry.requires_decision
     assert entry.descendants_inventoried is False
     assert entry.directory_entries is None
-    assert "unknown" in entry.reason
+    assert "adapter" in entry.reason
     assert not any(item.path.startswith("node_modules/") for item in plan.entries)
 
 
@@ -126,7 +126,7 @@ def test_large_dependency_directory_does_not_disable_independent_candidates(
     assert plan.complete
     assert not plan.issues
     assert plan.scanned_entries < 20
-    assert entries["node_modules"].action == "needs_rebuild"
+    assert entries["node_modules"].action == "private_tree"
     assert entries["runtime/data"].action == "clone_or_copy"
     assert plan.planned_apparent_bytes == len("small independent runtime")
 
@@ -558,12 +558,12 @@ def test_large_hydration_cli_is_bounded_and_json_keeps_full_details(
     assert max(map(len, human.splitlines())) < 500
     assert "600 Copy candidates" in human
     assert "1 Consent needed" in human
-    assert "1 Rebuild needed" in human
+    assert "1 Private dependency trees" in human
     assert "clone_or_copy" not in human
     assert "needs_consent" not in human
     assert ".env" in human
     assert "node_modules" in human
-    assert "unknown" in human
+    assert "adapter" in human
     assert "omitted" in human
     assert "--json" in human
     assert "materialization" not in human
