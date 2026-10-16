@@ -55,8 +55,11 @@ Ignored runtime is copied privately under the hydration policy:
   adapter validates metadata without executing the interpreter. Command
   sandboxes expose that base interpreter read-only, including a different
   installed Python version. No installer runs automatically.
-- Credential-like files inside dependency trees are omitted with an exact-path
-  notice unless individually approved. Special files, escaping links, nested
+- Credential files inside dependency trees, such as a `.aws` directory or a
+  `credentials.json` data file, are omitted with an exact-path notice unless
+  individually approved. Library code named like a credential, such as
+  `anthropic/lib/credentials/` or `google/auth/credentials.py`, is copied, since
+  imports need it. Special files, escaping links, nested
   repositories, and unsupported mounts are refused. Administrative paths are
   excluded entirely.
 
@@ -80,6 +83,11 @@ Command changes are discarded; file-tool edits remain the proposed source.
 Command and check output remains available when ignored cache or build files
 are present. Before output reaches the model, events, or check records, Loupe
 redacts actual copied credential-file values and sensitive configuration values.
+Values under secret-like keys (`PASSWORD=xy`) are redacted at any length; other
+values, such as `DEBUG=true` or `PORT=8000`, only when at least eight characters
+long, so ordinary output stays readable. Dependency trees are library code and
+are not scanned for values, apart from approved credential files inside them;
+screened source fixtures contribute only values of eight or more characters.
 Known secret signatures are screened as well. Screening buffers complete lines,
 so a value split across stdout reads cannot escape. Hook file returns containing
 private values are refused. Private values are held only in memory for screening.

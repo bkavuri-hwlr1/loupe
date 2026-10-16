@@ -190,7 +190,8 @@ class CommandRunner:
 
             sensitive_values = private_output_values(
                 source,
-                tuple(sorted(set(self.runtime_files) | set(self.sensitive_paths))),
+                tuple(sorted(self.runtime_files)),
+                source_paths=tuple(sorted(set(self.sensitive_paths))),
             )
             source = source.resolve()
             home = home.resolve()

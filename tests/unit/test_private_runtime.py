@@ -687,3 +687,71 @@ def test_short_private_value_cannot_hide_recognized_token_signature(
     assert code == 0 and stopped == "error" and clipped
     assert body not in output + repr(events)
     assert "recognized secret material" in output
+
+
+def test_library_code_named_like_credentials_is_copied(tmp_path: Path) -> None:
+    # anthropic/lib/credentials and google/auth/credentials.py are imported by
+    # their packages; leaving them out made `import anthropic` fail.
+    primary, private = tmp_path / "primary", tmp_path / "private"
+    site = primary / ".venv/lib/python3.12/site-packages"
+    (site / "sdk/lib/credentials").mkdir(parents=True)
+    (site / "sdk/lib/credentials/__init__.py").write_text("PROVIDERS = ()\n")
+    (site / "auth").mkdir()
+    (site / "auth/credentials.py").write_text("class Credentials: ...\n")
+    (site / "auth/credentials.json").write_text('{"token": "data-file"}\n')
+    (site / "auth/.aws").mkdir()
+    (site / "auth/.aws/config").write_text("region=us-east-1\n")
+    private.mkdir()
+    notices = copy_dependency_tree(primary, private, ".venv")
+    copied = private / ".venv/lib/python3.12/site-packages"
+    assert (copied / "sdk/lib/credentials/__init__.py").is_file()
+    assert (copied / "auth/credentials.py").is_file()
+    assert not (copied / "auth/credentials.json").exists()
+    assert not (copied / "auth/.aws").exists()
+    assert "auth/credentials.json" in repr(notices)
+    assert "auth/.aws" in repr(notices)
+
+
+def test_dependency_code_and_short_unnamed_values_are_not_redacted(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text(
+        "DEBUG=true\nPORT=8000\nAPI_KEY=k\n"
+        "DATABASE_URL=postgres://app:pw@localhost/db\n"
+    )
+    package = tmp_path / ".venv/lib/python3.12/site-packages/pkg"
+    package.mkdir(parents=True)
+    (package / "auth.py").write_text(
+        'token = "r"\npassword: str = "i"\nsecret_key = "library-default-value"\n'
+    )
+    (tmp_path / "node_modules/pkg/.aws").mkdir(parents=True)
+    (tmp_path / "node_modules/pkg/.aws/credentials").write_text(
+        "aws_secret_access_key=dependency-private-value\n"
+    )
+    values = set(private_output_values(tmp_path, (".env", ".venv", "node_modules")))
+    assert {"k", "pw", "postgres://app:pw@localhost/db"} <= values
+    assert "dependency-private-value" in values
+    assert not {"true", "8000", "r", "i", "library-default-value"} & values
+
+
+def test_screened_source_contributes_only_long_values(tmp_path: Path) -> None:
+    # A test file with fake keys is screened source, not a credential file; its
+    # short literals are test data and must not hide digits in every output.
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_auth.py").write_text(
+        'api_key = "fake-provider-key-123"\nmax_tokens = 4\npassword = "pw"\n'
+    )
+    values = set(
+        private_output_values(tmp_path, (), source_paths=("tests/test_auth.py",))
+    )
+    assert "fake-provider-key-123" in values
+    assert not {"4", "pw"} & values
+
+
+def test_cached_runtime_identity_still_sees_same_size_edits(tmp_path: Path) -> None:
+    (tmp_path / "runtime").mkdir()
+    (tmp_path / "runtime/data").write_text("first")
+    first = runtime_identity(tmp_path, ["runtime"])
+    assert runtime_identity(tmp_path, ["runtime"]) == first
+    (tmp_path / "runtime/data").write_text("other")
+    assert runtime_identity(tmp_path, ["runtime"]) != first
