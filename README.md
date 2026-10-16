@@ -271,8 +271,12 @@ agent can hand a read-only question to a helper with the `explore` tool. The
 helper runs in its own model context with read-only tools, sees the task's
 pending edits, and returns a short report, so the main conversation stays
 focused. Several explorations in one turn run in parallel, and the
-conversation shows each one as it finishes. Helpers cannot edit, run commands,
-or ask you questions; their tool calls and tokens count toward the task. Set
+conversation shows each one as it finishes. When the task offers them, helpers
+can run commands in its disposable sandbox and fetch public pages under its
+domain policy. Command and domain approvals ask you through the parent task,
+and task-wide approvals and fetched pages are shared. Helpers cannot edit or
+ask general questions; plan-mode helpers cannot run commands. Their tool calls
+and tokens count toward the task. Set
 `explore = false` under `[agent]` in the configuration file to turn them off.
 
 Helpers use low reasoning effort, which keeps explorations fast and cheaper,
@@ -732,8 +736,9 @@ independently of the terminal's `/changes` acknowledgments. Updates are advisory
 snapshots; file reads and final publication still recheck current state. Context
 contains metadata rather than source bodies or other sessions' prompts. A
 pending update above 1,000 events or 16 KiB is refused explicitly instead of
-silently dropping changes. External-editor watching and manual Git
-reconciliation remain planned.
+silently dropping changes. Bounded scans at model boundaries detect external
+changes to observed files and deliver path-only notices. Manual Git
+reconciliation remains planned.
 
 Try this with the configured provider, then inspect the task IDs printed by chat:
 
@@ -792,8 +797,10 @@ through -- its mode, epoch, and revision -- along with what shared mode cannot
 promise: only cooperative sessions honoring the publication barrier see a
 multi-file batch atomically, and an editor or test run reading paths directly
 may observe an apply in progress. `--workspace isolated` is refused with an
-explanation rather than silently downgraded, since worktree hydration is not
-built.
+explanation rather than silently downgraded, since isolated workspace
+materialization remains unavailable. `loupe workspace hydrate PATH --plan`
+previews runtime hydration without copying files; see the
+[hydration decision](docs/adr/0009-isolated-runtime-hydration.md).
 
 The initial broker commands make that boundary inspectable:
 

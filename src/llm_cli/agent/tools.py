@@ -25,6 +25,7 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -96,6 +97,8 @@ class _SearchPrepared:
 # A batched read's prepared answer: an outcome, the error its call raises, a
 # search awaiting matching, or nothing to prepare (file reads).
 type _Prepared = ToolOutcome | Exception | _SearchPrepared | None
+READ_ONLY_TOOLS = ("list_files", "read_file", "search_text", "read_diff")
+_HELPER_CALL: ContextVar[bool] = ContextVar("exploration_helper_call", default=False)
 MAX_EXPLORE_TASK_CHARACTERS = 4_000
 MAX_EXPLORE_LABEL_CHARACTERS = 80
 PLAN_STATUSES = ("pending", "in_progress", "completed")
@@ -185,6 +188,8 @@ class ToolBroker:
     finish_gate: Callable[[], ToolOutcome | None] | None = None
     usage: ToolUsage = field(default_factory=ToolUsage)
     agent_mode: str = "auto"
+    deadline_at: float | None = None
+    clock: Callable[[], float] = time.time
     _partial_reads: set[str] = field(default_factory=set, init=False)
     _commands_approved: bool = field(default=False, init=False)
     _mcp_approved: set[str] = field(default_factory=set, init=False)
@@ -193,6 +198,21 @@ class ToolBroker:
     # Explorations run in parallel threads and share the call budget.
     _budget_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
+    # Helpers share one parent question channel: approval requests must not
+    # overwrite each other, and task-wide approvals must be checked serially.
+    _approval_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
+    _notice_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
+    _notice_version: int = field(default=0, init=False)
+    _notice_text: str | None = field(default=None, init=False)
+    # A delegated view exposes only source reads and these parent-owned tools.
+    # None is an ordinary broker; an empty mapping is a source-only view.
+    _helper_tools: dict[str, Callable[[Mapping[str, object]], ToolOutcome]] | None = (
+        field(default=None, init=False, repr=False, compare=False)
     )
     # The next call's answer, already computed by invoke_reads.
     _ready: ToolOutcome | Exception | None = field(
@@ -221,7 +241,7 @@ class ToolBroker:
     def usage_snapshot(self) -> dict[str, object]:
         """Return JSON-safe counters so a resumed turn keeps every limit."""
 
-        return {
+        saved: dict[str, object] = {
             "calls": self.usage.calls,
             "files_read": self.usage.files_read,
             "bytes_read": self.usage.bytes_read,
@@ -237,6 +257,13 @@ class ToolBroker:
             ],
             "repairs": self._repairs.to_dict(),
         }
+        with self._notice_lock:
+            if self._notice_version:
+                saved["parent_notice"] = {
+                    "version": self._notice_version,
+                    "text": self._notice_text,
+                }
+        return saved
 
     def restore_usage(self, saved: Mapping[str, object]) -> None:
         """Restore a checkpointed budget without accepting malformed counters."""
@@ -277,6 +304,24 @@ class ToolBroker:
             raise ValueError("saved partial file reads are malformed")
         plan = parse_plan(saved.get("plan", []))
         repairs = RepairTracker.from_dict(saved.get("repairs"))
+        notice = saved.get("parent_notice", {"version": 0, "text": None})
+        if (
+            not isinstance(notice, dict)
+            or set(notice) != {"version", "text"}
+            or type(notice["version"]) is not int
+            or notice["version"] < 0
+            or (
+                notice["text"] is not None
+                and (
+                    not isinstance(notice["text"], str)
+                    or len(notice["text"].encode()) > self.limits.max_tool_output_bytes
+                    or contains_secret_material(notice["text"])
+                )
+            )
+        ):
+            raise ValueError("saved parent update notice is invalid")
+        with self._notice_lock:
+            self._notice_version, self._notice_text = notice["version"], notice["text"]
         self._partial_reads = set(partial_reads)
         self._repairs = repairs
         self.usage = ToolUsage(
@@ -291,6 +336,44 @@ class ToolBroker:
             outcome=outcome,
             plan=plan,
         )
+
+    def helper_call_active(self) -> bool:
+        return _HELPER_CALL.get()
+
+    def notify_parent(self, note: str) -> None:
+        """Keep a mandatory helper workspace update until the parent receives it."""
+        text = (
+            "An exploration helper updated your pending edits against changed "
+            "checkout files. Read the current pending diff/files before editing.\n\n"
+            + note
+        )
+        if contains_secret_material(text):
+            text = "An exploration helper updated pending edits; read the current diff."
+        with self._notice_lock:
+            self._notice_version += 1
+            self._notice_text = _clipped(
+                "\n\n".join(part for part in (text, self._notice_text) if part),
+                self.limits.max_tool_output_bytes // 2,
+            )
+
+    def pending_parent_notice(self) -> tuple[int, str] | None:
+        with self._notice_lock:
+            if self._notice_text is None:
+                return None
+            return self._notice_version, self._notice_text
+
+    def acknowledge_parent_notice(self, version: int) -> None:
+        with self._notice_lock:
+            if version == self._notice_version:
+                self._notice_text = None
+
+    def _check_web_lifecycle(self) -> None:
+        self.check_cancelled()
+        if self.deadline_at is not None and self.clock() >= self.deadline_at:
+            raise LlmCoordError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                "the agent exceeded its wall-clock budget for this task",
+            )
 
     def record_interrupted_call(self) -> None:
         """Count a tool call whose filesystem outcome cannot be replayed safely."""
@@ -327,7 +410,7 @@ class ToolBroker:
         observations, so a helper's reads never authorize this broker's writes.
         """
 
-        return ToolBroker(
+        view = ToolBroker(
             worktree=self.worktree,
             scopes=self.scopes,
             case_insensitive_filesystem=self.case_insensitive_filesystem,
@@ -336,8 +419,49 @@ class ToolBroker:
             cancelled=self.cancelled,
             agent_mode="plan",
         )
+        self._configure_read_only_view(view)
+        return view
+
+    def _configure_read_only_view(self, view: ToolBroker) -> None:
+        # Forward through the parent so task-wide approvals, web cache,
+        # command snapshot/limits and output policy remain exactly its own.
+        # The view already charges each call against its reserved budget.
+        view._helper_tools = {}
+        for name in ("run_command", "web_fetch"):
+            if name in self.tool_names():
+                view._helper_tools[name] = self._helper_handler(name)
+
+    def _helper_handler(
+        self, name: str
+    ) -> Callable[[Mapping[str, object]], ToolOutcome]:
+        def invoke(arguments: Mapping[str, object]) -> ToolOutcome:
+            self.check_cancelled()
+            if self.usage.finished or name not in self.tool_names():
+                return _error(f"the parent task no longer offers {name!r}")
+            if self._repairs.exhausted is not None and name in _REPAIR_TOOLS:
+                return _error(self._repairs.refusal())
+            if self.hooks is not None:
+                blocked = self.hooks.before_tool(name, arguments)
+                if blocked is not None:
+                    hook, reason = blocked
+                    self.usage.denied += 1
+                    return _error(
+                        f"a pre_tool hook ({hook}) blocked this call: {reason}"
+                    )
+            handler: Callable[[Mapping[str, object]], ToolOutcome] = getattr(
+                self, _HANDLERS[name].__name__
+            )
+            token = _HELPER_CALL.set(True)
+            try:
+                return handler(arguments)
+            finally:
+                _HELPER_CALL.reset(token)
+
+        return invoke
 
     def tool_names(self) -> tuple[str, ...]:
+        if self._helper_tools is not None:
+            return (*READ_ONLY_TOOLS, *self._helper_tools)
         names = [
             "list_files",
             "read_file",
@@ -400,6 +524,9 @@ class ToolBroker:
             self.usage.calls += 1
             call = self.usage.calls
         self.emit("tool.called", {"tool": name, "call": call})
+        notice = self.pending_parent_notice() if self._helper_tools is None else None
+        if notice is not None:
+            return _error(notice[1])
         if self.agent_mode == "plan" and name not in self.tool_names():
             self.usage.denied += 1
             return _error(
@@ -417,9 +544,9 @@ class ToolBroker:
         try:
             # The allowlist decides which tool is exposed; dispatch through the
             # instance so alternate workspace backends can implement it safely.
-            bound_handler: Callable[[Mapping[str, object]], ToolOutcome] = getattr(
-                self, handler.__name__
-            )
+            bound_handler = (self._helper_tools or {}).get(name)
+            if bound_handler is None:
+                bound_handler = getattr(self, handler.__name__)
             ready, self._ready = self._ready, None
             if isinstance(ready, Exception):
                 raise ready
@@ -472,6 +599,7 @@ class ToolBroker:
         names = {name for name, _ in calls}
         return (
             len(calls) > 1
+            and self.pending_parent_notice() is None
             and names <= BATCHED_READS
             and names <= set(self.tool_names())
             # A pre_tool hook may change files before the read it guards.
@@ -643,7 +771,11 @@ class ToolBroker:
         if contains_secret_material(url):
             return _error("the URL contains recognized secret material; leave it out")
         try:
-            page, downloaded = self.web.page(url, allowed=self._web_allowed)
+            page, downloaded = self.web.page(
+                url,
+                allowed=self._web_allowed,
+                check_cancelled=self._check_web_lifecycle,
+            )
         except WebFetchError as exc:
             return _error(f"web_fetch could not read that page: {exc}")
         if downloaded:  # Reading on from the cache is not another fetch.
@@ -680,29 +812,35 @@ class ToolBroker:
     def _web_allowed(self, host: str, url: str) -> str | None:
         """Ask before the first fetch from a domain policy does not allow."""
 
-        assert self.web is not None
-        if self.web.allowed_without_asking(host):
-            return None
-        if self.asker is None:
-            return f"{host} is not an allowed domain for web_fetch"
-        shown = _visible(url)
-        if len(shown) > 500:
-            shown = shown[:499] + "…"
-        question = (
-            f"Allow fetching a web page from {host}?\n\nGET {shown}\n\n"
-            f"1. Allow once\n2. Allow {host} for the rest of this task\n3. Deny\n\n"
-            "Reply with a number or your own answer."
-        )
-        answer = self.asker(question).strip()
-        choice = answer.casefold()
-        if choice in {"2", "always", "allow all"}:
-            self.web.approve(host)
-            return None
-        if choice in {"1", "y", "yes", "allow", "allow once"}:
-            return None
-        self.usage.denied += 1
-        reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
-        return f"the user declined fetching from {host}{reason}"
+        with self._approval_lock:
+            self.check_cancelled()
+            assert self.web is not None
+            if self.web.allowed_without_asking(host):
+                return None
+            if self.asker is None:
+                return f"{host} is not an allowed domain for web_fetch"
+            shown = _visible(url)
+            if len(shown) > 500:
+                shown = shown[:499] + "…"
+            question = (
+                f"Allow fetching a web page from {host}?\n\nGET {shown}\n\n"
+                f"1. Allow once\n2. Allow {host} for the rest of this task\n3. Deny\n\n"
+                "Reply with a number or your own answer."
+            )
+            if _HELPER_CALL.get():
+                question = (
+                    "An exploration helper requests this approval.\n\n" + question
+                )
+            answer = self.asker(question).strip()
+            choice = answer.casefold()
+            if choice in {"2", "always", "allow all"}:
+                self.web.approve(host)
+                return None
+            if choice in {"1", "y", "yes", "allow", "allow once"}:
+                return None
+            self.usage.denied += 1
+            reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
+            return f"the user declined fetching from {host}{reason}"
 
     def _call_mcp(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
         """Run an MCP tool once its server is approved; output is untrusted."""
@@ -1057,32 +1195,41 @@ class ToolBroker:
     ) -> ToolOutcome | None:
         """Ask the user to approve a command; model output can never approve."""
 
-        if self.command_approval == "allow" or self._commands_approved:
-            return None
-        if self.asker is None:
-            return _error(
-                "commands need approval, but no interactive session is attached"
+        with self._approval_lock:
+            self.check_cancelled()
+            if self.command_approval == "allow" or self._commands_approved:
+                return None
+            if self.asker is None:
+                return _error(
+                    "commands need approval, but no interactive session is attached"
+                )
+            location = "" if cwd in {"", "."} else f"\nin {_visible(cwd)}"
+            question = (
+                "Allow this command? It runs in a sandboxed copy of the checkout with "
+                "no network, and its changes are discarded.\n\n"
+                f"$ {_visible(shlex.join(argv))}{location} (timeout {timeout}s)\n\n"
+                "1. Allow once\n2. Allow commands for the rest of this task\n"
+                "3. Deny\n\n"
+                "Reply with a number or your own answer."
             )
-        location = "" if cwd in {"", "."} else f"\nin {_visible(cwd)}"
-        question = (
-            "Allow this command? It runs in a sandboxed copy of the checkout with "
-            "no network, and its changes are discarded.\n\n"
-            f"$ {_visible(shlex.join(argv))}{location} (timeout {timeout}s)\n\n"
-            "1. Allow once\n2. Allow commands for the rest of this task\n3. Deny\n\n"
-            "Reply with a number or your own answer."
-        )
-        if len(question) > MAX_QUESTION_CHARACTERS:
-            return _error("that command is too long to show for approval; shorten it")
-        answer = self.asker(question).strip()
-        choice = answer.casefold()
-        if choice in {"1", "y", "yes", "allow", "allow once"}:
-            return None
-        if choice in {"2", "always", "allow all"}:
-            self._commands_approved = True
-            return None
-        self.usage.denied += 1
-        reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
-        return _error(f"the user declined this command{reason}")
+            if _HELPER_CALL.get():
+                question = (
+                    "An exploration helper requests this approval.\n\n" + question
+                )
+            if len(question) > MAX_QUESTION_CHARACTERS:
+                return _error(
+                    "that command is too long to show for approval; shorten it"
+                )
+            answer = self.asker(question).strip()
+            choice = answer.casefold()
+            if choice in {"1", "y", "yes", "allow", "allow once"}:
+                return None
+            if choice in {"2", "always", "allow all"}:
+                self._commands_approved = True
+                return None
+            self.usage.denied += 1
+            reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
+            return _error(f"the user declined this command{reason}")
 
     def _create_directory(self, arguments: Mapping[str, object]) -> ToolOutcome:
         path = normalize_changed_path(_string(arguments, "path"))
@@ -1155,6 +1302,9 @@ class ToolBroker:
         """Apply the same completion gate to natural answers and finish tools."""
 
         self.check_cancelled()
+        notice = self.pending_parent_notice()
+        if notice is not None:
+            return _error(notice[1])
         if outcome not in _COMPLETION_OUTCOMES:
             return _error("outcome must be completed, blocked, or partial")
         if not answer.strip():
@@ -2029,8 +2179,10 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
         "context, and get back its report. Use it for broad investigation that "
         "would take many searches or reads, such as tracing how something is "
         "wired through the codebase. Several explore calls in one turn run in "
-        "parallel. The helper sees your pending edits but cannot edit, run "
-        "commands, or ask the user. Rely on its findings to understand the "
+        "parallel. The helper sees your pending edits and may use your offered "
+        "sandboxed commands and web_fetch with the same approvals. It cannot "
+        "edit or ask general questions. Plan helpers cannot run commands. "
+        "Rely on its findings to understand the "
         "code, but read a file yourself before editing it: a report does not "
         "count as reading it.",
         {
@@ -2090,6 +2242,7 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
 __all__ = [
     "MAX_EXPLORE_TASK_CHARACTERS",
     "PLAN_STATUSES",
+    "READ_ONLY_TOOLS",
     "ToolBroker",
     "ToolBudgetExhausted",
     "ToolOutcome",

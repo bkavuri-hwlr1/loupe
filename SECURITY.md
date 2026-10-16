@@ -218,16 +218,23 @@ The `explore` tool hands a read-only question to a helper: a separate model
 session with the same provider. A helper has no more authority than the task
 that started it:
 
-- its only tools are `list_files`, `read_file`, `search_text`, and `read_diff`,
-  through a view of the task's broker with the same source exclusions, secret
-  screening, and pending edits; it cannot edit, run checks or commands, ask the
-  user, or start further helpers;
+- it reads through `list_files`, `read_file`, `search_text`, and `read_diff`
+  on a view of the task's broker with the same source exclusions, secret
+  screening, and pending edits;
+- when the task offers them, `run_command` and `web_fetch` delegate to that
+  exact task's handlers: the same sandboxed command snapshots, command limits,
+  pre-tool hooks, source/output screening, domain policy, and parent question
+  channel. Task-wide approvals and the page cache are shared, not re-created
+  for each helper. Command writes stay in the disposable copy and are discarded;
+- plan-mode helpers never receive commands. No helper can edit the checkout or
+  proposal, run configured checks, ask general questions, access MCP, finish
+  the parent task, or start further helpers;
 - it keeps its own observations, so a file a helper read never counts as the
   task having read it before a full-file write;
 - its tool calls are reserved from the task's call budget before it starts,
   always leaving the task some calls of its own, and every call counts,
   including calls to tools it does not have; its token usage is added to the
-  task's total, and it starts no model request after the task's deadline;
+  task's total, and it starts no model request or tool after the task's deadline;
 - its report is tool output for the task's model: screened for recognized
   secret material, bounded in size, and labelled so the task still reads a
   file itself before editing it.
@@ -343,7 +350,9 @@ chooses, so:
   query string could carry data.
 
 A page's text is sent to the configured model provider as tool output.
-Exploration helpers cannot fetch pages.
+Exploration helpers can fetch pages only when the parent task offers the tool,
+using the same policy, approvals, and cache. They receive the same bounded,
+secret-screened external-content labels as the parent.
 
 ## Plugins and optional native code
 
@@ -380,3 +389,23 @@ authoritative and follows the knowledge-database backup policy.
 There are no security-supported releases yet. Security support, release signing,
 dependency update cadence, and end-of-life policy will be published before the
 first general release.
+
+
+### External-change notices
+
+Shared sessions register safe source observations for external-change tracking.
+The scanner opens descendants through no-follow directory descriptors, uses
+metadata to avoid unchanged-file reads, and screens stable bounded source before
+hashing it. Ignored/private paths, recognized secrets, oversized files and
+nonregular objects produce opaque metadata changes. Checkout events and model
+notices retain only the path and affected session, never content, diffs or
+identity digests. A `.env` observed through the file broker is tracked using
+metadata only; tracking does not grant model tools permission to read it.
+Only fresh checkout observations register source identities. Reading private
+pending edits, pinned ranges or saved diffs cannot reset the scanner baseline;
+batched fresh reads register under their capture barrier. Unrelated external
+events advance the model's private cursor quietly only after complete event
+validation, without changing terminal acknowledgements.
+Scanner state is durable local metadata. It does not replace publication's
+exact-base validation, monitor Git operations, follow filesystem links, or
+capture every intermediate state of an external writer.

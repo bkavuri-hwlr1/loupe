@@ -7,6 +7,16 @@ the remaining planned capabilities are listed below.
 
 ## Implemented
 
+- A metadata-only hydration preview for future isolated workspaces:
+  `loupe workspace hydrate [PATH] --plan` (or global `--json`) walks actual
+  ignored runtime entries with bounded no-follow traversal and passive Git
+  ignore classification. It reports sizes, copy/COW candidates, budgets and
+  explicit secret-consent, virtualenv-portability, symlink, special-file and
+  nested-repository refusals. Exact `--approve-secret PATH` flags preview
+  per-file consent without saving it. Truncated or changing inventories
+  disable candidate copies. This command needs no daemon and copies nothing;
+  isolated sessions still await C2/C3. See [ADR 0009](adr/0009-isolated-runtime-hydration.md).
+
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
   retained review proposals, task diffs, apply, undo, and cancellation. Shared
@@ -128,6 +138,16 @@ the remaining planned capabilities are listed below.
   Durable launches record harness, provider, and model separately; an explicit
   provider override selects its own default model. The loop has a two-hour
   wall clock, 500-tool-call cap, and 64 KiB tool-result ceiling.
+- Exploration helpers can use the parent task's offered `run_command` and
+  `web_fetch` handlers with the same sandbox, command/domain approvals,
+  pre-tool hooks, output screening, and page cache. Their command writes are
+  discarded, their calls use the reserved helper budget, and their tokens
+  contribute to task usage. Parallel fetches coalesce the same URL, serialize
+  bounded-cache updates, and allow waiting helpers to cancel or time out
+  without holding the cache lock over network/approval work.
+  Plan helpers still cannot run commands, and all
+  helper views refuse edits, configured checks, general questions, MCP access,
+  and task completion. Helpers start no new tools after the task deadline.
 - MCP authority for shared tasks over stdio or Streamable HTTP (JSON and
   bounded SSE responses), including tools and explicit resource/prompt
   list/read/get calls. HTTP header configuration contains only environment
@@ -264,9 +284,24 @@ coordination cursor enter the same execution checkpoint.
 The current context slice is advisory: it does not implement the plan's future
 verified context-packet acknowledgments or mutation barrier. It covers durable
 coordinator events and intentions, with up to 1,000 pending events and a 16 KiB
-rendered update. It does not scan for unmanaged external edits or monitor Git
-operations. Exact-base checks still reject stale publication independently of
-anything the model has seen.
+rendered update. A bounded scan now detects net external changes to paths a
+shared session has actually observed, at each model boundary and on rotating
+daemon ticks. Metadata invalidates cached identities; stable eligible source
+is screened before hashing. Excluded, secret, oversized and nonregular paths
+remain opaque. Durable path-only events reach only the session that observed
+the path; scanners never change publication bases or terminal cursors. Quiet
+cursor advances require validated irrelevant events and a prior model snapshot.
+Only fresh source captures register observations; private/pinned/diff replays
+cannot reset deduplication. Own confirmed publications are not reported again
+as outside edits. A scan covers the session's 1,000 most recently read paths
+and hashes at most 16 MiB of source (256 KiB per file) in five seconds. A path
+that changes while it is read, or does not fit this scan's budget, keeps its
+previous state for a later scan, so a branch switch catches up over several
+boundaries. Notices are advisory: a scan that cannot complete never fails the
+model turn or the daemon loop; the next update says once that outside edits
+could not be checked, and later boundaries scan again. It does not monitor Git
+operations or reconstruct intermediate edits between scans.
+Exact-base checks still reject stale publication independently of model context.
 
 Sessionless background runs and the `fixture_write` driver retain the original
 linked-worktree lifecycle described below. This is separate from the planned
@@ -399,8 +434,8 @@ revision, and every session on that checkout binds to it. `llm-coord workspace
 status` reports it together with the limits shared mode cannot exceed, which
 belong in front of an operator rather than only in the plan. `isolated` is
 accepted as a mode name and refused with an explanation rather than silently
-downgraded to shared, because hydration of ignored runtime files does not exist
-yet.
+downgraded to shared. Ignored-runtime hydration has a read-only preview, but
+isolated materialization and publication remain C2/C3 work.
 
 The manual shared-workspace broker remains available for one UTF-8 regular
 file at a time. A brokered read records an exact versioned identity. A session
@@ -554,8 +589,106 @@ These runs used experiment version 2, whose toolkit registry put the two
 flags on adjacent lines. A three-way merge treats adjacent changed lines as
 one conflict, so every two-session toolkit run had to resolve a registry
 conflict, which may account for part of its extra time. Version 3 puts a
-comment line between the flags so the parts merge cleanly; it has not been
-measured yet.
+comment line between the flags so the parts merge cleanly. Its repeated
+measurement follows below.
+
+
+### Toolkit version 3 measured results (October 14, 2026 local)
+
+The revised fixture separates adjacent text and numeric registry flags with a
+comment, allowing their disjoint changes to merge cleanly. On
+final Wave 1 commit `47d1451`, twelve live Codex runs repeated single/pair and
+clean/disrupted cases three times with `gpt-6-sol`, effort `xhigh`, exploration available (unused in every run), commands allowed, web fetch off,
+and a matching noneditable Python 3.14 wheel. Independent review was unavailable
+in this baseline. Full test
+suites were held during measurement; implementation work and short focused
+checks continued. [Sanitized per-run evidence](experiments/wave1-toolkit-v3-2026-10-14.json)
+retains the source fingerprint and exact settings.
+
+| Scenario | One agent median | Two sessions median | One agent tokens | Two sessions tokens |
+|---|---:|---:|---:|---:|
+| Clean | 62.4 s | 74.4 s | 70,197 | 124,159 |
+| Restart + manual edit | 79.8 s | 84.0 s | 84,108 | 162,268 |
+
+All twelve runs passed their own tests and every hidden acceptance test
+(15/15 clean, 16/16 disrupted). Every disrupted run restarted the daemon and
+preserved the operator edit. There were no answers, follow-ups, timeouts,
+rejected batches, failed lanes, or measured sleep intervals.
+
+On this fixture, two sessions were 19.2% slower clean and 5.3% slower disrupted,
+using 1.77x and 1.93x the tokens respectively. Tokens are prompt plus output,
+including cached prompt tokens, and do not measure dollar cost. Three samples
+per case do not establish a general performance claim. Earlier version 2 ran
+on implementation `b5b0b2a`; version 3 also includes subsequent Wave 1 product
+changes, so the difference does not isolate the fixture revision. The shop
+fixture was unchanged and was not rerun. E2 remains deferred.
+
+
+## Wave 2 B1: independent review before settlement
+
+`agent.review = "on"` enables one fresh read-only review after candidate
+reconciliation and required checks pass. The setting defaults to `off`.
+`agent.review_effort` defaults to `low`; `"task"` uses the task's effort,
+and any requested level is capped at that effort.
+
+The runner supplies the exact pending diff and complete original/candidate
+text, plus check results tied to the candidate/source/configuration digests.
+The reviewer returns explicit no-findings or changed-file/line findings.
+Findings return to the original conversation once for bounded repair and the
+usual required checks run again. There is no second review. A failed,
+interrupted, malformed or oversized review produces a visible notice and
+continues through the existing verification/publication rules. Normal-mode
+proposals still require the user's `/apply`.
+
+The reviewer has only file-read tools, a reserved budget of at most 20 calls,
+the task's cancellation/deadline, separate read observations and screened
+input/output. Its tokens count toward task totals and separate `review_*`
+usage. Checkpoints preserve the single attempt and any findings not yet
+delivered, so a restart neither bills a second review nor loses the handback.
+
+Validation so far: 59 focused review/benchmark tests pass, including finding
+repair, natural answers, check failures, reviewer failures, off/plan/no-edit
+paths, secret/oversized inputs, write-authority separation, cancellation token
+retention in execution records, post-review deadline enforcement, and restarts
+before/after review. Disabling the review gate makes
+both publication/repair regressions fail. Independent read-only review found
+no additional defects and its separate run passed all 26 review tests. Ruff
+and mypy pass (105 source files). Frozen product source `6653b0e` passed all
+2,210 tests with every extra installed on Python 3.14.8, using a noneditable
+wheel from an immutable snapshot. The later prompt, regression-test and
+documentation commits leave product source unchanged; their targeted follow-up
+checks pass. Independent review of the cancellation/deadline follow-up also
+found no defects and reran both added regressions successfully.
+
+The live benchmark suite is version 3 (separate from the session experiment's
+version). `independent-review-planted-bug` deliberately seeds an off-by-one
+pagination proposal that passes its incomplete smoke checks, calls the review
+gate, then repairs findings. Scoring requires exactly one observed completed
+review with at least one finding. A hidden acceptance test fails on the
+seeded proposal and passes on its repair. Run only with a non-default profile:
+
+```console
+uv run --all-extras python scripts/live_benchmark.py --profile explore-eval \
+  --provider codex --model gpt-6-sol --effort xhigh --set review=on \
+  --set review_effort=low --set explore=false \
+  --only independent-review-planted-bug --out /tmp/loupe-review-benchmark.json
+```
+
+The [live acceptance record](experiments/wave2-independent-review-2026-10-14.json)
+reports one successful Codex `gpt-6-sol`/`xhigh` run with review effort `low`,
+from benchmark source `26bb129` (product source identical to `6653b0e`). It
+recorded exactly one task, one completed review, one finding, two finish
+attempts, two check runs and two edits, with no questions or exploration
+helpers. The repaired checkout passed its two smoke tests and the hidden
+acceptance test. Total usage was 32,753 prompt and 769 output tokens; the
+review's included share was 1,187 prompt and 97 output tokens.
+
+The observed duration was 44 seconds while full test suites ran on the same
+machine, so it is not a comparative performance result. An initial run was
+excluded because a multiline piped prompt submitted three tasks; the prompt
+is now one physical line and its scoring/prompt tests pass (31 tests). This
+controlled example demonstrates the finding/repair gate. Broader bug-detection
+quality and cost savings remain unmeasured. Review remains off by default.
 
 ## Next executable slice
 
@@ -566,11 +699,50 @@ remaining harness gaps into packages that separate sessions can run at once.
 2. Add isolated mode with explicit environment hydration and publication
    through the same batch protocol, building on the check-snapshot runner.
    Symlinks and binary file operations still need dedicated recovery semantics.
-3. Add an independent review of the exact diff before publication, at the
-   session-aware harness boundary. Plan mode and bounded repair already exist.
+3. Broaden independent-review quality and cost measurements beyond the completed
+   planted-bug acceptance run; keep review disabled by default.
 4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
    lifecycle, with `none` and exact-search fallbacks before optional vector
    acceleration.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
+
+
+## Wave 2 local validation (October 14, 2026)
+
+B1 independent review, B2 helper commands/fetches, C1 hydration preview and C4
+external-change notices are implemented locally. The combined frozen candidate
+`51f5048` passed **2,316 tests**, with one expected case-sensitive
+filesystem skip on macOS. Ruff and mypy (107 source files) passed. A matching
+noneditable all-extras wheel and every original snapshot file were verified.
+The [validation record](experiments/wave2-validation-2026-10-14.json) records
+the tested commits, source fingerprint and required integration regressions.
+The corrected B1 live check found and repaired its planted bug before
+publication; the revised toolkit v3 benchmark completed all twelve runs.
+Phase 2 is not merged, and E2 remains deferred.
+
+
+## Wave 2 review corrections (October 15, 2026)
+
+The corrected candidate `7c15c49` passed **2,385 tests**
+with one expected macOS filesystem skip, Ruff, mypy and package builds. Its
+installed wheel and frozen source were verified unchanged after testing.
+The [validation record](experiments/wave2-review-fixes-2026-10-15.json)
+records the candidate identity and regression coverage.
+
+Independent review now accepts standalone fenced JSON and retains valid findings
+when other entries are malformed. Explicit no-findings is valid; a nonempty
+findings list with no valid entries fails. Review has a 120-second cap with 1–30 seconds
+reserved for completion. The cap covers provider waits and shared source tools;
+a timeout produces a visible incomplete-review notice. `/usage` itemizes the
+review's share of existing token totals. Real task cancellation and the original
+deadline still govern repair.
+
+Helpers identify themselves in command/domain approvals. A parent receives a
+durable reconciliation notice before its next action, including after replay or
+compaction; shared fetch waiters honor the task lifecycle while awaiting human
+approval. Hydration's default output is a short summary, and `--json` retains
+full details. Git-ignored `node_modules` directories are explicit rebuild
+decisions with unknown contents rather than enumerated copy candidates,
+preserving unrelated candidates. Actual copying remains C2/C3. E2 remains deferred.

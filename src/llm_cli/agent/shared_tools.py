@@ -223,6 +223,9 @@ class SharedToolBroker(ToolBroker):
 
     publication_lock: RLock = field(default_factory=RLock)
     guard: Callable[[], None] | None = None
+    # Session relevance metadata only; helpers share this callback while
+    # keeping their write-authorizing observations private.
+    on_read: Callable[[str, FileIdentity], None] | None = None
     _observations: dict[str, _Observation] = field(default_factory=dict, init=False)
     _contents: dict[str, bytes | None] = field(default_factory=dict, init=False)
 
@@ -234,6 +237,8 @@ class SharedToolBroker(ToolBroker):
     )
 
     def invoke(self, name: str, arguments: Mapping[str, object]) -> ToolOutcome:
+        if self.pending_parent_notice() is not None:
+            return ToolBroker.invoke(self, name, arguments)
         # Hooks run outside the publication lock: a slow hook must not hold
         # every other session's read barrier.
         if self.hooks is not None and name in self.tool_names():
@@ -356,7 +361,9 @@ class SharedToolBroker(ToolBroker):
             agent_mode="plan",
             publication_lock=self.publication_lock,
             guard=self.guard,
+            on_read=self.on_read,
         )
+        self._configure_read_only_view(view)
         with self.publication_lock:
             view._contents = dict(self._contents)
             view._modes = dict(self._modes)
@@ -512,6 +519,8 @@ class SharedToolBroker(ToolBroker):
 
         def wrapped(*args: P.args, **kwargs: P.kwargs) -> ToolOutcome:
             note = self.catch_up().note()
+            if note and self.helper_call_active():
+                self.notify_parent(note)
             unresolved = self.unresolved()
             if unresolved:
                 return _error(_joined(note, _resolve_first(unresolved)))
@@ -728,13 +737,24 @@ class SharedToolBroker(ToolBroker):
         refresh = arguments.get("refresh", False)
         if not isinstance(refresh, bool):
             return _error("refresh must be a boolean")
+        pinned = (partial_request or relative in self._partial_reads) and not refresh
+        prepared = (
+            self._batch is not None
+            and self._batch.kept(("observe", relative)) is not None
+        )
+        # A private/pinned view is not a new observation of the checkout. A
+        # prefetched disk read was registered when captured under its barrier.
+        fresh_source = (
+            relative not in self._contents
+            and (not pinned or relative not in self._observations)
+            and not prepared
+        )
         content = self._read(
-            relative,
-            pin_observation=(partial_request or relative in self._partial_reads)
-            and not refresh,
-            charge=not partial_request,
+            relative, pin_observation=pinned, charge=not partial_request
         )
         if content is None:
+            if fresh_source and self.on_read is not None:
+                self.on_read(relative, self._observations[relative].base)
             # An explicit refresh with no private candidate adopts the current
             # ABSENT identity just as a successful full-file refresh adopts new
             # content. The model has now seen the whole current state, so a
@@ -760,6 +780,8 @@ class SharedToolBroker(ToolBroker):
             self._partial_reads.discard(relative)
         else:
             self._partial_reads.add(relative)
+        if fresh_source and not result.is_error and self.on_read is not None:
+            self.on_read(relative, self._observations[relative].base)
         return result
 
     def _search_text(self, arguments: Mapping[str, object]) -> ToolOutcome:
@@ -794,16 +816,60 @@ class SharedToolBroker(ToolBroker):
         finally:
             self._batch = None
 
+    def _read_paths(
+        self, calls: Sequence[tuple[str, Mapping[str, object]]]
+    ) -> list[str]:
+        paths = ToolBroker._read_paths(self, calls)
+        batch = self._batch
+        if batch is None:
+            return paths
+        fresh: set[str] = set()
+        for name, arguments in calls:
+            if name != "read_file":
+                continue
+            try:
+                relative = normalize_changed_path(_string(arguments, "path"))
+                _read_range(arguments)
+            except (ValueError, LlmCoordError):
+                continue
+            refresh = arguments.get("refresh", False)
+            partial = any(
+                key in arguments for key in ("start_line", "end_line", "start_column")
+            )
+            pinned = (partial or relative in self._partial_reads) and not refresh
+            if not pinned or relative not in self._observations:
+                fresh.add(relative)
+        for relative in paths:
+            batch.keep(("fresh_source", relative), relative in fresh)
+        return paths
+
     def _prefetch(self, paths: list[str]) -> dict[str, bool]:
         answers = ToolBroker._prefetch(self, paths)
         batch = self._batch
         assert batch is not None
         for relative in paths:
             # An excluded file is refused before it is read; never read it.
-            if answers.get(relative, True) or relative in self._contents:
+            if (
+                answers.get(relative, True)
+                or relative in self._contents
+                or batch.kept(("fresh_source", relative)) is False
+            ):
+                # Pinned-only requests must not capture a newer checkout state
+                # they will never return. Keep their batched exclusion answers.
                 continue
             try:
-                found: object = self._observe(relative, check_ignored=False)
+                identity, content = self._observe(relative, check_ignored=False)
+                found: object = (identity, content)
+                # Register the actual source capture, never its delayed replay.
+                # Screening happened in _observe; binary content stays opaque.
+                if self.on_read is not None:
+                    try:
+                        if content is not None:
+                            content.decode("utf-8")
+                    except UnicodeDecodeError:
+                        pass
+                    else:
+                        self.on_read(relative, identity)
             except Exception as exc:
                 found = exc
             batch.keep(("observe", relative), found)
@@ -925,9 +991,7 @@ class SharedToolBroker(ToolBroker):
                 return finish(stop_reason="scanned_file_limit; narrow path")
         return finish()
 
-    def _batch_observation(
-        self, relative: str
-    ) -> tuple[FileIdentity, bytes | None]:
+    def _batch_observation(self, relative: str) -> tuple[FileIdentity, bytes | None]:
         batch = self._batch
         found = batch.kept(("observe", relative)) if batch is not None else None
         if found is None:
@@ -945,13 +1009,18 @@ class SharedToolBroker(ToolBroker):
         """
 
         def read() -> tuple[bytes | None, bool, str | None]:
-            _, content = self._observe(relative, check_ignored=False, screen=False)
+            identity, content = self._observe(
+                relative, check_ignored=False, screen=False
+            )
             if content is None:
                 return None, False, None
             if contains_secret_material(content):
                 return content, True, None
             try:
-                return content, False, content.decode("utf-8")
+                text = content.decode("utf-8")
+                if self.on_read is not None:
+                    self.on_read(relative, identity)
+                return content, False, text
             except UnicodeDecodeError:
                 return content, False, None
 

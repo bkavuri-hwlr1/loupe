@@ -917,6 +917,21 @@ CREATE TABLE execution_answer_revisions (
 );
 """,
     ),
+    Migration(
+        20,
+        "external_workspace_observations",
+        """
+CREATE TABLE workspace_external_observations (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    relative_path TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    stamp TEXT,
+    identity_json TEXT,
+    sequence INTEGER NOT NULL CHECK(sequence >= 0),
+    PRIMARY KEY(session_id, relative_path)
+);
+""",
+    ),
 )
 
 

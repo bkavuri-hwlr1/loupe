@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-14",
+  "scenario": "Controlled planted off-by-one pagination defect",
+  "validation_kind": "live acceptance, not comparative performance",
+  "source": {
+    "benchmark_commit": "26bb12986e70cc4cc0d1ad1b076d3ebab206367a",
+    "identical_product_source_commit": "6653b0ec19088f5b1980ebd85dc7bfc3e498dfca",
+    "benchmark_suite_version": 3,
+    "fixture": "review-pagination"
+  },
+  "settings": {
+    "provider": "codex",
+    "model": "gpt-6-sol",
+    "task_effort": "xhigh",
+    "review": "on",
+    "review_effort": "low",
+    "explore": false,
+    "profile_policy": "signed-in non-default profile"
+  },
+  "result": {
+    "passed": true,
+    "state": "completed",
+    "outcome": "completed",
+    "verification": "passed",
+    "task_count": 1,
+    "review_attempts": 1,
+    "completed_reviews": 1,
+    "findings": 1,
+    "finish_calls": 2,
+    "check_runs": 2,
+    "successful_edits": 2,
+    "main_turns": 10,
+    "main_tool_calls": 10,
+    "questions": 0,
+    "exploration_helpers": 0,
+    "repeated_results": 0,
+    "repeated_answers": 0,
+    "wall_seconds": 44.0,
+    "suspended_seconds": 0.0,
+    "prompt_tokens": 32753,
+    "output_tokens": 769,
+    "review_prompt_tokens": 1187,
+    "review_output_tokens": 97,
+    "hidden_acceptance_passed": 1,
+    "hidden_acceptance_total": 1,
+    "own_tests_passed": true,
+    "own_test_count": 2
+  },
+  "automated_validation": {
+    "product_source_commit": "6653b0ec19088f5b1980ebd85dc7bfc3e498dfca",
+    "python": "3.14.8",
+    "all_extras": true,
+    "noneditable_wheel": true,
+    "immutable_source_snapshot": true,
+    "full_suite_passed": 2210,
+    "full_suite_failed": 0,
+    "ruff": "passed",
+    "mypy": "passed",
+    "mypy_source_files": 105,
+    "focused_review_and_benchmark_passed": 59,
+    "single_prompt_scoring_followup_passed": 31,
+    "parent_capability_regression_passed": 1,
+    "independent_review_tests_passed": 26,
+    "independent_cancellation_deadline_followup_passed": 2
+  },
+  "excluded_runs": [
+    {
+      "benchmark_commit": "9ac51cfdf924a8b72ee5ddf5b2852b3501570d2d",
+      "task_count": 3,
+      "reason": "A multiline piped prompt submitted three tasks and failed the one-task criterion. The corrected prompt is one physical line and has a regression test.",
+      "included_in_results": false
+    }
+  ],
+  "interpretation": [
+    "The controlled proposal passed deliberately incomplete smoke checks. One independent review found the planted off-by-one defect, returned one repair handback, and the repaired result passed hidden acceptance.",
+    "The token totals include the review subset; the subset must not be added again. Prompt tokens include cached input and are not a price estimate.",
+    "Full test suites ran concurrently, so 44 seconds is an observed acceptance-run duration and is not comparative performance evidence.",
+    "One deliberately seeded case does not establish general defect-detection quality, false-positive rate, or savings. Review remains off by default."
+  ]
+}

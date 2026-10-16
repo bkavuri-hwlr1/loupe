@@ -163,6 +163,31 @@ no findings → publish, reviewer failure → publish with a notice, and the
 setting off → no review. A live benchmark run shows the planted-bug task
 caught.
 
+**Implementation status (2026-10-14).** The opt-in pass, one durable repair
+handback, read-only helper, usage accounting and review notices are implemented.
+Scripted tests cover publication, failures, cancellation and restart; the
+`independent-review-planted-bug` live task requires an observed successful
+review with findings rather than trusting the final answer's claims. Its live
+acceptance run passed: exactly one review found the planted pagination bug,
+the original agent repaired it, and the hidden test passed. See the sanitized
+[measurement record](experiments/wave2-independent-review-2026-10-14.json).
+The initial multiline-prompt run was excluded; the single-prompt regression
+is now covered. Timing is not comparative because full suites ran concurrently.
+Frozen product source passed all 2,210 all-extras tests, Ruff and mypy;
+subsequent prompt/test-only follow-ups passed their targeted regressions.
+
+Review accepts a standalone JSON code fence and retains valid, anchored findings
+when other findings are malformed. Optional review has a 120-second total cap
+and reserves 10% of the task budget for completion (minimum one second, maximum
+30 seconds); repair still uses the original task deadline. Reviewer searches
+and source-exclusion Git calls share this cap, including exclusion setup lock
+waits. A timed-out review
+produces a visible incomplete-review notice and permits normal checked
+settlement. Synchronous transports without cancellation can leave at most one
+private daemon request running per durable review attempt; its late response
+cannot execute tools or alter task state, and its unavailable usage is not
+counted. Streaming adapters stop at the next event after abandonment.
+
 ### B2. Exploration helpers can run commands and fetch pages
 
 **Why.** Remaining gaps from the harness plan items 9 and 10: helpers cannot
@@ -181,6 +206,14 @@ Count their calls against the helper's reserved budget.
 **Done when.** A helper can run a command and fetch an allowed page; a denied
 domain or command approval is refused to the helper exactly as to the parent;
 plan-mode helpers still cannot run commands.
+
+**Implemented.** Helper views expose only source reads plus the parent's
+offered command/fetch handlers, preserving its sandbox, approvals, hooks,
+cache, screening, cancellation, and deadline. Calls use the helper reservation
+without double charging, and helper observations never authorize parent writes.
+Helper-triggered reconciliation is delivered durably to the parent before its
+next action. Command/domain approval questions identify the helper; coalesced
+fetch waiters follow task cancellation/deadlines while domain approval is pending.
 
 ### B3. MCP over HTTP, resources and prompts, and plan mode
 
@@ -262,6 +295,19 @@ tests.
 with absolute paths, `node_modules`, nested repositories, escaping symlinks,
 and FIFOs with explicit decisions; nothing is copied yet.
 
+**Implemented (Wave 2 C1):** [ADR 0009](adr/0009-isolated-runtime-hydration.md)
+accepts the conservative preview minimum. `workspace/hydration.py` inventories
+actual ignored entries with descriptor-relative no-follow traversal, NUL-safe
+Git classification, metadata/time/depth/entry bounds, per-file and aggregate
+copy budgets, and stable lexical decisions. The daemon-free
+`loupe workspace hydrate [PATH] --plan` command returns human/JSON metadata;
+`--approve-secret PATH` previews exact-file consent only. `.venv` requires a
+portability adapter/rebuild without inspecting its bytes; contained symlink
+recreation is deferred along with escaping/absolute links. Refused directories
+explicitly mark descendants unexamined. Incomplete or changed inventories
+cannot propose copies. COW probing, pinned source/ignore-rule materialization,
+actual isolated workspaces and publication remain C2/C3 work.
+
 ### C2. Isolated mode: sessions in their own worktree
 
 **Depends on C1.** Open an isolated session on a managed linked worktree
@@ -288,6 +334,14 @@ isolated worktree at safe points, preserving local edits.
 each sees the other's published work, and neither loses edits.
 
 ### C4. Track edits made outside Loupe while sessions work
+
+**Implementation (Wave 2).** Durable bounded observations, periodic scans and
+model-boundary refreshes now emit path-only notices for sessions that read a
+changed path. Source identities are screened; ignored/secret paths remain
+opaque, and own publications are deduplicated. The combined Wave 2 candidate
+passed 2,316 tests with one expected filesystem skip; see the
+[validation record](experiments/wave2-validation-2026-10-14.json).
+Native watchers and Git-operation reconciliation remain later work.
 
 **Why.** #41 merges edits onto files changed outside Loupe when the agent
 next validates, checks, or finishes, but sessions are not told about outside

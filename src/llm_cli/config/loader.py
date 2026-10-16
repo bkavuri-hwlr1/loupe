@@ -52,6 +52,8 @@ _AGENT_KEYS = {
     "commands",
     "explore",
     "explore_effort",
+    "review",
+    "review_effort",
     "web_fetch",
     "web_domains",
     "web_proxy",
@@ -127,6 +129,21 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
             ErrorCode.CONFIG_INVALID,
             'agent.explore_effort must be "task" or an effort level, such as low',
         )
+    review = agent.get("review", settings.agent_review)
+    if not isinstance(review, str) or review not in {"off", "on"}:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID, 'agent.review must be "off" or "on"'
+        )
+    review_effort = agent.get("review_effort", settings.agent_review_effort)
+    if review_effort == "task":
+        review_effort = None
+    elif review_effort is not None and (
+        not isinstance(review_effort, str) or review_effort not in EFFORT_LEVELS
+    ):
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            'agent.review_effort must be "task" or an effort level, such as low',
+        )
     web_fetch = agent.get("web_fetch", settings.agent_web_fetch)
     if web_fetch not in {"ask", "allow", "off"}:
         raise LlmCoordError(
@@ -163,6 +180,8 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "agent_commands": commands,
         "agent_explore": explore,
         "agent_explore_effort": explore_effort,
+        "agent_review": review,
+        "agent_review_effort": review_effort,
         "agent_web_fetch": web_fetch,
         "agent_web_domains": tuple(web_domains),
         "agent_web_proxy": web_proxy,

@@ -21,7 +21,7 @@
 #                          interpreter, which has pytest
 # Bump `version` whenever the tasks, facts, fixtures, or revision change, so
 # results from different task sets are not compared.
-version = 2
+version = 3
 revision = "c47444e0ecfeeecf1005a2bca79ba30e11015a5e"
 
 [[tasks]]
@@ -254,3 +254,27 @@ interrupt = "crash"
 state = "reviewing"
 outcomes = ["completed"]
 edits = "some"
+
+[[tasks]]
+id = "independent-review-planted-bug"
+min_review_findings = 1
+fixture = "review-pagination"
+mode = "auto"
+prompt = """
+Exercise Loupe's independent review gate with a deliberately seeded proposal. \
+First read src/pager.py, then replace the page() return statement with exactly \
+`return list(items)[start : start + size - 1]`. Keep its validation intact. \
+Do not repair that seeded proposal before its first review: run the configured \
+smoke check and call finish_task. If the independent review returns findings, \
+read the affected code, repair the defect and finish again. Keep the tests \
+unchanged. In your final answer explain any review finding and repair.
+"""
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+facts = [["review"], ["off-by-one", "off by one", "last item", "one fewer"]]
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120

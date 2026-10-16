@@ -8,6 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from test_coordination_context import _event
+from test_coordination_context import ledger as ledger
 
 from llm_cli.agent.driver import CoordinationUpdate, RunRequest
 from llm_cli.agent.harness import CodingAgentHarness
@@ -15,6 +17,8 @@ from llm_cli.agent.limits import ExecutionLimits
 from llm_cli.agent.tools import ToolBroker
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.providers.base import ModelTurn, ToolCallRequest, ToolCallResult
+from llm_cli.storage.control import ControlStore
+from llm_cli.workspace.context import SharedCoordinationContext
 
 
 class Script:
@@ -240,3 +244,219 @@ def test_prior_conversation_cursor_is_reused_for_the_next_prompt(
     )
     assert cursors == [7]
     assert provider.history[0] == "prior history"
+
+
+def test_explicit_unchanged_facts_advance_checkpoint_without_model_text(
+    tmp_path: Path,
+) -> None:
+    provider = Script([_turn(("read", "unknown", {})), _finish()])
+    checkpoints: list[dict[str, object]] = []
+    events: list[tuple[str, dict[str, object]]] = []
+    cursors: list[int | None] = []
+
+    def refresh(after: int | None) -> CoordinationUpdate:
+        cursors.append(after)
+        return (
+            CoordinationUpdate(4, "initial facts")
+            if after is None
+            else CoordinationUpdate(6, None, facts_unchanged=True)
+        )
+
+    CodingAgentHarness(provider).run(
+        replace(
+            _request(tmp_path),
+            refresh_coordination=refresh,
+            checkpoint=lambda value: checkpoints.append(copy.deepcopy(dict(value))),
+        ),
+        ToolBroker(tmp_path, ("docs/",), on_event=lambda k, p: events.append((k, p))),
+    )
+    assert cursors == [None, 4]
+    assert checkpoints[-1]["coordination_sequence"] == 6
+    sent = provider.calls[-1]
+    assert isinstance(sent, tuple)
+    assert sent[0].call_id == "read" and sent[0].is_error
+    assert "[Coordination update:" not in sent[0].content
+    assert [p for k, p in events if k == "model.coordination_updated"] == [
+        {"through_sequence": 4}
+    ]
+
+
+def test_quiet_advance_is_not_checkpointed_until_model_response_succeeds(
+    tmp_path: Path,
+) -> None:
+    class Interrupted(Script):
+        def send_tool_results(self, results: Sequence[ToolCallResult]) -> ModelTurn:
+            raise RuntimeError("model request interrupted before acceptance")
+
+    checkpoints: list[dict[str, object]] = []
+
+    def refresh(after: int | None) -> CoordinationUpdate:
+        return (
+            CoordinationUpdate(4, "initial facts")
+            if after is None
+            else CoordinationUpdate(6, None, facts_unchanged=True)
+        )
+
+    request = replace(
+        _request(tmp_path),
+        refresh_coordination=refresh,
+        checkpoint=lambda value: checkpoints.append(copy.deepcopy(dict(value))),
+    )
+    with pytest.raises(RuntimeError, match="before acceptance"):
+        CodingAgentHarness(Interrupted([_turn(("read", "unknown", {}))])).run(
+            request,
+            ToolBroker(tmp_path, ("docs/",)),
+        )
+    saved = checkpoints[-1]
+    assert saved["phase"] == "tool_results"
+    assert saved["coordination_sequence"] == 4
+    resumed = Script([_finish()])
+    CodingAgentHarness(resumed).run(
+        replace(request, resume_state=saved),
+        ToolBroker(tmp_path, ("docs/",)),
+    )
+    assert checkpoints[-1]["coordination_sequence"] == 6
+    assert len(resumed.calls) == 1
+    assert "[Coordination update:" not in resumed.calls[0][0].content
+
+
+@pytest.mark.parametrize(
+    ("update", "prior"),
+    [
+        (CoordinationUpdate(1, None, facts_unchanged=True), None),
+        (CoordinationUpdate(6, None), 4),
+        (CoordinationUpdate(6, None, facts_unchanged=1), 4),  # type: ignore[arg-type]
+        (CoordinationUpdate(6, None, facts_unchanged="yes"), 4),  # type: ignore[arg-type]
+        (CoordinationUpdate(6, "", facts_unchanged=True), 4),
+        (CoordinationUpdate(6, "facts cannot be discarded", facts_unchanged=True), 4),
+        (CoordinationUpdate(4, None, facts_unchanged=True), 4),
+        (CoordinationUpdate(3, None, facts_unchanged=True), 4),
+    ],
+)
+def test_quiet_update_requires_explicit_validated_nonbootstrap_advance(
+    tmp_path: Path,
+    update: CoordinationUpdate,
+    prior: int | None,
+) -> None:
+    provider = Script([_finish()])
+    conversation = (
+        {
+            "version": 1,
+            "provider": "script",
+            "model": "script",
+            "session": {"messages": []},
+            "coordination_sequence": prior,
+        }
+        if prior is not None
+        else None
+    )
+    with pytest.raises(ValueError, match="invalid update"):
+        CodingAgentHarness(provider).run(
+            replace(
+                _request(tmp_path),
+                conversation_state=conversation,
+                refresh_coordination=lambda _: update,
+            ),
+            ToolBroker(tmp_path, ("docs/",)),
+        )
+    assert provider.calls == []
+    assert provider.history == []
+
+
+def test_nonadvancing_empty_update_keeps_existing_contract(tmp_path: Path) -> None:
+    provider = Script([_finish()])
+    CodingAgentHarness(provider).run(
+        replace(
+            _request(tmp_path),
+            conversation_state={
+                "version": 1,
+                "provider": "script",
+                "model": "script",
+                "session": {"messages": []},
+                "coordination_sequence": 4,
+            },
+            refresh_coordination=lambda _: CoordinationUpdate(4, None),
+        ),
+        ToolBroker(tmp_path, ("docs/",)),
+    )
+    assert "[Coordination update:" not in provider.calls[0]
+
+
+def test_context_marks_only_validated_irrelevant_replay_as_unchanged(
+    ledger: tuple[ControlStore, str, str],
+) -> None:
+    store, checkout, _ = ledger
+    context = SharedCoordinationContext(store, "reader", ("docs/",))
+    first = context(None)
+    head = _event(
+        store,
+        checkout,
+        "workspace.external_changed",
+        {
+            "path": "docs/other.md",
+            "affected_session_id": "other",
+        },
+    )
+    quiet = context(first.sequence)
+    assert quiet == CoordinationUpdate(head, None, facts_unchanged=True)
+    assert context(head) == CoordinationUpdate(head, None)
+    # A new task still needs the complete initial scope/intent snapshot.
+    assert SharedCoordinationContext(store, "reader", ("docs/",))(None).text
+
+
+@pytest.mark.parametrize(
+    "path", [None, [], "../outside", "*", "docs/", "docs\\guide.md", " docs/guide.md "]
+)
+def test_irrelevant_external_metadata_is_validated_before_quiet_advance(
+    ledger: tuple[ControlStore, str, str],
+    path: object,
+) -> None:
+    store, checkout, _ = ledger
+    context = SharedCoordinationContext(store, "reader", ("docs/",))
+    first = context(None)
+    _event(
+        store,
+        checkout,
+        "workspace.external_changed",
+        {
+            "path": path,
+            "affected_session_id": "other",
+        },
+    )
+    with pytest.raises(LlmCoordError, match="cannot be safely interpreted"):
+        context(first.sequence)
+    assert context._last_sequence == first.sequence
+
+
+def test_failed_outside_edit_scan_does_not_end_the_task(
+    tmp_path: Path,
+    ledger: tuple[ControlStore, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_cli.workspace import external
+
+    store, _, _ = ledger
+    scan = external.ExternalWorkspaceScanner.scan_session
+    scans: list[str] = []
+
+    def saved_mid_scan(self: external.ExternalWorkspaceScanner, session: str) -> int:
+        scans.append(session)
+        if len(scans) == 1:
+            return scan(self, session)
+        raise external._incomplete("external scan exceeds its time budget")
+
+    monkeypatch.setattr(
+        external.ExternalWorkspaceScanner, "scan_session", saved_mid_scan
+    )
+    provider = Script([_turn(("a", "unknown", {})), _finish()])
+    CodingAgentHarness(provider).run(
+        replace(
+            _request(tmp_path),
+            refresh_coordination=SharedCoordinationContext(store, "reader", ("docs/",)),
+        ),
+        ToolBroker(tmp_path, ("docs/",)),
+    )
+    assert len(scans) == 2
+    results = provider.calls[1]
+    assert isinstance(results, tuple)
+    assert "Outside edits could not be checked" in results[-1].content

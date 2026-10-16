@@ -10,7 +10,6 @@ because an agent loop has no natural end.
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import math
@@ -38,9 +37,11 @@ from llm_cli.agent.finalization import (
 from llm_cli.agent.instructions import discover_instructions, render_instructions
 from llm_cli.agent.limits import COMPACT_AT_FRACTION, DEFAULT_LIMITS, ExecutionLimits
 from llm_cli.agent.modes import validate_agent_mode
+from llm_cli.agent.reviewer import Reviewer, ReviewResult
 from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
 from llm_cli.agent.tools import (
     BATCHED_READS,
+    TaskCancelled,
     ToolBroker,
     ToolBudgetExhausted,
     ToolOutcome,
@@ -64,6 +65,10 @@ from llm_cli.providers.base import (
 )
 
 _MAX_IDLE_TURNS = 2
+# Optional review cannot spend the task's completion/settlement allowance.
+# Short tasks retain 10% (at least one second), longer tasks retain 30 seconds.
+_REVIEW_MAX_SECONDS = 120.0
+_REVIEW_COMPLETION_MARGIN_SECONDS = 30.0
 # Tools whose calls in one turn may run at the same time. They change nothing
 # that a later call depends on, so after a restart an interrupted call simply
 # runs again.
@@ -302,6 +307,9 @@ stays focused on the task. Read files yourself for small, targeted lookups.
 - The helper does not see this conversation: include what to look for and what
 the report should cover. Call explore several times in one turn to investigate
 independent questions in parallel.
+- Helpers cannot edit or ask general questions. When offered, commands use the
+parent's sandbox and fetch/command approvals go through the parent's user
+channel. Plan-mode helpers have no command access.
 - Rely on a report's findings to understand the code and answer questions; do
 not re-read files just to confirm them. Read a file yourself before editing it,
 since a report does not count as reading it, or when a finding is surprising
@@ -356,6 +364,8 @@ class CodingAgentHarness:
         clock: Callable[[], float] = time.time,
         explorations: bool = True,
         explore_effort: str | None = None,
+        review: str = "off",
+        review_effort: str | None = "low",
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.provider = provider
@@ -366,6 +376,10 @@ class CodingAgentHarness:
         # more than ``explore_effort``, or the task's own effort when None.
         self.explorations = explorations
         self.explore_effort = explore_effort
+        if review not in {"off", "on"}:
+            raise ValueError("review must be off or on")
+        self.review = review
+        self.review_effort = review_effort
 
     def run(self, request: RunRequest, tools: ToolBroker) -> RunResult:
         saved = _saved_checkpoint(request.resume_state, provider=self.provider)
@@ -405,6 +419,8 @@ class CodingAgentHarness:
             if saved is not None
             else self.clock() + self.limits.wall_clock_seconds
         )
+        tools.deadline_at = deadline
+        tools.clock = self.clock
         explorer: Explorer | None = None
         if self.explorations and tools.explorer is None:
             explorer = Explorer(
@@ -495,6 +511,14 @@ class CodingAgentHarness:
                 {"provider": self.provider.name, "model": self.provider.model},
             )
 
+        review_state = (
+            dict(_mapping(saved.get("review"), "saved review"))
+            if saved is not None and saved.get("review") is not None
+            else {}
+        )
+        progress_results: Sequence[ToolCallResult] = results
+        progress_in_flight = in_flight
+
         def checkpoint(
             next_phase: str,
             *,
@@ -538,6 +562,7 @@ class CodingAgentHarness:
                         else None,
                         "outcome": outcome,
                         "completion_blocker": completion_blocker,
+                        "review": dict(review_state),
                         "finalization": (
                             dict(finalization) if finalization is not None else None
                         ),
@@ -545,6 +570,125 @@ class CodingAgentHarness:
                 )
                 is True
             )
+
+        def persist_review() -> None:
+            checkpoint(
+                phase,
+                current_turn=turn,
+                current_results=progress_results if phase == "tools" else results,
+                current_in_flight=progress_in_flight if phase == "tools" else None,
+            )
+
+        previous_gate = tools.finish_gate
+
+        def review_gate() -> ToolOutcome | None:
+            # Checks and reconciliation retain their authority and run again
+            # after the bounded repair. A review failure never overrides them.
+            refused = previous_gate() if previous_gate is not None else None
+            if refused is not None:
+                return refused
+            if tools.usage.writes == 0 or request.review_context is None:
+                return None
+            if review_state:
+                if review_state.get("status") == "started":
+                    review_state.update(
+                        status="failed", reason="review was interrupted"
+                    )
+                    tools.emit(
+                        "review.finished",
+                        {
+                            "state": "failed",
+                            "findings": 0,
+                            "reason": "The independent review was interrupted",
+                        },
+                    )
+                    persist_review()
+                if review_state.get("status") == "findings" and not review_state.get(
+                    "delivered"
+                ):
+                    return ToolOutcome(str(review_state["handback"]), True)
+                return None
+            review_state["status"] = "started"
+            # Persist before any provider call. A daemon restart cannot make a
+            # second billed review or create an unbounded review/repair loop.
+            persist_review()
+            tools.emit("review.started", {"label": "Independent review"})
+            reviewer: Reviewer | None = None
+
+            def record_review_usage() -> None:
+                addition = reviewer.usage if reviewer is not None else {}
+                for key, value in addition.items():
+                    usage_total[key] = usage_total.get(key, 0) + value
+                    usage_total[f"review_{key}"] = (
+                        usage_total.get(f"review_{key}", 0) + value
+                    )
+
+            try:
+                review_margin = min(
+                    _REVIEW_COMPLETION_MARGIN_SECONDS,
+                    max(1.0, self.limits.wall_clock_seconds * 0.1),
+                )
+                review_deadline = min(
+                    self.clock() + _REVIEW_MAX_SECONDS, deadline - review_margin
+                )
+                reviewer = Reviewer(
+                    self.provider,
+                    tools,
+                    effort_ceiling=self.review_effort,
+                    deadline=review_deadline,
+                    clock=self.clock,
+                )
+                context = request.review_context()
+                reviewed = reviewer.review(request.instructions, context)
+            except TaskCancelled:
+                record_review_usage()
+                persist_review()
+                raise
+            except Exception:
+                # Do not put provider/request exception contents in notices.
+                reviewed = ReviewResult(failure="the review snapshot was unavailable")
+            record_review_usage()
+            if self.clock() >= deadline:
+                persist_review()
+                raise LlmCoordError(
+                    ErrorCode.PROVIDER_UNAVAILABLE,
+                    "the agent exceeded its wall-clock budget for this task",
+                )
+            review_state.update(
+                status="failed"
+                if reviewed.failure
+                else ("findings" if reviewed.findings else "clean"),
+                delivered=False,
+            )
+            if reviewed.findings:
+                review_state["handback"] = reviewed.handback()
+            tools.emit(
+                "review.finished",
+                {
+                    "state": "failed" if reviewed.failure else "completed",
+                    "findings": len(reviewed.findings),
+                    "reason": reviewed.failure,
+                },
+            )
+            persist_review()
+            return ToolOutcome(reviewed.handback(), True) if reviewed.findings else None
+
+        if self.review == "on" and request.agent_mode != "plan":
+            tools.finish_gate = review_gate
+
+        def tool_progress(
+            completed: tuple[ToolCallResult, ...], pending: int | None
+        ) -> None:
+            nonlocal progress_results, progress_in_flight
+            progress_results, progress_in_flight = completed, pending
+            assert turn is not None
+            self._checkpoint_tool_progress(
+                completed, pending, persist=checkpoint, turn=turn
+            )
+
+        def mark_review_delivered() -> None:
+            if review_state.get("status") == "findings":
+                review_state["delivered"] = True
 
         def refresh_coordination() -> CoordinationUpdate | None:
             if request.refresh_coordination is None:
@@ -555,7 +699,20 @@ class CodingAgentHarness:
                 or type(update.sequence) is not int
                 or update.sequence < (coordination_sequence or 0)
                 or (update.text is not None and not isinstance(update.text, str))
-                or (update.sequence != coordination_sequence and not update.text)
+                or type(update.facts_unchanged) is not bool
+                or (
+                    update.facts_unchanged
+                    and (
+                        coordination_sequence is None
+                        or update.sequence <= coordination_sequence
+                        or update.text is not None
+                    )
+                )
+                or (
+                    update.sequence != coordination_sequence
+                    and not update.text
+                    and not update.facts_unchanged
+                )
             ):
                 raise ValueError("coordination refresh returned an invalid update")
             if update.text is not None and (
@@ -636,8 +793,17 @@ class CodingAgentHarness:
             return True
 
         def send_prompt(text: str) -> ModelTurn:
+            notice = tools.pending_parent_notice()
+            text = _with_parent_notice(text, notice)
+
+            def send() -> ModelTurn:
+                response = self._guarded(session.send_user, text, tools, live)
+                if notice is not None:
+                    tools.acknowledge_parent_notice(notice[0])
+                return response
+
             try:
-                return self._guarded(session.send_user, text, tools, live)
+                return send()
             except LlmCoordError as exc:
                 # The provider rejected the prompt as too long and left the
                 # history unchanged. Summarize it and send the prompt again.
@@ -653,7 +819,7 @@ class CodingAgentHarness:
                 current_results=results,
                 current_in_flight=in_flight,
             )
-            return self._guarded(session.send_user, text, tools, live)
+            return send()
 
         def record_turn(new_turn: ModelTurn) -> None:
             nonlocal context_tokens, summarized_this_turn
@@ -741,6 +907,10 @@ class CodingAgentHarness:
                     else _CONTINUE_AFTER_COMPACTION,
                     update,
                 )
+                if review_state.get("status") == "findings" and not review_state.get(
+                    "delivered"
+                ):
+                    message += "\n\n" + str(review_state["handback"])
                 if phase == "nudge" and needs_compaction(len(message)):
                     compact()
                     checkpoint(
@@ -750,6 +920,7 @@ class CodingAgentHarness:
                         current_in_flight=in_flight,
                     )
                 turn = send_prompt(message)
+                mark_review_delivered()
                 consumed_coordination(update)
                 record_turn(turn)
                 _accumulate(usage_total, turn.usage)
@@ -764,9 +935,29 @@ class CodingAgentHarness:
                 )
                 continue
             if phase == "tool_results":
+                if (
+                    results
+                    and review_state.get("status") == "findings"
+                    and not review_state.get("delivered")
+                    and not any(
+                        str(review_state["handback"]) in r.content for r in results
+                    )
+                ):
+                    # An interrupted finish may have an unknown-outcome result.
+                    # Keep its provider call ID and restore the durable findings.
+                    first, *rest = results
+                    results = (
+                        ToolCallResult(
+                            first.call_id,
+                            first.content + "\n\n" + str(review_state["handback"]),
+                            True,
+                        ),
+                        *rest,
+                    )
                 update = refresh_coordination()
+                notice = tools.pending_parent_notice()
                 payload = _results_with_coordination(
-                    results, update, self.limits.max_tool_output_bytes
+                    results, update, self.limits.max_tool_output_bytes, notice
                 )
                 # A summary can absorb these results without recording them,
                 # so a failed summary leaves them to be sent as usual.
@@ -801,7 +992,10 @@ class CodingAgentHarness:
                     )
                     continue
                 assert turn is not None
+                if notice is not None:
+                    tools.acknowledge_parent_notice(notice[0])
                 consumed_coordination(update)
+                mark_review_delivered()
                 record_turn(turn)
                 _accumulate(usage_total, turn.usage)
                 results = ()
@@ -870,11 +1064,7 @@ class CodingAgentHarness:
                 tools,
                 completed=results,
                 in_flight=in_flight,
-                checkpoint=functools.partial(
-                    self._checkpoint_tool_progress,
-                    persist=checkpoint,
-                    turn=turn,
-                ),
+                checkpoint=tool_progress,
             )
             in_flight = None
             if explorer is not None:
@@ -1687,10 +1877,19 @@ def _with_coordination(text: str, update: CoordinationUpdate | None) -> str:
     )
 
 
+def _with_parent_notice(text: str, notice: tuple[int, str] | None) -> str:
+    if notice is None:
+        return text
+    return (
+        text + "\n\n[Helper workspace update]\n" + notice[1] + "\n[End helper update]"
+    )
+
+
 def _results_with_coordination(
     results: Sequence[ToolCallResult],
     update: CoordinationUpdate | None,
     limit: int,
+    notice: tuple[int, str] | None = None,
 ) -> tuple[ToolCallResult, ...]:
     """Attach facts without creating an unmatched native tool result.
 
@@ -1699,11 +1898,11 @@ def _results_with_coordination(
     last outcome to fit the existing per-result budget, retaining the update.
     """
 
-    if update is None or not update.text:
+    suffix = _with_parent_notice(_with_coordination("", update), notice)
+    if not suffix:
         return tuple(results)
     if not results:
-        raise ValueError("coordination tool update has no completed tool result")
-    suffix = _with_coordination("", update)
+        raise ValueError("checkout update has no completed tool result")
     available = limit - len(suffix.encode("utf-8"))
     last = results[-1]
     content = last.content

@@ -89,6 +89,39 @@ def test_usage_lines_show_the_explore_helpers_share() -> None:
     )
 
 
+def test_usage_lines_itemize_review_without_adding_it_to_totals() -> None:
+    lines = usage_lines(
+        {
+            "task_runs": 1,
+            "usage": {
+                "prompt_tokens": 5_000,
+                "output_tokens": 300,
+                "explore_prompt_tokens": 2_000,
+                "explore_output_tokens": 100,
+                "review_prompt_tokens": 1_200,
+                "review_output_tokens": 50,
+            },
+        }
+    )
+
+    assert lines[1:5] == [
+        "  Prompt:  5.0k tokens",
+        "  Output:  300 tokens",
+        "  Of these, explore helpers used 2.0k prompt and 100 output tokens.",
+        "  Of these, independent review used 1.2k prompt and 50 output tokens.",
+    ]
+
+
+def test_usage_lines_omit_absent_review_usage() -> None:
+    lines = usage_lines(
+        {
+            "task_runs": 1,
+            "usage": {"prompt_tokens": 500, "output_tokens": 30},
+        }
+    )
+    assert not any("independent review" in line for line in lines)
+
+
 def test_footer_shows_the_context_meter_only_when_known() -> None:
     composer = Composer(io.StringIO(), io.StringIO(), plain=True)
     composer.model = "gpt-6-sol"

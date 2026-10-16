@@ -95,6 +95,7 @@ from llm_cli.workspace.broker import (
     store_candidate_content,
     workspace_target,
 )
+from llm_cli.workspace.external import ExternalWorkspaceScanner
 from llm_cli.workspace.identity import (
     EXECUTABLE_MODE,
     REGULAR_MODE,
@@ -257,6 +258,8 @@ class DaemonService:
             driver_capabilities=self.drivers.capabilities,
         )
         self.startup_recovery: RecoveryReport | None = None
+        self._external_scanner = ExternalWorkspaceScanner(self.store)
+        self._next_external_scan_at = 0.0
         self._authority_lock = asyncio.Lock()
         self._background_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
         # Executions whose answer is being written again right now.
@@ -399,6 +402,13 @@ class DaemonService:
                             self.paths.data_dir / "check-worktrees",
                         )
                     self._schedule_ready_launches()
+                if time.monotonic() >= self._next_external_scan_at:
+                    await asyncio.to_thread(self._scan_external_changes)
+                    self._next_external_scan_at = time.monotonic() + 2.0
+
+    def _scan_external_changes(self) -> None:
+        with self.workspace_batches.lock:
+            self._external_scanner.scan_active()
 
     async def handle(self, request: Request) -> Any:
         try:
@@ -1871,6 +1881,8 @@ class DaemonService:
             self.providers.create(provider, model, effort=effort),
             explorations=self.settings.agent_explore,
             explore_effort=self.settings.agent_explore_effort,
+            review=self.settings.agent_review,
+            review_effort=self.settings.agent_review_effort,
         )
 
     @staticmethod

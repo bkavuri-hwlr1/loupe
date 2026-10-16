@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-15",
+  "scope": "Corrections to the Wave 2 candidate before opening its PR",
+  "tested_commit": "7c15c49578754075c55ed86d82462c0272a8bb6b",
+  "source_fingerprint": "b475e7ce03306bf1f50784dbbf0f10d556c0fef027551a9450198030bb3edb81",
+  "source_files": 107,
+  "original_snapshot_files_verified_unchanged": 328,
+  "installed_wheel_verified_after_tests": true,
+  "runtime": "Python 3.14.8; matching noneditable wheel; locked all-extras and dev dependencies",
+  "pytest": {
+    "passed": 2385,
+    "failed": 0,
+    "expected_skips": [
+      "test_case_aliases_invalidate_all_copy_actions"
+    ]
+  },
+  "ruff": "passed",
+  "mypy": "passed",
+  "build": "wheel and sdist passed",
+  "regressions": [
+    "Standalone fenced review JSON and per-finding validation retain valid findings; all-invalid reports fail.",
+    "Independent review cap reserves completion time and covers provider waits, search and Git exclusion checks; genuine cancellation and repair deadlines still apply.",
+    "Late abandoned provider responses cannot run tools, change usage or publish.",
+    "Review usage is itemized as a subset of task totals.",
+    "Human hydration output is bounded and escaped; JSON retains the complete plan.",
+    "Ignored node_modules uses an opaque directory-level rebuild decision, leaving unrelated copy candidates available.",
+    "Helper-triggered reconciliation reaches the parent before further actions and survives failed requests, compaction and checkpoint replay.",
+    "Coalesced fetch waiters wait through domain approval while honoring task cancellation and deadlines.",
+    "Command/domain approval questions identify exploration helpers without leaking helper task text.",
+    "Unrelated shared.py formatting restored with AST equality proof."
+  ],
+  "hydration_reproduction": {
+    "ignored_files": 600,
+    "dependency_entries": 20001,
+    "old_human_bytes": 395386,
+    "new_human_bytes": 1249,
+    "old_copy_candidates": 0,
+    "new_copy_candidates": 600,
+    "dependency_action": "needs_rebuild; unknown descendants; never a copy candidate"
+  },
+  "limits": [
+    "E2 remains deferred; no live provider calls were needed for these corrections.",
+    "Review remains off by default. An abandoned synchronous provider request may finish privately; late unknown usage is not invented.",
+    "Hydration remains preview-only; isolated materialization/publication belongs to C2/C3.",
+    "No release or merge is performed by this validation record."
+  ]
+}
