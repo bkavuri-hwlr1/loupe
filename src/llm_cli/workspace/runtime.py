@@ -11,12 +11,12 @@ import stat
 import tempfile
 import time
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import suppress
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
-from llm_cli.workspace.hydration import _evidence, _likely_secret
+from llm_cli.workspace.hydration import _SECRET_DIRECTORIES, _evidence, _likely_secret
 
 _DEPENDENCIES = frozenset({".venv", "venv", "node_modules"})
 _ADMIN = frozenset({".git", ".loupe", ".llm-coord", ".codex", ".agents"})
@@ -25,6 +25,28 @@ _MAX_BYTES = 5 * 1024**3
 _MAX_ENTRIES = 200_000
 _SECRET_KEY = re.compile(
     r"(?i)(?:secret|token|password|passwd|credential|api.?key|access.?key|authorization)"
+)
+# Values not named as secrets are redacted only when this long: shorter ones,
+# such as DEBUG=true or PORT=8000, would hide ordinary output wherever they
+# appear. Values under secret-like keys are redacted at any length.
+_UNNAMED_MINIMUM = 8
+# Library code named like a credential is still code that imports need, such
+# as anthropic/lib/credentials or google/auth/credentials.py.
+_CODE_SUFFIXES = (
+    ".py",
+    ".pyc",
+    ".pyi",
+    ".pyd",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".mts",
+    ".cts",
+    ".map",
 )
 _ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?([^=:#]+)\s*[=:]\s*(.*?)\s*$")
 _YAML_FIELD = re.compile(
@@ -74,6 +96,28 @@ def _yaml_scalar(value: str) -> str:
 
 def dependency_path(relative: str) -> bool:
     return Path(relative).name.casefold() in _DEPENDENCIES
+
+
+def _in_dependency_tree(path: str) -> bool:
+    return any(part.casefold() in _DEPENDENCIES for part in PurePosixPath(path).parts)
+
+
+def dependency_credential(path: str, *, directory: bool) -> bool:
+    """Whether an entry inside a dependency tree holds credentials.
+
+    Only credential directories (such as .aws) and data files with credential
+    names count. A package directory or code file named like a credential is
+    library code, and leaving it out breaks imports.
+    """
+    name = PurePosixPath(path).name.casefold()
+    if directory:
+        return name in _SECRET_DIRECTORIES
+    if name.endswith(_CODE_SUFFIXES):
+        return False
+    return _likely_secret(name) or any(
+        part.casefold() in _SECRET_DIRECTORIES
+        for part in PurePosixPath(path).parts[:-1]
+    )
 
 
 def relocated_venv_text(relative: str, body: bytes) -> bool:
@@ -315,7 +359,9 @@ def copy_dependency_tree(
                 if entry.name.casefold() in _ADMIN:
                     raise _error("dependency tree contains administration: " + path)
                 if (
-                    _likely_secret(path)
+                    dependency_credential(
+                        path, directory=stat.S_ISDIR(observed.st_mode)
+                    )
                     and path not in approved_secret_paths
                     and not pinned_private
                     and not (
@@ -430,8 +476,13 @@ def copy_dependency_tree(
     return tuple(notices)
 
 
-def _files(root: Path, relative: str) -> Iterator[tuple[str, bytes]]:
-    """Read a bounded private tree, never following a descendant symlink."""
+def _files(
+    root: Path, relative: str, wanted: Callable[[str], bool] = lambda path: True
+) -> Iterator[tuple[str, bytes]]:
+    """Read a bounded private tree, never following a descendant symlink.
+
+    Only files ``wanted`` accepts are read; the rest are counted but skipped.
+    """
     from llm_cli.workspace.isolated import _error, _parent, _read, _source
 
     target = root / relative
@@ -463,6 +514,8 @@ def _files(root: Path, relative: str) -> Iterator[tuple[str, bytes]]:
                     finally:
                         os.close(child)
                 elif stat.S_ISREG(status.st_mode):
+                    if not wanted(path):
+                        continue
                     total += status.st_size
                     if total > _MAX_BYTES:
                         raise _error(
@@ -486,23 +539,38 @@ def _files(root: Path, relative: str) -> Iterator[tuple[str, bytes]]:
             os.close(descriptor)
 
 
-def private_output_values(root: Path, paths: tuple[str, ...]) -> tuple[str, ...]:
-    """Keep actual private values in memory only; ordinary ignored files are inert."""
-    values: set[str] = set()
+def private_output_values(
+    root: Path, paths: tuple[str, ...], *, source_paths: tuple[str, ...] = ()
+) -> tuple[str, ...]:
+    """Keep actual private values in memory only; ordinary ignored files are inert.
 
-    def add(value: object) -> None:
+    Dependency trees are library code, not configuration: only approved
+    credential files inside them are read. ``source_paths`` are screened source
+    files, such as tests with fake keys; their short literals (max_tokens=4)
+    are test data, so only values of at least _UNNAMED_MINIMUM count.
+    """
+    values: set[str] = set()
+    floor = 1
+
+    def add(value: object, minimum: int = 1) -> None:
+        minimum = max(minimum, floor)
         if isinstance(value, str) and value.strip():
-            values.add(value.strip())
-            values.update(line.strip() for line in value.splitlines() if line.strip())
+            for candidate in (
+                value.strip(),
+                *(line.strip() for line in value.splitlines() if line.strip()),
+            ):
+                if len(candidate) >= minimum:
+                    values.add(candidate)
         elif isinstance(value, (int, float, bool)):
-            values.add(str(value))
-            values.add(json.dumps(value))
+            for candidate in (str(value), json.dumps(value)):
+                if len(candidate) >= minimum:
+                    values.add(candidate)
         elif isinstance(value, dict):
             for item in value.values():
-                add(item)
+                add(item, minimum)
         elif isinstance(value, list):
             for item in value:
-                add(item)
+                add(item, minimum)
 
     def sensitive_fields(value: object) -> None:
         if isinstance(value, dict):
@@ -515,9 +583,26 @@ def private_output_values(root: Path, paths: tuple[str, ...]) -> tuple[str, ...]
             for item in value:
                 sensitive_fields(item)
 
-    for relative in paths:
-        for path, body in _files(root, relative):
-            private = _likely_secret(path)
+    def url_credentials(text: str) -> None:
+        with suppress(ValueError):
+            parsed = urlsplit(text)
+            if parsed.scheme and parsed.hostname:
+                add(unquote(parsed.password or ""))
+                add(unquote(parsed.username or ""), _UNNAMED_MINIMUM)
+
+    def wanted(path: str) -> bool:
+        return not _in_dependency_tree(path) or dependency_credential(
+            path, directory=False
+        )
+
+    for relative in (*paths, *source_paths):
+        floor = _UNNAMED_MINIMUM if relative in source_paths else 1
+        for path, body in _files(root, relative, wanted):
+            private = (
+                dependency_credential(path, directory=False)
+                if _in_dependency_tree(path)
+                else _likely_secret(path)
+            )
             if b"\0" in body and not private:
                 continue
             try:
@@ -530,27 +615,27 @@ def private_output_values(root: Path, paths: tuple[str, ...]) -> tuple[str, ...]
                 # protection merely by containing a NUL or invalid UTF-8 byte.
                 text = body.decode("utf-8", errors="replace")
             if private:
-                add(text)
+                add(text, _UNNAMED_MINIMUM)
                 text = text.replace("\0", "\n").replace("\ufffd", "\n")
-                add(text)
+                add(text, _UNNAMED_MINIMUM)
                 with suppress(ValueError):
                     words = shlex.split(text, comments=True)
                     for index, word in enumerate(words[:-1]):
-                        if word.casefold() in {"login", "password", "account"}:
+                        if word.casefold() == "password":
                             add(words[index + 1])
+                        elif word.casefold() in {"login", "account"}:
+                            add(words[index + 1], _UNNAMED_MINIMUM)
                 for line in text.splitlines():
-                    with suppress(ValueError):
-                        parsed = urlsplit(line.strip())
-                        if parsed.scheme and parsed.hostname:
-                            add(unquote(parsed.password or ""))
-                            add(unquote(parsed.username or ""))
+                    url_credentials(line.strip())
+                    assignment = _ASSIGNMENT.match(line)
+                    if assignment:
+                        url_credentials(assignment[2].strip().strip("\"'"))
             for parse in (json.loads, tomllib.loads):
                 with suppress(ValueError):
                     structured = parse(text)
+                    sensitive_fields(structured)
                     if private:
-                        add(structured)
-                    else:
-                        sensitive_fields(structured)
+                        add(structured, _UNNAMED_MINIMUM)
             for line in text.splitlines():
                 if ":" in line and _SECRET_KEY.search(line):
                     for field in _YAML_FIELD.finditer(line):
@@ -559,7 +644,11 @@ def private_output_values(root: Path, paths: tuple[str, ...]) -> tuple[str, ...]
                                 add(_yaml_scalar(field[2]))
                 assignment = _ASSIGNMENT.match(line)
                 if assignment and (private or _SECRET_KEY.search(assignment[1])):
-                    add(assignment[2].strip().strip("\"'"))
+                    minimum = (
+                        1 if _SECRET_KEY.search(assignment[1]) else _UNNAMED_MINIMUM
+                    )
+                    add(assignment[2].strip().strip("\"'"), minimum)
                     with suppress(ValueError):
-                        add(" ".join(shlex.split(assignment[2], comments=True)))
+                        words = shlex.split(assignment[2], comments=True)
+                        add(" ".join(words), minimum)
     return tuple(sorted(values, key=len, reverse=True))

@@ -199,6 +199,24 @@ def materialize_snapshot_file(
         target.chmod(0o755 if mode == "100755" else 0o644)
 
 
+# A check fingerprints the same private runtime several times; a dependency tree
+# can hold thousands of files. Unchanged files, by exact path and full stat
+# signature, reuse their digest; any write changes ctime and rehashes.
+_RUNTIME_DIGESTS: dict[str, tuple[tuple[int, ...], str, int]] = {}
+_RUNTIME_DIGESTS_LIMIT = 400_000
+
+
+def _stat_signature(status: os.stat_result) -> tuple[int, ...]:
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+    )
+
+
 def runtime_identity(root: Path, paths: list[str]) -> str:
     """Bind copied inputs to evidence without exposing their contents."""
     manifest: list[tuple[str, str]] = []
@@ -238,19 +256,30 @@ def runtime_identity(root: Path, paths: list[str]) -> str:
                 continue
             if entry.is_dir():
                 continue
-            identity, body = read_identified_path(entry)
-            if identity.kind is not ObjectKind.REGULAR or body is None:
-                raise ValueError("runtime snapshot contains an absent or special file")
-            total += identity.size
+            key = os.fsdecode(entry)
+            before = _stat_signature(entry.lstat())
+            cached = _RUNTIME_DIGESTS.get(key)
+            if cached is not None and cached[0] == before:
+                file_digest, size = cached[1], cached[2]
+            else:
+                identity, body = read_identified_path(entry)
+                if identity.kind is not ObjectKind.REGULAR or body is None:
+                    raise ValueError(
+                        "runtime snapshot contains an absent or special file"
+                    )
+                from llm_cli.workspace.runtime import relocated_venv_text
+
+                if relocated_venv_text(entry.relative_to(root).as_posix(), body):
+                    body = body.replace(os.fsencode(root), b"<private-runtime-root>")
+                file_digest, size = hashlib.sha256(body).hexdigest(), identity.size
+                if _stat_signature(entry.lstat()) == before:
+                    if len(_RUNTIME_DIGESTS) >= _RUNTIME_DIGESTS_LIMIT:
+                        _RUNTIME_DIGESTS.clear()
+                    _RUNTIME_DIGESTS[key] = (before, file_digest, size)
+            total += size
             if total > 5 * 1024**3:
                 raise ValueError("runtime snapshot exceeds 5 GiB")
-            from llm_cli.workspace.runtime import relocated_venv_text
-
-            if relocated_venv_text(entry.relative_to(root).as_posix(), body):
-                body = body.replace(os.fsencode(root), b"<private-runtime-root>")
-            manifest.append(
-                (entry.relative_to(root).as_posix(), hashlib.sha256(body).hexdigest())
-            )
+            manifest.append((entry.relative_to(root).as_posix(), file_digest))
     encoded = json.dumps(manifest)
     if not paths:
         return digest(encoded)
@@ -557,12 +586,8 @@ class CheckRunner:
 
             self.sensitive_values = private_output_values(
                 snapshot,
-                tuple(
-                    sorted(
-                        set(self.config.get("runtime_paths", []))
-                        | set(self.sensitive_paths)
-                    )
-                ),
+                tuple(sorted(set(self.config.get("runtime_paths", [])))),
+                source_paths=tuple(sorted(set(self.sensitive_paths))),
             )
             before = source_snapshot(snapshot)[0]
             commands = [*self.config.get("setup", []), spec["argv"]]
