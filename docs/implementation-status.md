@@ -784,10 +784,14 @@ E2 remains deferred.
 
 ## Wave 3 validation follow-up (October 16, 2026)
 
-The first combined frozen run exposed a shared-session settlement regression:
-isolated catch-up handling had changed unmergeable shared proposals from durable
-divergence to held review. The fix limits that handling to isolated sessions.
-The 44-test orchestration-stress, catch-up, isolated synchronization, publication,
-and held-workflow suite passed, as did the OpenAI publication-refusal regression
-(45 focused passes total). Ruff and mypy passed. The original frozen full run
-continues collecting failures; final-head CI validation is pending.
+The first combined frozen run finished with 2,484 passing tests, five failures,
+and one expected case-sensitive-filesystem skip. All five failures exercised one
+shared-session settlement regression: isolated catch-up handling had changed
+unmergeable shared proposals from durable divergence to held review. The fix
+limits that handling to isolated sessions.
+
+The corrected revision passed 64 focused orchestration-stress, catch-up,
+isolated synchronization/publication/held-workflow, OpenAI publication-refusal,
+and shared-finalization tests, including all five failing cases. Ruff, mypy, and
+source-distribution/wheel builds passed. Current cross-platform CI results are
+recorded on [PR #55](https://github.com/bkavuri-hwlr1/loupe/pull/55).
