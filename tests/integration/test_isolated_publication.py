@@ -238,8 +238,6 @@ def test_publication_preserves_private_edit_made_after_candidate_freeze(
 def test_declassified_hydrated_runtime_is_refused_before_source_artifact_capture(
     tmp_path: Path, repository_factory: Any, service_factory: Any
 ) -> None:
-    from llm_cli.errors import LlmCoordError
-
     async def scenario() -> None:
         root = repository_factory(
             tmp_path, {"a.py": "source\n", ".gitignore": "settings.local\n"}
@@ -262,8 +260,10 @@ def test_declassified_hydrated_runtime_is_refused_before_source_artifact_capture
                 / hashlib.sha256(runtime).hexdigest()
             )
             assert not artifact.exists()
-            with pytest.raises(LlmCoordError, match="runtime"):
-                service.shared_runner.isolated_sync.synchronize(session.workspace_id)
+            report = service.shared_runner.isolated_sync.synchronize(
+                session.workspace_id
+            )
+            assert "settings.local" in report.deferred
             assert not artifact.exists()
             assert (private / "settings.local").read_bytes() == runtime
         finally:
@@ -299,10 +299,10 @@ def test_private_sync_failure_does_not_fail_confirmed_publication_or_recovery(
         credentials, private = await open_session(service, root, provider.model)
         synchronize = service.shared_runner.isolated_sync.synchronize
 
-        def sync(workspace_id: str) -> Any:
+        def sync(workspace_id: str, **kwargs: Any) -> Any:
             if (root / "a.py").read_text() == "published\n":
                 raise WorkspaceBrokerError("private writer needs recovery")
-            return synchronize(workspace_id)
+            return synchronize(workspace_id, **kwargs)
 
         monkeypatch.setattr(service.shared_runner.isolated_sync, "synchronize", sync)
         try:
@@ -403,6 +403,52 @@ def test_isolated_helper_command_notifies_parent_when_pending_edits_are_reconcil
             assert "your edits were merged" in notices[0]
             assert "local\nmiddle\nremote" in provider.helper.results[0][0].content
             assert (root / "docs/guide.md").read_text() == "local\nmiddle\nremote\n"
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
+
+
+def test_before_model_sync_error_does_not_fail_isolated_task(
+    tmp_path: Path, repository_factory: Any, service_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_cli.errors import ErrorCode, LlmCoordError
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "original\n"})
+        provider = ScriptedProvider(
+            "isolated-save-race",
+            [_tools(_call("read_file", path="a.py")), _finish()],
+        )
+        service = service_factory(tmp_path)
+        _register(service, provider)
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(root)}))
+        credentials, _ = await open_session(service, root, provider.model)
+        sync = service.shared_runner.isolated_sync
+        original = sync.refresh_capture
+        calls = 0
+
+        def raced(path: Path, protected: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise LlmCoordError(
+                    ErrorCode.REPOSITORY_UNSAFE,
+                    "source changed before isolated snapshot",
+                )
+            return original(path, protected)
+
+        monkeypatch.setattr(sync, "refresh_capture", raced)
+        try:
+            await asyncio.wait_for(
+                await _start(service, root, credentials, "save-race", ("*",)), 30
+            )
+            _assert_completed(service, "save-race")
+            assert calls > 1
+            assert not provider.steps
+            assert provider.results and not provider.results[0][0].is_error
         finally:
             service.close()
 

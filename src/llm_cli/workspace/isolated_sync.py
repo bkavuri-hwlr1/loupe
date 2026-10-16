@@ -123,6 +123,7 @@ class SyncResult:
     merged: tuple[str, ...] = ()
     conflicted: tuple[str, ...] = ()
     sequence: int = 0
+    deferred: tuple[str, ...] = ()
 
     def note(self) -> str:
         notices = []
@@ -138,6 +139,13 @@ class SyncResult:
                 + ", ".join(self.conflicted)
                 + ". Read and resolve these paths before publication."
             )
+        if self.deferred:
+            paths = ", ".join(path[:200] for path in self.deferred[:10])
+            suffix = " and other paths" if len(self.deferred) > 10 else ""
+            notices.append(
+                "Source synchronization deferred for " + paths + suffix
+                + "; keeping accepted source and retrying at the next safe point."
+            )
         return "\n".join(notices)
 
 
@@ -148,11 +156,14 @@ class IsolatedSynchronizer:
         publisher: SharedBatchPublisher,
         capture: Callable[[Path, Sequence[str]], Manifest],
         validate: Callable[[str], object] | None = None,
+        *,
+        refresh_capture: Callable[[Path, Sequence[str]], Manifest] | None = None,
     ) -> None:
         self.store = store
         self.publisher = publisher
         self.capture = capture
         self.validate = validate
+        self.refresh_capture = refresh_capture or capture
 
     def register(
         self,
@@ -218,7 +229,9 @@ class IsolatedSynchronizer:
     def _runtime(path: str, state: Mapping[str, Any]) -> bool:
         return runtime_path_matches(path, json.loads(state["runtime_paths_json"]))
 
-    def synchronize(self, workspace_id: str) -> SyncResult:
+    def synchronize(
+        self, workspace_id: str, *, refresh_source: bool = True
+    ) -> SyncResult:
         """Apply complete ordered incoming batches at a caller-owned safe point."""
         with self.publisher.lock:
             self.recover(workspace_id)
@@ -277,47 +290,86 @@ class IsolatedSynchronizer:
                     applied.extend(report.applied)
                     merged.extend(report.merged)
                     conflicted.extend(report.conflicted)
-            report = self._refresh_primary(workspace_id)
-            applied.extend(report.applied)
-            merged.extend(report.merged)
-            conflicted.extend(report.conflicted)
-            return SyncResult(
-                tuple(applied), tuple(merged), tuple(conflicted), sequence
-            )
+            state = self._state(workspace_id)
+        # Filesystem scanning, screening and artifact writes must not monopolize
+        # the same lock that every shared session needs to publish.
+        if refresh_source:
+            try:
+                primary = self.refresh_capture(
+                    Path(state["source_path"]),
+                    tuple(json.loads(state["runtime_paths_json"])),
+                )
+            except (LlmCoordError, OSError, ValueError):
+                primary = None
+            with self.publisher.lock:
+                current = self._state(workspace_id)
+                with self.store.connection() as con:
+                    latest = con.execute(
+                        "SELECT MAX(sequence) FROM checkout_events WHERE checkout_id=?",
+                        (state["checkout_id"],),
+                    ).fetchone()[0]
+                if (
+                    primary is None
+                    or current["generation"] != state["generation"]
+                    or current["source_sequence"] != state["source_sequence"]
+                    or int(latest or 0) != upper_bound
+                ):
+                    return SyncResult(
+                        tuple(applied), tuple(merged), tuple(conflicted), sequence,
+                        ("checkout snapshot",),
+                    )
+                report = self._refresh_primary(workspace_id, primary)
+                applied.extend(report.applied)
+                merged.extend(report.merged)
+                conflicted.extend(report.conflicted)
+                deferred = report.deferred
+        else:
+            deferred = ()
+        return SyncResult(
+            tuple(applied), tuple(merged), tuple(conflicted), sequence, deferred
+        )
 
-    def _refresh_primary(self, workspace_id: str) -> SyncResult:
-        """Reconcile exact source bytes changed without a reconstructible batch."""
+    def _refresh_primary(self, workspace_id: str, primary: Manifest) -> SyncResult:
+        """Reconcile a source snapshot captured without the publication lock."""
         state = self._state(workspace_id)
         baseline: Manifest = json.loads(state["manifest_json"])
-        primary = self.capture(
-            Path(state["source_path"]), tuple(json.loads(state["runtime_paths_json"]))
-        )
+        deferred = set(getattr(primary, "deferred", ()))
         files = []
         for path in sorted(baseline.keys() | primary.keys()):
             if self._runtime(path, state):
                 continue
             before, after = baseline.get(path), primary.get(path)
+            if path in deferred or (before or {}).get("screened") or (after or {}).get(
+                "screened"
+            ):
+                # Private fixture bytes may exist locally for commands, but they
+                # cannot be read through the source artifact or proposal channel.
+                if _identity(before) != _identity(after):
+                    deferred.add(path)
+                continue
             if _identity(before).kind is ObjectKind.DIRECTORY_MARKER:
                 target = candidate_target(Path(state["source_path"]), path)
                 if target.is_dir() and not target.is_symlink():
-                    primary[path] = before  # type: ignore[assignment]
                     continue
             if _identity(before) == _identity(after):
                 continue
+            theirs, original = self._body(after), self._body(before)
             files.append(
                 BatchFile(
                     path,
                     _identity(before),
-                    self._body(after),
+                    theirs,
                     _identity(after).mode,
-                    self._body(before),
+                    original,
                     _identity(after).permissions,
                     bool((after or {}).get("binary") or (before or {}).get("binary"))
-                    or _binary(self._body(after)),
+                    or _binary(theirs),
                 )
             )
         if not files:
-            return SyncResult(sequence=int(state["source_sequence"]))
+            return SyncResult(
+                sequence=int(state["source_sequence"]), deferred=tuple(sorted(deferred))
+            )
         # Source scans contain leaves; explicit parent operations make a newly
         # added source subtree replayable in a different physical worktree.
         added = {file.relative_path for file in files}
@@ -332,14 +384,16 @@ class IsolatedSynchronizer:
                 directories.append(BatchFile(relative, ABSENT, b"", DIRECTORY_MODE))
                 added.add(relative)
         files = [*directories, *files]
-        # Retain source artifacts before the journal, including empty directory bodies.
-        for file in files:
-            if file.content is not None:
-                store_candidate_content(self.publisher.candidate_dir, file.content)
+        # Bodies already live in the capture cache's immutable artifact store.
+        for file in directories:
+            store_candidate_content(self.publisher.candidate_dir, file.content or b"")
         request = _request("isolated-source-refresh", files, ("*",), False)
         report = self._prepare(workspace_id, int(state["source_sequence"]), request)
         self.recover(workspace_id)
-        return report
+        return SyncResult(
+            report.applied, report.merged, report.conflicted, report.sequence,
+            tuple(sorted(deferred)),
+        )
 
     def _conflicts(self, workspace_id: str) -> dict[str, dict[str, Any]]:
         with self.store.connection() as con:
@@ -648,6 +702,12 @@ class IsolatedSynchronizer:
                 tuple(json.loads(state["runtime_paths_json"])),
             )
             for item in overlay:
+                if (baseline.get(item.relative_path) or {}).get("screened") or (
+                    local.get(item.relative_path) or {}
+                ).get("screened"):
+                    raise WorkspaceBrokerError(
+                        "isolated edit overlaps screened private source"
+                    )
                 if self._runtime(item.relative_path, state):
                     raise WorkspaceBrokerError("isolated edit overlaps runtime data")
                 if _identity(local.get(item.relative_path)) != item.base:
@@ -689,6 +749,8 @@ class IsolatedSynchronizer:
                 if self._runtime(path, state):
                     continue
                 before, after = baseline.get(path), local.get(path)
+                if (before or {}).get("screened") or (after or {}).get("screened"):
+                    continue
                 if _identity(before) == _identity(after):
                     continue
                 content = self._body(after)
@@ -755,7 +817,7 @@ class IsolatedSynchronizer:
     def after_publication(self, batch_id: str, workspace_id: str) -> None:
         """Private catch-up cannot turn a confirmed shared publication into failure."""
         try:
-            self.synchronize(workspace_id)
+            self.synchronize(workspace_id, refresh_source=False)
         except (ValueError, OSError, LlmCoordError):
             with self.store.connection() as con:
                 execution = con.execute(

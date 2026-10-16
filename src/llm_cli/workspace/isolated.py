@@ -15,9 +15,10 @@ import stat
 import sys
 import tempfile
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -224,19 +225,63 @@ def _capture_path(root: Path, relative: str) -> tuple[bytes, os.stat_result, boo
     return body, before, is_link
 
 
+class SourceManifest(dict[str, dict[str, Any]]):
+    """A snapshot with path-only deferrals, never failed or screened bytes."""
+
+    deferred: tuple[str, ...] = ()
+
+
+@dataclass
+class SourceCaptureCache:
+    """Cache regular source only while its pinned filesystem identity matches."""
+
+    max_entries: int = 40_000
+    entries: OrderedDict[
+        tuple[Path, str], tuple[dict[str, int], dict[str, Any]]
+    ] = field(default_factory=OrderedDict)
+    lock: RLock = field(default_factory=RLock, repr=False)
+
+    def lookup(
+        self, key: tuple[Path, str]
+    ) -> tuple[dict[str, int], dict[str, Any]] | None:
+        with self.lock:
+            result = self.entries.get(key)
+            if result is not None:
+                self.entries.move_to_end(key)
+            return result
+
+    def prune(self, root: Path, present: set[str]) -> None:
+        with self.lock:
+            for key in tuple(self.entries):
+                if key[0] == root and key[1] not in present:
+                    self.entries.pop(key)
+
+    def remember(
+        self, key: tuple[Path, str], status: os.stat_result, entry: dict[str, Any]
+    ) -> None:
+        with self.lock:
+            self.entries[key] = (_evidence(status), dict(entry))
+            self.entries.move_to_end(key)
+            while len(self.entries) > max(0, self.max_entries):
+                self.entries.popitem(last=False)
+
+
 def capture_source(
     root: Path,
     candidate_dir: Path,
     *,
     protected_paths: Sequence[str] = (),
-) -> dict[str, dict[str, Any]]:
+    cache: SourceCaptureCache | None = None,
+    defer_changed: bool = False,
+) -> SourceManifest:
     """Capture ordinary current working bytes, including dirty/untracked files.
 
     Missing tracked files retain an absent identity. Screened source retains
     only its identity: creation may copy it privately, but its bytes never enter
     ordinary artifacts or model-facing proposals.
     """
-    manifest: dict[str, dict[str, Any]] = {}
+    manifest = SourceManifest()
+    deferred: list[str] = []
     total = 0
     source_paths = _source_paths(root)
     excluded = excluded_paths(root, list(source_paths))
@@ -244,6 +289,9 @@ def capture_source(
         if runtime_path(root, relative):
             continue
         if runtime_path_matches(relative, protected_paths):
+            if defer_changed:
+                deferred.append(relative)
+                continue
             raise _error(
                 "runtime path became source; explicit reclassification is required"
             )
@@ -252,12 +300,32 @@ def capture_source(
             or _private_path(relative)
             or any(part in _ADMIN for part in Path(relative).parts)
         ):
+            if defer_changed:
+                deferred.append(relative)
+                continue
             raise _error(f"protected source cannot be snapshotted: {relative}")
-        for attempt in range(3):
+        key = (root, relative)
+        cached = cache.lookup(key) if cache is not None else None
+        if cached is not None:
+            try:
+                with _parent(root, relative) as (parent, name):
+                    status = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                if stat.S_ISREG(status.st_mode) and _evidence(status) == cached[0]:
+                    manifest[relative] = dict(cached[1])
+                    total += int(cached[1]["size"])
+                    if total > 1024**3:
+                        raise _error("isolated source exceeds its 1 GiB budget")
+                    continue
+            except OSError:
+                pass
+        for attempt in range(1 if defer_changed else 3):
             try:
                 body, before, is_link = _capture_path(root, relative)
                 break
             except _SourceChanged:
+                if defer_changed:
+                    deferred.append(relative)
+                    break
                 if attempt == 2:
                     raise _error(
                         f"source kept changing during isolated snapshot: {relative}; "
@@ -273,11 +341,16 @@ def capture_source(
                     "permissions": None,
                 }
                 break
-            except OSError as exc:
+            except (OSError, LlmCoordError) as exc:
+                if defer_changed:
+                    deferred.append(relative)
+                    break
+                if isinstance(exc, LlmCoordError):
+                    raise
                 raise _error(
                     "source requires a link, submodule, or special adapter: " + relative
                 ) from exc
-        if relative in manifest:
+        if relative in manifest or relative in deferred:
             continue
         total += len(body)
         if total > 1024**3:
@@ -299,6 +372,11 @@ def capture_source(
             "permissions": None if is_link else stat.S_IMODE(before.st_mode) & 0o777,
             **({"screened": True} if screened else {}),
         }
+        if cache is not None and not is_link:
+            cache.remember(key, before, manifest[relative])
+    manifest.deferred = tuple(deferred)
+    if cache is not None:
+        cache.prune(root, set(source_paths))
     return manifest
 
 

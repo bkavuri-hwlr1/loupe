@@ -64,7 +64,11 @@ from llm_cli.storage.connection import immediate_transaction
 from llm_cli.workspace.batches import BatchFile, SharedBatchPublisher
 from llm_cli.workspace.context import SharedCoordinationContext
 from llm_cli.workspace.identity import SYMLINK_MODE, FileIdentity
-from llm_cli.workspace.isolated import IsolatedWorkspaceManager, capture_source
+from llm_cli.workspace.isolated import (
+    IsolatedWorkspaceManager,
+    SourceCaptureCache,
+    capture_source,
+)
 from llm_cli.workspace.isolated_sync import IsolatedSynchronizer
 from llm_cli.workspace.workflow import TaskWorkflow, decode_files, encode_files
 
@@ -86,13 +90,24 @@ class SharedTaskExecutionRunner:
         self.publisher = publisher
         self.isolated: IsolatedWorkspaceManager | None = None
         self.workflow = TaskWorkflow(self.store, self.coordinator, publisher)
+        capture_cache = SourceCaptureCache()
         self.isolated_sync = IsolatedSynchronizer(
             self.store,
             publisher,
             lambda root, protected: capture_source(
-                root, publisher.candidate_dir, protected_paths=protected
+                root,
+                publisher.candidate_dir,
+                protected_paths=protected,
+                cache=capture_cache,
             ),
             self._validate_isolated,
+            refresh_capture=lambda root, protected: capture_source(
+                root,
+                publisher.candidate_dir,
+                protected_paths=protected,
+                cache=capture_cache,
+                defer_changed=True,
+            ),
         )
         self.workflow.isolated_sync = self.isolated_sync
         self.is_shutting_down: Callable[[], bool] = lambda: False
@@ -300,11 +315,15 @@ class SharedTaskExecutionRunner:
                     else files
                 )
 
-            def safe_point(*, reconcile: bool = True) -> str:
+            def safe_point(
+                *, reconcile: bool = True, refresh_source: bool = True
+            ) -> str:
                 if not isolated:
                     return ""
                 self.ensure_available(workspace.workspace_id)
-                report = self.isolated_sync.synchronize(workspace.workspace_id)
+                report = self.isolated_sync.synchronize(
+                    workspace.workspace_id, refresh_source=refresh_source
+                )
                 note = report.note()
                 if note:
                     broker.emit("workspace.isolated_synchronized", {"notice": note})
@@ -455,9 +474,9 @@ class SharedTaskExecutionRunner:
             )
 
             def refresh_coordination(after_sequence: int | None) -> CoordinationUpdate:
+                note = safe_point()
                 with self.publisher.lock:
                     self.ensure_available(workspace.workspace_id)
-                    note = safe_point()
                     update = context(after_sequence)
                     return (
                         replace(
@@ -624,9 +643,10 @@ class SharedTaskExecutionRunner:
                     self.workflow.retain(
                         task.task_id, task.attempt, execution.execution_id, files
                     )
+                safe_point(reconcile=False)
                 with self.publisher.lock:
                     self.ensure_available(workspace.workspace_id)
-                    safe_point(reconcile=False)
+                    safe_point(reconcile=False, refresh_source=False)
                     stopped = self.workflow.stopped(task.task_id, task.attempt)
                     incomplete = run.outcome != "completed"
                     if incomplete and not files and not stopped:

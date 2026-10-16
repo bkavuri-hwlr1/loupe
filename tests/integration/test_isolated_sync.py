@@ -456,3 +456,162 @@ def test_runtime_alias_overlay_is_refused_before_retaining_its_body(
             (BatchFile("LOCAL.DATA", ABSENT, private, REGULAR_MODE),),
         )
     assert not artifact.exists()
+
+
+def _real_capture(env: Environment) -> None:
+    from llm_cli.workspace.isolated import SourceCaptureCache, capture_source
+
+    cache = SourceCaptureCache()
+    env.sync.capture = lambda root, protected=(): capture_source(
+        root, env.publisher.candidate_dir, protected_paths=protected, cache=cache
+    )
+    env.sync.refresh_capture = lambda root, protected=(): capture_source(
+        root, env.publisher.candidate_dir, protected_paths=protected,
+        cache=cache, defer_changed=True,
+    )
+
+
+def test_moving_source_save_defers_one_path_and_receives_others(
+    env: Environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import isolated
+
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    (env.primary / "a.txt").write_text("saved source\n")
+    (env.primary / "b.txt").write_text("unrelated change\n")
+    original = isolated._capture_path
+
+    def moving(root: Path, relative: str) -> tuple[bytes, object, bool]:
+        if root == env.primary and relative == "a.txt":
+            raise isolated._SourceChanged
+        return original(root, relative)
+
+    monkeypatch.setattr(isolated, "_capture_path", moving)
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.deferred == ("a.txt",)
+    assert (env.local / "a.txt").read_text() == "first\nmiddle\nlast\n"
+    assert (env.local / "b.txt").read_text() == "unrelated change\n"
+    monkeypatch.setattr(isolated, "_capture_path", original)
+    assert env.sync.synchronize(env.workspace_id).applied == ("a.txt",)
+    assert (env.local / "a.txt").read_text() == "saved source\n"
+
+
+def test_new_screened_source_does_not_block_other_incoming_changes(
+    env: Environment,
+) -> None:
+    _real_capture(env)
+    secret = b"AKIA" + b"EXAMPLE000000000"
+    (env.primary / "fixture.py").write_bytes(secret)
+    (env.primary / "b.txt").write_text("new ordinary source\n")
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.deferred == ("fixture.py",)
+    assert (env.local / "b.txt").read_text() == "new ordinary source\n"
+    assert not (env.local / "fixture.py").exists()
+    assert env.sync.publication_files(env.workspace_id, ()) == ()
+    assert all(
+        secret not in path.read_bytes()
+        for path in env.publisher.candidate_dir.iterdir()
+    )
+    (env.primary / "b.txt").write_text("later ordinary source\n")
+    assert env.sync.synchronize(env.workspace_id).applied == ("b.txt",)
+
+
+def test_unchanged_source_scan_reuses_identities_and_artifacts(
+    env: Environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import isolated
+
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    reads: list[str] = []
+    stores: list[bytes] = []
+    original_read = isolated._capture_path
+    original_store = isolated._store_source
+
+    def read(root: Path, relative: str) -> tuple[bytes, object, bool]:
+        reads.append(relative)
+        return original_read(root, relative)
+
+    def store(root: Path, body: bytes) -> str:
+        stores.append(body)
+        return original_store(root, body)
+
+    monkeypatch.setattr(isolated, "_capture_path", read)
+    monkeypatch.setattr(isolated, "_store_source", store)
+    env.sync.synchronize(env.workspace_id)
+    assert reads == stores == []
+    import os
+
+    original = (env.primary / "b.txt").stat()
+    replacement = env.primary / "replacement.tmp"
+    replacement.write_bytes(b"change\n")
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+    replacement.replace(env.primary / "b.txt")
+    env.sync.synchronize(env.workspace_id)
+    assert reads == ["b.txt"]
+    assert stores == [b"change\n"]
+
+
+def test_source_scan_releases_publisher_lock_and_discards_raced_publication(
+    env: Environment,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    capture = env.sync.refresh_capture
+    once = False
+
+    def scan(root: Path, protected: Sequence[str]) -> Manifest:
+        nonlocal once
+        snapshot = capture(root, protected)
+        if not once:
+            once = True
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    env.publish, "during-scan", {"b.txt": b"published\n"}
+                )
+                future.result(timeout=3)
+        return snapshot
+
+    env.sync.refresh_capture = scan
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.deferred
+    assert (env.local / "b.txt").read_text() == "before\n"
+    env.sync.synchronize(env.workspace_id)
+    assert (env.local / "b.txt").read_text() == "published\n"
+
+
+def test_cached_source_still_honors_changed_exclusion_policy(
+    env: Environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import isolated
+
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    original = isolated.excluded_paths
+
+    def exclusions(root: Path, paths: list[str]) -> set[str]:
+        return original(root, paths) | ({"a.txt"} if root == env.primary else set())
+
+    monkeypatch.setattr(isolated, "excluded_paths", exclusions)
+    (env.primary / "b.txt").write_text("other changed source\n")
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.deferred == ("a.txt",)
+    assert (env.local / "a.txt").read_text() == "first\nmiddle\nlast\n"
+    assert (env.local / "b.txt").read_text() == "other changed source\n"
+
+
+def test_source_cache_evicts_closed_root_metadata_without_losing_source(
+    env: Environment,
+) -> None:
+    from llm_cli.workspace.isolated import SourceCaptureCache, capture_source
+
+    cache = SourceCaptureCache(max_entries=2)
+    initial = capture_source(env.primary, env.publisher.candidate_dir, cache=cache)
+    assert len(cache.entries) == 2
+    capture_source(env.local, env.publisher.candidate_dir, cache=cache)
+    assert len(cache.entries) == 2
+    assert all(root == env.local for root, _ in cache.entries)
+    refreshed = capture_source(env.primary, env.publisher.candidate_dir, cache=cache)
+    assert refreshed == initial
+    assert len(cache.entries) == 2
