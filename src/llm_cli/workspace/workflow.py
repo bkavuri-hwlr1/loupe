@@ -428,7 +428,7 @@ class TaskWorkflow:
         return {"state": "discarded", "task_id": task_id}
 
     def _publication_workspace(
-        self, session: SessionRecord
+        self, session: SessionRecord, *, allow_removed: bool = False
     ) -> tuple[WorkspaceRecord, Path | None, str | None]:
         """Resolve a retained action to shared source and its private runtime.
 
@@ -458,7 +458,6 @@ class TaskWorkflow:
                 "Wait for the isolated session's active task before "
                 "applying or undoing."
             )
-        self.isolated_sync.synchronize(workspace.workspace_id)
         with self.store.connection() as con:
             binding = con.execute(
                 "SELECT source_workspace_id FROM workspaces WHERE workspace_id=?",
@@ -472,6 +471,13 @@ class TaskWorkflow:
             or source.checkout_id != workspace.checkout_id
         ):
             raise ValueError("The isolated workspace's shared checkout is unavailable.")
+        if workspace.state == "removed":
+            if allow_removed:
+                # Undo uses the retained published batch's exact identities;
+                # no private files or runtime remain necessary after close.
+                return source, None, None
+            raise ValueError("The isolated proposal's private workspace was removed.")
+        self.isolated_sync.synchronize(workspace.workspace_id)
         return source, Path(workspace.canonical_path), workspace.workspace_id
 
     def apply(
@@ -499,6 +505,20 @@ class TaskWorkflow:
             if session is None:
                 raise ValueError("Apply currently requires a shared-session task.")
             workspace, runtime_root, _ = self._publication_workspace(session)
+            sensitive_paths: tuple[str, ...] = ()
+            if runtime_root is not None:
+                with self.store.connection() as con:
+                    private = con.execute(
+                        "SELECT source_manifest_json FROM isolated_workspaces "
+                        "WHERE workspace_id=?",
+                        (session.workspace_id,),
+                    ).fetchone()
+                assert private is not None
+                sensitive_paths = tuple(
+                    path
+                    for path, entry in json.loads(private[0]).items()
+                    if entry.get("screened")
+                )
             root = Path(workspace.canonical_path)
             files = self._merge_proposal(root, decode_files(row["proposal_json"]))
 
@@ -512,7 +532,7 @@ class TaskWorkflow:
                 root,
                 files,
                 runtime_root=runtime_root,
-                suppress_output=runtime_root is not None,
+                sensitive_paths=sensitive_paths,
             )
             if failure is not None:
                 raise ValueError(failure)
@@ -619,7 +639,7 @@ class TaskWorkflow:
         if session is None:
             raise ValueError("Apply and undo currently require a shared-session task.")
         workspace, runtime_root, isolated_workspace_id = self._publication_workspace(
-            session
+            session, allow_removed=undo
         )
         root = Path(workspace.canonical_path)
         files = prepared if prepared is not None else decode_files(row["proposal_json"])

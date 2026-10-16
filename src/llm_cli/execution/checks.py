@@ -778,6 +778,7 @@ def check_retained_proposal(
     *,
     runtime_root: Path | None = None,
     suppress_output: bool = False,
+    sensitive_paths: tuple[str, ...] = (),
 ) -> str | None:
     """Refresh required evidence for a manual apply's captured candidate.
 
@@ -801,6 +802,7 @@ def check_retained_proposal(
         workflow.publisher.lock,
         runtime_root=runtime_root,
         suppress_output=suppress_output,
+        sensitive_paths=sensitive_paths,
     )
     outcome = runner.gate()
     return outcome.content if outcome else None

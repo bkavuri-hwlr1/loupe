@@ -73,7 +73,8 @@ async def prepare(service: Any, root: Path) -> tuple[dict[str, str], Path]:
                                 sys.executable,
                                 "-c",
                                 "from pathlib import Path; "
-                                    "assert 'value = 2' in Path('a.py').read_text(); "
+                                "print('CHECK_DETAIL: validating a.py'); "
+                                "assert 'value = 2' in Path('a.py').read_text(); "
                                 f"assert Path('.env').read_text() == {SECRET!r}; "
                                 "print(Path('.env').read_text())",
                             ]
@@ -157,6 +158,49 @@ def test_held_isolated_apply_refuses_overlapping_shared_change(
             assert (root / "a.py").read_text() == remote
             row = service.workflow.get("held")
             assert row is not None and row["status"] == "awaiting_review"
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
+
+
+def test_closed_held_proposal_applies_cleans_private_runtime_and_can_undo(
+    tmp_path: Path, repository_factory: Any, service_factory: Any
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": BASE, ".gitignore": ".env\n"})
+        (root / ".env").write_text(SECRET)
+        service = service_factory(tmp_path)
+        creds, private = await prepare(service, root)
+        workspace_id = service.store.get_session(creds["session_id"]).workspace_id
+        # A new shared source file invalidates the retained check evidence,
+        # exercising the value-aware check path during manual apply too.
+        (root / "outside.txt").write_text("new shared source\n")
+        await service.handle(_request("session.close", creds))
+        assert private.exists() and (private / ".env").read_text() == SECRET
+        service.close()
+        service = service_factory(tmp_path)
+        service.initialize()
+        try:
+            applied = await service.handle(_request("task.apply", {"task_id": "held"}))
+            assert applied["state"] == "published"
+            assert (root / "a.py").read_text() == PROPOSAL
+            assert not private.exists()
+            assert service.store.get_workspace(workspace_id).state == "removed"
+            assert not list(service.isolated_workspaces.managed_root.rglob(".env"))
+            with service.store.connection() as con:
+                outputs = con.execute(
+                    "SELECT output FROM check_runs WHERE task_id='held'"
+                ).fetchall()
+            assert len(outputs) >= 2
+            assert all("CHECK_DETAIL: validating a.py" in row[0] for row in outputs)
+            assert all(SECRET not in row[0] for row in outputs)
+            undone = await service.handle(_request("task.undo", {"task_id": "held"}))
+            assert undone["state"] == "published"
+            assert (root / "a.py").read_text() == BASE
+            assert (root / ".env").read_text() == SECRET
+            assert (root / "outside.txt").read_text() == "new shared source\n"
+            assert not private.exists()
         finally:
             service.close()
 
