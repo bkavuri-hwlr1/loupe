@@ -74,14 +74,11 @@ def env(
     with store.connection() as con:
         con.execute("UPDATE sessions SET state='active'")
         con.execute(
-            "INSERT INTO workspaces(workspace_id,checkout_id,kind,mode,state,canonical_path,source_workspace_id,created_at,updated_at) VALUES('isolated',?,'linked_worktree','isolated','active',?,?,0,0)",
+            "INSERT INTO workspaces(workspace_id,checkout_id,kind,mode,state,"
+            "canonical_path,source_workspace_id,created_at,updated_at) "
+            "VALUES('isolated',?,'linked_worktree','isolated','active',?,?,0,0)",
             (checkout.checkout_id, str(local), workspace.workspace_id),
         )
-        # Temporary fixture schema until dependency migration21 is available.
-        con.executescript("""
-        CREATE TABLE IF NOT EXISTS isolated_sync_state(workspace_id TEXT PRIMARY KEY,manifest_json TEXT NOT NULL,source_sequence INTEGER NOT NULL,runtime_paths_json TEXT NOT NULL,generation INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS isolated_sync_journal(workspace_id TEXT NOT NULL,sequence INTEGER NOT NULL,generation INTEGER NOT NULL,manifest_json TEXT NOT NULL,steps_json TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(workspace_id,generation));
-        """)
         sequence = int(
             con.execute(
                 "SELECT next_event_sequence FROM checkout_heads WHERE checkout_id=?",

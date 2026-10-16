@@ -56,11 +56,17 @@ class SharedCoordinationContext:
     """
 
     def __init__(
-        self, store: ControlStore, session_id: str, scopes: Sequence[str]
+        self,
+        store: ControlStore,
+        session_id: str,
+        scopes: Sequence[str],
+        *,
+        scan_external: bool = True,
     ) -> None:
         self.store = store
         self.session_id = session_id
         self.scopes = normalize_scopes(scopes)
+        self.scan_external = scan_external
         self._last_sequence: int | None = None
         # Whether the last outside-edit scan failed, and an undelivered notice.
         self._scan_failing = False
@@ -72,7 +78,8 @@ class SharedCoordinationContext:
         ):
             raise _too_large("the saved coordination cursor is invalid")
         try:
-            ExternalWorkspaceScanner(self.store).scan_session(self.session_id)
+            if self.scan_external:
+                ExternalWorkspaceScanner(self.store).scan_session(self.session_id)
         except (LlmCoordError, OSError, ValueError) as exc:
             # Outside-edit notices are advisory and must never fail the model
             # turn. Say so once per failure run; exact-base checks still guard
@@ -93,10 +100,16 @@ class SharedCoordinationContext:
                 SELECT s.checkout_id, s.workspace_id, s.state AS session_state,
                     s.workspace_mode, w.checkout_id AS workspace_checkout_id,
                     w.kind, w.mode, w.state AS workspace_state,
-                    w.workspace_epoch, w.workspace_revision,
+                    COALESCE(source.workspace_epoch,w.workspace_epoch) AS workspace_epoch,
+                    COALESCE(source.workspace_revision,w.workspace_revision) AS workspace_revision,
+                    w.source_workspace_id, source.state AS source_state,
+                    source.kind AS source_kind, source.mode AS source_mode,
+                    source.checkout_id AS source_checkout_id,
                     c.path_case_insensitive, h.next_event_sequence
                 FROM sessions AS s
                 JOIN workspaces AS w ON w.workspace_id = s.workspace_id
+                LEFT JOIN workspaces AS source
+                    ON source.workspace_id = w.source_workspace_id
                 JOIN checkouts AS c ON c.checkout_id = s.checkout_id
                 JOIN checkout_heads AS h ON h.checkout_id = s.checkout_id
                 WHERE s.session_id = ?
@@ -285,17 +298,32 @@ class SharedCoordinationContext:
                 ErrorCode.SESSION_NOT_ACTIVE,
                 "live coordination requires an active or disconnected session",
             )
+        shared = (
+            binding["workspace_mode"] == "shared"
+            and binding["mode"] == "shared"
+            and binding["kind"] == "shared_checkout"
+        )
+        isolated = (
+            binding["workspace_mode"] == "isolated"
+            and binding["mode"] == "isolated"
+            and binding["kind"] == "linked_worktree"
+            and binding["source_state"] == "active"
+            and binding["source_kind"] == "shared_checkout"
+            and binding["source_mode"] == "shared"
+            and binding["source_checkout_id"] == binding["checkout_id"]
+        )
         if (
-            binding["workspace_mode"] != "shared"
-            or binding["mode"] != "shared"
-            or binding["kind"] != "shared_checkout"
+            not (shared or isolated)
             or binding["workspace_state"] != "active"
             or binding["workspace_checkout_id"] != binding["checkout_id"]
         ):
             raise LlmCoordError(
                 ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
-                "the session's shared workspace binding is unavailable",
+                "the session's source workspace binding is unavailable",
             )
+        publication_workspace = (
+            binding["source_workspace_id"] if isolated else binding["workspace_id"]
+        )
         pending = connection.execute(
             """
             SELECT 1 FROM workspace_batches WHERE workspace_id = ?
@@ -305,7 +333,7 @@ class SharedCoordinationContext:
                 AND operation_state = 'prepared'
             LIMIT 1
             """,
-            (binding["workspace_id"], binding["workspace_id"]),
+            (publication_workspace, publication_workspace),
         ).fetchone()
         if pending is not None:
             raise LlmCoordError(
