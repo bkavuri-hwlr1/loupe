@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from llm_cli.agent.shared_tools import SharedToolBroker
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace import batches
 from llm_cli.workspace.batches import BatchFile, SharedBatchPublisher
@@ -711,3 +712,27 @@ def test_parent_swap_at_delete_cannot_remove_outside_file(
         == "operator_attention"
     )
     assert (outside / "gone").read_bytes() == b"outside sentinel"
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_delete_refuses_to_publish_over_an_edit_after_model_read(
+    batch_env: BatchEnvironment, partial: bool
+) -> None:
+    env = batch_env
+    target = env.repository / "a.txt"
+    target.write_text("first line\nsecond line\n")
+    broker = SharedToolBroker(worktree=env.repository, scopes=("*",))
+    options: dict[str, object] = {"path": "a.txt"}
+    if partial:
+        options.update(start_line=1, end_line=1)
+    assert not broker.invoke("read_file", options).is_error
+    target.write_text("user saved a newer version\n")
+    current = identify_path(target)
+    assert not broker.invoke("delete_file", {"path": "a.txt"}).is_error
+    published = env.publisher.publish(
+        "stale-delete", "first", broker.candidates(), ("*",)
+    )
+    assert published.state == "diverged"
+    assert identify_path(target) == current
+    assert target.read_text() == "user saved a newer version\n"
+    assert _events(env) == 0
