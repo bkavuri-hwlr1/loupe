@@ -209,7 +209,7 @@ class CommandRunner:
                 remaining=_CAPTURE_BYTES,
                 cancelled=self.cancelled,
                 on_output=(
-                    None
+                    (lambda text: None)
                     if self.suppress_output
                     else lambda text: emit(
                         "command.output", {"run_id": run_id, "text": text}

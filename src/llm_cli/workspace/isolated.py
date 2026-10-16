@@ -414,17 +414,27 @@ def copy_runtime_file(source: Path, target: Path, entry: HydrationEntry) -> None
                 raise _error("runtime path changed while hydration copied it")
 
 
+def copy_pinned_runtime_file(source: Path, target: Path, relative: str) -> None:
+    """Copy a pinned runtime input privately, independent of later ignore edits."""
+    with _source(source, relative) as descriptor:
+        before = os.fstat(descriptor)
+        body = _read(descriptor, _MAX_SOURCE_FILE)
+        with _parent(target, relative, create=True) as (parent, name):
+            _write_body(parent, name, body, stat.S_IMODE(before.st_mode) & 0o600)
+        if _evidence(before) != _evidence(os.fstat(descriptor)):
+            raise _error("isolated runtime changed during command snapshot")
+        with _parent(source, relative) as (parent, name):
+            if _evidence(before) != _evidence(
+                os.stat(name, dir_fd=parent, follow_symlinks=False)
+            ):
+                raise _error("isolated runtime path changed during command snapshot")
+
+
 def copy_runtime_files(source: Path, target: Path, paths: tuple[str, ...]) -> None:
     """Re-copy explicitly hydrated files into a private disposable command tree."""
     register_runtime_paths(target, paths)
     for relative in paths:
-        with _source(source, relative) as descriptor:
-            before = os.fstat(descriptor)
-            body = _read(descriptor, _MAX_SOURCE_FILE)
-            with _parent(target, relative, create=True) as (parent, name):
-                _write_body(parent, name, body, stat.S_IMODE(before.st_mode) & 0o700)
-            if _evidence(before) != _evidence(os.fstat(descriptor)):
-                raise _error("isolated runtime changed during command snapshot")
+        copy_pinned_runtime_file(source, target, relative)
 
 
 class IsolatedWorkspaceManager:
@@ -778,7 +788,15 @@ class IsolatedWorkspaceManager:
                         "isolated creation"
                     )
                 fresh = plan_hydration(root, approved_secret_paths=approved_secrets)
-                if fresh != plan:
+                if not fresh.complete or [
+                    entry
+                    for entry in fresh.entries
+                    if entry.action != "exclude_administration"
+                ] != [
+                    entry
+                    for entry in plan.entries
+                    if entry.action != "exclude_administration"
+                ]:
                     raise _error("runtime inventory changed during isolated creation")
                 if (
                     run_git(
