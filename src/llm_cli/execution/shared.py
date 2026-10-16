@@ -619,7 +619,7 @@ class SharedTaskExecutionRunner:
                     gave_up = not self._catch_up(
                         task, claim, broker, checker.gate if checked else None
                     )
-                    if not gave_up:
+                    if not gave_up or not isolated:
                         files = candidate_files()
                     self.workflow.retain(
                         task.task_id, task.attempt, execution.execution_id, files
@@ -676,7 +676,7 @@ class SharedTaskExecutionRunner:
                     hold = (
                         stopped
                         or incomplete
-                        or gave_up
+                        or (isolated and gave_up)
                         or bool(
                             files
                             and (
