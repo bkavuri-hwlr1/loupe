@@ -849,3 +849,71 @@ def test_metadata_binary_read_supports_full_size_opaque_replacement(
     )
     assert not write.is_error, write.content
     assert broker.candidates()[0].original == body
+
+
+@pytest.mark.parametrize("read_kind", ["partial", "full", "binary", "symlink"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_delete_keeps_last_read_base_after_concurrent_change(
+    checkout: Path, read_kind: str, resume: bool
+) -> None:
+    path = checkout / "docs/guide.md"
+    broker = _broker(checkout)
+    if read_kind == "symlink":
+        path.unlink()
+        path.symlink_to("first.md")
+        read = broker.invoke("read_symlink", {"path": "docs/guide.md"})
+    elif read_kind == "binary":
+        path.write_bytes(b"\x00original")
+        read = broker.invoke("read_binary", {"path": "docs/guide.md"})
+    else:
+        path.write_text("first line\nsecond line\n")
+        options: dict[str, object] = {"path": "docs/guide.md"}
+        if read_kind == "partial":
+            options["start_line"] = 1
+            options["end_line"] = 1
+        read = broker.invoke("read_file", options)
+    assert not read.is_error, read.content
+    original = identify_path(path)
+    if resume:
+        restored = _broker(checkout)
+        restored.restore_usage(broker.usage_snapshot())
+        broker = restored
+    if read_kind == "symlink":
+        path.unlink()
+        path.symlink_to("second.md")
+    else:
+        path.write_bytes(
+            b"\x00concurrent" if read_kind == "binary" else b"concurrent edit\n"
+        )
+    concurrent = identify_path(path)
+    deleted = broker.invoke("delete_file", {"path": "docs/guide.md"})
+    assert not deleted.is_error, deleted.content
+    (candidate,) = broker.candidates()
+    assert candidate.base == original
+    assert candidate.content is None
+    assert candidate.base != concurrent
+    report = broker.reconcile()
+    if read_kind in {"binary", "symlink"}:
+        assert report.unmerged == ("docs/guide.md",)
+        assert broker.candidates()[0].base == original
+    else:
+        assert report.dropped == ("docs/guide.md",)
+        assert broker.candidates() == ()
+    assert identify_path(path) == concurrent
+
+
+def test_explicit_read_refresh_authorizes_deletion_of_refreshed_base(
+    checkout: Path,
+) -> None:
+    broker = _broker(checkout)
+    assert not broker.invoke("read_file", {"path": "docs/guide.md"}).is_error
+    path = checkout / "docs/guide.md"
+    path.write_text("concurrent edit\n")
+    refreshed = broker.invoke("read_file", {"path": "docs/guide.md", "refresh": True})
+    assert not refreshed.is_error and "concurrent edit" in refreshed.content
+    assert not broker.invoke("delete_file", {"path": "docs/guide.md"}).is_error
+    (candidate,) = broker.candidates()
+    assert candidate.base == identify_path(path)
+    assert not broker.invoke(
+        "finish_task", {"answer": "Deleted the requested file."}
+    ).is_error
