@@ -109,6 +109,8 @@ _MAX_URL_CHARACTERS = 2_048
 _REPAIR_TOOLS = frozenset(
     {
         "write_file",
+        "write_binary",
+        "write_symlink",
         "apply_patch",
         "create_directory",
         "delete_file",
@@ -1070,6 +1072,18 @@ class ToolBroker:
 
     # -- write tools -----------------------------------------------------
 
+    def _read_binary(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        return _error("binary tools require a coordinated workspace")
+
+    def _write_binary(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        return _error("binary tools require a coordinated workspace")
+
+    def _read_symlink(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        return _error("symlink tools require a coordinated workspace")
+
+    def _write_symlink(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        return _error("symlink tools require a coordinated workspace")
+
     def _write_file(self, arguments: Mapping[str, object]) -> ToolOutcome:
         relative = normalize_changed_path(_string(arguments, "path"))
         if relative in self._partial_reads:
@@ -1895,6 +1909,10 @@ def _visible(text: str) -> str:
 
 
 _HANDLERS: Mapping[str, Callable[[ToolBroker, Mapping[str, object]], ToolOutcome]] = {
+    "read_binary": ToolBroker._read_binary,
+    "write_binary": ToolBroker._write_binary,
+    "read_symlink": ToolBroker._read_symlink,
+    "write_symlink": ToolBroker._write_symlink,
     "run_check": ToolBroker._run_check,
     "run_command": ToolBroker._run_command,
     "create_directory": ToolBroker._create_directory,
@@ -1989,9 +2007,38 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
         {"path": _TEXT},
         ["path"],
     ),
+    "read_binary": _schema(
+        "read_binary",
+        "Read a bounded source file as base64, retaining its exact base "
+        "for write_binary. Set metadata_only=true to inspect size/identity and "
+        "authorize opaque replacement without returning base64 bytes.",
+        {"path": _TEXT, "metadata_only": {"type": "boolean"}},
+        ["path"],
+    ),
+    "write_binary": _schema(
+        "write_binary",
+        "Stage a bounded binary replacement from strict base64. Read existing "
+        "files with read_binary first. Binary changes never merge.",
+        {"path": _TEXT, "content_base64": _TEXT},
+        ["path", "content_base64"],
+    ),
+    "read_symlink": _schema(
+        "read_symlink",
+        "Read the symlink target without following it, retaining its exact base.",
+        {"path": _TEXT},
+        ["path"],
+    ),
+    "write_symlink": _schema(
+        "write_symlink",
+        "Create or retarget a symlink to a relative path within scope. Read an "
+        "existing link with read_symlink first. Absolute, escaping, protected, "
+        "and chained targets are refused.",
+        {"path": _TEXT, "target": _TEXT},
+        ["path", "target"],
+    ),
     "delete_file": _schema(
         "delete_file",
-        "Delete one regular UTF-8 source file within scope.",
+        "Delete one regular source file or symlink within scope without following it.",
         {"path": _TEXT},
         ["path"],
     ),

@@ -10,12 +10,21 @@ from __future__ import annotations
 
 import hashlib
 import os
+import posixpath
 import stat
 from contextlib import suppress
 from pathlib import Path
 
 from llm_cli.coordination.scopes import normalize_changed_path
-from llm_cli.workspace.identity import EXECUTABLE_MODE, REGULAR_MODE
+from llm_cli.workspace.identity import (
+    EXECUTABLE_MODE,
+    REGULAR_MODE,
+    SYMLINK_MODE,
+    FileIdentity,
+    ObjectKind,
+    content_identity,
+    read_identified_path,
+)
 
 MAX_SHARED_TEXT_BYTES = 256 * 1024
 
@@ -100,6 +109,115 @@ def workspace_target(checkout_root: Path, relative_path: str) -> Path:
     return target
 
 
+def read_candidate_path(
+    path: Path, *, max_bytes: int = MAX_SHARED_TEXT_BYTES
+) -> tuple[FileIdentity, bytes | None]:
+    """Capture ordinary bytes or the link itself, never its referent."""
+    identity, content = read_identified_path(path, max_bytes=max_bytes)
+    if identity.kind is ObjectKind.SYMLINK:
+        content = os.fsencode(os.readlink(path))
+        if (
+            len(content) > max_bytes
+            or content_identity(ObjectKind.SYMLINK, SYMLINK_MODE, content)
+            != identity.digest
+            or read_identified_path(path)[0] != identity
+        ):
+            raise WorkspaceBrokerError("symlink changed during observation")
+    return identity, content
+
+
+def validate_symlink_target(root: Path, relative_path: str, content: bytes) -> str:
+    """Validate a relative link without following any part of its destination."""
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WorkspaceBrokerError("symlink target must be UTF-8") from exc
+    if len(content) > 1000:
+        raise WorkspaceBrokerError("symlink target exceeds the 1000-byte path limit")
+    if not text or "\x00" in text or "\\" in text or text.startswith("/"):
+        raise WorkspaceBrokerError("symlink target must be a relative contained path")
+    destination = posixpath.normpath(
+        posixpath.join(posixpath.dirname(relative_path), text)
+    )
+    if destination == "." or destination == relative_path:
+        raise WorkspaceBrokerError("symlink cannot target itself or the checkout root")
+    try:
+        destination = normalize_changed_path(destination)
+    except ValueError as exc:
+        raise WorkspaceBrokerError(
+            "symlink target escapes the checkout or a protected path"
+        ) from exc
+    from llm_cli.agent.source_policy import _private_path
+
+    if _private_path(destination) or any(
+        part in {".loupe", ".llm-coord", ".codex", ".agents"}
+        for part in Path(destination).parts
+    ):
+        raise WorkspaceBrokerError("symlink target is a protected path")
+    target = root
+    for part in Path(destination).parts:
+        target /= part
+        if target.is_symlink():
+            raise WorkspaceBrokerError("symlink target cannot traverse another symlink")
+        if (target / ".git").exists():
+            raise WorkspaceBrokerError(
+                "symlink target cannot enter a nested repository"
+            )
+    return destination
+
+
+def atomic_replace_symlink(
+    *,
+    checkout_root: Path,
+    git_common_dir: Path,
+    relative_path: str,
+    content: bytes,
+    publication_id: str,
+    expected_base: FileIdentity | None = None,
+) -> None:
+    """Stage an exact link outside the checkout and install without following it."""
+    validate_symlink_target(checkout_root, relative_path, content)
+    target = workspace_target(checkout_root, relative_path)
+    before, _ = read_candidate_path(target)
+    if expected_base is not None and before != expected_base:
+        raise WorkspaceBrokerError("symlink base changed before staging")
+    if before.kind not in {ObjectKind.ABSENT, ObjectKind.SYMLINK}:
+        raise WorkspaceBrokerError(
+            "symlink replacement requires an absent path or symlink"
+        )
+    stage_root = git_common_dir / "llm-coord-stage"
+    stage_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _require_private_directory(stage_root)
+    if stage_root.stat().st_dev != target.parent.stat().st_dev:
+        raise WorkspaceBrokerError("symlink staging is not on the checkout filesystem")
+    temporary = stage_root / f"{publication_id}.tmp"
+    if temporary.is_symlink():
+        if os.fsencode(os.readlink(temporary)) != content:
+            raise WorkspaceBrokerError("symlink staging has an unrecognized target")
+        temporary.unlink()
+    elif temporary.exists():
+        raise WorkspaceBrokerError("symlink staging path has an unexpected type")
+    parent_fd = _open_publication_parent(checkout_root, relative_path)
+    try:
+        os.symlink(os.fsdecode(content), temporary)
+        _fsync_directory(stage_root)
+        workspace_target(checkout_root, relative_path)
+        validate_symlink_target(checkout_root, relative_path, content)
+        if (
+            read_candidate_path(target)[0] != before
+            or os.fstat(parent_fd).st_ino != target.parent.stat().st_ino
+        ):
+            raise WorkspaceBrokerError("symlink target changed during staging")
+        os.replace(temporary, target.name, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+        raise
+    finally:
+        os.close(parent_fd)
+
+
 def atomic_replace_regular_file(
     *,
     checkout_root: Path,
@@ -109,6 +227,7 @@ def atomic_replace_regular_file(
     mode: str,
     publication_id: str,
     permissions: int | None = None,
+    expected_base: FileIdentity | None = None,
 ) -> None:
     """Write one fully prepared regular file then atomically install it.
 
@@ -161,11 +280,18 @@ def atomic_replace_regular_file(
         raise WorkspaceBrokerError(
             "a prior publication with this ID still needs recovery"
         ) from None
+    parent_fd: int | None = None
     try:
         with os.fdopen(descriptor, "wb") as handle:
+            parent_fd = _open_publication_parent(checkout_root, relative_path)
             handle.write(content)
             handle.flush()
             workspace_target(checkout_root, relative_path)
+            if (
+                expected_base is not None
+                and read_candidate_path(target)[0] != expected_base
+            ):
+                raise WorkspaceBrokerError("file base changed during staging")
             try:
                 current = target.lstat()
             except FileNotFoundError:
@@ -213,11 +339,59 @@ def atomic_replace_regular_file(
                 )
             ):
                 raise WorkspaceBrokerError("publication target changed during staging")
-            os.replace(temporary, target)
-        _fsync_directory(target.parent)
+            current_parent = target.parent.stat()
+            opened_parent = os.fstat(parent_fd)
+            if (current_parent.st_dev, current_parent.st_ino) != (
+                opened_parent.st_dev,
+                opened_parent.st_ino,
+            ):
+                raise WorkspaceBrokerError("publication parent changed during staging")
+            os.replace(temporary, target.name, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
     except BaseException:
         with suppress(FileNotFoundError):
             temporary.unlink()
+        raise
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
+def atomic_delete_file(root: Path, relative_path: str, expected: FileIdentity) -> None:
+    """Delete the observed leaf through pinned real parents, never its referent."""
+    target = workspace_target(root, relative_path)
+    parent_fd = _open_publication_parent(root, relative_path)
+    try:
+        if read_candidate_path(target)[0] != expected:
+            raise WorkspaceBrokerError("file base changed before deletion")
+        workspace_target(root, relative_path)
+        current_parent = target.parent.stat()
+        opened_parent = os.fstat(parent_fd)
+        if (current_parent.st_dev, current_parent.st_ino) != (
+            opened_parent.st_dev,
+            opened_parent.st_ino,
+        ):
+            raise WorkspaceBrokerError("publication parent changed before deletion")
+        os.unlink(target.name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _open_publication_parent(root: Path, relative_path: str) -> int:
+    """Pin every parent component without following replacement directory links."""
+    parts = Path(normalize_changed_path(relative_path)).parts[:-1]
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in parts:
+            child = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
+            )
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
         raise
 
 

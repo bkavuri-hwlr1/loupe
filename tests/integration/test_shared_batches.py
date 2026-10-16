@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from llm_cli.agent.shared_tools import SharedToolBroker
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace import batches
 from llm_cli.workspace.batches import BatchFile, SharedBatchPublisher
@@ -440,4 +441,298 @@ def test_unreadable_or_nontext_preflight_is_durable_divergence(
     assert result.state == "diverged"
     assert (env.repository / "a.txt").read_bytes() == b"old a\n"
     assert (env.repository / "docs/b.txt").read_bytes() == b"\xff"
+    assert _events(env) == 0
+
+
+@pytest.mark.parametrize(
+    "operation", ["link_create", "link_retarget", "link_delete", "binary"]
+)
+def test_typed_publication_crash_recovery_and_reverse_batch(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    from llm_cli.workspace.batches import result_identity
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    path = env.repository / "typed"
+    original: bytes | None = None
+    if operation in {"link_retarget", "link_delete"}:
+        path.symlink_to("a.txt")
+        original = b"a.txt"
+    elif operation == "binary":
+        original = b"\x00\xffbefore"
+        path.write_bytes(original)
+    content = (
+        None
+        if operation == "link_delete"
+        else b"\xff\x00after"
+        if operation == "binary"
+        else b"docs/b.txt"
+    )
+    mode = (
+        ""
+        if content is None
+        else REGULAR_MODE
+        if operation == "binary"
+        else SYMLINK_MODE
+    )
+    candidate = BatchFile(
+        "typed",
+        identify_path(path),
+        content,
+        mode,
+        original,
+        binary=operation == "binary",
+    )
+    with monkeypatch.context() as patch:
+
+        def crash(*args: Any) -> None:
+            raise RuntimeError("crash before journal confirmation")
+
+        patch.setattr(env.publisher, "_confirm", crash)
+        with pytest.raises(RuntimeError):
+            env.publisher.publish("typed", "first", (candidate,), ("*",))
+    assert env.publisher.recover("typed")[0].state == "published"
+    assert identify_path(path) == result_identity(candidate)
+    inverse = BatchFile(
+        "typed",
+        result_identity(candidate),
+        original,
+        candidate.base.mode,
+        content,
+        binary=operation == "binary",
+    )
+    assert (
+        env.publisher.publish("undo-typed", "first", (inverse,), ("*",)).state
+        == "published"
+    )
+    assert identify_path(path) == candidate.base
+
+
+@pytest.mark.parametrize(
+    "target", [b"../outside", b"/tmp/outside", b".git/config", b"jump/file"]
+)
+def test_symlink_publisher_rejects_escaping_or_chained_targets(
+    batch_env: BatchEnvironment, target: bytes
+) -> None:
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    (env.repository / "jump").symlink_to(env.repository.parent)
+    item = BatchFile("link", ABSENT, target, SYMLINK_MODE)
+    with pytest.raises(WorkspaceBrokerError):
+        env.publisher.publish("escape", "first", (item,), ("*",))
+    assert not (env.repository / "link").is_symlink()
+
+
+def test_symlink_recovery_refuses_changed_target_parent(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    item = BatchFile("link", ABSENT, b"docs/b.txt", SYMLINK_MODE)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            batches,
+            "atomic_replace_symlink",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("crash")),
+        )
+        with pytest.raises(RuntimeError):
+            env.publisher.publish("link", "first", (item,), ("*",))
+    (env.repository / "docs").rename(env.repository / "old-docs")
+    (env.repository / "docs").symlink_to(env.repository.parent)
+    assert env.publisher.recover("link")[0].state == "operator_attention"
+    assert not (env.repository / "link").is_symlink()
+
+
+@pytest.mark.parametrize("kind", ["binary", "symlink"])
+def test_typed_late_base_race_never_overwrites_new_state(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    path = env.repository / "late"
+    if kind == "binary":
+        path.write_bytes(b"\x00before")
+        original = b"\x00before"
+        after = b"\xffafter"
+        mode = REGULAR_MODE
+        function = "atomic_replace_regular_file"
+    else:
+        path.symlink_to("a.txt")
+        original = b"a.txt"
+        after = b"docs/b.txt"
+        mode = SYMLINK_MODE
+        function = "atomic_replace_symlink"
+    item = BatchFile(
+        "late", identify_path(path), after, mode, original, binary=kind == "binary"
+    )
+    apply = getattr(batches, function)
+
+    def race(**kwargs: Any) -> None:
+        path.unlink()
+        if kind == "binary":
+            path.write_bytes(b"external edit")
+        else:
+            path.symlink_to("third-target")
+        apply(**kwargs)
+
+    monkeypatch.setattr(batches, function, race)
+    assert (
+        env.publisher.publish("late", "first", (item,), ("*",)).state
+        == "operator_attention"
+    )
+    if kind == "binary":
+        assert path.read_bytes() == b"external edit"
+    else:
+        assert path.readlink() == Path("third-target")
+    assert _events(env) == 0
+
+
+def test_symlink_parent_swap_during_staging_never_writes_outside(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import broker
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    outside = env.repository.parent / "outside"
+    outside.mkdir()
+    item = BatchFile("docs/link", ABSENT, b"b.txt", SYMLINK_MODE)
+    create = broker.os.symlink
+
+    def swap(source: Any, target: Any, *args: Any, **kwargs: Any) -> None:
+        create(source, target, *args, **kwargs)
+        if str(target).endswith(".tmp"):
+            (env.repository / "docs").rename(env.repository / "saved-docs")
+            create(outside, env.repository / "docs")
+
+    monkeypatch.setattr(broker.os, "symlink", swap)
+    assert (
+        env.publisher.publish("swap", "first", (item,), ("*",)).state
+        == "operator_attention"
+    )
+    assert list(outside.iterdir()) == []
+    assert not (env.repository / "saved-docs/link").is_symlink()
+
+
+def test_symlink_scope_and_protected_target_revalidated_on_recovery(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    item = BatchFile("docs/link", ABSENT, b"b.txt", SYMLINK_MODE)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            batches,
+            "atomic_replace_symlink",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("crash")),
+        )
+        with pytest.raises(RuntimeError):
+            env.publisher.publish("link", "first", (item,), ("docs/",))
+    # An ignored target is runtime-only even though the link text still fits scope.
+    (env.repository / ".gitignore").write_text("docs/b.txt\n")
+    # Tracked files remain source despite ignore patterns; make this one untracked.
+    from llm_cli.git.environment import run_git
+
+    run_git(env.repository, ["rm", "--cached", "docs/b.txt"])
+    assert env.publisher.recover("link")[0].state == "operator_attention"
+    assert not (env.repository / "docs/link").is_symlink()
+
+
+@pytest.mark.parametrize("kind", ["binary", "symlink"])
+def test_parent_swap_at_atomic_install_cannot_redirect_typed_write(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from llm_cli.workspace import broker
+    from llm_cli.workspace.identity import SYMLINK_MODE
+
+    env = batch_env
+    outside = env.repository.parent / "outside"
+    outside.mkdir()
+    (outside / "new").write_bytes(b"outside sentinel")
+    item = BatchFile(
+        "docs/new",
+        ABSENT,
+        b"b.txt" if kind == "symlink" else b"\x00binary",
+        SYMLINK_MODE if kind == "symlink" else REGULAR_MODE,
+        binary=kind == "binary",
+    )
+    install = broker.os.replace
+
+    def swap(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+        if str(source).endswith(".tmp") and "llm-coord-stage" in str(source):
+            (env.repository / "docs").rename(env.repository / "saved-docs")
+            (env.repository / "docs").symlink_to(outside)
+        install(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(broker.os, "replace", swap)
+    assert (
+        env.publisher.publish("install-race", "first", (item,), ("*",)).state
+        == "operator_attention"
+    )
+    assert (outside / "new").read_bytes() == b"outside sentinel"
+    assert not (outside / "new").is_symlink()
+
+
+@pytest.mark.parametrize("kind", ["binary", "symlink"])
+def test_parent_swap_at_delete_cannot_remove_outside_file(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from llm_cli.workspace import broker
+
+    env = batch_env
+    target = env.repository / "docs/gone"
+    if kind == "binary":
+        target.write_bytes(b"\x00before")
+        before = b"\x00before"
+    else:
+        target.symlink_to("b.txt")
+        before = b"b.txt"
+    outside = env.repository.parent / "outside"
+    outside.mkdir()
+    (outside / "gone").write_bytes(b"outside sentinel")
+    item = BatchFile(
+        "docs/gone", identify_path(target), None, "", before, binary=kind == "binary"
+    )
+    unlink = broker.os.unlink
+
+    def swap(path: Any, *args: Any, **kwargs: Any) -> None:
+        if str(path) == "gone" and "dir_fd" in kwargs:
+            (env.repository / "docs").rename(env.repository / "saved-docs")
+            (env.repository / "docs").symlink_to(outside)
+        unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(broker.os, "unlink", swap)
+    assert (
+        env.publisher.publish("delete-race", "first", (item,), ("*",)).state
+        == "operator_attention"
+    )
+    assert (outside / "gone").read_bytes() == b"outside sentinel"
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_delete_refuses_to_publish_over_an_edit_after_model_read(
+    batch_env: BatchEnvironment, partial: bool
+) -> None:
+    env = batch_env
+    target = env.repository / "a.txt"
+    target.write_text("first line\nsecond line\n")
+    broker = SharedToolBroker(worktree=env.repository, scopes=("*",))
+    options: dict[str, object] = {"path": "a.txt"}
+    if partial:
+        options.update(start_line=1, end_line=1)
+    assert not broker.invoke("read_file", options).is_error
+    target.write_text("user saved a newer version\n")
+    current = identify_path(target)
+    assert not broker.invoke("delete_file", {"path": "a.txt"}).is_error
+    published = env.publisher.publish(
+        "stale-delete", "first", broker.candidates(), ("*",)
+    )
+    assert published.state == "diverged"
+    assert identify_path(target) == current
+    assert target.read_text() == "user saved a newer version\n"
     assert _events(env) == 0

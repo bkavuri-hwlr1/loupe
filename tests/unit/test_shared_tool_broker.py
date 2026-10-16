@@ -709,3 +709,211 @@ def test_missing_path_exposes_invisible_characters_without_rewriting(
         broker.invoke("read_file", {"path": "src/ap\u200bp.py"}).content
         == "exact filename"
     )
+
+
+@pytest.mark.parametrize("body", [b"\x00\xffbinary", b"ascii binary payload"])
+def test_binary_edits_resume_without_merging(checkout: Path, body: bytes) -> None:
+    path = checkout / "docs/data.bin"
+    path.write_bytes(body)
+    broker = _broker(checkout)
+    assert broker.invoke(
+        "write_binary", {"path": "docs/data.bin", "content_base64": "Yg=="}
+    ).is_error
+    assert not broker.invoke("read_binary", {"path": "docs/data.bin"}).is_error
+    assert not broker.invoke(
+        "write_binary", {"path": "docs/data.bin", "content_base64": "Yg=="}
+    ).is_error
+    restored = _broker(checkout)
+    restored.restore_usage(broker.usage_snapshot())
+    assert restored.candidates()[0].binary
+    assert "Binary change" in restored.invoke("read_diff", {}).content
+    path.write_bytes(b"a concurrent replacement")
+    assert restored.reconcile().unmerged == ("docs/data.bin",)
+    assert restored.candidates()[0].original == body
+    assert restored.candidates()[0].content == b"b"
+
+
+def test_binary_limits_and_truncated_read_preserve_observation(checkout: Path) -> None:
+    (checkout / "docs/data.bin").write_bytes(b"x" * 100)
+    broker = _broker(checkout, limits=ExecutionLimits(max_tool_output_bytes=20))
+    assert (
+        "truncated" in broker.invoke("read_binary", {"path": "docs/data.bin"}).content
+    )
+    assert broker.invoke(
+        "write_binary", {"path": "docs/data.bin", "content_base64": "eA=="}
+    ).is_error
+    assert broker.invoke(
+        "write_binary", {"path": "docs/new.bin", "content_base64": "not base64"}
+    ).is_error
+    assert broker.invoke(
+        "write_binary",
+        {"path": "docs/new.bin", "content_base64": "A" * (MAX_SHARED_TEXT_BYTES * 2)},
+    ).is_error
+    assert broker.candidates() == ()
+
+
+def test_symlink_create_retarget_delete_are_private(checkout: Path) -> None:
+    from llm_cli.workspace.identity import SYMLINK_MODE, ObjectKind
+
+    broker = _broker(checkout)
+    assert not broker.invoke(
+        "write_symlink", {"path": "docs/link", "target": "guide.md"}
+    ).is_error
+    assert broker.candidates()[0].mode == SYMLINK_MODE
+    assert not (checkout / "docs/link").is_symlink()
+    assert broker.invoke("read_symlink", {"path": "docs/link"}).content == "guide.md"
+    restored = _broker(checkout)
+    restored.restore_usage(broker.usage_snapshot())
+    assert restored.candidates()[0].content == b"guide.md"
+    (checkout / "docs/link").symlink_to("guide.md")
+    broker = _broker(checkout)
+    assert broker.invoke(
+        "write_symlink", {"path": "docs/link", "target": "new.md"}
+    ).is_error
+    assert broker.invoke("read_symlink", {"path": "docs/link"}).content == "guide.md"
+    assert not broker.invoke(
+        "write_symlink", {"path": "docs/link", "target": "new.md"}
+    ).is_error
+    assert broker.candidates()[0].base.kind is ObjectKind.SYMLINK
+    assert broker.candidates()[0].original == b"guide.md"
+    assert "Symlink" in broker.invoke("read_diff", {}).content
+    broker = _broker(checkout)
+    assert not broker.invoke("delete_file", {"path": "docs/link"}).is_error
+    assert broker.candidates()[0].content is None
+    assert (checkout / "docs/link").is_symlink()
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/tmp/outside",
+        "../../outside",
+        "../src/app.py",
+        "../.git/config",
+        "../.env",
+        "link",
+    ],
+)
+def test_symlink_escape_or_out_of_scope_target_refused(
+    checkout: Path, target: str
+) -> None:
+    broker = _broker(checkout)
+    assert broker.invoke(
+        "write_symlink", {"path": "docs/link", "target": target}
+    ).is_error
+    assert broker.candidates() == ()
+
+
+def test_binary_and_link_tools_are_read_only_for_helpers(checkout: Path) -> None:
+    broker = _broker(checkout).read_only_view(ExecutionLimits())
+    assert "write_binary" not in broker.tool_names()
+    assert "write_symlink" not in broker.tool_names()
+    assert broker.invoke(
+        "write_binary", {"path": "docs/new", "content_base64": "eA=="}
+    ).is_error
+
+
+def test_escaping_existing_link_cannot_enter_an_undoable_candidate(
+    checkout: Path,
+) -> None:
+    (checkout / "docs/escape").symlink_to("../../outside")
+    broker = _broker(checkout)
+    assert broker.invoke("delete_file", {"path": "docs/escape"}).is_error
+    assert broker.candidates() == ()
+    assert not broker.invoke("read_symlink", {"path": "docs/escape"}).is_error
+    assert broker.invoke(
+        "write_symlink", {"path": "docs/escape", "target": "guide.md"}
+    ).is_error
+    assert broker.candidates() == ()
+
+
+def test_metadata_binary_read_supports_full_size_opaque_replacement(
+    checkout: Path,
+) -> None:
+    body = b"\x00" * MAX_SHARED_TEXT_BYTES
+    (checkout / "docs/data.bin").write_bytes(body)
+    broker = _broker(checkout)
+    read = broker.invoke(
+        "read_binary", {"path": "docs/data.bin", "metadata_only": True}
+    )
+    assert not read.is_error
+    assert json.loads(read.content)["bytes"] == MAX_SHARED_TEXT_BYTES
+    write = broker.invoke(
+        "write_binary",
+        {
+            "path": "docs/data.bin",
+            "content_base64": base64.b64encode(b"\xff" * MAX_SHARED_TEXT_BYTES).decode(
+                "ascii"
+            ),
+        },
+    )
+    assert not write.is_error, write.content
+    assert broker.candidates()[0].original == body
+
+
+@pytest.mark.parametrize("read_kind", ["partial", "full", "binary", "symlink"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_delete_keeps_last_read_base_after_concurrent_change(
+    checkout: Path, read_kind: str, resume: bool
+) -> None:
+    path = checkout / "docs/guide.md"
+    broker = _broker(checkout)
+    if read_kind == "symlink":
+        path.unlink()
+        path.symlink_to("first.md")
+        read = broker.invoke("read_symlink", {"path": "docs/guide.md"})
+    elif read_kind == "binary":
+        path.write_bytes(b"\x00original")
+        read = broker.invoke("read_binary", {"path": "docs/guide.md"})
+    else:
+        path.write_text("first line\nsecond line\n")
+        options: dict[str, object] = {"path": "docs/guide.md"}
+        if read_kind == "partial":
+            options["start_line"] = 1
+            options["end_line"] = 1
+        read = broker.invoke("read_file", options)
+    assert not read.is_error, read.content
+    original = identify_path(path)
+    if resume:
+        restored = _broker(checkout)
+        restored.restore_usage(broker.usage_snapshot())
+        broker = restored
+    if read_kind == "symlink":
+        path.unlink()
+        path.symlink_to("second.md")
+    else:
+        path.write_bytes(
+            b"\x00concurrent" if read_kind == "binary" else b"concurrent edit\n"
+        )
+    concurrent = identify_path(path)
+    deleted = broker.invoke("delete_file", {"path": "docs/guide.md"})
+    assert not deleted.is_error, deleted.content
+    (candidate,) = broker.candidates()
+    assert candidate.base == original
+    assert candidate.content is None
+    assert candidate.base != concurrent
+    report = broker.reconcile()
+    if read_kind in {"binary", "symlink"}:
+        assert report.unmerged == ("docs/guide.md",)
+        assert broker.candidates()[0].base == original
+    else:
+        assert report.dropped == ("docs/guide.md",)
+        assert broker.candidates() == ()
+    assert identify_path(path) == concurrent
+
+
+def test_explicit_read_refresh_authorizes_deletion_of_refreshed_base(
+    checkout: Path,
+) -> None:
+    broker = _broker(checkout)
+    assert not broker.invoke("read_file", {"path": "docs/guide.md"}).is_error
+    path = checkout / "docs/guide.md"
+    path.write_text("concurrent edit\n")
+    refreshed = broker.invoke("read_file", {"path": "docs/guide.md", "refresh": True})
+    assert not refreshed.is_error and "concurrent edit" in refreshed.content
+    assert not broker.invoke("delete_file", {"path": "docs/guide.md"}).is_error
+    (candidate,) = broker.candidates()
+    assert candidate.base == identify_path(path)
+    assert not broker.invoke(
+        "finish_task", {"answer": "Deleted the requested file."}
+    ).is_error

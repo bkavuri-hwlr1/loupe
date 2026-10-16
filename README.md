@@ -749,13 +749,17 @@ uv run llm-coord task events TASK_ID
 uv run llm-coord task watch TASK_ID --after SEQUENCE
 ```
 
-A batch supports at most 50 regular UTF-8 files, 256 KiB per file, and 4 MiB of
-retained original and candidate bytes per task. Missing parent directories can
-be staged within scope. Ignored runtime files
-and nested repositories are excluded from shared source tools; symlink edits
-and arbitrary shell commands remain unavailable. Named checks run in private
-snapshots with explicitly configured dependency setup. `validate_changes` checks scope and stale
-bases; it does not run program tests.
+A batch supports at most 50 paths, 256 KiB per regular file, and 4 MiB of
+retained original and candidate bytes per task. Shared tools can replace binary
+files using strict base64 and create, retarget, or delete contained relative
+symlinks. Binary and symlink edits retain exact bases and never merge after a
+base change. Link targets must remain within the claim; absolute, escaping,
+protected, ignored, and chained targets are refused. Missing parent directories
+can be staged within scope. Ignored runtime files and nested repositories are
+excluded from shared source tools. Named checks run in private snapshots with
+explicitly configured dependency setup. `validate_changes` checks scope and
+stale bases; it does not run program tests. See the
+[verified workflow guide](docs/verified-workflow.md) for the typed file tools.
 
 A successful batch advances the workspace by one revision and one checkout
 event, without changing HEAD, the index, or refs. A preflight conflict retains

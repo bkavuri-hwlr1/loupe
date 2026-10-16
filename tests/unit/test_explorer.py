@@ -194,7 +194,7 @@ def test_helper_reads_pending_edits_and_its_report_returns_to_the_agent(
 
     assert result.answer == "The guide was edited."
     (helper,) = provider.helper_sessions()
-    assert helper.tools == list(EXPLORER_TOOLS)
+    assert helper.tools == [*EXPLORER_TOOLS, "read_binary", "read_symlink"]
     assert helper.sent[0] == task
     read, search = helper.sent[1]  # type: ignore[misc]
     assert read.content == "edited guide\n"
@@ -852,7 +852,12 @@ def test_helper_uses_parent_command_approval_and_web_policy(
 
     assert not outcome.is_error
     (helper,) = provider.helper_sessions()
-    assert helper.tools == [*EXPLORER_TOOLS, "run_command", "web_fetch"]
+    assert helper.tools == [
+        *EXPLORER_TOOLS,
+        "run_command",
+        "web_fetch",
+        *(("read_binary", "read_symlink") if shared else ()),
+    ]
     command_result, web_result = helper.sent[1]  # type: ignore[misc]
     assert not command_result.is_error and "helper output" in command_result.content
     assert not web_result.is_error and "allowed page" in web_result.content
@@ -1022,9 +1027,15 @@ def test_read_only_view_refuses_mutations_checks_and_questions(
         command_approval="allow",
     )
     view = parent.read_only_view(parent.limits)
-    assert view.tool_names() == (*EXPLORER_TOOLS, "run_command")
+    assert view.tool_names() == (
+        *EXPLORER_TOOLS,
+        "run_command",
+        *(("read_binary", "read_symlink") if shared else ()),
+    )
     calls = {
         "write_file": {"path": "docs/guide.md", "content": "changed"},
+        "write_binary": {"path": "docs/data.bin", "content_base64": "AP8="},
+        "write_symlink": {"path": "docs/link", "target": "guide.md"},
         "apply_patch": {
             "path": "docs/guide.md",
             "old_text": "original",
@@ -1375,3 +1386,45 @@ def test_invalid_batch_read_cannot_refresh_a_pinned_source_observation(
     assert not outcomes[0].is_error and "original" in outcomes[0].content
     assert outcomes[1].is_error
     assert seen == original
+
+
+def test_shared_helper_reads_typed_overlay_without_authorizing_parent_edits(
+    checkout: Path,
+) -> None:
+    import base64
+
+    (checkout / "docs/existing.bin").write_bytes(b"\x00existing")
+    (checkout / "docs/existing-link").symlink_to("guide.md")
+    parent, _ = _shared(checkout)
+    assert not parent.invoke(
+        "write_binary", {"path": "docs/new.bin", "content_base64": "AP8="}
+    ).is_error
+    assert not parent.invoke(
+        "write_symlink", {"path": "docs/new-link", "target": "guide.md"}
+    ).is_error
+    view = parent.read_only_view(parent.limits)
+    assert view.invoke("read_binary", {"path": "docs/new.bin"}).content == "AP8="
+    assert view.invoke("read_symlink", {"path": "docs/new-link"}).content == "guide.md"
+    assert view.invoke(
+        "read_binary", {"path": "docs/existing.bin"}
+    ).content == base64.b64encode(b"\x00existing").decode("ascii")
+    assert (
+        view.invoke("read_symlink", {"path": "docs/existing-link"}).content
+        == "guide.md"
+    )
+    assert view.invoke(
+        "write_file", {"path": "docs/guide.md", "content": "forbidden"}
+    ).is_error
+    for broker in (view, parent):
+        assert broker.invoke(
+            "write_binary", {"path": "docs/existing.bin", "content_base64": "AP8="}
+        ).is_error
+        assert broker.invoke(
+            "write_symlink", {"path": "docs/existing-link", "target": "new.bin"}
+        ).is_error
+    assert (checkout / "docs/existing.bin").read_bytes() == b"\x00existing"
+    assert (checkout / "docs/existing-link").readlink() == Path("guide.md")
+    assert {item.relative_path for item in parent.candidates()} == {
+        "docs/new.bin",
+        "docs/new-link",
+    }

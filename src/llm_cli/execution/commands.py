@@ -24,7 +24,11 @@ from llm_cli.agent.source_policy import ensure_safe_content
 from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
-from llm_cli.execution.checks import source_snapshot, supervised_run
+from llm_cli.execution.checks import (
+    materialize_snapshot_file,
+    source_snapshot,
+    supervised_run,
+)
 from llm_cli.execution.sandbox import SandboxPolicy, uses_reaper, wrap
 from llm_cli.git.environment import run_git
 from llm_cli.ids import new_id
@@ -240,12 +244,8 @@ class CommandRunner:
                 if body is not None
             }
         for path, body in bodies.items():
-            if body is None:
-                continue
-            destination = candidate_target(target, path)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(body)
-            destination.chmod(0o755 if modes.get(path) == "100755" else 0o644)
+            if body is not None:
+                materialize_snapshot_file(target, path, body, modes[path])
         for file in sorted(
             files,
             key=lambda item: (
@@ -253,15 +253,9 @@ class CommandRunner:
                 item.relative_path,
             ),
         ):
-            destination = candidate_target(target, file.relative_path)
-            if file.mode == DIRECTORY_MODE:
-                destination.mkdir(parents=True, exist_ok=True)
-            elif file.content is None:
-                destination.unlink(missing_ok=True)
-            else:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(file.content)
-                destination.chmod(0o755 if file.mode == "100755" else 0o644)
+            materialize_snapshot_file(
+                target, file.relative_path, file.content, file.mode
+            )
 
     def _link_dependencies(self, source: Path) -> tuple[Path, ...]:
         """Expose ignored dependency folders read-only at their usual paths."""
