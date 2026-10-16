@@ -27,7 +27,10 @@ from llm_cli.daemon.service import DaemonService
 async def open_session(
     service: DaemonService, root: Path, model: str, mode: str = "isolated"
 ) -> tuple[dict[str, str], Path]:
-    credentials = {"session_id": model, "resume_secret": "fixture-session-secret"}
+    credentials = {
+        "session_id": model,
+        "resume_secret": "fixture-session-secret-" + model,
+    }
     opened = await service.handle(
         _request(
             "session.open",

@@ -34,6 +34,7 @@ from llm_cli.workspace.batches import (
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
     WorkspaceBrokerError,
+    atomic_delete_file,
     atomic_replace_regular_file,
     atomic_replace_symlink,
     load_candidate_content,
@@ -454,7 +455,8 @@ class IsolatedSynchronizer:
                         else 2
                         if step["after"]["kind"] == "absent"
                         else 1,
-                        len(Path(step["path"]).parts),
+                        (-1 if step["after"]["kind"] == "absent" else 1)
+                        * len(Path(step["path"]).parts),
                     ),
                 )
                 for ordinal, step in enumerate(ordered):
@@ -476,7 +478,11 @@ class IsolatedSynchronizer:
                         if before.kind is ObjectKind.DIRECTORY_MARKER:
                             target.rmdir()
                         else:
-                            target.unlink()
+                            atomic_delete_file(
+                                root=root,
+                                relative_path=step["path"],
+                                expected=before,
+                            )
                         _sync_parent(target)
                     elif after.kind is ObjectKind.DIRECTORY_MARKER:
                         target.mkdir(mode=0o700)
@@ -506,6 +512,7 @@ class IsolatedSynchronizer:
                             relative_path=step["path"],
                             content=body,
                             publication_id=f"isolated-link-{workspace_id}-{journal['generation']}-{ordinal}",
+                            expected_base=before,
                         )
                     else:
                         raise WorkspaceBrokerError(

@@ -100,8 +100,10 @@ class SharedCoordinationContext:
                 SELECT s.checkout_id, s.workspace_id, s.state AS session_state,
                     s.workspace_mode, w.checkout_id AS workspace_checkout_id,
                     w.kind, w.mode, w.state AS workspace_state,
-                    COALESCE(source.workspace_epoch,w.workspace_epoch) AS workspace_epoch,
-                    COALESCE(source.workspace_revision,w.workspace_revision) AS workspace_revision,
+                    COALESCE(source.workspace_epoch,w.workspace_epoch)
+                        AS workspace_epoch,
+                    COALESCE(source.workspace_revision,w.workspace_revision)
+                        AS workspace_revision,
                     w.source_workspace_id, source.state AS source_state,
                     source.kind AS source_kind, source.mode AS source_mode,
                     source.checkout_id AS source_checkout_id,

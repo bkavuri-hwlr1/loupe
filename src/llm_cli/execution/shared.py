@@ -290,6 +290,8 @@ class SharedTaskExecutionRunner:
 
             def candidate_files() -> tuple[BatchFile, ...]:
                 files = broker.candidates()
+                if row["agent_mode"] == "plan":
+                    return files
                 return (
                     self.isolated_sync.publication_files(workspace.workspace_id, files)
                     if isolated
