@@ -42,6 +42,7 @@ from llm_cli.ids import new_id
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.broker import validate_symlink_target
+from llm_cli.workspace.external import ExternalWorkspaceScanner
 from llm_cli.workspace.hydration import (
     HydrationEntry,
     _bounded_git,
@@ -260,7 +261,7 @@ def capture_source(root: Path, candidate_dir: Path) -> dict[str, dict[str, Any]]
     return manifest
 
 
-def source_fingerprint(root: Path) -> str:
+def source_fingerprint(root: Path, policy_paths: tuple[str, ...] = ()) -> str:
     """Pin config origins and full ignore/attribute/exclude file identities."""
     config = _passive(root, ["config", "--null", "--show-origin", "--list"])
     parts = config.split(b"\0")
@@ -286,6 +287,7 @@ def source_fingerprint(root: Path) -> str:
             paths.add(path if path.is_absolute() else root / path)
     config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     paths.update({config_home / "git/ignore", config_home / "git/attributes"})
+    paths.update(root / path for path in policy_paths)
     paths.update(
         root / path
         for path in _source_paths(root)
@@ -565,24 +567,37 @@ class IsolatedWorkspaceManager:
             # Cleanup requires every existing byte to be an expected creation
             # byte. User additions/changes, links, or changed primary runtime
             # make ownership ambiguous and therefore preserve the whole tree.
+            known_files = set(state.source_manifest) | set(state.runtime_files)
+            known_parents = {
+                parent.as_posix()
+                for relative in known_files
+                for parent in Path(relative).parents
+                if parent != Path(".")
+            }
             for directory, directories, files in os.walk(path, followlinks=False):
                 base = Path(directory)
-                if any((base / name).is_symlink() for name in directories):
-                    return False
+                for name in list(directories):
+                    relative = (base / name).relative_to(path).as_posix()
+                    if (base / name).is_symlink():
+                        files.append(name)
+                        directories.remove(name)
+                    elif relative not in known_parents:
+                        return False
                 for name in files:
                     relative = (base / name).relative_to(path).as_posix()
                     if relative == ".git":
                         continue
-                    with _source(path, relative) as descriptor:
-                        body = _read(descriptor, _MAX_SOURCE_FILE)
                     expected = state.source_manifest.get(relative)
+                    if expected is not None and expected["kind"] == "symlink":
+                        with _parent(path, relative) as (parent, leaf):
+                            body = os.fsencode(os.readlink(leaf, dir_fd=parent))
+                    else:
+                        with _source(path, relative) as descriptor:
+                            body = _read(descriptor, _MAX_SOURCE_FILE)
                     if expected is not None:
                         if expected["content_hash"] != hashlib.sha256(body).hexdigest():
                             return False
-                    elif any(
-                        relative == item or relative.startswith(item + "/")
-                        for item in state.runtime_paths
-                    ):
+                    elif relative in state.runtime_files:
                         with _source(
                             Path(checkout.canonical_path), relative
                         ) as descriptor:
@@ -640,11 +655,20 @@ class IsolatedWorkspaceManager:
                 ).fetchone()
             if prior is not None:
                 state = self.validate(str(prior[0]))
+                if set(approved_secrets) - set(state.runtime_files):
+                    raise _error("existing isolated session cannot add runtime consent")
                 workspace = self.store.get_workspace(state.workspace_id)
                 assert workspace is not None
                 return workspace, state.notices
             shared = self.store.ensure_shared_workspace(checkout)
             self.ensure_available(shared.workspace_id)
+            scanner = ExternalWorkspaceScanner(self.store)
+            for session in self.store.list_sessions(checkout_id=checkout.checkout_id):
+                if session.workspace_mode == "shared" and session.state in {
+                    "active",
+                    "disconnected",
+                }:
+                    scanner.scan_session(session.session_id)
             root = Path(checkout.canonical_path)
             head = run_git(
                 root, ["rev-parse", "--verify", "HEAD^{commit}"], check=False
@@ -656,9 +680,14 @@ class IsolatedWorkspaceManager:
                 )
             assert isinstance(head.stdout, str)
             base_oid = head.stdout.strip()
-            fingerprint = source_fingerprint(root)
-            source = capture_source(root, self.candidate_dir)
             plan = plan_hydration(root, approved_secret_paths=approved_secrets)
+            policy_paths = tuple(
+                entry.path
+                for entry in plan.entries
+                if Path(entry.path).name in {".gitignore", ".gitattributes"}
+            )
+            fingerprint = source_fingerprint(root, policy_paths)
+            source = capture_source(root, self.candidate_dir)
             if not plan.complete:
                 raise _error(
                     "isolated hydration inventory is incomplete: "
@@ -801,11 +830,17 @@ class IsolatedWorkspaceManager:
                 if capture_source(managed.path, self.candidate_dir) != source:
                     raise _error("isolated materialized source manifest did not match")
                 self._stage(workspace_id, "materialized")
+                allocated = 0
                 for runtime_entry in copies:
                     copy_runtime_file(root, managed.path, runtime_entry)
+                    with _source(managed.path, runtime_entry.path) as descriptor:
+                        status = os.fstat(descriptor)
+                        allocated += getattr(status, "st_blocks", 0) * 512
+                    if allocated > plan.budgets.max_allocated_bytes:
+                        raise _error("runtime copies exceeded their allocation budget")
                 self._stage(workspace_id, "hydrated")
                 if (
-                    source_fingerprint(root) != fingerprint
+                    source_fingerprint(root, policy_paths) != fingerprint
                     or capture_source(root, self.candidate_dir) != source
                 ):
                     raise _error(

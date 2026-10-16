@@ -157,10 +157,11 @@ def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
                                     sys.executable,
                                     "-c",
                                     "from pathlib import Path; "
-                                "assert Path('a.py').read_text() == 'value = 2\\n'; "
-                                "data = Path('.env').read_text(); "
-                                "assert data; print(data); "
-                                "Path('.env').write_text('changed only in check')",
+                                    "assert Path('a.py').read_text() == "
+                                    "'value = 2\\n'; "
+                                    "data = Path('.env').read_text(); "
+                                    "assert data; print(data); "
+                                    "Path('.env').write_text('changed only in check')",
                                 ],
                             }
                         }
@@ -187,3 +188,88 @@ def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
             service.close()
 
     asyncio.run(scenario())
+
+
+def test_equivalent_exclude_replacement_invalidates_creation(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    git_run: Any,
+) -> None:
+    from llm_cli.errors import LlmCoordError
+
+    env = batch_env
+    rules = tmp_path / "global-ignore"
+    rules.write_text("runtime.local\n")
+    git_run(env.repository, "config", "core.excludesFile", str(rules))
+    (env.repository / "runtime.local").write_text("private input\n")
+    manager = _manager(env, tmp_path)
+
+    def replace_policy(stage: str) -> None:
+        if stage == "materialized":
+            replacement = tmp_path / "replacement"
+            replacement.write_text("runtime.local\n")
+            replacement.replace(rules)
+
+    manager.fault = replace_policy
+    with pytest.raises(LlmCoordError, match="policy changed"):
+        manager.open(_checkout(env), "changed-rules")
+    assert (env.repository / "runtime.local").read_text() == "private input\n"
+
+
+def test_broken_cow_probe_cannot_modify_primary_runtime(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_cli.errors import LlmCoordError
+    from llm_cli.workspace import isolated
+
+    env = batch_env
+    (env.repository / ".gitignore").write_text("runtime.local\n")
+    (env.repository / "runtime.local").write_text("original runtime\n")
+    seen_probe: list[bytes] = []
+
+    def broken_clone(source: int, parent: int, name: str) -> bool:
+        # Simulate a clone whose destination mutation corrupts its source.
+        # The source passed to the probe must be disposable owned data.
+        seen_probe.append(isolated._read(source, 1024))
+        descriptor = os.open(
+            name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent
+        )
+        os.close(descriptor)
+        writable = os.open("source", os.O_WRONLY, dir_fd=parent)
+        try:
+            os.write(writable, b"corrupted probe")
+        finally:
+            os.close(writable)
+        return True
+
+    monkeypatch.setattr(isolated, "_clone", broken_clone)
+    with pytest.raises(LlmCoordError, match="clone did not isolate"):
+        _manager(env, tmp_path).open(_checkout(env), "broken-clone")
+    assert seen_probe == [b"loupe private clone probe"]
+    assert (env.repository / "runtime.local").read_text() == "original runtime\n"
+
+
+def test_cleanup_preserves_an_unknown_empty_directory(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+) -> None:
+    env = batch_env
+    manager = _manager(env, tmp_path)
+
+    class Crash(BaseException):
+        pass
+
+    def interrupt(stage: str) -> None:
+        if stage == "materialized":
+            private = next((tmp_path / "private").iterdir())
+            (private / "user-created-empty-directory").mkdir()
+            raise Crash()
+
+    manager.fault = interrupt
+    with pytest.raises(Crash):
+        manager.open(_checkout(env), "empty-directory")
+    manager.recover()
+    private = next((tmp_path / "private").iterdir())
+    assert (private / "user-created-empty-directory").is_dir()
