@@ -1,4 +1,4 @@
-"""Bounded, durable shared-checkout publication for regular UTF-8 files.
+"""Durable publication for bounded regular files and contained symlinks.
 
 The caller shares ``lock`` with every cooperative checkout read and write.
 Journal recovery rolls forward from recorded bases; it never overwrites a
@@ -31,19 +31,22 @@ from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
     WorkspaceBrokerError,
     atomic_replace_regular_file,
+    atomic_replace_symlink,
     candidate_content_hash,
     load_candidate_content,
+    read_candidate_path,
     store_candidate_content,
+    validate_symlink_target,
 )
 from llm_cli.workspace.identity import (
     ABSENT,
     DIRECTORY_MODE,
     EXECUTABLE_MODE,
     REGULAR_MODE,
+    SYMLINK_MODE,
     FileIdentity,
     ObjectKind,
     content_identity,
-    read_identified_path,
 )
 
 MAX_BATCH_FILES = 50
@@ -59,6 +62,7 @@ class BatchFile:
     mode: str
     original: bytes | None = None
     permissions: int | None = None
+    binary: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +79,7 @@ class _JournalFile:
     base: FileIdentity
     result: FileIdentity
     content_hash: str | None
+    binary: bool = False
 
 
 def _identity_json(identity: FileIdentity) -> dict[str, object]:
@@ -107,8 +112,12 @@ def _validate_base(base: FileIdentity) -> None:
             raise WorkspaceBrokerError("invalid directory identity")
         return
     if (
-        base.kind is not ObjectKind.REGULAR
-        or base.mode not in {REGULAR_MODE, EXECUTABLE_MODE}
+        base.kind not in {ObjectKind.REGULAR, ObjectKind.SYMLINK}
+        or (
+            base.kind is ObjectKind.REGULAR
+            and base.mode not in {REGULAR_MODE, EXECUTABLE_MODE}
+        )
+        or (base.kind is ObjectKind.SYMLINK and base.mode != SYMLINK_MODE)
         or not isinstance(base.digest, str)
         or len(base.digest) != 64
         or any(char not in "0123456789abcdef" for char in base.digest)
@@ -174,6 +183,13 @@ def result_identity(item: BatchFile) -> FileIdentity:
         return ABSENT
     if item.mode == DIRECTORY_MODE:
         return directory_identity()
+    if item.mode == SYMLINK_MODE:
+        return FileIdentity(
+            ObjectKind.SYMLINK,
+            SYMLINK_MODE,
+            content_identity(ObjectKind.SYMLINK, SYMLINK_MODE, item.content),
+            len(item.content),
+        )
     permissions = (
         item.permissions if item.permissions is not None else item.base.permissions
     )
@@ -223,9 +239,7 @@ def _target(root: Path, relative_path: str) -> Path:
 
 
 def _observe(target: Path) -> FileIdentity:
-    identity, body = read_identified_path(target, max_bytes=MAX_SHARED_TEXT_BYTES)
-    if body is not None:
-        body.decode("utf-8")
+    identity, _ = read_candidate_path(target, max_bytes=MAX_SHARED_TEXT_BYTES)
     return identity
 
 
@@ -253,16 +267,22 @@ def _request(
             raise WorkspaceBrokerError("batch paths must be unique")
         paths.append(path)
         _validate_base(item.base)
-        if item.mode not in {REGULAR_MODE, EXECUTABLE_MODE, DIRECTORY_MODE, ""}:
+        if item.mode not in {
+            REGULAR_MODE,
+            EXECUTABLE_MODE,
+            SYMLINK_MODE,
+            DIRECTORY_MODE,
+            "",
+        }:
             raise WorkspaceBrokerError(
                 "batch result mode must be regular or executable"
             )
         if item.content is not None and not isinstance(item.content, bytes):
             raise WorkspaceBrokerError("batch content must be bytes")
         if item.original is not None and (
-            item.base.kind is not ObjectKind.REGULAR
+            item.base.kind not in {ObjectKind.REGULAR, ObjectKind.SYMLINK}
             or len(item.original) != item.base.size
-            or content_identity(ObjectKind.REGULAR, item.base.mode, item.original)
+            or content_identity(item.base.kind, item.base.mode, item.original)
             != item.base.digest
         ):
             raise WorkspaceBrokerError("original bytes do not match the observed base")
@@ -275,10 +295,15 @@ def _request(
             )
         if len(body) > MAX_SHARED_TEXT_BYTES:
             raise WorkspaceBrokerError("batch file exceeds the shared text byte limit")
-        try:
-            body.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise WorkspaceBrokerError("batch content must be UTF-8 text") from exc
+        if not item.binary and item.mode != SYMLINK_MODE:
+            try:
+                body.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise WorkspaceBrokerError(
+                    "binary content requires the binary flag"
+                ) from exc
+        if type(item.binary) is not bool:
+            raise WorkspaceBrokerError("batch binary flag is invalid")
         total += len(body) + len(item.original or b"")
         if total > MAX_BATCH_BYTES:
             raise WorkspaceBrokerError("batch exceeds the 4 MiB aggregate byte limit")
@@ -287,6 +312,7 @@ def _request(
         encoded.append(
             {
                 "relative_path": path,
+                **({"binary": True} if item.binary else {}),
                 "base": _identity_json(item.base),
                 "result": _identity_json(result),
                 "content_hash": candidate_content_hash(body)
@@ -339,11 +365,19 @@ def _journal_files(request_json: str) -> tuple[_JournalFile, ...]:
             )
         ):
             raise WorkspaceBrokerError("stored batch path or content hash is invalid")
+        if type(entry.get("binary", False)) is not bool:
+            raise WorkspaceBrokerError("stored batch binary flag is invalid")
         result = _identity_from_json(entry.get("result"))
         if (digest is None) != result.absent:
             raise WorkspaceBrokerError("stored batch result body is inconsistent")
         files.append(
-            _JournalFile(path, _identity_from_json(entry.get("base")), result, digest)
+            _JournalFile(
+                path,
+                _identity_from_json(entry.get("base")),
+                result,
+                digest,
+                entry.get("binary", False),
+            )
         )
     return tuple(files)
 
@@ -446,6 +480,32 @@ class SharedBatchPublisher:
                         "workspace has an unresolved file publication"
                     )
                 root = Path(str(binding["canonical_path"]))
+                for item in files:
+                    if item.mode == SYMLINK_MODE:
+                        destination = validate_symlink_target(
+                            root, item.relative_path, item.content or b""
+                        )
+                        if uncovered_paths(
+                            scopes,
+                            (destination,),
+                            case_insensitive_filesystem=bool(
+                                binding["path_case_insensitive"]
+                            ),
+                        ):
+                            raise WorkspaceBrokerError(
+                                "symlink target is outside the supplied scopes"
+                            )
+                        if any(
+                            f.mode == SYMLINK_MODE
+                            and (
+                                destination == f.relative_path
+                                or destination.startswith(f.relative_path + "/")
+                            )
+                            for f in files
+                        ):
+                            raise WorkspaceBrokerError(
+                                "batch symlink cannot target another candidate symlink"
+                            )
                 # The checkout's durable case policy cannot be weakened by the caller.
                 _request(
                     session_id,
@@ -611,10 +671,11 @@ class SharedBatchPublisher:
                     if item.content_hash is not None
                     else b""
                 )
-                body.decode("utf-8")
-                if item.result.kind is ObjectKind.REGULAR and (
+                if item.result.kind is ObjectKind.SYMLINK:
+                    validate_symlink_target(root, item.relative_path, body)
+                if item.result.kind in {ObjectKind.REGULAR, ObjectKind.SYMLINK} and (
                     len(body) != item.result.size
-                    or content_identity(ObjectKind.REGULAR, item.result.mode, body)
+                    or content_identity(item.result.kind, item.result.mode, body)
                     != item.result.digest
                 ):
                     raise WorkspaceBrokerError(
@@ -668,6 +729,16 @@ class SharedBatchPublisher:
                         target.unlink()
                     _sync_parent(target)
                     continue
+                if item.result.kind is ObjectKind.SYMLINK:
+                    atomic_replace_symlink(
+                        checkout_root=root,
+                        git_common_dir=Path(str(row["git_common_dir"])),
+                        relative_path=item.relative_path,
+                        content=bodies[item.relative_path],
+                        publication_id=staging_id,
+                        expected_base=item.base,
+                    )
+                    continue
                 atomic_replace_regular_file(
                     checkout_root=root,
                     git_common_dir=Path(str(row["git_common_dir"])),
@@ -676,6 +747,7 @@ class SharedBatchPublisher:
                     mode=item.result.mode,
                     publication_id=staging_id,
                     permissions=item.result.permissions,
+                    expected_base=item.base,
                 )
             with (
                 self.store.connection() as connection,

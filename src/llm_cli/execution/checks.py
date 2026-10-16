@@ -30,7 +30,13 @@ from llm_cli.git.worktrees import (
 from llm_cli.ids import new_id
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.batches import BatchFile, candidate_target
-from llm_cli.workspace.identity import DIRECTORY_MODE, ObjectKind, read_identified_path
+from llm_cli.workspace.broker import read_candidate_path, validate_symlink_target
+from llm_cli.workspace.identity import (
+    DIRECTORY_MODE,
+    SYMLINK_MODE,
+    ObjectKind,
+    read_identified_path,
+)
 from llm_cli.workspace.workflow import TaskWorkflow, encode_files
 
 _OUTPUT_LIMIT = 10 * 1024 * 1024
@@ -137,10 +143,16 @@ def source_snapshot(
     total = 0
     for path in paths:
         target = candidate_target(root, path)
-        identity, body = read_identified_path(target)
-        if identity.kind not in {ObjectKind.REGULAR, ObjectKind.ABSENT}:
+        identity, body = read_candidate_path(target, max_bytes=256 * 1024 * 1024)
+        if identity.kind is ObjectKind.SYMLINK:
+            validate_symlink_target(root, path, body or b"")
+        if identity.kind not in {
+            ObjectKind.REGULAR,
+            ObjectKind.SYMLINK,
+            ObjectKind.ABSENT,
+        }:
             raise ValueError(
-                f"Snapshot cannot include symlinks or nested repositories: {path}"
+                f"Snapshot cannot include special files or nested repositories: {path}"
             )
         total += identity.size
         if total > 1024**3:
@@ -149,6 +161,27 @@ def source_snapshot(
         if contents:
             bodies[path] = body
     return digest(json.dumps(manifest)), bodies
+
+
+def materialize_snapshot_file(
+    root: Path, path: str, body: bytes | None, mode: str
+) -> None:
+    """Install captured source without following a link from the old snapshot."""
+    target = candidate_target(root, path)
+    if mode == DIRECTORY_MODE:
+        target.mkdir(parents=True, exist_ok=True)
+        return
+    if target.is_symlink() or target.is_file():
+        target.unlink()
+    if body is None:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if mode == SYMLINK_MODE:
+        validate_symlink_target(root, path, body)
+        target.symlink_to(os.fsdecode(body))
+    else:
+        target.write_bytes(body)
+        target.chmod(0o755 if mode == "100755" else 0o644)
 
 
 def runtime_identity(root: Path, paths: list[str]) -> str:
@@ -319,6 +352,8 @@ class CheckRunner:
         lock: RLock,
         deadline_at: float | None = None,
         on_result: Callable[[str, str, str], None] | None = None,
+        runtime_paths: tuple[str, ...] | None = None,
+        suppress_output: bool = False,
     ) -> None:
         self.workflow, self.row, self.root = workflow, row, root
         # Told (name, state, output) after every run, for repair limits.
@@ -331,6 +366,11 @@ class CheckRunner:
         )
         self.emit, self.lock = emit, lock
         self.config = json.loads(row["config_json"])
+        if runtime_paths is not None:
+            self.config["runtime_paths"] = sorted(
+                set(self.config.get("runtime_paths", [])) | set(runtime_paths)
+            )
+        self.suppress_output = suppress_output
         self.deadline_at = deadline_at or (time.time() + 7200)
 
     def gate(self) -> ToolOutcome | None:
@@ -498,6 +538,8 @@ class CheckRunner:
                 if runtime_path.exists():
                     shutil.rmtree(runtime_path)
             duration = time.monotonic() - started
+            if self.suppress_output:
+                output = "[Check output withheld: private runtime inputs.]"
             with self.store.connection() as con:
                 con.execute(
                     (
@@ -585,26 +627,12 @@ class CheckRunner:
                 if target.is_symlink() or (path not in bodies and target.is_file()):
                     target.unlink()
             for path, body in bodies.items():
-                target = candidate_target(snapshot, path)
-                if body is None:
-                    target.unlink(missing_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(body)
-                    target.chmod(0o755 if modes[path] == "100755" else 0o644)
+                materialize_snapshot_file(snapshot, path, body, modes[path])
             for f in sorted(
                 files,
                 key=lambda f: (0 if f.mode == DIRECTORY_MODE else 1, f.relative_path),
             ):
-                target = candidate_target(snapshot, f.relative_path)
-                if f.mode == DIRECTORY_MODE:
-                    target.mkdir(parents=True, exist_ok=True)
-                elif f.content is None:
-                    target.unlink(missing_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(f.content)
-                    target.chmod(0o755 if f.mode == "100755" else 0o644)
+                materialize_snapshot_file(snapshot, f.relative_path, f.content, f.mode)
             for path in self.config.get("runtime_paths", []):
                 self._copy_runtime(path, snapshot)
             if (
@@ -664,8 +692,10 @@ class CheckRunner:
             deadline=deadline,
             remaining=remaining,
             cancelled=self.cancelled,
-            on_output=lambda text: self.emit(
-                "check.output", {"run_id": run_id, "text": text}
+            on_output=lambda text: (
+                None
+                if self.suppress_output
+                else self.emit("check.output", {"run_id": run_id, "text": text})
             ),
         )
 

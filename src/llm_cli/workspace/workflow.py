@@ -27,7 +27,12 @@ from llm_cli.workspace.batches import (
     candidate_target,
     result_identity,
 )
-from llm_cli.workspace.identity import DIRECTORY_MODE, ObjectKind, read_identified_path
+from llm_cli.workspace.identity import (
+    DIRECTORY_MODE,
+    SYMLINK_MODE,
+    ObjectKind,
+    read_identified_path,
+)
 from llm_cli.workspace.merge import has_conflict_markers, merge_text
 
 
@@ -39,6 +44,7 @@ def encode_files(files: tuple[BatchFile, ...]) -> str:
                 "base": _identity_json(f.base),
                 "mode": f.mode,
                 "permissions": f.permissions,
+                **({"binary": True} if f.binary else {}),
                 "content": base64.b64encode(f.content).decode()
                 if f.content is not None
                 else None,
@@ -65,6 +71,7 @@ def decode_files(value: str) -> tuple[BatchFile, ...]:
             if item["original"] is not None
             else None,
             item.get("permissions"),
+            item.get("binary", False),
         )
         for item in json.loads(value)
     )
@@ -345,6 +352,17 @@ class TaskWorkflow:
             if f.mode == DIRECTORY_MODE:
                 sections.append(f"Create directory {f.relative_path}/\n")
                 continue
+            if f.binary:
+                sections.append(
+                    f"Binary change {f.relative_path}: {len(f.original or b'')} -> "
+                    f"{len(f.content or b'')} bytes\n"
+                )
+                continue
+            if f.mode == SYMLINK_MODE or f.base.kind is ObjectKind.SYMLINK:
+                sections.append(
+                    f"Symlink {f.relative_path}: {f.original!r} -> {f.content!r}\n"
+                )
+                continue
             sections.extend(
                 difflib.unified_diff(
                     (f.original or b"").decode().splitlines(keepends=True),
@@ -458,14 +476,19 @@ class TaskWorkflow:
                 current, theirs = read_identified_path(
                     candidate_target(root, f.relative_path)
                 )
-                if has_conflict_markers(f.content):
+                if (
+                    not f.binary
+                    and f.mode != SYMLINK_MODE
+                    and has_conflict_markers(f.content)
+                ):
                     raise ValueError("unresolved merge")
                 if current == f.base:
                     merged.append(f)
                     continue
                 # Delete/modify, add/add and type changes require a fresh edit.
                 if (
-                    f.base.kind is not ObjectKind.REGULAR
+                    f.binary
+                    or f.base.kind is not ObjectKind.REGULAR
                     or current.kind is not ObjectKind.REGULAR
                     or f.original is None
                     or f.content is None
@@ -545,7 +568,10 @@ class TaskWorkflow:
         if undo:
             inverses = []
             for f in files:
-                if f.base.kind is ObjectKind.REGULAR and f.original is None:
+                if (
+                    f.base.kind in {ObjectKind.REGULAR, ObjectKind.SYMLINK}
+                    and f.original is None
+                ):
                     raise ValueError(
                         "Original contents unavailable; undo is not supported fo"
                         "r this task."
@@ -567,6 +593,7 @@ class TaskWorkflow:
                         f.base.mode,
                         f.content if f.mode != DIRECTORY_MODE else None,
                         f.base.permissions,
+                        f.binary,
                     )
                 )
             files = tuple(inverses)

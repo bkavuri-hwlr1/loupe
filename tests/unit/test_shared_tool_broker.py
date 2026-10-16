@@ -709,3 +709,105 @@ def test_missing_path_exposes_invisible_characters_without_rewriting(
         broker.invoke("read_file", {"path": "src/ap\u200bp.py"}).content
         == "exact filename"
     )
+
+
+@pytest.mark.parametrize("body", [b"\x00\xffbinary", b"ascii binary payload"])
+def test_binary_edits_resume_without_merging(checkout: Path, body: bytes) -> None:
+    path = checkout / "docs/data.bin"
+    path.write_bytes(body)
+    broker = _broker(checkout)
+    assert broker.invoke(
+        "write_binary", {"path": "docs/data.bin", "content_base64": "Yg=="}
+    ).is_error
+    assert not broker.invoke("read_binary", {"path": "docs/data.bin"}).is_error
+    assert not broker.invoke(
+        "write_binary", {"path": "docs/data.bin", "content_base64": "Yg=="}
+    ).is_error
+    restored = _broker(checkout)
+    restored.restore_usage(broker.usage_snapshot())
+    assert restored.candidates()[0].binary
+    assert "Binary change" in restored.invoke("read_diff", {}).content
+    path.write_bytes(b"a concurrent replacement")
+    assert restored.reconcile().unmerged == ("docs/data.bin",)
+    assert restored.candidates()[0].original == body
+    assert restored.candidates()[0].content == b"b"
+
+
+def test_binary_limits_and_truncated_read_preserve_observation(checkout: Path) -> None:
+    (checkout / "docs/data.bin").write_bytes(b"x" * 100)
+    broker = _broker(checkout, limits=ExecutionLimits(max_tool_output_bytes=20))
+    assert (
+        "truncated" in broker.invoke("read_binary", {"path": "docs/data.bin"}).content
+    )
+    assert broker.invoke(
+        "write_binary", {"path": "docs/data.bin", "content_base64": "eA=="}
+    ).is_error
+    assert broker.invoke(
+        "write_binary", {"path": "docs/new.bin", "content_base64": "not base64"}
+    ).is_error
+    assert broker.invoke(
+        "write_binary",
+        {"path": "docs/new.bin", "content_base64": "A" * (MAX_SHARED_TEXT_BYTES * 2)},
+    ).is_error
+    assert broker.candidates() == ()
+
+
+def test_symlink_create_retarget_delete_are_private(checkout: Path) -> None:
+    from llm_cli.workspace.identity import SYMLINK_MODE, ObjectKind
+
+    broker = _broker(checkout)
+    assert not broker.invoke(
+        "write_symlink", {"path": "docs/link", "target": "guide.md"}
+    ).is_error
+    assert broker.candidates()[0].mode == SYMLINK_MODE
+    assert not (checkout / "docs/link").is_symlink()
+    assert broker.invoke("read_symlink", {"path": "docs/link"}).content == "guide.md"
+    restored = _broker(checkout)
+    restored.restore_usage(broker.usage_snapshot())
+    assert restored.candidates()[0].content == b"guide.md"
+    (checkout / "docs/link").symlink_to("guide.md")
+    broker = _broker(checkout)
+    assert broker.invoke(
+        "write_symlink", {"path": "docs/link", "target": "new.md"}
+    ).is_error
+    assert broker.invoke("read_symlink", {"path": "docs/link"}).content == "guide.md"
+    assert not broker.invoke(
+        "write_symlink", {"path": "docs/link", "target": "new.md"}
+    ).is_error
+    assert broker.candidates()[0].base.kind is ObjectKind.SYMLINK
+    assert broker.candidates()[0].original == b"guide.md"
+    assert "Symlink" in broker.invoke("read_diff", {}).content
+    broker = _broker(checkout)
+    assert not broker.invoke("delete_file", {"path": "docs/link"}).is_error
+    assert broker.candidates()[0].content is None
+    assert (checkout / "docs/link").is_symlink()
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/tmp/outside",
+        "../../outside",
+        "../src/app.py",
+        "../.git/config",
+        "../.env",
+        "link",
+    ],
+)
+def test_symlink_escape_or_out_of_scope_target_refused(
+    checkout: Path, target: str
+) -> None:
+    broker = _broker(checkout)
+    assert broker.invoke(
+        "write_symlink", {"path": "docs/link", "target": target}
+    ).is_error
+    assert broker.candidates() == ()
+
+
+def test_binary_and_link_tools_are_read_only_for_helpers(checkout: Path) -> None:
+    broker = _broker(checkout).read_only_view(ExecutionLimits())
+    assert "write_binary" not in broker.tool_names()
+    assert "write_symlink" not in broker.tool_names()
+    assert broker.invoke(
+        "write_binary", {"path": "docs/new", "content_base64": "eA=="}
+    ).is_error
