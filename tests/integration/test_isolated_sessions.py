@@ -273,3 +273,52 @@ def test_cleanup_preserves_an_unknown_empty_directory(
     manager.recover()
     private = next((tmp_path / "private").iterdir())
     assert (private / "user-created-empty-directory").is_dir()
+
+
+def test_global_exclusion_protects_tracked_source_before_artifact_capture(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    git_run: Any,
+) -> None:
+    from llm_cli.errors import LlmCoordError
+    from llm_cli.workspace.isolated import capture_source
+
+    env = batch_env
+    private = b"opaque local protected source fixture"
+    (env.repository / "private.custom").write_bytes(private)
+    git_run(env.repository, "add", "private.custom")
+    rules = tmp_path / "global-ignore"
+    rules.write_text("private.custom\n")
+    config = tmp_path / "global-config"
+    config.write_text(f"[core]\n    excludesFile = {rules}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    with pytest.raises(LlmCoordError, match="protected source"):
+        capture_source(env.repository, env.publisher.candidate_dir)
+    assert all(
+        private not in path.read_bytes()
+        for path in env.publisher.candidate_dir.glob("*")
+        if path.is_file()
+    )
+
+
+def test_primary_runtime_declassification_is_refused_before_artifacts(
+    batch_env: BatchEnvironment,
+) -> None:
+    from llm_cli.errors import LlmCoordError
+    from llm_cli.workspace.isolated import capture_source
+
+    env = batch_env
+    private = b"unknown-format private runtime"
+    (env.repository / "runtime.local").write_bytes(private)
+    with pytest.raises(LlmCoordError, match="runtime path became source"):
+        capture_source(
+            env.repository,
+            env.publisher.candidate_dir,
+            protected_paths=("runtime.local",),
+        )
+    assert all(
+        private not in path.read_bytes()
+        for path in env.publisher.candidate_dir.glob("*")
+        if path.is_file()
+    )
