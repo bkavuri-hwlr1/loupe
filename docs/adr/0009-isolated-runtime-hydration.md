@@ -131,3 +131,23 @@ This decision selects its first independently useful piece: a read-only plan.
 - Exact source materialization, COW capability probing, content stability,
   protected command output, durable consent, runtime refresh, and crash recovery
   remain work for C2/C3; a complete preview alone enables none of them.
+
+## C2 implementation (Wave 3)
+
+The session materializer now implements exact ordinary-source snapshots,
+private ignored-file hydration, exact-file secret consent, pinned source-policy
+identities, descriptor-based stable copies, a disposable same-device COW probe,
+allocation/free-space checks, and durable creation/recovery intents. Interrupted
+known creations are cleaned only after their output is verified; ambiguous paths
+are preserved and quarantined. Ready workspaces restore frozen runtime exclusions
+on restart. Source symlinks use the C5 contained-link policy; runtime symlinks
+remain deferred.
+
+Checks and command snapshots copy hydrated runtime privately and withhold their
+output. Runtime check evidence is process-keyed, so restarting invalidates that
+evidence without storing raw runtime digests. Opaque dependency trees remain
+absent with visible notices; no rebuild is run automatically. Per-tab environment
+forwarding, protected-source adapters, runtime refresh, and managed background
+processes remain outside this package. Publication is the C3 dependency.
+
+See [Isolated workspaces](../isolated-workspaces.md) for usage and limits.
