@@ -36,15 +36,15 @@ from llm_cli.workspace.broker import (
     WorkspaceBrokerError,
     atomic_replace_regular_file,
     atomic_replace_symlink,
-    read_candidate_path,
     load_candidate_content,
+    read_candidate_path,
     store_candidate_content,
 )
 from llm_cli.workspace.identity import (
     ABSENT,
     DIRECTORY_MODE,
-    REGULAR_MODE,
     EXECUTABLE_MODE,
+    REGULAR_MODE,
     SYMLINK_MODE,
     FileIdentity,
     ObjectKind,
@@ -139,10 +139,12 @@ class IsolatedSynchronizer:
         store: ControlStore,
         publisher: SharedBatchPublisher,
         capture: Callable[[Path], Manifest],
+        validate: Callable[[str], object] | None = None,
     ) -> None:
         self.store = store
         self.publisher = publisher
         self.capture = capture
+        self.validate = validate
 
     def register(
         self,
@@ -167,6 +169,8 @@ class IsolatedSynchronizer:
             )
 
     def _state(self, workspace_id: str) -> dict[str, Any]:
+        if self.validate is not None:
+            self.validate(workspace_id)
         with self.store.connection() as con:
             row = con.execute(
                 "SELECT s.*,w.canonical_path,w.checkout_id,w.source_workspace_id,"
