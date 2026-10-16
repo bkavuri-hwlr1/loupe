@@ -780,3 +780,14 @@ decisions with unknown contents rather than enumerated copy candidates,
 preserving unrelated candidates. C2 now implements bounded private copying as
 noted above, and C3 adds checked source publication and incoming synchronization.
 E2 remains deferred.
+
+
+## Wave 3 validation follow-up (October 16, 2026)
+
+The first combined frozen run exposed a shared-session settlement regression:
+isolated catch-up handling had changed unmergeable shared proposals from durable
+divergence to held review. The fix limits that handling to isolated sessions.
+The 44-test orchestration-stress, catch-up, isolated synchronization, publication,
+and held-workflow suite passed, as did the OpenAI publication-refusal regression
+(45 focused passes total). Ruff and mypy passed. The original frozen full run
+continues collecting failures; final-head CI validation is pending.
