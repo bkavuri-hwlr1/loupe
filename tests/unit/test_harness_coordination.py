@@ -426,3 +426,37 @@ def test_irrelevant_external_metadata_is_validated_before_quiet_advance(
     with pytest.raises(LlmCoordError, match="cannot be safely interpreted"):
         context(first.sequence)
     assert context._last_sequence == first.sequence
+
+
+def test_failed_outside_edit_scan_does_not_end_the_task(
+    tmp_path: Path,
+    ledger: tuple[ControlStore, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_cli.workspace import external
+
+    store, _, _ = ledger
+    scan = external.ExternalWorkspaceScanner.scan_session
+    scans: list[str] = []
+
+    def saved_mid_scan(self: external.ExternalWorkspaceScanner, session: str) -> int:
+        scans.append(session)
+        if len(scans) == 1:
+            return scan(self, session)
+        raise external._incomplete("external scan exceeds its time budget")
+
+    monkeypatch.setattr(
+        external.ExternalWorkspaceScanner, "scan_session", saved_mid_scan
+    )
+    provider = Script([_turn(("a", "unknown", {})), _finish()])
+    CodingAgentHarness(provider).run(
+        replace(
+            _request(tmp_path),
+            refresh_coordination=SharedCoordinationContext(store, "reader", ("docs/",)),
+        ),
+        ToolBroker(tmp_path, ("docs/",)),
+    )
+    assert len(scans) == 2
+    results = provider.calls[1]
+    assert isinstance(results, tuple)
+    assert "Outside edits could not be checked" in results[-1].content

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import threading
 from pathlib import Path
@@ -209,7 +210,78 @@ def test_offline_edit_and_new_read_do_not_duplicate_notices(
     assert external.ExternalWorkspaceScanner(store).scan_session("reader") == 0
 
 
-def test_budget_failure_does_not_advance_cursor_or_record_partial_scan(
+def test_over_budget_path_is_checked_by_a_later_scan(
+    checkout: tuple[ControlStore, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A branch switch can change more source than one scan may hash. Deferring
+    # the excess lets later scans catch up instead of failing every boundary.
+    store, root, _ = checkout
+    for name in ("big", "small"):
+        (root / name).write_text("old")
+        _read(store, root, name)
+    context = SharedCoordinationContext(store, "reader", ("*",))
+    initial = context(None)
+    (root / "big").write_text("new" * 10)
+    (root / "small").write_text("new")
+    monkeypatch.setattr(external, "MAX_BYTES", 5)
+    update = context(initial.sequence)
+    assert [event["path"] for event in _events(store)] == ["small"]
+    assert update.text is not None and "external_changes" not in update.text
+    monkeypatch.setattr(external, "MAX_BYTES", 1_000)
+    later = context(update.sequence)
+    assert [event["path"] for event in _events(store)] == ["small", "big"]
+    assert later.text is not None and '"big"' in later.text
+
+
+def test_path_changing_during_its_read_is_checked_by_a_later_scan(
+    checkout: tuple[ControlStore, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, root, _ = checkout
+    for name in ("a", "log"):
+        (root / name).write_text("old")
+        _read(store, root, name)
+    scanner = external.ExternalWorkspaceScanner(store)
+    scanner.scan_session("reader")
+    for name in ("a", "log"):
+        (root / name).write_text("new")
+    source = external._source
+
+    def saving(root_: Path, relative: str, *args: Any) -> Any:
+        if relative == "log":
+            (root / "log").write_text("newer")  # An editor saves mid-read.
+        return source(root_, relative, *args)
+
+    monkeypatch.setattr(external, "_source", saving)
+    assert scanner.scan_session("reader") == 1
+    assert [event["path"] for event in _events(store)] == ["a"]
+    monkeypatch.setattr(external, "_source", source)
+    assert scanner.scan_session("reader") == 1
+    assert [event["path"] for event in _events(store)] == ["a", "log"]
+
+
+def test_long_sessions_scan_their_most_recent_reads(
+    checkout: tuple[ControlStore, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, root, _ = checkout
+    for order, name in enumerate(("oldest", "middle", "newest"), start=1):
+        (root / name).write_text("old")
+        _read(store, root, name)
+        with store.connection() as conn:
+            conn.execute(
+                "UPDATE workspace_read_observations SET observed_at=? "
+                "WHERE relative_path=?",
+                (order, name),
+            )
+    monkeypatch.setattr(external, "MAX_PATHS", 2)
+    scanner = external.ExternalWorkspaceScanner(store)
+    scanner.scan_session("reader")
+    for name in ("oldest", "newest"):
+        (root / name).write_text("new")
+    assert scanner.scan_session("reader") == 1
+    assert [event["path"] for event in _events(store)] == ["newest"]
+
+
+def test_failed_boundary_scan_continues_and_says_so_once(
     checkout: tuple[ControlStore, Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, root, _ = checkout
@@ -217,13 +289,36 @@ def test_budget_failure_does_not_advance_cursor_or_record_partial_scan(
     _read(store, root, "a")
     context = SharedCoordinationContext(store, "reader", ("*",))
     initial = context(None)
-    (root / "a").write_text("new")
-    monkeypatch.setattr(external, "MAX_BYTES", 1)
-    with pytest.raises(LlmCoordError, match="byte budget"):
-        context(initial.sequence)
-    assert not _events(store)
-    monkeypatch.setattr(external, "MAX_BYTES", 1_000)
-    assert context(initial.sequence).text
+    scan = external.ExternalWorkspaceScanner.scan_session
+
+    def failing(self: Any, session_id: str) -> int:
+        raise external._incomplete("external scan exceeds its time budget")
+
+    monkeypatch.setattr(external.ExternalWorkspaceScanner, "scan_session", failing)
+    first = context(initial.sequence)
+    assert first.sequence == initial.sequence
+    assert first.text is not None
+    notice = json.loads(first.text)["external_changes"]
+    assert "could not be checked (external scan exceeds its time budget)" in notice
+    assert context(first.sequence).text is None
+    monkeypatch.setattr(external.ExternalWorkspaceScanner, "scan_session", scan)
+    assert context(first.sequence).text is None
+    monkeypatch.setattr(external.ExternalWorkspaceScanner, "scan_session", failing)
+    assert "external_changes" in str(context(first.sequence).text)
+
+
+def test_daemon_scan_survives_unexpected_scan_errors(
+    checkout: tuple[ControlStore, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, root, _ = checkout
+    (root / "a").write_text("old")
+    _read(store, root, "a")
+
+    def broken(self: Any, session_id: str) -> int:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(external.ExternalWorkspaceScanner, "scan_session", broken)
+    assert external.ExternalWorkspaceScanner(store).scan_active() == 0
 
 
 def test_actual_batch_publication_is_not_reported_again_as_external(

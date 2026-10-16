@@ -62,13 +62,29 @@ class SharedCoordinationContext:
         self.session_id = session_id
         self.scopes = normalize_scopes(scopes)
         self._last_sequence: int | None = None
+        # Whether the last outside-edit scan failed, and an undelivered notice.
+        self._scan_failing = False
+        self._scan_notice: str | None = None
 
     def __call__(self, after_sequence: int | None) -> CoordinationUpdate:
         if after_sequence is not None and (
             type(after_sequence) is not int or after_sequence < 0
         ):
             raise _too_large("the saved coordination cursor is invalid")
-        ExternalWorkspaceScanner(self.store).scan_session(self.session_id)
+        try:
+            ExternalWorkspaceScanner(self.store).scan_session(self.session_id)
+        except (LlmCoordError, OSError, ValueError) as exc:
+            # Outside-edit notices are advisory and must never fail the model
+            # turn. Say so once per failure run; exact-base checks still guard
+            # publication, and the next boundary scans again.
+            if not self._scan_failing:
+                self._scan_notice = (
+                    exc.message if isinstance(exc, LlmCoordError) else "scan failed"
+                )
+            self._scan_failing = True
+        else:
+            self._scan_failing = False
+            self._scan_notice = None
         with self.store.connection() as connection:
             connection.execute("PRAGMA query_only = ON")
             connection.execute("BEGIN")
@@ -186,10 +202,15 @@ class SharedCoordinationContext:
                     other_events += 1
             if expected != head + 1:
                 raise _too_large("checkout coordination history has an unavailable gap")
-            if start == head and self._last_sequence == head:
+            if (
+                start == head
+                and self._last_sequence == head
+                and self._scan_notice is None
+            ):
                 return CoordinationUpdate(sequence=head, text=None)
             if (
-                after_sequence is not None
+                self._scan_notice is None
+                and after_sequence is not None
                 and self._last_sequence is not None
                 and unrelated_external == head - start
                 and unrelated_external > 0
@@ -236,12 +257,18 @@ class SharedCoordinationContext:
             }
             if bootstrap is not None:
                 packet["bootstrap"] = bootstrap
+            if self._scan_notice is not None:
+                packet["external_changes"] = (
+                    "Outside edits could not be checked "
+                    f"({self._scan_notice}). Later model requests check again."
+                )
             text = json.dumps(packet, ensure_ascii=True, separators=(",", ":"))
             if len(text.encode("utf-8")) > _MAX_CONTEXT_BYTES:
                 raise _too_large(
                     "coordination metadata exceeds the model context budget"
                 )
         self._last_sequence = head
+        self._scan_notice = None
         return CoordinationUpdate(sequence=head, text=text)
 
     @staticmethod

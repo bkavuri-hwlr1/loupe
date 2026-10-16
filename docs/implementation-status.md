@@ -293,10 +293,14 @@ the path; scanners never change publication bases or terminal cursors. Quiet
 cursor advances require validated irrelevant events and a prior model snapshot.
 Only fresh source captures register observations; private/pinned/diff replays
 cannot reset deduplication. Own confirmed publications are not reported again
-as outside edits. Scans are
-bounded to 1,000 paths, 16 MiB of source, 256 KiB per file and five seconds per
-session; an incomplete boundary refuses to advance its context cursor. It does
-not monitor Git operations or reconstruct intermediate edits between scans.
+as outside edits. A scan covers the session's 1,000 most recently read paths
+and hashes at most 16 MiB of source (256 KiB per file) in five seconds. A path
+that changes while it is read, or does not fit this scan's budget, keeps its
+previous state for a later scan, so a branch switch catches up over several
+boundaries. Notices are advisory: a scan that cannot complete never fails the
+model turn or the daemon loop; the next update says once that outside edits
+could not be checked, and later boundaries scan again. It does not monitor Git
+operations or reconstruct intermediate edits between scans.
 Exact-base checks still reject stale publication independently of model context.
 
 Sessionless background runs and the `fixture_write` driver retain the original

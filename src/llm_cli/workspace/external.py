@@ -3,6 +3,11 @@
 Metadata is a cheap invalidation hint. Stable, screened source identities decide
 net changes; excluded, secret, nonregular and oversized files stay opaque.
 No scan changes a session's publication base or terminal delivery cursor.
+
+A scan covers a session's most recently read paths. A path that changes while
+it is read, or does not fit the scan's byte or time budget, keeps its previous
+state and is checked by a later scan, so large outside changes catch up over
+several scans instead of failing all of them.
 """
 
 from __future__ import annotations
@@ -123,6 +128,10 @@ def register_read(
     )
 
 
+class _Deferred(Exception):
+    """This path does not fit the current scan; a later scan checks it."""
+
+
 def _identity(identity: FileIdentity) -> str:
     return _encode([str(identity.kind), identity.mode, identity.digest])
 
@@ -143,7 +152,7 @@ def _source(
         if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_FILE_BYTES:
             return None, 0
         if before.st_size > remaining:
-            raise _incomplete("external scan exceeds its byte budget")
+            raise _Deferred
         descriptor = os.open(
             leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
         )
@@ -194,13 +203,13 @@ class ExternalWorkspaceScanner:
         if not sessions:
             self._last_session = ""
             return 0
+        # Notices are advisory: no session's scan may stop the daemon loop.
         # Each tick is bounded and rotates; every model boundary scans its own session.
         deadline = time.monotonic() + MAX_SECONDS
         emitted = 0
         for row in sessions:
             self._last_session = str(row[0])
-            # A boundary reports incomplete scans without advancing its cursor.
-            with suppress(LlmCoordError):
+            with suppress(LlmCoordError, OSError, ValueError, sqlite3.Error):
                 emitted += self.scan_session(self._last_session)
             if time.monotonic() >= deadline:
                 break
@@ -231,18 +240,20 @@ class ExternalWorkspaceScanner:
                 connection, str(binding["workspace_id"])
             ):
                 return 0
+            # Read observations last as long as the session; a long conversation
+            # is covered for the files it read most recently.
             rows = connection.execute(
                 "SELECT r.*, x.generation, x.stamp, x.identity_json, x.sequence "
                 "FROM workspace_read_observations r LEFT JOIN "
                 "workspace_external_observations x "
                 "ON x.session_id=r.session_id AND x.relative_path=r.relative_path "
-                "WHERE r.session_id=? ORDER BY r.relative_path LIMIT ?",
-                (session_id, MAX_PATHS + 1),
+                "WHERE r.session_id=? ORDER BY r.observed_at DESC, r.relative_path "
+                "LIMIT ?",
+                (session_id, MAX_PATHS),
             ).fetchall()
             if not rows:
                 return 0
-            if len(rows) > MAX_PATHS:
-                raise _incomplete("external scan exceeds its path budget")
+            rows.sort(key=lambda row: str(row["relative_path"]))
             published = self._published(connection, binding, rows)
         root = Path(binding["canonical_path"])
         stamps = {
@@ -257,7 +268,8 @@ class ExternalWorkspaceScanner:
         results: list[tuple[sqlite3.Row, str, str | None, bool]] = []
         consumed = 0
         for row in rows:
-            remaining()
+            if time.monotonic() >= deadline:
+                break  # The remaining paths keep their state for a later scan.
             path = str(row["relative_path"])
             stamp = stamps[path]
             # First scans always verify source identity against the actual read.
@@ -268,11 +280,13 @@ class ExternalWorkspaceScanner:
             if path not in excluded and stamp != "unavailable":
                 try:
                     identity, count = _source(root, path, stamp, MAX_BYTES - consumed)
-                    consumed += count
-                except (OSError, ValueError) as exc:
-                    raise _incomplete(
-                        "a file changed or became unavailable during external scan"
-                    ) from exc
+                except _Deferred:
+                    continue
+                except (OSError, ValueError):
+                    # Being written right now, as by an editor's save; a later
+                    # scan sees its settled state.
+                    continue
+                consumed += count
             previous = row["identity_json"]
             if previous is None and path not in excluded:
                 previous = _encode(
