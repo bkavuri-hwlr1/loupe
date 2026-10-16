@@ -80,7 +80,7 @@ def test_approved_runtime_is_private_and_excluded_after_ignore_change_and_restar
     dependencies.mkdir()
     (dependencies / "module.js").write_text("opaque dependency\n")
     isolate = manager(env, tmp_path)
-    workspace, notices = isolate.open(
+    workspace, _ = isolate.open(
         checkout(env), "isolated-runtime", approved_secrets=(".env",)
     )
     private = Path(workspace.canonical_path)
@@ -88,8 +88,13 @@ def test_approved_runtime_is_private_and_excluded_after_ignore_change_and_restar
     assert not (private / ".env").stat().st_mode & 0o177
     assert not private.stat().st_mode & 0o077
     assert (private / ".env").stat().st_ino != (env.repository / ".env").stat().st_ino
-    assert not (private / "node_modules").exists()
-    assert any("node_modules" in notice for notice in notices)
+    private_dependency = private / "node_modules/module.js"
+    assert private_dependency.read_text() == "opaque dependency\n"
+    assert (
+        private_dependency.stat().st_ino != (dependencies / "module.js").stat().st_ino
+    )
+    private_dependency.write_text("private dependency edit\n")
+    assert (dependencies / "module.js").read_text() == "opaque dependency\n"
     (private / ".gitignore").write_text("")
     assert source_policy.excluded_paths(private, [".env", "settings.local"]) == {
         ".env",
@@ -97,12 +102,14 @@ def test_approved_runtime_is_private_and_excluded_after_ignore_change_and_restar
     }
     source_policy._runtime_roots.clear()
     manager(env, tmp_path).recover()
-    assert "settings.local" in source_policy.excluded_paths(private, ["settings.local"])
+    assert source_policy.excluded_paths(
+        private, ["settings.local", "node_modules/module.js"]
+    ) == {"settings.local", "node_modules/module.js"}
     state = isolate.get(workspace.workspace_id)
     assert state is not None and ".env" not in state.source_manifest
-    assert "settings.local" not in isolated.capture_source(
-        private, env.publisher.candidate_dir
-    )
+    source = isolated.capture_source(private, env.publisher.candidate_dir)
+    assert "settings.local" not in source
+    assert "node_modules/module.js" not in source
     (private / ".env").write_bytes(b"private modified runtime\n")
     assert (env.repository / ".env").read_bytes() == secret
     with env.store.connection() as connection:
