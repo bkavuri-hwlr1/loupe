@@ -94,9 +94,39 @@ a claim that the source was tested.
 
 Shared tools support regular UTF-8 file creation, deletion, renaming, and
 source-directory creation inside the task's scope. Rename destinations must
-be absent. Binary edits, symlink edits, nested repositories, recursive directory
-deletion, and case-only renames remain unavailable. All edits remain private
-until the daemon validates and journals publication.
+be absent. They also provide these typed operations:
+
+| Tool | Behavior |
+| --- | --- |
+| `read_binary` | Reads and pins the exact file base, returning base64. `metadata_only=true` returns size and identity instead and explicitly authorizes an opaque replacement. |
+| `write_binary` | Stages strict `content_base64` bytes against a prior complete binary read, or creates an absent file. |
+| `read_symlink` | Reads the link target itself without following it. |
+| `write_symlink` | Creates a relative link, or retargets a link previously read with `read_symlink`. |
+| `delete_file` | Deletes a regular text or binary file, or a contained symlink, preserving its original state for undo. |
+
+Binary bodies use the same 256 KiB decoded per-file limit and 4 MiB total
+retained-byte budget as text. A truncated base64 response does not authorize a
+replacement; use an explicit metadata-only read for a large opaque file. Binary
+changes, including ASCII content submitted through `write_binary`, never merge
+when their exact base changes. Task diffs show byte counts rather than treating
+binary bodies as text.
+
+Both the original and proposed symlink targets must be relative, at most 1,000
+UTF-8 bytes, and contained within the claimed scopes. Absolute or escaping
+links, protected or ignored targets, links through other links, and cycles are
+refused. A symlink target is stored as bytes in the same durable journal as a
+regular candidate. Required checks and command snapshots recreate links without
+following them. Publication and undo preserve object kinds, compare exact bases,
+and recover interrupted journaled operations; unrecognized external changes
+require attention rather than being overwritten.
+
+Exploration helpers can use `read_binary` and `read_symlink` to inspect the
+parent's pending edits. Helpers cannot edit those files, and a helper's read
+does not authorize the parent to replace a file it has not read itself.
+
+Nested repositories, recursive directory deletion, type-changing replacements,
+and case-only renames remain unavailable. All edits remain private until the
+daemon validates and journals publication.
 
 | Chat command | CLI equivalent | Purpose |
 | --- | --- | --- |

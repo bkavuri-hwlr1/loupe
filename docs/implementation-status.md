@@ -21,7 +21,11 @@ the remaining planned capabilities are listed below.
   dependency setup, bounded replayable subprocess output, required-check gating,
   retained review proposals, task diffs, apply, undo, and cancellation. Shared
   overlays and batch journals support directory creation, regular text-file
-  deletion, and renames. Configuration is owner-local and frozen per attempt.
+  deletion and renames, bounded binary replacement from base64, and contained
+  relative symlink creation, retargeting and deletion. Binary and symlink edits
+  retain exact bases, survive checkpoints, run in typed check/command snapshots,
+  and use the journal for publication, undo and crash recovery. Configuration
+  is owner-local and frozen per attempt.
   See [the workflow guide](verified-workflow.md) for limits and commands.
 
 - A Python 3.12–3.14 package with `loupe` and `louped` entry points
@@ -123,8 +127,9 @@ the remaining planned capabilities are listed below.
   capabilities, including whether they enforce scope themselves.
 - A bounded model tool surface: `list_files`, `read_file`, `search_text`,
   `read_diff`, `write_file`, `apply_patch`, `validate_changes`, `finish_task`,
-  and `ask_user` when a session is attached. Reads are confined to the
-  worktree; writes are confined to the claim inside it. A refused write is
+  and `ask_user` when a session is attached. Shared workspaces additionally
+  expose `read_binary`, `write_binary`, `read_symlink`, and `write_symlink`.
+  Reads are confined to the worktree; writes are confined to the claim inside it. A refused write is
   returned to the model as a correctable error, never as a crashed run.
 - A built-in supervised coding-agent harness over a neutral provider/session
   protocol, with optional Anthropic and OpenAI SDK adapters. OpenAI uses
@@ -451,9 +456,11 @@ this manual contract; shared agent tasks use the separate multi-file batch
 journal described above.
 
 Shared tools exclude ignored runtime files and nested repositories. Missing candidate
-parents can be staged as directories inside scope. Regular-file deletion and
-renames use the batch journal; symlink edits and arbitrary shell execution
-remain unsupported. Named checks use disposable snapshots. The daemon barrier
+parents can be staged as directories inside scope. Regular-file deletion,
+renames, binary replacements, and contained relative symlink edits use the batch
+journal. Binary and symlink changes never merge after a base change; escaping,
+protected, ignored, and chained symlink targets are refused. Named checks use
+disposable snapshots. The daemon barrier
 coordinates cooperating reads and publications within one profile. It does not
 make a multi-file filesystem replacement atomic for external editors or test
 processes, and the complete multi-profile guarantees in the plan are not yet
@@ -698,7 +705,6 @@ remaining harness gaps into packages that separate sessions can run at once.
 1. Validate the remaining multi-profile authority and migration guarantees.
 2. Add isolated mode with explicit environment hydration and publication
    through the same batch protocol, building on the check-snapshot runner.
-   Symlinks and binary file operations still need dedicated recovery semantics.
 3. Broaden independent-review quality and cost measurements beyond the completed
    planted-bug acceptance run; keep review disabled by default.
 4. Build the opt-in knowledge/RAG and graph planes on top of that durable task

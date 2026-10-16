@@ -324,7 +324,8 @@ class SharedToolBroker(ToolBroker):
         with nullcontext() if name == "search_text" else self.publication_lock:
             snapshot = (
                 self.usage_snapshot()
-                if name
+                if name in self.tool_names()
+                and name
                 in {
                     "write_file",
                     "write_binary",
