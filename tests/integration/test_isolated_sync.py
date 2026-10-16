@@ -312,3 +312,22 @@ def test_incoming_policy_exclusion_precedes_local_secret_artifact_read(
         env.sync.synchronize(env.workspace_id)
     assert not artifact.exists()
     assert (env.local / "a.txt").read_bytes() == protected
+
+
+def test_later_disjoint_batch_on_conflicted_file_does_not_clear_divergence(
+    env: Environment,
+) -> None:
+    (env.local / "a.txt").write_text("local\nmiddle\nlast\n")
+    env.publish("first", {"a.txt": b"remote\nmiddle\nlast\n"})
+    assert env.sync.synchronize(env.workspace_id).conflicted == ("a.txt",)
+    env.publish(
+        "second", {"a.txt": b"remote\nmiddle\nnew last\n", "b.txt": b"unrelated\n"}
+    )
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.conflicted == ("a.txt",)
+    assert (env.local / "a.txt").read_text() == "local\nmiddle\nlast\n"
+    assert (env.local / "b.txt").read_text() == "unrelated\n"
+    restarted = IsolatedSynchronizer(env.store, env.publisher, env.sync.capture)
+    restarted.synchronize(env.workspace_id)
+    with pytest.raises(WorkspaceBrokerError, match="conflict remains unresolved"):
+        restarted.publication_files(env.workspace_id, ())

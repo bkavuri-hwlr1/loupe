@@ -331,6 +331,22 @@ class IsolatedSynchronizer:
         self.recover(workspace_id)
         return report
 
+    def _conflicts(self, workspace_id: str) -> dict[str, dict[str, Any]]:
+        with self.store.connection() as con:
+            journals = con.execute(
+                "SELECT steps_json FROM isolated_sync_journal WHERE workspace_id=? "
+                "AND state='applied' ORDER BY generation",
+                (workspace_id,),
+            ).fetchall()
+        unresolved: dict[str, dict[str, Any]] = {}
+        for journal in journals:
+            for step in json.loads(journal["steps_json"]):
+                if step["disposition"] == "divergence_preserved":
+                    unresolved[step["path"]] = step
+                else:
+                    unresolved.pop(step["path"], None)
+        return unresolved
+
     def _prepare(
         self, workspace_id: str, sequence: int, request_json: str
     ) -> SyncResult:
@@ -341,6 +357,7 @@ class IsolatedSynchronizer:
         applied: list[str] = []
         merged: list[str] = []
         conflicts: list[str] = []
+        unresolved = self._conflicts(workspace_id)
         incoming_files = _journal_files(request_json)
         if excluded_paths(root, [item.relative_path for item in incoming_files]):
             raise WorkspaceBrokerError(
@@ -371,6 +388,12 @@ class IsolatedSynchronizer:
             disposition = "already_current"
             if current == incoming.result:
                 pass
+            elif path in unresolved and current == _identity_from_json(
+                unresolved[path]["after"]
+            ):
+                # A later disjoint edit in the same file must not silently
+                # resolve an earlier overlap the user has not addressed.
+                disposition = "divergence_preserved"
             elif current == _identity(accepted) and incoming.base == _identity(
                 accepted
             ):
@@ -625,19 +648,7 @@ class IsolatedSynchronizer:
                     target = candidate_target(Path(state["canonical_path"]), path)
                     if target.is_dir() and not target.is_symlink():
                         local[path] = entry
-            with self.store.connection() as con:
-                journals = con.execute(
-                    "SELECT steps_json FROM isolated_sync_journal WHERE workspace_id=? "
-                    "AND state='applied' ORDER BY generation",
-                    (workspace_id,),
-                ).fetchall()
-            unresolved: dict[str, dict[str, Any]] = {}
-            for journal in journals:
-                for step in json.loads(journal["steps_json"]):
-                    if step["disposition"] == "divergence_preserved":
-                        unresolved[step["path"]] = step
-                    else:
-                        unresolved.pop(step["path"], None)
+            unresolved = self._conflicts(workspace_id)
             for path, step in unresolved.items():
                 current = _identity(local.get(path))
                 if current == _identity_from_json(
