@@ -34,6 +34,7 @@ from llm_cli.git.environment import run_git
 from llm_cli.ids import new_id
 from llm_cli.workspace.batches import BatchFile, candidate_target
 from llm_cli.workspace.identity import DIRECTORY_MODE, read_identified_path
+from llm_cli.workspace.isolated import copy_runtime_files
 
 # Ignored dependency folders a command may read in place. Copying them would
 # be slow, and virtual environments embed absolute paths.
@@ -83,7 +84,11 @@ class CommandRunner:
         dependency_paths: Sequence[str] = DEPENDENCY_PATHS,
         deadline_at: float | None = None,
         search_path: str | None = None,
+        runtime_files: tuple[str, ...] = (),
+        suppress_output: bool = False,
     ) -> None:
+        self.runtime_files = runtime_files
+        self.suppress_output = suppress_output
         self.root = root.resolve()
         self.snapshot_root = snapshot_root
         self.candidates = candidates
@@ -176,7 +181,9 @@ class CommandRunner:
             home.mkdir(mode=0o700)
             (home / "tmp").mkdir()
             self._capture(source)
-            readable = self._link_dependencies(source)
+            if self.runtime_files:
+                copy_runtime_files(self.root, source, self.runtime_files)
+            readable = () if self.runtime_files else self._link_dependencies(source)
             source = source.resolve()
             home = home.resolve()
             directory = (source / relative_cwd).resolve()
@@ -201,15 +208,19 @@ class CommandRunner:
                 deadline=deadline,
                 remaining=_CAPTURE_BYTES,
                 cancelled=self.cancelled,
-                on_output=lambda text: emit(
-                    "command.output", {"run_id": run_id, "text": text}
+                on_output=(
+                    None
+                    if self.suppress_output
+                    else lambda text: emit(
+                        "command.output", {"run_id": run_id, "text": text}
+                    )
                 ),
                 reaper=uses_reaper(self.sandbox),
             )
             # "error" from the supervisor means output was withheld for secret
             # material; the command itself still ran to completion.
             state = "completed" if stopped is None or stopped == "error" else stopped
-            if state == "completed":
+            if state == "completed" and not self.suppress_output:
                 files = {path: _read_back(source, path) for path in read_back}
         except (OSError, ValueError, RuntimeError) as exc:
             state = "cancelled" if self.cancelled() else "error"
@@ -228,6 +239,9 @@ class CommandRunner:
                     "truncated": clipped,
                 },
             )
+        if self.suppress_output:
+            output = "Output withheld: command had access to private runtime files."
+            files = {}
         if self.cancelled():
             raise TaskCancelled("task stopped")
         return state, exit_code, output, clipped, duration, files

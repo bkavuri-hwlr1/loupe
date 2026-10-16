@@ -943,6 +943,7 @@ CREATE TABLE isolated_workspaces (
     source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0),
     source_manifest_json TEXT NOT NULL,
     runtime_paths_json TEXT NOT NULL,
+    runtime_files_json TEXT NOT NULL,
     notices_json TEXT NOT NULL,
     source_fingerprint TEXT NOT NULL,
     creation_token TEXT NOT NULL,
