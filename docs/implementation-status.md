@@ -23,7 +23,8 @@ the remaining planned capabilities are listed below.
   containing current source working bytes; the primary checkout and index remain
   unchanged. Safe ignored regular files are copied privately, protected inputs
   require consent, and unsupported dependency trees stay absent with a notice.
-  Runtime exclusions survive ignore-rule changes and daemon restart. Checks and
+  Runtime exclusions survive ignore-rule changes and daemon restart, including
+  case and Unicode-normalization aliases. Checks and
   approved commands use disposable copies and withhold runtime-visible output
   before model results, events, or check records. Interrupted creation retains
   private recovery archives and preserves unknown or late user changes. C2 holds
