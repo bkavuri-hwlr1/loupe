@@ -323,20 +323,24 @@ crash. Publication still refuses with a clear message until C3.
 while the main checkout is untouched, and a daemon crash at each creation step
 recovers or cleans up without touching user paths.
 
-**Implemented (Wave 3 C2):** Isolated conversations now create private linked
+**Implemented (Wave 3 C2):** Isolated conversations create private linked
 worktrees from current working bytes without changing the primary index or HEAD.
-Source policy and exact manifests are pinned across creation; ignored runtime
-receives a verified private copy or COW clone, with exact-file secret consent.
-Hydrated paths remain excluded from source tools, artifacts, and proposals even
-after ignore-rule changes. Checks and approved commands copy session runtime into
-disposable snapshots and withhold output before model or durable result delivery.
-Opaque dependency trees stay absent with visible notices; no rebuild is inferred.
-Creation recovery restores ready sessions or retains known interrupted output in
-private recovery archives; late user files and replacements are preserved. The
-focused creation/privacy/runtime/recovery/worktree/durable-session suite passed
-45 tests; a further 87-test isolated creation/privacy and model-tool run covers
-case and Unicode runtime aliases. Ruff and mypy passed. C3 below completes source
-publication. See
+Source policy and exact manifests are pinned across creation, with bounded retries
+when a save crosses a snapshot. Screened ordinary source fixtures copy privately
+without entering model tools or artifacts. Ignored runtime receives verified
+private copies or COW clones, with exact-file secret consent. Directory-level
+adapters support private dependency trees without exhausting the preview's
+per-entry inventory budget; supported virtualenv launchers and Node workspace
+links relocate into private snapshots. No installer runs automatically.
+Hydrated paths stay excluded from source tools, artifacts, and proposals even
+after ignore-rule changes. Commands and checks retain useful diagnostics while
+filtering actual copied private values before delivery or storage. Closing
+retires an idle workspace and Git registration; held proposals keep their runtime
+until applied or discarded. Recovery archives preserve ordinary source evidence
+and late writes while disposing of owned runtime and screened-source copies.
+Creation, privacy, dependency, output, close, and restart regressions are tracked
+with the current validation results on [PR #54](https://github.com/bkavuri-hwlr1/loupe/pull/54).
+Publication remains the C3 handoff. See
 [the isolated workspace guide](isolated-workspaces.md) for supported boundaries.
 
 ### C3. Isolated mode: publish and receive batches

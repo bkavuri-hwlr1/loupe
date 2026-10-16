@@ -11,8 +11,8 @@ the remaining planned capabilities are listed below.
   `loupe workspace hydrate [PATH] --plan` (or global `--json`) walks actual
   ignored runtime entries with bounded no-follow traversal and passive Git
   ignore classification. It reports sizes, copy/COW candidates, budgets and
-  explicit secret-consent, virtualenv-portability, symlink, special-file and
-  nested-repository refusals. Exact `--approve-secret PATH` flags preview
+  exact-file secret consent, bounded private dependency-tree adapters, and
+  unsupported symlink, special-file and nested-repository decisions. Exact `--approve-secret PATH` flags preview
   per-file consent without saving it. Truncated or changing inventories
   disable candidate copies. This command needs no daemon and copies nothing.
   See [ADR 0009](adr/0009-isolated-runtime-hydration.md).
@@ -20,24 +20,35 @@ the remaining planned capabilities are listed below.
 - Isolated session creation and runtime execution (Wave 3 C2): `loupe chat` and
   `loupe session open` accept `--workspace isolated` and repeatable exact-file
   `--approve-secret PATH` consent. Each session gets a private linked worktree
-  containing current source working bytes; the primary checkout and index remain
-  unchanged. Safe ignored regular files are copied privately, protected inputs
-  require consent, and unsupported dependency trees stay absent with a notice.
+  containing current source working bytes. Ordinary source files that trigger
+  secret screening can be copied privately for local tests without exposing their
+  bytes to model tools or ordinary artifacts. Stable no-follow copies and bounded
+  retries handle source saves during creation. Ignored files and supported
+  `.venv`, `venv`, and `node_modules` trees use private copies or verified COW,
+  with exact-file secret consent and bounded directory-level adapters.
   Runtime exclusions survive ignore-rule changes and daemon restart, including
-  case and Unicode-normalization aliases. Checks and
-  approved commands use disposable copies and withhold runtime-visible output
-  before model results, events, or check records. Interrupted creation retains
-  private recovery archives and preserves unknown or late user changes. See
-  [isolated workspaces](isolated-workspaces.md) for recovery behavior, source-index
-  semantics, and unsupported runtime adapters.
+  case and Unicode-normalization aliases. Commands and checks keep useful output
+  while filtering actual copied credential values before model results, events,
+  check records, and hook returns. Closing removes the private worktree and Git
+  registration once running work and held proposals release it. Recovery preserves
+  ordinary source evidence and late user changes while scrubbing owned runtime
+  and screened-source copies from archives. See
+  [isolated workspaces](isolated-workspaces.md) for supported
+  layouts, bounded adapters, and recovery behavior.
 
 - Isolated source publication and incoming synchronization (Wave 3 C3): shared
   batches and current primary source reach the private worktree at safe points.
+  Metadata-assisted scans skip unchanged bodies outside the publication lock;
+  a racing publication invalidates the scan before it can apply. Source saves or
+  unavailable paths defer synchronization with a bounded path-only notice while
+  preserving the last accepted version and allowing the task to continue.
   Three-way text merges retain local edits; overlapping, binary, symlink, and
   nonempty-directory conflicts remain durable without blocking unrelated incoming
   paths. Checked source deltas publish through the shared batch journal, while
   runtime stays excluded. Normal-mode proposals freeze independently of later
   private edits; apply and undo support restart and private runtime checks.
+  A closed session retains its runtime through held apply, then retires it;
+  exact-base undo remains available after that private cleanup.
   Incoming journals recognize exact before/after states, and a private catch-up
   failure cannot turn confirmed primary publication into a failed task.
 

@@ -45,12 +45,16 @@ Ignored runtime is copied privately under the hydration policy:
   The preview remains bounded without listing their descendants; materialization
   streams up to 200,000 entries and 5 GiB through no-follow descriptors, under a
   60-second copy budget. Files use private COW clones or copies, never hardlinks.
-  Relative dependency links must remain inside that dependency tree.
-- Virtualenv scripts and editable-install paths are relocated into each private
-  snapshot. An external Python interpreter link is allowed only when it resolves
-  to the daemon's exact base interpreter; command sandboxes expose that trusted
-  interpreter read-only. Environments built with another Python require an
-  explicit adapter. No installer runs automatically.
+  Relative dependency links remain inside that tree or point at ordinary source
+  packages copied into the same private workspace. Secret, excluded, administrative,
+  and outside-checkout targets are refused.
+- Virtualenv launchers, activation scripts, editable-install paths, and venv
+  configuration are relocated into each private snapshot; other runtime data
+  retains exact bytes. External Python links must match pinned `pyvenv.cfg`
+  home/executable metadata and name a regular native Python executable. The
+  adapter validates metadata without executing the interpreter. Command
+  sandboxes expose that base interpreter read-only, including a different
+  installed Python version. No installer runs automatically.
 - Credential-like files inside dependency trees are omitted with an exact-path
   notice unless individually approved. Special files, escaping links, nested
   repositories, and unsupported mounts are refused. Administrative paths are
@@ -98,7 +102,15 @@ helpers retain their read-only broker view and have no MCP access.
 
 Before model requests, checks, commands, and publication, Loupe receives complete
 shared batches in event order and compares the current primary source for edits
-made outside Loupe. Unchanged private paths receive the incoming version. Clean
+made outside Loupe. Regular files with unchanged device, inode, mode, size,
+mtime, and ctime reuse their stored source identity without rereading or
+re-storing the body. The filesystem scan runs outside the publication lock;
+its result is discarded if a publication races it. A crossing save or an
+unavailable or newly screened path keeps its last accepted version, reports a
+bounded path-only deferral, and retries at the next safe point without failing
+the task. Unrelated source changes can still advance.
+
+Unchanged private paths receive the incoming version. Clean
 three-way text merges preserve private edits alongside incoming changes. Binary
 and symlink changes retain exact identities and do not merge.
 
@@ -117,7 +129,9 @@ Applying a held proposal merges it onto the current primary source and reruns
 required checks with the owning isolated session's private runtime. Later private
 edits are preserved rather than added to that held proposal. `/undo` reverses the
 published batch with exact-base validation and synchronizes the private source.
-These operations remain available after daemon restart.
+These operations remain available after daemon restart. A published task's
+exact-base undo also remains available after its closed private workspace has
+been retired; it uses retained publication data against the shared checkout.
 
 Publication retains the shared limits: 50 paths, 256 KiB per regular file, and
 4 MiB of retained original and candidate bytes. Runtime paths never enter source

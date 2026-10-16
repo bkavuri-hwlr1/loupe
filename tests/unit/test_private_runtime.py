@@ -309,3 +309,352 @@ def test_hook_returns_source_only_after_private_value_screening(
     else:
         assert result.state == "completed"
         assert result.files == {"generated.txt": b"safe generated source"}
+
+
+def test_plain_runtime_path_values_are_exact_not_venv_relocated(tmp_path: Path) -> None:
+    from llm_cli.workspace.isolated import copy_runtime_files
+
+    private, snapshot = tmp_path / "private", tmp_path / "snapshot"
+    private.mkdir()
+    snapshot.mkdir()
+    (private / ".env").write_text("LOCAL_PATH=" + str(private) + "\n")
+    register_runtime_paths(private, (".env",))
+    copy_runtime_files(private, snapshot, (".env",))
+    assert (snapshot / ".env").read_bytes() == (private / ".env").read_bytes()
+    assert runtime_identity(private, [".env"]) == runtime_identity(snapshot, [".env"])
+
+
+def test_venv_fixture_path_values_remain_exact_while_launchers_relocate(
+    tmp_path: Path,
+) -> None:
+    primary, private = tmp_path / "primary", tmp_path / "private"
+    (primary / ".venv/data").mkdir(parents=True)
+    private.mkdir()
+    value = "fixture root=" + str(primary)
+    (primary / ".venv/data/fixture.txt").write_text(value)
+    copy_dependency_tree(primary, private, ".venv")
+    assert (private / ".venv/data/fixture.txt").read_text() == value
+    assert runtime_identity(primary, [".venv"]) == runtime_identity(private, [".venv"])
+
+
+def test_node_workspace_link_points_at_copied_private_source(
+    tmp_path: Path,
+    repository_factory: Any,
+) -> None:
+    primary = repository_factory(
+        tmp_path,
+        {
+            ".gitignore": "node_modules/\n",
+            "packages/local/package.json": '{"main":"index.js"}',
+            "packages/local/index.js": "module.exports = 42;\n",
+        },
+    )
+    (primary / "node_modules").mkdir()
+    (primary / "node_modules/local").symlink_to("../packages/local")
+    private, snapshot = tmp_path / "private", tmp_path / "snapshot"
+    for destination in (private, snapshot):
+        destination.mkdir()
+        shutil.copytree(primary / "packages", destination / "packages")
+        shutil.copyfile(primary / ".gitignore", destination / ".gitignore")
+        subprocess.run(["git", "init", "--quiet"], cwd=destination, check=True)
+    register_runtime_paths(private, ("node_modules",))
+    register_runtime_paths(snapshot, ("node_modules",))
+    assert copy_dependency_tree(primary, private, "node_modules") == ()
+    assert (
+        copy_dependency_tree(private, snapshot, "node_modules", pinned_private=True)
+        == ()
+    )
+    assert runtime_identity(private, ["node_modules"]) == runtime_identity(
+        snapshot, ["node_modules"]
+    )
+    link = snapshot / "node_modules/local"
+    assert link.resolve() == snapshot / "packages/local"
+    (link / "index.js").write_text("private only\n")
+    assert (primary / "packages/local/index.js").read_text() == "module.exports = 42;\n"
+    assert (private / "packages/local/index.js").read_text() == "module.exports = 42;\n"
+
+
+@pytest.mark.parametrize(
+    "target", ["../.env", "../.git", "../ignored", "../../outside"]
+)
+def test_node_workspace_link_refuses_private_admin_ignored_and_escape(
+    tmp_path: Path,
+    repository_factory: Any,
+    target: str,
+) -> None:
+    primary = repository_factory(
+        tmp_path,
+        {
+            ".gitignore": "node_modules/\n.env\nignored/\n",
+            "source.py": "pass\n",
+        },
+    )
+    (primary / ".env").write_text("TOKEN=private")
+    (primary / "ignored").mkdir()
+    (primary / "node_modules").mkdir()
+    (primary / "node_modules/local").symlink_to(target)
+    private = tmp_path / "private"
+    private.mkdir()
+    with pytest.raises(
+        (LlmCoordError, ValueError), match=r"protected|excluded|escapes"
+    ):
+        copy_dependency_tree(primary, private, "node_modules")
+
+
+def test_alternate_installed_python_venv_runs_after_private_relocation(
+    tmp_path: Path,
+) -> None:
+    candidates = [
+        shutil.which("python3.14"),
+        shutil.which("python3.13"),
+        "/opt/homebrew/bin/python3.14",
+    ]
+    base = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+    alternate = next(
+        (
+            Path(path)
+            for path in candidates
+            if path and Path(path).is_file() and Path(path).resolve() != base
+        ),
+        None,
+    )
+    if alternate is None:
+        pytest.skip("an alternate installed Python is unavailable")
+    primary, private, snapshot = (
+        tmp_path / name for name in ("primary", "private", "snapshot")
+    )
+    for path in (primary, private, snapshot):
+        path.mkdir()
+    subprocess.run(
+        [str(alternate), "-m", "venv", "--without-pip", str(primary / ".venv")],
+        check=True,
+    )
+    copy_dependency_tree(primary, private, ".venv")
+    copy_dependency_tree(private, snapshot, ".venv", pinned_private=True)
+    completed = subprocess.run(
+        [
+            ".venv/bin/python",
+            "-c",
+            "import sys; print(sys.version_info[:2]); import encodings",
+        ],
+        cwd=snapshot,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert runtime_identity(private, [".venv"]) == runtime_identity(snapshot, [".venv"])
+    assert (snapshot / ".venv/bin/python").resolve() != base
+
+
+def test_venv_external_python_must_match_cfg_and_be_native(tmp_path: Path) -> None:
+    primary, private, external = (
+        tmp_path / name for name in ("primary", "private", "external")
+    )
+    (primary / ".venv/bin").mkdir(parents=True)
+    private.mkdir()
+    external.mkdir()
+    fake = external / "python3.99"
+    fake.write_text("#!/bin/sh\nprintf unsafe\n")
+    fake.chmod(0o755)
+    (primary / ".venv/pyvenv.cfg").write_text("home = " + str(external) + "\n")
+    (primary / ".venv/bin/python").symlink_to(fake)
+    with pytest.raises(LlmCoordError, match="native"):
+        copy_dependency_tree(primary, private, ".venv")
+    shutil.rmtree(private / ".venv")
+    (primary / ".venv/pyvenv.cfg").write_text("home = /nonexistent-python-base\n")
+    with pytest.raises(LlmCoordError, match="pinned configuration"):
+        copy_dependency_tree(primary, private, ".venv")
+
+
+def test_nested_json_credentials_are_redacted_without_hiding_siblings(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "settings.local").write_text(
+        '{"database":{"password":"nested-private-value","host":"ordinary-host"},'
+        '"services":[{"credentials":{"token":"nested-list-private-value"}}],'
+        '"diagnostic":"assertion at line 42"}'
+    )
+    values = private_output_values(tmp_path, ("settings.local",))
+    assert {"nested-private-value", "nested-list-private-value"} <= set(values)
+    assert "ordinary-host" not in values
+    assert "assertion at line 42" not in values
+    events: list[str] = []
+    code, output, clipped, stopped = supervised_run(
+        [
+            sys.executable,
+            "-c",
+            "import json; from pathlib import Path; "
+            "d=json.loads(Path('settings.local').read_text()); "
+            "print(d['database']['password']); "
+            "print(d['services'][0]['credentials']['token']); "
+            "print(d['database']['host']); print(d['diagnostic'])",
+        ],
+        cwd=tmp_path,
+        env={"PATH": os.defpath},
+        deadline=time.monotonic() + 20,
+        remaining=4096,
+        cancelled=lambda: False,
+        on_output=events.append,
+        sensitive_values=values,
+    )
+    assert code == 0 and stopped is None and not clipped
+    assert "nested-private-value" not in output + repr(events)
+    assert "nested-list-private-value" not in output + repr(events)
+    assert "ordinary-host" in output and "assertion at line 42" in output
+
+
+def test_numeric_and_toml_sensitive_fields_are_actual_private_values(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "settings.local").write_text(
+        '{"database":{"password":418529},"ordinary":123}'
+    )
+    (tmp_path / "auth.toml").write_text(
+        '[database]\npassword = "toml-private-value"\nport = 9012\n'
+    )
+    values = private_output_values(tmp_path, ("settings.local", "auth.toml"))
+    assert "418529" in values and "toml-private-value" in values
+    assert "123" not in values and "9012" not in values
+
+
+def test_exact_credential_descendant_consent_copies_only_approved_file(
+    tmp_path: Path,
+) -> None:
+    primary, private = tmp_path / "primary", tmp_path / "private"
+    (primary / "node_modules/pkg/.aws").mkdir(parents=True)
+    private.mkdir()
+    approved = "node_modules/pkg/.aws/credentials"
+    (primary / approved).write_text("aws_access_key_id=approved-private-value\n")
+    (primary / "node_modules/pkg/.aws/config").write_text("secret=unapproved-sibling\n")
+    notices = copy_dependency_tree(
+        primary, private, "node_modules", approved_secret_paths=(approved,)
+    )
+    assert (private / approved).read_bytes() == (primary / approved).read_bytes()
+    assert not (private / "node_modules/pkg/.aws/config").exists()
+    assert "node_modules/pkg/.aws/config" in repr(notices)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"TOKEN=opaque-private-value\0\n",
+        b"TOKEN=opaque-private-value\xff\n",
+    ],
+)
+@pytest.mark.parametrize("value_only", [False, True])
+def test_literal_binary_private_input_never_reaches_output_or_events(
+    tmp_path: Path,
+    body: bytes,
+    value_only: bool,
+) -> None:
+    (tmp_path / ".env").write_bytes(body)
+    (tmp_path / "ordinary.pyc").write_bytes(b"\0ordinary unclassified cache")
+    values = private_output_values(tmp_path, (".env", "ordinary.pyc"))
+    assert values and all(
+        "ordinary unclassified cache" not in value for value in values
+    )
+    events: list[str] = []
+    command = (
+        "print(Path('.env').read_bytes().split(b'=')[1]"
+        ".split(bytes([0]))[0].decode(errors='ignore'))"
+        if value_only
+        else "sys.stdout.buffer.write(Path('.env').read_bytes()); "
+        "sys.stdout.buffer.flush()"
+    )
+    code, output, clipped, stopped = supervised_run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; "
+            "print('useful diagnostic', flush=True); " + command,
+        ],
+        cwd=tmp_path,
+        env={"PATH": os.defpath},
+        deadline=time.monotonic() + 20,
+        remaining=4096,
+        cancelled=lambda: False,
+        on_output=events.append,
+        sensitive_values=values,
+    )
+    assert code == 0 and stopped is None and not clipped
+    assert "opaque-private-value" not in output + repr(events)
+    assert "useful diagnostic" in output
+
+
+@pytest.mark.parametrize("filename", ["secrets.yaml", "settings.local"])
+def test_yaml_flow_credentials_and_quoted_scalars_are_screened_before_events(
+    tmp_path: Path, filename: str
+) -> None:
+    (tmp_path / filename).write_text(
+        "database: {password: inline-private-value, host: example.test}\n"
+        "services: {token: 'quoted private, value', ordinary: diagnostic}\n"
+        'auth: {password: "escaped\\nprivate"}\n'
+    )
+    values = private_output_values(tmp_path, (filename,))
+    assert {"inline-private-value", "quoted private, value", "escaped\nprivate"} <= set(
+        values
+    )
+    if filename == "settings.local":
+        assert "example.test" not in values and "diagnostic" not in values
+    events: list[str] = []
+    code, output, clipped, stopped = supervised_run(
+        [
+            sys.executable,
+            "-c",
+            "print('inline-private-value'); print('quoted private, value'); "
+            "print('escaped\\nprivate'); print('ordinary diagnostic survives')",
+        ],
+        cwd=tmp_path,
+        env={"PATH": os.defpath},
+        deadline=time.monotonic() + 20,
+        remaining=4096,
+        cancelled=lambda: False,
+        on_output=events.append,
+        sensitive_values=values,
+    )
+    assert code == 0 and stopped is None and not clipped
+    assert "inline-private-value" not in output + repr(events)
+    assert "quoted private, value" not in output + repr(events)
+    assert "escaped" not in output + repr(events)
+    assert "ordinary diagnostic survives" in output
+
+
+def test_overlapping_short_secrets_do_not_expand_generated_placeholders(
+    tmp_path: Path,
+) -> None:
+    values = (*"abcdefghijklmnopqrstuvwxyz", "test", "failed")
+    events: list[str] = []
+    code, output, clipped, stopped = supervised_run(
+        [sys.executable, "-c", "print('test failed')"],
+        cwd=tmp_path,
+        env={"PATH": os.defpath},
+        deadline=time.monotonic() + 20,
+        remaining=4096,
+        cancelled=lambda: False,
+        on_output=events.append,
+        sensitive_values=values,
+    )
+    assert code == 0 and stopped is None and not clipped
+    assert output == "[private value] [private value]\n"
+    assert "".join(events) == output
+    assert len(output) < 100
+
+
+def test_rendered_redaction_and_events_respect_capture_byte_budget(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    code, output, clipped, stopped = supervised_run(
+        [sys.executable, "-c", "print('z' * 4000)"],
+        cwd=tmp_path,
+        env={"PATH": os.defpath},
+        deadline=time.monotonic() + 20,
+        remaining=4096,
+        cancelled=lambda: False,
+        on_output=events.append,
+        sensitive_values=("z",),
+    )
+    assert code == 0 and stopped is None and clipped
+    assert len(output.encode()) <= 4096
+    assert len("".join(events).encode()) <= 4096
+    assert "z" not in output + repr(events)

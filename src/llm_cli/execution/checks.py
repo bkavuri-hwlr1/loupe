@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import posixpath
+import re
 import selectors
 import shutil
 import subprocess
@@ -213,14 +214,25 @@ def runtime_identity(root: Path, paths: list[str]) -> str:
                 if Path(link).is_absolute():
                     from llm_cli.workspace.runtime import _trusted_python
 
-                    _trusted_python(root, entry.relative_to(root).as_posix(), link)
+                    executable = _trusted_python(
+                        root, entry.relative_to(root).as_posix(), link
+                    )
+                    identity, _ = read_identified_path(executable)
+                    manifest.append(
+                        (
+                            entry.relative_to(root).as_posix() + ":base-python",
+                            identity.digest,
+                        )
+                    )
                 else:
                     destination = posixpath.normpath(
                         posixpath.join(entry.parent.relative_to(root).as_posix(), link)
                     )
                     if destination != path and not destination.startswith(path + "/"):
-                        raise ValueError(
-                            "runtime snapshot contains an escaping symlink"
+                        from llm_cli.workspace.runtime import workspace_dependency_link
+
+                        workspace_dependency_link(
+                            root, entry.relative_to(root).as_posix(), link
                         )
                 manifest.append((entry.relative_to(root).as_posix(), digest(link)))
                 continue
@@ -232,7 +244,9 @@ def runtime_identity(root: Path, paths: list[str]) -> str:
             total += identity.size
             if total > 5 * 1024**3:
                 raise ValueError("runtime snapshot exceeds 5 GiB")
-            if b"\0" not in body:
+            from llm_cli.workspace.runtime import relocated_venv_text
+
+            if relocated_venv_text(entry.relative_to(root).as_posix(), body):
                 body = body.replace(os.fsencode(root), b"<private-runtime-root>")
             manifest.append(
                 (entry.relative_to(root).as_posix(), hashlib.sha256(body).hexdigest())
@@ -722,7 +736,31 @@ class CheckRunner:
     def _copy_runtime(self, path: str, snapshot: Path) -> None:
         if runtime_path(self.runtime_root, path):
             from llm_cli.workspace.isolated import copy_pinned_runtime_file
+            from llm_cli.workspace.runtime import dependency_path
 
+            source = candidate_target(self.runtime_root, path)
+            if (
+                source.is_dir()
+                and not source.is_symlink()
+                and not dependency_path(path)
+            ):
+                # Configured directory roots overlap the exact session-pinned
+                # files added to this config. Those exact entries copy below;
+                # recursing this root would widen consent to new private files.
+                if any(
+                    other.startswith(path + "/")
+                    for other in self.config.get("runtime_paths", [])
+                ):
+                    return
+                with os.scandir(source) as runtime_entries:
+                    if next(runtime_entries, None) is not None:
+                        raise ValueError(
+                            "runtime directory has no exact pinned file inputs: " + path
+                        )
+                candidate_target(snapshot, path).mkdir(
+                    parents=True, exist_ok=True, mode=0o700
+                )
+                return
             copy_pinned_runtime_file(self.runtime_root, snapshot, path)
             return
         source = candidate_target(self.runtime_root, path)
@@ -833,6 +871,17 @@ def supervised_run(
     output pipe.
     """
 
+    private_pattern = (
+        re.compile(
+            "|".join(
+                re.escape(value)
+                for value in sorted(set(sensitive_values), key=len, reverse=True)
+                if value
+            )
+        )
+        if any(sensitive_values)
+        else None
+    )
     process = subprocess.Popen(
         [
             sys.executable,
@@ -850,12 +899,19 @@ def supervised_run(
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     chunks: list[str] = []
+    rendered_remaining = remaining
     partial_line: list[str] = []
     withheld = False
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     clipped, stopped = False, None
 
     def emit_safe(text: str) -> None:
+        nonlocal clipped, rendered_remaining
+        encoded = text.encode("utf-8")
+        allowed = encoded[: max(0, rendered_remaining)]
+        clipped |= len(allowed) < len(encoded)
+        text = allowed.decode("utf-8", errors="ignore")
+        rendered_remaining -= len(text.encode("utf-8"))
         for start in range(0, len(text), 4096):
             chunk = text[start : start + 4096]
             chunks.append(chunk)
@@ -865,8 +921,10 @@ def supervised_run(
         nonlocal withheld
         line = "".join(partial_line)
         partial_line.clear()
-        for value in sensitive_values:
-            line = line.replace(value, "[private value]")
+        if private_pattern is not None:
+            # Match only original output. Never revisit generated placeholders,
+            # which can themselves contain another (especially short) value.
+            line = private_pattern.sub("[private value]", line)
         try:
             ensure_safe_content(line)
         except LlmCoordError:
