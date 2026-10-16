@@ -41,6 +41,7 @@ def create_managed_worktree(
     task_id: str,
     base_oid: str,
     worktree_path: Path | None = None,
+    checkout: bool = True,
 ) -> ManagedWorktree:
     """Create and lock a detached linked worktree at one exact commit OID.
 
@@ -114,7 +115,12 @@ def create_managed_worktree(
         # Conditional includes can enable a filter only under the new Git
         # directory. Register first without materializing source, then let the
         # child-context guard inspect its effective config before checkout.
-        run_git(canonical_path, ["reset", "--hard", resolved_base])
+        if checkout:
+            run_git(canonical_path, ["reset", "--hard", resolved_base])
+        else:
+            # Populate only the private index. Source bytes are materialized
+            # from an exact working-tree manifest without filters or checkout.
+            run_git(canonical_path, ["read-tree", resolved_base])
 
         run_git(
             canonical_repository,
