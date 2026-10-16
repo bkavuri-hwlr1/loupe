@@ -32,6 +32,7 @@ class GitWorktreeRecord:
     path: Path
     head_oid: str | None
     locked: bool
+    lock_reason: str | None = None
 
 
 def create_managed_worktree(
@@ -417,6 +418,7 @@ def list_git_worktrees(repository: Path) -> tuple[GitWorktreeRecord, ...]:
         path = Path(decoded_path).resolve(strict=False)
         head: str | None = None
         locked = False
+        lock_reason: str | None = None
         for record_field in fields[1:]:
             if record_field.startswith(b"HEAD "):
                 try:
@@ -428,7 +430,17 @@ def list_git_worktrees(repository: Path) -> tuple[GitWorktreeRecord, ...]:
                     ) from exc
             elif record_field == b"locked" or record_field.startswith(b"locked "):
                 locked = True
-        records.append(GitWorktreeRecord(path=path, head_oid=head, locked=locked))
+                lock_reason = (
+                    record_field.removeprefix(b"locked")
+                    .strip()
+                    .decode("utf-8", errors="replace")
+                    or None
+                )
+        records.append(
+            GitWorktreeRecord(
+                path=path, head_oid=head, locked=locked, lock_reason=lock_reason
+            )
+        )
         fields = []
     if fields or not records:
         raise LlmCoordError(

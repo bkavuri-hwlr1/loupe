@@ -35,7 +35,8 @@ from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
 from llm_cli.git.worktrees import (
     create_managed_worktree,
-    remove_managed_worktree,
+    list_git_worktrees,
+    prune_managed_worktrees,
     resume_managed_worktree,
 )
 from llm_cli.ids import new_id
@@ -81,13 +82,17 @@ def _error(message: str) -> LlmCoordError:
 
 @contextmanager
 def _parent(
-    root: Path, relative: str, *, create: bool = False
+    root: Path | int, relative: str, *, create: bool = False
 ) -> Iterator[tuple[int, str]]:
     """Keep every ancestor pinned; no descendant symlink may be followed."""
     normalized = normalize_changed_path(relative)
     if normalized != relative or any(part in _ADMIN for part in Path(relative).parts):
         raise _error("isolated source names an administrative or noncanonical path")
-    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = (
+        os.dup(root)
+        if isinstance(root, int)
+        else os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    )
     try:
         parts = relative.split("/")
         for part in parts[:-1]:
@@ -531,7 +536,8 @@ class IsolatedWorkspaceManager:
                 "UPDATE workspaces SET state='quarantined', quarantine_reason=?, "
                 "state_version=state_version+1 WHERE workspace_id=?",
                 (
-                    "isolated creation interrupted; files preserved for recovery",
+                    "isolated creation interrupted; files preserved in worktree or "
+                    + str(self.managed_root / (".recovery-" + workspace_id)),
                     workspace_id,
                 ),
             )
@@ -562,6 +568,56 @@ class IsolatedWorkspaceManager:
         register_runtime_paths(managed.path, state.runtime_paths)
         return state
 
+    def _creation_file_matches(
+        self,
+        root: Path,
+        relative: str,
+        state: IsolatedState,
+        primary: Path,
+    ) -> bool:
+        expected = state.source_manifest.get(relative)
+        if expected is not None and expected["kind"] == "symlink":
+            with _parent(root, relative) as (parent, leaf):
+                body = os.fsencode(os.readlink(leaf, dir_fd=parent))
+        else:
+            with _source(root, relative) as descriptor:
+                body = _read(descriptor, _MAX_SOURCE_FILE)
+        if expected is not None:
+            return bool(expected["content_hash"] == hashlib.sha256(body).hexdigest())
+        if relative in state.runtime_files:
+            with _source(primary, relative) as descriptor:
+                return _read(descriptor, _MAX_SOURCE_FILE) == body
+        return False
+
+    @staticmethod
+    def _cleanup_files(
+        root: Path, known: set[str], *, git_pointer: bool = False
+    ) -> tuple[str, ...]:
+        parents = {
+            parent.as_posix()
+            for relative in known
+            for parent in Path(relative).parents
+            if parent != Path(".")
+        }
+        result: list[str] = []
+        for directory, directories, files in os.walk(root, followlinks=False):
+            base = Path(directory)
+            for name in list(directories):
+                relative = (base / name).relative_to(root).as_posix()
+                if (base / name).is_symlink():
+                    files.append(name)
+                    directories.remove(name)
+                elif relative not in parents:
+                    raise _error("cleanup found an unknown directory; preserving it")
+            for name in files:
+                relative = (base / name).relative_to(root).as_posix()
+                if git_pointer and relative == ".git":
+                    continue
+                if relative not in known:
+                    raise _error("cleanup found an unknown file; preserving it")
+                result.append(relative)
+        return tuple(sorted(result))
+
     def _clean_incomplete(self, workspace_id: str) -> bool:
         state = self.get(workspace_id)
         workspace = self.store.get_workspace(workspace_id)
@@ -569,69 +625,179 @@ class IsolatedWorkspaceManager:
         path = Path(workspace.canonical_path)
         checkout = self.store.get_checkout(workspace.checkout_id)
         assert checkout is not None
+        primary = Path(checkout.canonical_path)
+        archive = self.managed_root / (".recovery-" + workspace_id)
+        archive_data = archive / "files"
+        owner: dict[str, Any] | None = None
+        if archive.exists() or archive.is_symlink():
+            with _source(archive, "owner.json") as descriptor:
+                owner = json.loads(_read(descriptor, 4096))
+            if owner is None or owner.get("token") != state.creation_token:
+                return False
         if path.exists() or path.is_symlink():
+            root_status = path.lstat()
+            if owner is not None:
+                if [root_status.st_dev, root_status.st_ino] != owner["root_identity"]:
+                    return False
+                # A crash can happen after removing the Git pointer but before
+                # rmdir. Restore only in the same pinned directory inode.
+                if not (path / ".git").exists():
+                    with _source(archive, "git-pointer") as descriptor:
+                        pointer = _read(descriptor, 4096)
+                    root_fd = os.open(
+                        path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    )
+                    try:
+                        _write_body(root_fd, ".git", pointer, 0o600)
+                    finally:
+                        os.close(root_fd)
             managed = resume_managed_worktree(
-                Path(checkout.canonical_path),
+                primary,
                 managed_root=self.managed_root,
                 registered_path=path,
                 task_id=workspace_id,
                 base_oid=state.base_oid,
             )
-            with _source(managed.git_dir, "loupe-isolated-owner") as descriptor:
-                if _read(descriptor, 1024).decode() != state.creation_token:
+            try:
+                with _source(managed.git_dir, "loupe-isolated-owner") as descriptor:
+                    if _read(descriptor, 1024).decode() != state.creation_token:
+                        return False
+            except FileNotFoundError:
+                # The locked registration itself can prove an otherwise empty
+                # worktree in the add-return / private-marker crash window.
+                record = next(
+                    (item for item in list_git_worktrees(primary) if item.path == path),
+                    None,
+                )
+                if (
+                    state.stage != "planned"
+                    or record is None
+                    or record.lock_reason != "llm-coord:" + workspace_id
+                    or set(os.listdir(path)) != {".git"}
+                ):
                     return False
-            # Cleanup requires every existing byte to be an expected creation
-            # byte. User additions/changes, links, or changed primary runtime
-            # make ownership ambiguous and therefore preserve the whole tree.
-            known_files = set(state.source_manifest) | set(state.runtime_files)
-            known_parents = {
-                parent.as_posix()
-                for relative in known_files
-                for parent in Path(relative).parents
-                if parent != Path(".")
-            }
-            for directory, directories, files in os.walk(path, followlinks=False):
-                base = Path(directory)
-                for name in list(directories):
-                    relative = (base / name).relative_to(path).as_posix()
-                    if (base / name).is_symlink():
-                        files.append(name)
-                        directories.remove(name)
-                    elif relative not in known_parents:
-                        return False
-                for name in files:
-                    relative = (base / name).relative_to(path).as_posix()
-                    if relative == ".git":
-                        continue
-                    expected = state.source_manifest.get(relative)
-                    if expected is not None and expected["kind"] == "symlink":
-                        with _parent(path, relative) as (parent, leaf):
-                            body = os.fsencode(os.readlink(leaf, dir_fd=parent))
-                    else:
-                        with _source(path, relative) as descriptor:
-                            body = _read(descriptor, _MAX_SOURCE_FILE)
-                    if expected is not None:
-                        if expected["content_hash"] != hashlib.sha256(body).hexdigest():
+            known = set(state.source_manifest) | set(state.runtime_files)
+            originals = self._cleanup_files(path, known, git_pointer=True)
+            archived = self._cleanup_files(archive_data, known) if owner else ()
+            if set(originals) & set(archived):
+                return False
+            if not all(
+                self._creation_file_matches(path, item, state, primary)
+                for item in originals
+            ):
+                return False
+            if not all(
+                self._creation_file_matches(archive_data, item, state, primary)
+                for item in archived
+            ):
+                return False
+            root_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                pinned = os.fstat(root_fd)
+                if (pinned.st_dev, pinned.st_ino) != (
+                    root_status.st_dev,
+                    root_status.st_ino,
+                ):
+                    return False
+                pointer_fd = os.open(
+                    ".git", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd
+                )
+                try:
+                    pointer = _read(pointer_fd, 4096)
+                finally:
+                    os.close(pointer_fd)
+                if owner is None:
+                    archive.mkdir(mode=0o700)
+                    archive_data.mkdir(mode=0o700)
+                    owner = {
+                        "token": state.creation_token,
+                        "root_identity": [root_status.st_dev, root_status.st_ino],
+                    }
+                    archive_fd = os.open(
+                        archive, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    )
+                    try:
+                        _write_body(
+                            archive_fd, "owner.json", json.dumps(owner).encode(), 0o600
+                        )
+                        _write_body(archive_fd, "git-pointer", pointer, 0o600)
+                    finally:
+                        os.close(archive_fd)
+                self.fault("cleanup_verified")
+                for relative in originals:
+                    with (
+                        _parent(root_fd, relative) as (source_parent, leaf),
+                        _parent(archive_data, relative, create=True) as (
+                            destination_parent,
+                            destination_leaf,
+                        ),
+                    ):
+                        # The archive is private and the destination is new.
+                        # Never overwrite an earlier recovered copy.
+                        try:
+                            os.stat(
+                                destination_leaf,
+                                dir_fd=destination_parent,
+                                follow_symlinks=False,
+                            )
+                        except FileNotFoundError:
+                            pass
+                        else:
                             return False
-                    elif relative in state.runtime_files:
-                        with _source(
-                            Path(checkout.canonical_path), relative
-                        ) as descriptor:
-                            if _read(descriptor, _MAX_SOURCE_FILE) != body:
-                                return False
-                    else:
+                        os.rename(
+                            leaf,
+                            destination_leaf,
+                            src_dir_fd=source_parent,
+                            dst_dir_fd=destination_parent,
+                        )
+                        os.fsync(source_parent)
+                        os.fsync(destination_parent)
+                    self.fault("cleanup_archived")
+                    if not self._creation_file_matches(
+                        archive_data, relative, state, primary
+                    ):
                         return False
-            remove_managed_worktree(
-                Path(checkout.canonical_path),
-                managed_root=self.managed_root,
-                registered_path=path,
-                force=True,
-            )
+                # Retain archived bytes, including any late write through an
+                # already-open descriptor. Cleanup only removes empty names.
+                parents = {
+                    parent
+                    for relative in known
+                    for parent in Path(relative).parents
+                    if parent != Path(".")
+                }
+                for parent in sorted(
+                    parents, key=lambda item: len(item.parts), reverse=True
+                ):
+                    with (
+                        suppress(FileNotFoundError),
+                        _parent(root_fd, parent.as_posix()) as (parent_fd, leaf),
+                    ):
+                        os.rmdir(leaf, dir_fd=parent_fd)
+                        os.fsync(parent_fd)
+                if set(os.listdir(root_fd)) != {".git"}:
+                    return False
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino):
+                    return False
+                os.unlink(".git", dir_fd=root_fd)
+                try:
+                    path.rmdir()
+                except OSError:
+                    _write_body(root_fd, ".git", pointer, 0o600)
+                    return False
+            finally:
+                os.close(root_fd)
+        # Pruning only touches missing managed registrations, never an existing
+        # directory created by a user after rmdir. Foreign stale entries abort.
+        prune_managed_worktrees(primary, managed_root=self.managed_root)
         with self.store.connection() as con, immediate_transaction(con):
             con.execute(
-                "UPDATE workspaces SET state='removed',"
-                "state_version=state_version+1 WHERE workspace_id=?",
-                (workspace_id,),
+                "UPDATE workspaces SET state='removed',state_version=state_version+1,"
+                "quarantine_reason=? WHERE workspace_id=?",
+                (
+                    "Interrupted creation output retained at " + str(archive),
+                    workspace_id,
+                ),
             )
             con.execute(
                 "DELETE FROM isolated_workspaces WHERE workspace_id=?", (workspace_id,)

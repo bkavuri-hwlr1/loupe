@@ -74,7 +74,9 @@ def test_each_creation_crash_recovers_or_cleans_owned_files(
         _manager(env, tmp_path).validate(rows[0]["workspace_id"])
     else:
         assert not rows
-        assert not list((tmp_path / "private").glob("*"))
+        assert not list((tmp_path / "private").glob("workspace_*"))
+        for archive in (tmp_path / "private").glob(".recovery-*"):
+            assert not archive.stat().st_mode & 0o077
         # A known interrupted creation can be retried without a manual cleanup.
         manager.fault = lambda stage: None
         manager.open(_checkout(env), "crash", approved_secrets=(".env",))
@@ -322,3 +324,135 @@ def test_primary_runtime_declassification_is_refused_before_artifacts(
         for path in env.publisher.candidate_dir.glob("*")
         if path.is_file()
     )
+
+
+class CreationCrash(BaseException):
+    pass
+
+
+def _interrupted_creation(
+    env: BatchEnvironment, tmp_path: Path
+) -> tuple[IsolatedWorkspaceManager, Path, str]:
+    manager = _manager(env, tmp_path)
+
+    def interrupt(stage: str) -> None:
+        if stage == "materialized":
+            raise CreationCrash()
+
+    manager.fault = interrupt
+    with pytest.raises(CreationCrash):
+        manager.open(_checkout(env), "recovery-race")
+    with env.store.connection() as con:
+        workspace_id = str(
+            con.execute("SELECT workspace_id FROM isolated_workspaces").fetchone()[0]
+        )
+    return manager, tmp_path / "private" / workspace_id, workspace_id
+
+
+def test_cleanup_preserves_a_file_created_after_inventory(
+    batch_env: BatchEnvironment, tmp_path: Path
+) -> None:
+    manager, private, workspace_id = _interrupted_creation(batch_env, tmp_path)
+
+    def late_write(stage: str) -> None:
+        if stage == "cleanup_verified":
+            (private / "late-user-file").write_text("retain late bytes")
+
+    manager.fault = late_write
+    manager.recover()
+    assert (private / "late-user-file").read_text() == "retain late bytes"
+    state = manager.get(workspace_id)
+    assert state is not None and state.stage == "attention"
+    assert (
+        tmp_path / "private" / (".recovery-" + workspace_id) / "files" / "a.txt"
+    ).read_text() == "old a\n"
+
+
+def test_cleanup_archives_late_replacement_without_erasing_it(
+    batch_env: BatchEnvironment, tmp_path: Path
+) -> None:
+    manager, private, workspace_id = _interrupted_creation(batch_env, tmp_path)
+
+    def late_write(stage: str) -> None:
+        if stage == "cleanup_verified":
+            replacement = private / "replacement"
+            replacement.write_text("retain replacement bytes")
+            replacement.replace(private / "a.txt")
+
+    manager.fault = late_write
+    manager.recover()
+    archive = tmp_path / "private" / (".recovery-" + workspace_id)
+    assert (archive / "files" / "a.txt").read_text() == "retain replacement bytes"
+    state = manager.get(workspace_id)
+    assert state is not None and state.stage == "attention"
+    with batch_env.store.connection() as con:
+        row = con.execute(
+            "SELECT quarantine_reason FROM workspaces WHERE workspace_id=?",
+            (workspace_id,),
+        ).fetchone()
+    assert row is not None and str(archive) in row[0]
+
+
+def test_cleanup_resumes_after_archiving_nested_source(
+    batch_env: BatchEnvironment, tmp_path: Path
+) -> None:
+    manager, private, workspace_id = _interrupted_creation(batch_env, tmp_path)
+    archive = tmp_path / "private" / (".recovery-" + workspace_id)
+
+    def interrupt(stage: str) -> None:
+        if stage == "cleanup_archived" and (archive / "files/docs/b.txt").exists():
+            raise CreationCrash()
+
+    manager.fault = interrupt
+    with pytest.raises(CreationCrash):
+        manager.recover()
+    assert not (private / "docs/b.txt").exists()
+    assert (archive / "files/docs/b.txt").read_text() == "old b\n"
+    _manager(batch_env, tmp_path).recover()
+    assert manager.get(workspace_id) is None
+    assert not private.exists()
+    assert (archive / "files/docs/b.txt").read_text() == "old b\n"
+
+
+def test_registration_before_owner_marker_recovers_known_empty_worktree(
+    batch_env: BatchEnvironment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import isolated
+
+    real_create = isolated.create_managed_worktree
+
+    def interrupt_after_registration(*args: Any, **kwargs: Any) -> Any:
+        real_create(*args, **kwargs)
+        raise CreationCrash()
+
+    monkeypatch.setattr(
+        isolated, "create_managed_worktree", interrupt_after_registration
+    )
+    manager = _manager(batch_env, tmp_path)
+    with pytest.raises(CreationCrash):
+        manager.open(_checkout(batch_env), "registration-window")
+    with batch_env.store.connection() as con:
+        workspace_id = str(
+            con.execute("SELECT workspace_id FROM isolated_workspaces").fetchone()[0]
+        )
+    manager.recover()
+    assert manager.get(workspace_id) is None
+    assert not (tmp_path / "private" / workspace_id).exists()
+
+
+def test_cleanup_retains_later_writes_through_an_open_source_descriptor(
+    batch_env: BatchEnvironment, tmp_path: Path
+) -> None:
+    manager, private, workspace_id = _interrupted_creation(batch_env, tmp_path)
+    archive = tmp_path / "private" / (".recovery-" + workspace_id)
+    descriptor = os.open(private / "a.txt", os.O_WRONLY)
+    try:
+        manager.fault = lambda stage: None
+        manager.recover()
+        assert manager.get(workspace_id) is None
+        os.write(descriptor, b"late open-descriptor write")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    assert (archive / "files/a.txt").read_bytes() == b"late open-descriptor write"
+    assert not private.exists()
