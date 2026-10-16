@@ -45,12 +45,16 @@ Ignored runtime is copied privately under the hydration policy:
   The preview remains bounded without listing their descendants; materialization
   streams up to 200,000 entries and 5 GiB through no-follow descriptors, under a
   60-second copy budget. Files use private COW clones or copies, never hardlinks.
-  Relative dependency links must remain inside that dependency tree.
-- Virtualenv scripts and editable-install paths are relocated into each private
-  snapshot. An external Python interpreter link is allowed only when it resolves
-  to the daemon's exact base interpreter; command sandboxes expose that trusted
-  interpreter read-only. Environments built with another Python require an
-  explicit adapter. No installer runs automatically.
+  Relative dependency links remain inside that tree or point at ordinary source
+  packages copied into the same private workspace. Secret, excluded, administrative,
+  and outside-checkout targets are refused.
+- Virtualenv launchers, activation scripts, editable-install paths, and venv
+  configuration are relocated into each private snapshot; other runtime data
+  retains exact bytes. External Python links must match pinned `pyvenv.cfg`
+  home/executable metadata and name a regular native Python executable. The
+  adapter validates metadata without executing the interpreter. Command
+  sandboxes expose that base interpreter read-only, including a different
+  installed Python version. No installer runs automatically.
 - Credential-like files inside dependency trees are omitted with an exact-path
   notice unless individually approved. Special files, escaping links, nested
   repositories, and unsupported mounts are refused. Administrative paths are

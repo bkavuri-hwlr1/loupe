@@ -101,7 +101,7 @@ def test_typed_source_is_materialized_without_following_links(
     assert not any("source-link" in notice for notice in notices)
 
 
-@pytest.mark.parametrize("dependency", ["none", "python", "node"])
+@pytest.mark.parametrize("dependency", ["none", "python", "node", "generic"])
 def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
     tmp_path: Path,
     repository_factory: Any,
@@ -113,10 +113,17 @@ def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
             tmp_path,
             {
                 "a.py": "value = 1\n",
-                ".gitignore": ".env\n.venv/\nnode_modules/\n",
+                ".gitignore": ".env\n.venv/\nnode_modules/\nruntime/\n",
             },
         )
         interpreter = sys.executable
+        if dependency == "generic":
+            (root / "runtime").mkdir()
+            (root / "runtime/data").write_text("local runtime input")
+            (root / "runtime/settings.local").write_text(
+                '{"database":{"password":"nested-check-private-value",'
+                '"numeric_secret":418529,"host":"ordinary-check-host"}}'
+            )
         if dependency == "python":
             subprocess.run(
                 [sys.executable, "-m", "venv", "--without-pip", str(root / ".venv")],
@@ -206,6 +213,14 @@ def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
             code = (
                 "import local_dependency; assert local_dependency.VALUE == 42; " + code
             )
+        if dependency == "generic":
+            code = (
+                "import json; "
+                "assert open('runtime/data').read() == 'local runtime input'; "
+                "d=json.load(open('runtime/settings.local')); "
+                "print(d['database']['password']); print(d['database']['host']); "
+                "print(d['database']['numeric_secret']); "
+            ) + code
         argv = [interpreter, "-c", code]
         if dependency == "node":
             argv = ["npm", "test", "--silent"]
@@ -215,11 +230,12 @@ def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
                 {
                     "path": str(root),
                     "config": {
+                        "runtime_paths": ["runtime"] if dependency == "generic" else [],
                         "checks": {
                             "runtime": {
                                 "argv": argv,
                             }
-                        }
+                        },
                     },
                 },
             )
@@ -234,6 +250,16 @@ def test_isolated_task_checks_use_env_without_publishing_or_disclosing_it(
                     "SELECT output FROM check_runs WHERE task_id='isolated-task'"
                 ).fetchone()[0]
             assert "useful assertion diagnostic" in persisted_output
+            if dependency == "generic":
+                assert "nested-check-private-value" not in persisted_output
+                assert "418529" not in persisted_output
+                assert "ordinary-check-host" in persisted_output
+                assert "nested-check-private-value" not in repr(
+                    service.store.list_task_events("isolated-task")
+                )
+                assert "418529" not in repr(
+                    service.store.list_task_events("isolated-task")
+                )
             assert secret not in repr(rows)
             assert secret not in repr(service.store.list_task_events("isolated-task"))
             assert secret not in repr(provider.results)
