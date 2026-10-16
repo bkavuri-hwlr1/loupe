@@ -328,3 +328,82 @@ def test_private_sync_failure_does_not_fail_confirmed_publication_or_recovery(
             service.close()
 
     asyncio.run(scenario())
+
+
+def test_isolated_helper_command_notifies_parent_when_pending_edits_are_reconciled(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    from test_shared_explore import Provider
+
+    from llm_cli.agent.tools import ToolBroker
+    from llm_cli.execution import commands, shared
+    from llm_cli.providers.base import ModelTurn
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"docs/guide.md": "first\nmiddle\nlast\n"})
+        provider = Provider(
+            "isolated-helper",
+            [
+                _tools(
+                    _call("read_file", path="docs/guide.md"),
+                    _call(
+                        "write_file",
+                        path="docs/guide.md",
+                        content="local\nmiddle\nlast\n",
+                    ),
+                ),
+                _tools(_call("explore", task="Inspect command")),
+                ModelTurn(text="Done."),
+            ],
+            [
+                _tools(_call("run_command", argv=["cat", "docs/guide.md"])),
+                ModelTurn(text="Done."),
+            ],
+        )
+        send = provider.helper.send_user
+
+        def send_after_primary_change(text: str) -> ModelTurn:
+            (root / "docs/guide.md").write_text("first\nmiddle\nremote\n")
+            return send(text)
+
+        notices: list[str] = []
+        notify = ToolBroker.notify_parent
+
+        def collect_notice(broker: ToolBroker, text: str) -> None:
+            notices.append(text)
+            notify(broker, text)
+
+        monkeypatch.setattr(provider.helper, "send_user", send_after_primary_change)
+        monkeypatch.setattr(ToolBroker, "notify_parent", collect_notice)
+        monkeypatch.setattr(shared, "available_sandbox", lambda: "test-sandbox")
+        monkeypatch.setattr(
+            commands, "wrap", lambda kind, policy, argv, **kwargs: list(argv)
+        )
+        service = service_factory(tmp_path)
+        assert service.shared_runner.commands is not None
+        service.shared_runner.commands = replace(
+            service.shared_runner.commands, approval="allow"
+        )
+        service.providers.register("scripted", lambda model: provider)
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(root)}))
+        credentials, _ = await open_session(service, root, provider.model)
+        try:
+            await asyncio.wait_for(
+                await _start(service, root, credentials, "helper-task", ("docs/",)), 30
+            )
+            _assert_completed(service, "helper-task")
+            assert len(notices) == 1
+            assert "docs/guide.md" in notices[0]
+            assert "your edits were merged" in notices[0]
+            assert "local\nmiddle\nremote" in provider.helper.results[0][0].content
+            assert (root / "docs/guide.md").read_text() == "local\nmiddle\nremote\n"
+        finally:
+            service.close()
+
+    asyncio.run(scenario())

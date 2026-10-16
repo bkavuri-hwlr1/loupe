@@ -225,48 +225,57 @@ class IsolatedSynchronizer:
             applied: list[str] = []
             merged: list[str] = []
             conflicted: list[str] = []
-            with self.store.connection() as con:
-                rows = con.execute(
-                    "SELECT sequence,event_type,payload_json FROM checkout_events "
-                    "WHERE checkout_id=? AND sequence>? ORDER BY sequence LIMIT 1001",
-                    (state["checkout_id"], state["source_sequence"]),
-                ).fetchall()
-            if len(rows) > 1000:
-                raise WorkspaceBrokerError(
-                    "isolated synchronization exceeds 1000 pending events"
-                )
             sequence = int(state["source_sequence"])
-            for row in rows:
-                if int(row["sequence"]) != sequence + 1:
-                    raise WorkspaceBrokerError("isolated incoming history has a gap")
-                sequence += 1
-                if row["event_type"] != "workspace.batch_published":
-                    # Non-batch events carry no reconstructible source bodies.
-                    # Exact publication comparison still catches outside writes.
-                    with self.store.connection() as con:
-                        con.execute(
-                            "UPDATE isolated_sync_state SET "
-                            "source_sequence=? WHERE workspace_id=?",
-                            (sequence, workspace_id),
-                        )
-                    continue
-                payload = json.loads(row["payload_json"])
+            with self.store.connection() as con:
+                latest = con.execute(
+                    "SELECT MAX(sequence) FROM checkout_events WHERE checkout_id=?",
+                    (state["checkout_id"],),
+                ).fetchone()[0]
+            upper_bound = max(sequence, int(latest or 0))
+            while sequence < upper_bound:
                 with self.store.connection() as con:
-                    batch = con.execute(
-                        "SELECT * FROM workspace_batches "
-                        "WHERE batch_id=? AND checkout_id=? "
-                        "AND state='published' AND checkout_event_sequence=?",
-                        (payload["batch_id"], state["checkout_id"], sequence),
-                    ).fetchone()
-                if batch is None:
-                    raise WorkspaceBrokerError("incoming batch artifact is unavailable")
-                report = self._prepare(
-                    workspace_id, sequence, str(batch["request_json"])
-                )
-                self.recover(workspace_id)
-                applied.extend(report.applied)
-                merged.extend(report.merged)
-                conflicted.extend(report.conflicted)
+                    rows = con.execute(
+                        "SELECT sequence,event_type,payload_json FROM checkout_events "
+                        "WHERE checkout_id=? AND sequence>? AND sequence<=? "
+                        "ORDER BY sequence LIMIT 1000",
+                        (state["checkout_id"], sequence, upper_bound),
+                    ).fetchall()
+                if not rows:
+                    raise WorkspaceBrokerError("isolated incoming history has a gap")
+                for row in rows:
+                    if int(row["sequence"]) != sequence + 1:
+                        raise WorkspaceBrokerError(
+                            "isolated incoming history has a gap"
+                        )
+                    sequence += 1
+                    if row["event_type"] != "workspace.batch_published":
+                        # Exact source comparison below also catches outside writes.
+                        with self.store.connection() as con:
+                            con.execute(
+                                "UPDATE isolated_sync_state SET "
+                                "source_sequence=? WHERE workspace_id=?",
+                                (sequence, workspace_id),
+                            )
+                        continue
+                    payload = json.loads(row["payload_json"])
+                    with self.store.connection() as con:
+                        batch = con.execute(
+                            "SELECT * FROM workspace_batches "
+                            "WHERE batch_id=? AND checkout_id=? "
+                            "AND state='published' AND checkout_event_sequence=?",
+                            (payload["batch_id"], state["checkout_id"], sequence),
+                        ).fetchone()
+                    if batch is None:
+                        raise WorkspaceBrokerError(
+                            "incoming batch artifact is unavailable"
+                        )
+                    report = self._prepare(
+                        workspace_id, sequence, str(batch["request_json"])
+                    )
+                    self.recover(workspace_id)
+                    applied.extend(report.applied)
+                    merged.extend(report.merged)
+                    conflicted.extend(report.conflicted)
             report = self._refresh_primary(workspace_id)
             applied.extend(report.applied)
             merged.extend(report.merged)
@@ -457,6 +466,9 @@ class IsolatedSynchronizer:
                     "incoming": result,
                 }
             )
+        preserved = _preserve_local_directories(root, steps)
+        applied = [path for path in applied if path not in preserved]
+        conflicts.extend(preserved)
         with self.store.connection() as con, immediate_transaction(con):
             con.execute(
                 "INSERT INTO "
@@ -484,6 +496,16 @@ class IsolatedSynchronizer:
             root = Path(state["canonical_path"])
             for journal in journals:
                 steps = json.loads(journal["steps_json"])
+                if _preserve_local_directories(root, steps):
+                    # A private child can be added after preparation or a crash.
+                    # Retain its container durably before replaying other paths.
+                    with self.store.connection() as con:
+                        con.execute(
+                            "UPDATE isolated_sync_journal SET steps_json=? "
+                            "WHERE workspace_id=? AND generation=? "
+                            "AND state='prepared'",
+                            (_encode(steps), workspace_id, journal["generation"]),
+                        )
                 # Validate the entire transition before making any further write.
                 for step in steps:
                     path = normalize_changed_path(step["path"])
@@ -651,6 +673,10 @@ class IsolatedSynchronizer:
             unresolved = self._conflicts(workspace_id)
             for path, step in unresolved.items():
                 current = _identity(local.get(path))
+                if step["after"]["kind"] == "directory_marker":
+                    current, _ = read_candidate_path(
+                        candidate_target(Path(state["canonical_path"]), path)
+                    )
                 if current == _identity_from_json(
                     step["after"]
                 ) and current != _identity(step["incoming"]):
@@ -665,7 +691,10 @@ class IsolatedSynchronizer:
                 if _identity(before) == _identity(after):
                     continue
                 content = self._body(after)
-                if has_conflict_markers(content):
+                binary = bool(
+                    (after or {}).get("binary") or (before or {}).get("binary")
+                ) or _binary(content)
+                if not binary and has_conflict_markers(content):
                     raise WorkspaceBrokerError(
                         "isolated source contains unresolved conflict markers"
                     )
@@ -677,10 +706,7 @@ class IsolatedSynchronizer:
                         _identity(after).mode,
                         self._body(before),
                         _identity(after).permissions,
-                        bool(
-                            (after or {}).get("binary") or (before or {}).get("binary")
-                        )
-                        or _binary(content),
+                        binary,
                     )
                 )
             added = {file.relative_path for file in files}
@@ -747,6 +773,45 @@ class IsolatedSynchronizer:
                         )
                     },
                 )
+
+
+def _preserve_local_directories(
+    root: Path, steps: list[dict[str, Any]]
+) -> tuple[str, ...]:
+    """Keep containers whose children will survive this incoming transition."""
+    deleted = {step["path"] for step in steps if step["after"]["kind"] == "absent"}
+    preserved = []
+    for step in sorted(steps, key=lambda item: -len(Path(item["path"]).parts)):
+        if (
+            step["before"]["kind"] != "directory_marker"
+            or step["after"]["kind"] != "absent"
+        ):
+            continue
+        target = candidate_target(root, step["path"])
+        current, _ = read_candidate_path(target)
+        if current.kind is not ObjectKind.DIRECTORY_MARKER:
+            continue  # Recovery's exact state check handles changed path kinds.
+        descriptor = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(descriptor)
+            live = target.lstat()
+            if (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino):
+                raise WorkspaceBrokerError(
+                    "isolated directory changed during inspection"
+                )
+            with os.scandir(descriptor) as entries:
+                retained_child = any(
+                    step["path"] + "/" + entry.name not in deleted for entry in entries
+                )
+        finally:
+            os.close(descriptor)
+        if retained_child:
+            step["after"] = step["before"]
+            step["content_hash"] = None
+            step["disposition"] = "divergence_preserved"
+            deleted.remove(step["path"])
+            preserved.append(step["path"])
+    return tuple(preserved)
 
 
 def _sync_parent(path: Path) -> None:

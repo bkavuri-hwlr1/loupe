@@ -331,3 +331,108 @@ def test_later_disjoint_batch_on_conflicted_file_does_not_clear_divergence(
     restarted.synchronize(env.workspace_id)
     with pytest.raises(WorkspaceBrokerError, match="conflict remains unresolved"):
         restarted.publication_files(env.workspace_id, ())
+
+
+@pytest.mark.parametrize(
+    "body", [b"<<<<<<< your pending edits\n", b"\0\n<<<<<<< your pending edits\n\xff"]
+)
+def test_binary_marker_bytes_are_not_interpreted_as_text_conflicts(
+    env: Environment, body: bytes
+) -> None:
+    from llm_cli.workspace.identity import ABSENT
+
+    files = env.sync.publication_files(
+        env.workspace_id,
+        (BatchFile("binary.dat", ABSENT, body, REGULAR_MODE, binary=True),),
+    )
+    assert len(files) == 1
+    assert files[0].binary
+    assert files[0].content == body
+
+
+@pytest.mark.parametrize("added_after_prepare", [False, True])
+def test_incoming_directory_deletion_preserves_private_children_and_completes(
+    env: Environment, monkeypatch: pytest.MonkeyPatch, added_after_prepare: bool
+) -> None:
+    from llm_cli.workspace.identity import ABSENT, DIRECTORY_MODE
+
+    created = (
+        BatchFile("folder", ABSENT, b"", DIRECTORY_MODE),
+        BatchFile("folder/item.txt", ABSENT, b"original", REGULAR_MODE),
+    )
+    assert (
+        env.publisher.publish("create", "shared", created, ("*",)).state == "published"
+    )
+    env.sync.synchronize(env.workspace_id)
+    child = env.local / "folder/user-added.txt"
+    if added_after_prepare:
+        prepare = env.sync._prepare
+
+        def add_after_preparation(*args: object) -> isolated_sync.SyncResult:
+            result = prepare(*args)  # type: ignore[arg-type]
+            child.write_text("private addition")
+            return result
+
+        monkeypatch.setattr(env.sync, "_prepare", add_after_preparation)
+    else:
+        child.write_text("private addition")
+    base, original = read_identified_path(env.primary / "folder/item.txt")
+    b_base, b_body = read_identified_path(env.primary / "b.txt")
+    removed = (
+        BatchFile("folder/item.txt", base, None, "", original),
+        BatchFile("folder", identify_path(env.primary / "folder"), None, ""),
+        BatchFile("b.txt", b_base, b"unrelated update", REGULAR_MODE, b_body),
+    )
+    assert (
+        env.publisher.publish("remove", "shared", removed, ("*",)).state == "published"
+    )
+    env.sync.synchronize(env.workspace_id)
+    assert child.read_text() == "private addition"
+    assert not (env.local / "folder/item.txt").exists()
+    assert (env.local / "b.txt").read_text() == "unrelated update"
+    with env.store.connection() as con:
+        assert (
+            con.execute(
+                "SELECT count(*) FROM isolated_sync_journal WHERE state='prepared'"
+            ).fetchone()[0]
+            == 0
+        )
+    restarted = IsolatedSynchronizer(env.store, env.publisher, env.sync.capture)
+    restarted.synchronize(env.workspace_id)
+    with pytest.raises(
+        WorkspaceBrokerError, match="conflict remains unresolved: folder"
+    ):
+        restarted.publication_files(env.workspace_id, ())
+    child.rename(env.local / "user-added.txt")
+    child.parent.rmdir()
+    files = restarted.publication_files(env.workspace_id, ())
+    assert [file.relative_path for file in files] == ["user-added.txt"]
+
+
+def test_idle_isolated_session_catches_up_across_multiple_event_pages(
+    env: Environment,
+) -> None:
+    with env.store.connection() as con:
+        checkout = con.execute(
+            "SELECT checkout_id FROM workspaces WHERE workspace_id=?",
+            (env.workspace_id,),
+        ).fetchone()[0]
+        for _ in range(1000):
+            env.store.append_checkout_event(
+                con,
+                checkout_id=checkout,
+                event_type="session.heartbeat",
+                caused_by_session_id="shared",
+                payload={},
+                now=0,
+            )
+    env.publish("after-first-page", {"a.txt": b"after page boundary\n"})
+    result = env.sync.synchronize(env.workspace_id)
+    assert result.applied == ("a.txt",)
+    assert (env.local / "a.txt").read_bytes() == b"after page boundary\n"
+    with env.store.connection() as con:
+        assert (
+            con.execute("SELECT source_sequence FROM isolated_sync_state").fetchone()[0]
+            == result.sequence
+        )
+    assert env.sync.synchronize(env.workspace_id).applied == ()

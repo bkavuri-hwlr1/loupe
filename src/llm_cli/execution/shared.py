@@ -313,6 +313,9 @@ class SharedTaskExecutionRunner:
                     if pending:
                         broker.emit("edits.reconciled", pending.payload())
                         note += "\n" + pending.note()
+                note = note.strip()
+                if note and broker.helper_call_active():
+                    broker.notify_parent(note)
                 return note
 
             deadline_value = saved.checkpoint.get("deadline_at") if saved else None
@@ -735,7 +738,9 @@ class SharedTaskExecutionRunner:
                     publication=outcome,
                     verification=verification,
                     completion="cancelled" if stopped else run.outcome,
-                    changed_paths=tuple(sorted(file.relative_path for file in files)),
+                    changed_paths=tuple(
+                        sorted(file.relative_path for file in files)
+                    ),
                 ),
             )
             with self.publisher.lock:
@@ -825,7 +830,9 @@ class SharedTaskExecutionRunner:
                         execution.execution_id,
                         cancelled=self.workflow.stopped(task.task_id, task.attempt),
                         completion_outcome=(
-                            "cancelled" if isinstance(exc, TaskCancelled) else "failed"
+                            "cancelled"
+                            if isinstance(exc, TaskCancelled)
+                            else "failed"
                         ),
                         verification=verification,
                         file_count=len(files),
@@ -841,7 +848,9 @@ class SharedTaskExecutionRunner:
                     # A diverged batch settles without an answer, so a
                     # response that cannot be finished must not block it.
                     with suppress(ValueError, LlmCoordError):
-                        self._finish_interrupted_response(fresh, batch.state, driver)
+                        self._finish_interrupted_response(
+                            fresh, batch.state, driver
+                        )
                     self.coordinator.settle_shared_execution(
                         execution.execution_id, outcome=batch.state
                     )
