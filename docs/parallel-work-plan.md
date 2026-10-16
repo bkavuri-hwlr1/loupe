@@ -334,7 +334,9 @@ Opaque dependency trees stay absent with visible notices; no rebuild is inferred
 Creation recovery restores ready sessions or retains known interrupted output in
 private recovery archives; late user files and replacements are preserved. The
 focused creation/privacy/runtime/recovery/worktree/durable-session suite passed
-45 tests, with Ruff and mypy passing. Publication remains the C3 handoff. See
+45 tests; a further 87-test isolated creation/privacy and model-tool run covers
+case and Unicode runtime aliases. Ruff and mypy passed. Publication remains the
+C3 handoff. See
 [the isolated workspace guide](isolated-workspaces.md) for supported boundaries.
 
 ### C3. Isolated mode: publish and receive batches

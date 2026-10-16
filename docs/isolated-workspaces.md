@@ -46,10 +46,14 @@ Ignored runtime is copied privately under the hydration policy:
 - Runtime symlinks, special files, nested repositories, and unsupported mounts
   are omitted with a notice. Administrative paths are excluded entirely.
 
-Hydrated paths remain runtime-only even if a task changes `.gitignore`. Their
-bytes do not enter ordinary model file tools, source artifacts, source
-manifests, or proposals. Closing a conversation does not copy runtime changes
-back to the primary checkout.
+Hydrated paths remain runtime-only even if a task changes `.gitignore`. Runtime
+exclusions also reserve case and Unicode-normalization aliases: `LOCAL.DATA`
+cannot expose hydrated `local.data` on a case-insensitive filesystem. This rule
+is deliberately conservative on case-sensitive filesystems too; differently
+cased source names cannot reuse a protected runtime path. Actual filesystem
+paths are never rewritten. Runtime bytes do not enter ordinary model file tools,
+source artifacts, source manifests, or proposals. Closing a conversation does
+not copy runtime changes back to the primary checkout.
 
 ## Tasks and checks
 
