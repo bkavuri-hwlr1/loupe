@@ -161,7 +161,7 @@ arguments, working directory, relevant content hash, task, and expiry.
 ### Model-chosen commands
 
 The `run_command` tool runs an argv list the model chooses. It is offered only
-in shared-workspace normal and auto tasks, only where an operating-system
+in shared and isolated normal and auto tasks, only where an operating-system
 sandbox starts successfully (Seatbelt through `sandbox-exec` on macOS,
 bubblewrap on Linux), and never unsandboxed. Each command runs in a disposable
 copy of the checkout with the task's pending edits applied:
@@ -176,14 +176,24 @@ copy of the checkout with the task's pending edits applied:
   1Password agent, package-registry tokens, Codex and Claude credentials,
   keychains and keyrings, and browser profiles on macOS and Linux, including
   Snap and Flatpak installs) are unreadable;
-- ignored dependency folders (`.venv`, `venv`, `node_modules`, and configured
-  `runtime_paths`) are readable in place but not writable;
+- in shared sessions, ignored dependency folders (`.venv`, `venv`,
+  `node_modules`, and configured `runtime_paths`) are readable in place but not
+  writable; isolated sessions use private copies of their exact hydrated runtime
+  files, and unsupported dependency trees stay absent;
 - the environment carries only `PATH` and fixed, non-secret settings;
 - arguments containing recognized secret material are refused, and output after
   recognized secret material is withheld;
 - each command has a timeout (at most 600 seconds) and stops with its task, and
   when it ends, so do processes it started, including ones that left its
   process group; output is not awaited from such a process.
+
+Isolated runtime hydration requires exact-file consent for protected inputs.
+Frozen runtime paths, including case and Unicode aliases, remain excluded from
+model file tools and source artifacts after ignore-rule changes or restart.
+Commands, checks, and hooks that can read hydrated runtime withhold their output
+before it reaches model results, events, or check records; completion and exit
+status remain visible. Runtime changes are never part of source publication.
+See [isolated workspaces](docs/isolated-workspaces.md) for recovery and limits.
 
 Other files on disk remain readable, so this is weaker than a read allowlist:
 a command could read a credential stored somewhere this policy does not list,
@@ -218,9 +228,9 @@ The `explore` tool hands a read-only question to a helper: a separate model
 session with the same provider. A helper has no more authority than the task
 that started it:
 
-- it reads through `list_files`, `read_file`, `search_text`, and `read_diff`
-  on a view of the task's broker with the same source exclusions, secret
-  screening, and pending edits;
+- it reads through `list_files`, `read_file`, `read_binary`, `read_symlink`,
+  `search_text`, and `read_diff` on a view of the task's broker with the same
+  source exclusions, secret screening, typed bounds, and pending edits;
 - when the task offers them, `run_command` and `web_fetch` delegate to that
   exact task's handlers: the same sandboxed command snapshots, command limits,
   pre-tool hooks, source/output screening, domain policy, and parent question
@@ -320,7 +330,7 @@ commands, without per-run approval since the user configured them:
   events record only the hook's name, the tool, the paths it changed, and a
   reason category.
 
-Hooks apply to the agent's own calls in shared-workspace tasks; exploration
+Hooks apply to the agent's own calls in shared and isolated tasks; exploration
 helpers' reads do not run them.
 
 ### Web pages

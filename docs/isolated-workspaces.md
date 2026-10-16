@@ -58,10 +58,12 @@ not copy runtime changes back to the primary checkout.
 ## Tasks and checks
 
 Model reads and edits operate on the isolated source and its private proposal.
-Configured checks and approved model commands use disposable snapshots based
-on that source, with exact copies of its hydrated runtime files. Changing `.env`
-in a check does not change either the session's `.env` or the primary checkout.
-Command changes are discarded; file-tool edits remain the proposed source.
+Approved model commands use disposable snapshots of the private source and
+pending edits. Required checks verify the proposed source batch on the current
+primary checkout in a disposable snapshot. Both receive exact private copies of
+the isolated session's hydrated runtime files. Changing `.env` in a check does
+not change either the session's `.env` or the primary checkout. Command changes
+are discarded; file-tool edits remain the proposed source.
 
 When a command or check can read hydrated runtime, its output is withheld before
 model results, task events, check records, or hook file returns are exposed.
@@ -75,11 +77,53 @@ per-terminal environment forwarding, virtualenv rebuilding, runtime refresh,
 and long-running process interfaces in the workspace design are future work.
 An isolated session does not grant additional access to provider credentials.
 
-C2 retains source proposals and reports that publication requires the isolated
-batch publisher. C3 adds publication and incoming shared-checkout batches; the
-single-file legacy publication RPC remains unavailable for isolated sessions.
+Configured MCP servers follow the same approval and plan-mode rules as shared
+sessions. They remain external authority, outside the worktree's scope and
+sandbox enforcement; isolation does not make them safe to trust. Exploration
+helpers retain their read-only broker view and have no MCP access.
+
+## Receive and publish source
+
+Before model requests, checks, commands, and publication, Loupe receives complete
+shared batches in event order and compares the current primary source for edits
+made outside Loupe. Unchanged private paths receive the incoming version. Clean
+three-way text merges preserve private edits alongside incoming changes. Binary
+and symlink changes retain exact identities and do not merge.
+
+An overlap preserves the private file and retains the incoming source artifact.
+Unrelated paths can still advance. The conflict survives restart and later
+incoming batches; publication stops until the preserved path is explicitly
+resolved. Edit the source to the intended combined result and rerun its checks.
+An incoming directory deletion preserves a container with private children;
+move the children to their intended location and remove the empty container to
+resolve that directory conflict. Recovery never recursively deletes it.
+
+Auto mode publishes the checked, scoped source delta through the same batch
+journal used by shared sessions. The primary checkout's HEAD, index, and refs
+remain unchanged. Normal mode freezes a proposal for `/diff` and `/apply`.
+Applying a held proposal merges it onto the current primary source and reruns
+required checks with the owning isolated session's private runtime. Later private
+edits are preserved rather than added to that held proposal. `/undo` reverses the
+published batch with exact-base validation and synchronizes the private source.
+These operations remain available after daemon restart.
+
+Publication retains the shared limits: 50 paths, 256 KiB per regular file, and
+4 MiB of retained original and candidate bytes. Runtime paths never enter source
+proposals, including after ignore-rule changes or alternate path spellings.
+The manual single-file publication RPC remains shared-only; isolated tasks use
+batch publication.
 
 ## Recovery
+
+Incoming source transitions are journaled before any filesystem write. Recovery
+accepts only each path's recorded before or after state and checks all paths
+before continuing. An unrelated third state is preserved for inspection instead
+of being overwritten. The accepted source manifest and local transition journal
+remain separate from the private worktree's detached Git HEAD.
+
+A confirmed primary publication remains successful if private catch-up cannot
+complete. The task records that private synchronization needs recovery; later
+recovery confirms the published batch independently of the private error.
 
 Each creation phase has a durable intent: planned, registered, source materialized,
 runtime hydrated, then ready. After a daemon crash, a ready workspace is reopened

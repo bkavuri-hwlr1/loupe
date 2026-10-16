@@ -335,8 +335,8 @@ Creation recovery restores ready sessions or retains known interrupted output in
 private recovery archives; late user files and replacements are preserved. The
 focused creation/privacy/runtime/recovery/worktree/durable-session suite passed
 45 tests; a further 87-test isolated creation/privacy and model-tool run covers
-case and Unicode runtime aliases. Ruff and mypy passed. Publication remains the
-C3 handoff. See
+case and Unicode runtime aliases. Ruff and mypy passed. C3 below completes source
+publication. See
 [the isolated workspace guide](isolated-workspaces.md) for supported boundaries.
 
 ### C3. Isolated mode: publish and receive batches
@@ -348,6 +348,19 @@ isolated worktree at safe points, preserving local edits.
 
 **Done when.** A shared and an isolated session work on the same repository;
 each sees the other's published work, and neither loses edits.
+
+**Implemented (Wave 3 C3):** Isolated sessions freeze source deltas against a
+separate accepted manifest and publish through the validated shared batch
+publisher. Incoming batches replay at safe points, and exact primary scans catch
+outside edits. Clean text merges preserve local work; durable conflicts retain
+private bytes while unrelated paths advance. Runtime paths and their aliases
+are excluded before content retention. Normal-mode apply and undo check the
+frozen proposal against current shared source with private runtime inputs, even
+after restart, preserving later private edits. Journal recovery accepts only
+recorded before/after states; confirmed publication survives a private catch-up
+failure with a durable notice. The focused synchronization/publication/held-review
+suite passed 27 tests; Ruff and mypy passed. See
+[isolated workspaces](isolated-workspaces.md) for supported limits.
 
 ### C4. Track edits made outside Loupe while sessions work
 

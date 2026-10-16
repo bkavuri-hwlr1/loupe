@@ -27,9 +27,19 @@ the remaining planned capabilities are listed below.
   case and Unicode-normalization aliases. Checks and
   approved commands use disposable copies and withhold runtime-visible output
   before model results, events, or check records. Interrupted creation retains
-  private recovery archives and preserves unknown or late user changes. C2 holds
-  proposals for the C3 publisher. See [isolated workspaces](isolated-workspaces.md)
-  for recovery behavior, source-index semantics, and unsupported runtime adapters.
+  private recovery archives and preserves unknown or late user changes. See
+  [isolated workspaces](isolated-workspaces.md) for recovery behavior, source-index
+  semantics, and unsupported runtime adapters.
+
+- Isolated source publication and incoming synchronization (Wave 3 C3): shared
+  batches and current primary source reach the private worktree at safe points.
+  Three-way text merges retain local edits; overlapping, binary, symlink, and
+  nonempty-directory conflicts remain durable without blocking unrelated incoming
+  paths. Checked source deltas publish through the shared batch journal, while
+  runtime stays excluded. Normal-mode proposals freeze independently of later
+  private edits; apply and undo support restart and private runtime checks.
+  Incoming journals recognize exact before/after states, and a private catch-up
+  failure cannot turn confirmed primary publication into a failed task.
 
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
@@ -220,7 +230,7 @@ the remaining planned capabilities are listed below.
   model-visible event cursor. The cursor is checkpointed with successful model
   history and promoted to later session prompts; it never acknowledges terminal
   delivery. Oversized updates and event gaps stop the request explicitly.
-- Bounded shared batch journals: up to 50 regular UTF-8 files, 256 KiB per file,
+- Bounded shared batch journals: up to 50 typed paths, 256 KiB per regular file,
   and 4 MiB of retained base and candidate bytes in the tool overlay. A batch
   changes one workspace revision and appends one checkout event, preserving
   HEAD, index, and refs. A preflight conflict retains the whole proposal
@@ -454,7 +464,9 @@ revision. Shared sessions bind to it; isolated sessions bind to a private linked
 worktree whose source workspace is that shared record. `llm-coord workspace
 status` reports the workspace and mode limits. Ignored-runtime hydration has a
 read-only preview, and C2 implements private materialization and runtime-aware
-execution. Isolated publication remains the C3 dependency.
+execution. Isolated tasks now publish through the shared batch journal and
+receive incoming source at safe points; the private baseline and transition
+journal retain unresolved local divergence across restart.
 
 The manual shared-workspace broker remains available for one UTF-8 regular
 file at a time. A brokered read records an exact versioned identity. A session
@@ -717,8 +729,8 @@ quality and cost savings remain unmeasured. Review remains off by default.
 remaining harness gaps into packages that separate sessions can run at once.
 
 1. Validate the remaining multi-profile authority and migration guarantees.
-2. Complete isolated publication and incoming shared batches (C3) on top of
-   C2's private creation and runtime-aware check snapshots.
+2. Extend isolated runtime support with explicit dependency rebuild adapters,
+   runtime refresh, and per-terminal environment handling from the workspace plan.
 3. Broaden independent-review quality and cost measurements beyond the completed
    planted-bug acceptance run; keep review disabled by default.
 4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
@@ -766,4 +778,5 @@ approval. Hydration's default output is a short summary, and `--json` retains
 full details. Git-ignored `node_modules` directories are explicit rebuild
 decisions with unknown contents rather than enumerated copy candidates,
 preserving unrelated candidates. C2 now implements bounded private copying as
-noted above; publication remains C3. E2 remains deferred.
+noted above, and C3 adds checked source publication and incoming synchronization.
+E2 remains deferred.
