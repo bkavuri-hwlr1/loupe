@@ -811,3 +811,41 @@ def test_binary_and_link_tools_are_read_only_for_helpers(checkout: Path) -> None
     assert broker.invoke(
         "write_binary", {"path": "docs/new", "content_base64": "eA=="}
     ).is_error
+
+
+def test_escaping_existing_link_cannot_enter_an_undoable_candidate(
+    checkout: Path,
+) -> None:
+    (checkout / "docs/escape").symlink_to("../../outside")
+    broker = _broker(checkout)
+    assert broker.invoke("delete_file", {"path": "docs/escape"}).is_error
+    assert broker.candidates() == ()
+    assert not broker.invoke("read_symlink", {"path": "docs/escape"}).is_error
+    assert broker.invoke(
+        "write_symlink", {"path": "docs/escape", "target": "guide.md"}
+    ).is_error
+    assert broker.candidates() == ()
+
+
+def test_metadata_binary_read_supports_full_size_opaque_replacement(
+    checkout: Path,
+) -> None:
+    body = b"\x00" * MAX_SHARED_TEXT_BYTES
+    (checkout / "docs/data.bin").write_bytes(body)
+    broker = _broker(checkout)
+    read = broker.invoke(
+        "read_binary", {"path": "docs/data.bin", "metadata_only": True}
+    )
+    assert not read.is_error
+    assert json.loads(read.content)["bytes"] == MAX_SHARED_TEXT_BYTES
+    write = broker.invoke(
+        "write_binary",
+        {
+            "path": "docs/data.bin",
+            "content_base64": base64.b64encode(b"\xff" * MAX_SHARED_TEXT_BYTES).decode(
+                "ascii"
+            ),
+        },
+    )
+    assert not write.is_error, write.content
+    assert broker.candidates()[0].original == body

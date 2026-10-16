@@ -22,6 +22,7 @@ PATHS = "{paths}"
 # The tool argument naming the file each editing tool leaves changed.
 EDITED_PATH = {
     "write_file": "path",
+    "write_binary": "path",
     "apply_patch": "path",
     "rename_file": "destination",
 }

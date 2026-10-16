@@ -2010,8 +2010,9 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
     "read_binary": _schema(
         "read_binary",
         "Read a bounded source file as base64, retaining its exact base "
-        "for write_binary.",
-        {"path": _TEXT},
+        "for write_binary. Set metadata_only=true to inspect size/identity and "
+        "authorize opaque replacement without returning base64 bytes.",
+        {"path": _TEXT, "metadata_only": {"type": "boolean"}},
         ["path"],
     ),
     "write_binary": _schema(
