@@ -462,9 +462,9 @@ edits = "some"
 review_kind = "clean"
 seed_path = "src/subject.py"
 seed_before = "    return age >= 18 and not blocked"
-seed_after = "    return not blocked and age >= 18"
+seed_after = "    return (age >= 18) and (not blocked)"
 acceptance = "review-clean-inverted"
-prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return age >= 18 and not blocked` with `    return not blocked and age >= 18`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return age >= 18 and not blocked` with `    return (age >= 18) and (not blocked)`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
 
 [tasks.checks.smoke]
 argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]

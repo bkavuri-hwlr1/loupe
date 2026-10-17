@@ -18,20 +18,38 @@ def test_contract(tmp_path):
     subject = load_subject()
 
     class Handle:
-        closed = False
+        def __init__(self, fail):
+            self.closed = False
+            self.fail = fail
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
 
         def read(self):
+            if self.fail:
+                raise ValueError("read failed")
             return " label "
 
         def close(self):
             self.closed = True
 
     class File:
-        handle = Handle()
+        def __init__(self, fail):
+            self.handle = Handle(fail)
 
         def open(self):
             return self.handle
 
-    file = File()
-    assert subject.read_label(file) == "label"
-    assert file.handle.closed
+    for fail in (False, True):
+        file = File(fail)
+        try:
+            label = subject.read_label(file)
+        except ValueError:
+            assert fail
+        else:
+            assert not fail
+            assert label == "label"
+        assert file.handle.closed

@@ -491,3 +491,66 @@ def test_hidden_oracle_ignores_candidate_collection_hooks_and_skip_config(
     target.write_text("import os; os._exit(0)\n")
     result = benchmark.hidden_acceptance(task, root, ())
     assert result["ran"] is False and result["passed"] is False
+
+
+@pytest.mark.parametrize("cleanup", ["finally", "context-manager"])
+def test_resource_oracle_accepts_equivalent_cleanup_protocols(
+    tmp_path: Path, monkeypatch, cleanup: str
+) -> None:
+    import runpy
+
+    task = next(task for task in _corpus() if task.id == "review-resource")
+    root = tmp_path / "repo"
+    shutil.copytree(benchmark.FIXTURES / task.fixture, root)
+    if cleanup == "context-manager":
+        (root / task.seed_path).write_text(
+            "def read_label(path):\n"
+            "    with path.open() as handle:\n"
+            "        return handle.read().strip()\n"
+        )
+    monkeypatch.setenv("BENCHMARK_REPOSITORY", str(root))
+    hidden = benchmark.ROOT / "scripts/benchmark_acceptance" / task.acceptance
+    oracle = runpy.run_path(str(hidden / "test_acceptance.py"))["test_contract"]
+    oracle(tmp_path)
+
+
+def test_resource_oracle_requires_cleanup_when_reading_raises(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import runpy
+
+    task = next(task for task in _corpus() if task.id == "review-resource")
+    root = tmp_path / "repo"
+    shutil.copytree(benchmark.FIXTURES / task.fixture, root)
+    (root / task.seed_path).write_text(
+        "def read_label(path):\n"
+        "    handle = path.open()\n"
+        "    result = handle.read().strip()\n"
+        "    handle.close()\n"
+        "    return result\n"
+    )
+    monkeypatch.setenv("BENCHMARK_REPOSITORY", str(root))
+    hidden = benchmark.ROOT / "scripts/benchmark_acceptance" / task.acceptance
+    oracle = runpy.run_path(str(hidden / "test_acceptance.py"))["test_contract"]
+    with pytest.raises(AssertionError):
+        oracle(tmp_path)
+
+
+def test_clean_inverted_seed_preserves_evaluation_order_and_exceptions() -> None:
+    task = next(task for task in _corpus() if task.id == "review-clean-inverted")
+    original = (benchmark.FIXTURES / task.fixture / task.seed_path).read_text()
+    reference, candidate = {}, {}
+    exec(original, reference)
+    exec(original.replace(task.seed_before, task.seed_after, 1), candidate)
+
+    def outcome(function, age, blocked):
+        try:
+            return ("value", function(age, blocked))
+        except (TypeError, ValueError) as error:
+            return (type(error), str(error))
+
+    for age in (12, 18, 19, None, "19"):
+        for blocked in (False, True):
+            assert outcome(reference["eligible"], age, blocked) == outcome(
+                candidate["eligible"], age, blocked
+            )
