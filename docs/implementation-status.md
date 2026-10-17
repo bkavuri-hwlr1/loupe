@@ -520,6 +520,38 @@ it is not yet a comparison of coding quality or throughput against one agent.
 
 ## Live two-session experiment
 
+### Wave 4 isolated and mixed smoke (October 17, 2026)
+
+The session runner now supports `--workspace shared|isolated|mixed`. Its
+`toolkit-runtime` fixture has an ignored generated canary, exact `.env` consent
+for isolated lanes, and a required check that reads the private runtime without
+printing it. Hidden acceptance ignores candidate pytest configuration and hooks.
+Each run checks the primary HEAD/index, physical session modes, canary exclusion
+from control data and logs, and removal of private worktrees and `.env` copies.
+
+The [sanitized measurement record](experiments/wave4-isolated-smoke-2026-10-17.json)
+currently contains four successful pilots and eight repeat attempts: eleven runs
+passed, while one mixed disrupted repeat lost the outside operator note. The
+runner stopped before the last four repeats. All fourteen runtime, privacy and
+cleanup audit flags passed even in that failed case; hidden operator preservation
+failed, so the case is excluded from successful-repeat medians. A no-provider
+reproduction traced it to a false incoming conflict when an unchanged isolated
+file receives a verified batch containing an outside edit it has not seen.
+The repeat measurement remains incomplete pending the C3 follow-up.
+
+The isolated repeats passed all three samples per scenario: median 90.4 s and
+154,485 tokens clean; 100.1 s and 212,088 tokens disrupted. Historical shared v3
+pair medians were 74.4 s / 124,159 tokens clean and 84.0 s / 162,268 tokens
+disrupted. That older fixture had no runtime canary/check; these are context,
+not a matched throughput comparison. All initial and failed attempts count
+against the 3M budget: 2,200,610 tokens spent, 799,390 remaining.
+
+The frozen C6 runner branch passed 2,575 tests with one expected filesystem skip,
+Ruff, mypy over 110 files, and wheel/sdist builds. The live product candidate also
+includes C7 and the isolated scheduling follow-up; the record pins both sources.
+
+### Earlier shared-mode experiments
+
 `scripts/live_sessions.py` runs the same multi-file change two ways with a
 real model: one session given every part, and one session per part working
 at once in one shared checkout. The `shop` experiment (`live_sessions.toml`)

@@ -529,6 +529,18 @@ before Waves 5–6 build on isolated mode.
 **Done when.** The option and fixture validate in unit tests, and the
 recorded runs meet every check above or name the defects that block them.
 
+**Implemented tooling; repeat measurement incomplete (October 17, 2026).**
+The runner supports all three workspace selections and exact consent for isolated
+lanes. A required runtime canary check, trusted hidden acceptance, per-case
+checkpoints and post-close privacy/cleanup audits are covered by focused tests.
+The exact C6 branch passed 2,575 tests with one expected filesystem skip, Ruff,
+mypy and package builds. Four pilots and seven repeats passed; one mixed
+disrupted repeat exposed a C3 false incoming conflict that could lose an outside
+edit, so the runner stopped before the remaining four repeats. Its failure stays
+in the [measurement record](experiments/wave4-isolated-smoke-2026-10-17.json),
+with all prior costs counted and no completed-measurement claim. C3 must be fixed
+and the affected conditions rechecked within the remaining budget.
+
 ### C7. Faster isolated checks and Wave 3 leftovers
 
 **Why.** These are the items left open by the Wave 3 review.
