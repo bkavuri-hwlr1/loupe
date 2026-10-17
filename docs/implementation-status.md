@@ -52,6 +52,17 @@ the remaining planned capabilities are listed below.
   Incoming journals recognize exact before/after states, and a private catch-up
   failure cannot turn confirmed primary publication into a failed task.
 
+- Faster isolated checks and incoming private fixtures (Wave 4 C7): fresh
+  writable runtime copies use bounded verified COW and descriptor identity scans.
+  Repeated full checks on this checkout's 6,576-target `.venv` took
+  1.428/1.452/1.471 seconds, down from 3.032/3.033/3.037 seconds. Screened fixture
+  changes reach an unchanged private copy through identity-only journals and
+  private Git staging; divergence preserves private bytes and reports the path
+  once. Incoming changes larger than 8 MiB defer that path. Unapproved optional
+  secrets are omitted with an exact consent notice. See
+  [measurements](experiments/isolated-runtime-c7-2026-10-17.md) and
+  [ADR 0009](adr/0009-isolated-runtime-hydration.md).
+
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
   retained review proposals, task diffs, apply, undo, and cancellation. Shared
@@ -736,17 +747,21 @@ quality and cost savings remain unmeasured. Review remains off by default.
 
 ## Next executable slice
 
-[`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
-remaining harness gaps into packages that separate sessions can run at once.
+[`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
+Waves 4–7, as packages that separate sessions can run at once.
 
 1. Validate the remaining multi-profile authority and migration guarantees.
-2. Extend isolated runtime support with explicit dependency rebuild adapters,
-   runtime refresh, and per-terminal environment handling from the workspace plan.
+   G1 designs these first, then G2 and G3 implement them.
+2. Complete isolated-mode live validation (C6); C7 implements faster checks.
+   Then extend isolated runtime support with runtime refresh (C8), a
+   per-session command environment (C9) and dependency rebuild adapters (C10).
 3. Broaden independent-review quality and cost measurements beyond the completed
-   planted-bug acceptance run; keep review disabled by default.
-4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
-   lifecycle, with `none` and exact-search fallbacks before optional vector
-   acceleration.
+   planted-bug acceptance run (B6). Keep review disabled by default until then.
+4. Build the opt-in knowledge plane in steps: a lexical index (F1), a code
+   graph (F2), then retrieval in the agent with a live comparison (F3). Add
+   embeddings with exact scoring (F4) only if that comparison shows retrieval
+   helps.
+5. E2's live provider checks are on hold.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).

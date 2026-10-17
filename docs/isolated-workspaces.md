@@ -14,8 +14,10 @@ loupe chat --workspace isolated --approve-secret .env
 
 The preview is read-only. Its secret approvals do not authorize a later
 conversation: repeat an exact `--approve-secret PATH` on the command that opens
-the isolated conversation. Multiple files require repeated flags. Consent is
-bound to that one new conversation; it cannot be added during resume, applied
+the isolated conversation. Multiple files require repeated flags. Opening without
+consent still succeeds: each unapproved secret is omitted with an exact-path
+notice naming `--approve-secret PATH`. Checks that need that file may fail;
+reopen with the flag to supply it. Consent is bound to that one new conversation; it cannot be added during resume, applied
 to shared mode, or reused automatically after switching models.
 
 The same flags work with `loupe session open --workspace isolated`. Runtime
@@ -37,8 +39,10 @@ Ignored runtime is copied privately under the hydration policy:
 - An ignored ordinary regular file receives a verified COW clone on a supported
   same-device filesystem, or a private byte copy. The clone probe modifies only
   disposable Loupe-owned files. Cross-device copies use private byte copying.
-- A likely secret, such as `.env`, requires exact-file consent and receives a
-  private copy with permissions no broader than `0600`, under private directories.
+- A likely secret, such as `.env`, is optional. Without exact-file consent it
+  is omitted, its path remains reserved as runtime, and the opening notice names
+  `--approve-secret PATH`. An approved file receives a private copy with
+  permissions no broader than `0600`, under private directories.
 - Every file is read through no-follow descriptors and checked for source/path
   changes. File, apparent-byte, allocation, inventory, and free-space limits apply.
 - Ignored `node_modules`, `.venv`, and `venv` roots use a directory adapter.
@@ -96,6 +100,21 @@ private values are refused. Private values are held only in memory for screening
 Runtime verification uses a process-keyed fingerprint; a daemon restart safely
 makes old runtime check evidence stale.
 
+Repeated checks reuse digests only while full file metadata still matches, and
+reuse secret-classification booleans only for exact source content identities.
+A verified COW/copy transfers its digest to that destination's exact metadata;
+any later write invalidates it. Pinned private dependency snapshots use at most
+four copy workers with eight files in flight. Source and target descriptors stay
+pinned, source paths are rechecked, and all queued work drains before failure or
+cleanup. Every invocation still receives its own writable private runtime.
+
+On macOS/APFS, a clone of Loupe with its actual virtualenv (6,576 regular targets,
+including interpreter links) ran repeated `.venv/bin/python -c pass` checks in
+1.43–1.47 seconds, down from 3.03 seconds; cold runs were 1.79 seconds versus
+3.91 seconds. These are full `CheckRunner.run` measurements including Git worktree
+creation, private runtime copying, source checks, output screening, and cleanup,
+with no provider request. Other filesystems retain private-copy fallbacks.
+
 Commands retain Loupe's existing minimized child environment. The general
 per-terminal environment forwarding, automatic virtualenv rebuilding, runtime refresh,
 and long-running process interfaces in the workspace design are future work.
@@ -114,9 +133,22 @@ made outside Loupe. Regular files with unchanged device, inode, mode, size,
 mtime, and ctime reuse their stored source identity without rereading or
 re-storing the body. The filesystem scan runs outside the publication lock;
 its result is discarded if a publication races it. A crossing save or an
-unavailable or newly screened path keeps its last accepted version, reports a
-bounded path-only deferral, and retries at the next safe point without failing
-the task. Unrelated source changes can still advance.
+unavailable path keeps its last accepted version, reports a bounded path-only
+deferral, and retries at the next safe point without failing the task. Unrelated
+source changes can still advance.
+
+Screened source fixtures, such as tests containing fake credentials, synchronize
+privately when their local copy is unchanged. Their bodies stay out of ordinary
+source artifacts, proposals, and model file tools. A prepared journal stores only
+identities and random staging tokens; incoming bodies live under the owned
+private worktree's Git administration with `0700` directories and `0600` files.
+If both copies changed, Loupe preserves the private file, retains the incoming
+version there, and reports that path once. The conflict survives restart;
+repeating a safe point does not repeat its notice. Recovery validates staged
+content and recognizes only its frozen before/after identities. Incoming opaque
+transitions keep the existing 8 MiB changed-path limit; a larger path is deferred
+with a path-only notice while unrelated changes advance. Closing the
+session removes this staging with its private Git registration.
 
 Unchanged private paths receive the incoming version. Clean
 three-way text merges preserve private edits alongside incoming changes. Binary
