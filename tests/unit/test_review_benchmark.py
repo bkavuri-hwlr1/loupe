@@ -9,6 +9,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from test_live_benchmark import benchmark
 
 
@@ -172,6 +173,8 @@ def test_pair_order_alternates_without_dropping_repetitions() -> None:
 
 
 def _seed_edit(task, content: str, call_id: str = "seed"):
+    original = (benchmark.FIXTURES / task.fixture / task.seed_path).read_text()
+    content = original.replace(task.seed_before, content, 1)
     return [
         (
             "model.tool_call",
@@ -294,6 +297,9 @@ def test_paired_summary_distinguishes_harm_and_incomplete_runs() -> None:
     assert summary["review_prompt_tokens"] == 90
     assert summary["review_token_share"] == 105 / 360
     assert summary["cost_usd"] is None
+    assert summary["per_case"]["incomplete"]["hidden_passes"] == 0
+    assert summary["per_case"]["incomplete"]["median_wall_seconds"] is None
+    assert summary["per_case"]["incomplete"]["measured_runs"] == 0
 
 
 def test_checkpoint_usage_retains_failed_review_cost_without_double_counting(
@@ -392,3 +398,96 @@ def test_structured_patch_seed_and_noop_repair_are_measured() -> None:
     )
     assert benchmark.checks(task, "completed", metrics)["state"]
     assert "verification" not in benchmark.checks(task, "completed", metrics)
+
+
+def test_unavailable_provider_cannot_make_valid_latency_look_faster() -> None:
+    good = {
+        "id": "bug",
+        "review_kind": "bug",
+        "review_arm": "on",
+        "seed_observed": True,
+        "state": "completed",
+        "passed": True,
+        "hidden_acceptance": {"ran": True, "passed": True},
+        "wall_seconds": 50,
+        "prompt_tokens": 100,
+        "output_tokens": 20,
+    }
+    unavailable = {
+        **good,
+        "state": "failed",
+        "seed_observed": False,
+        "wall_seconds": 1,
+        "prompt_tokens": 0,
+        "output_tokens": 0,
+    }
+    arm = benchmark.review_summary({"tasks": [good, unavailable, unavailable]})["on"]
+    assert arm["median_wall_seconds"] == 50
+    assert arm["per_case"]["bug"] == {
+        "runs": 3,
+        "measured_runs": 1,
+        "invalid_or_incomplete_runs": 2,
+        "hidden_passes": 1,
+        "median_wall_seconds": 50,
+        "median_tokens": 120,
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        ("apply_patch", {"old_text": "size - 1", "new_text": "size"}),
+        ("delete_file", {}),
+        ("rename_file", {"source": "src/subject.py", "destination": "src/moved.py"}),
+    ],
+)
+def test_seed_witness_replays_partial_repairs_delete_and_rename(mutation) -> None:
+    task = _corpus()[0]
+    tool, arguments = mutation
+    events = [
+        *_seed_edit(task, task.seed_after),
+        (
+            "model.tool_call",
+            {
+                "call_id": "repair",
+                "tool": tool,
+                "arguments": {"path": task.seed_path, **arguments},
+            },
+        ),
+        ("model.tool_result", {"call_id": "repair"}),
+        ("review.started", {}),
+    ]
+    assert not benchmark.seed_observed(task, events)
+    events[-2] = ("model.tool_result", {"call_id": "repair", "is_error": True})
+    assert benchmark.seed_observed(task, events)
+
+
+def test_hidden_oracle_ignores_candidate_collection_hooks_and_skip_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task = _corpus()[0]
+    root = tmp_path / "repo"
+    shutil.copytree(benchmark.FIXTURES / task.fixture, root)
+    (root / "conftest.py").write_text(
+        "import pytest\ndef pytest_collection_modifyitems(items):\n"
+        "    for item in items: item.add_marker(pytest.mark.skip())\n"
+    )
+    (root / "pytest.ini").write_text("[pytest]\naddopts = --ignore=hidden_acceptance\n")
+    monkeypatch.setattr(benchmark, "available_sandbox", lambda: "test")
+    monkeypatch.setattr(benchmark, "wrap", lambda kind, policy, argv, **kwargs: argv)
+    target = root / task.seed_path
+    original = target.read_text()
+    target.write_text(original.replace(task.seed_before, task.seed_after, 1))
+    assert benchmark.hidden_acceptance(task, root, ()) == {
+        "ran": True,
+        "passed": False,
+        "returncode": 1,
+        "reason": None,
+    }
+    target.write_text(original)
+    assert benchmark.hidden_acceptance(task, root, ())["passed"] is True
+    # An early exit must never be accepted as a passed hidden test.
+    target.write_text("import os; os._exit(0)\n")
+    result = benchmark.hidden_acceptance(task, root, ())
+    assert result["ran"] is False and result["passed"] is False

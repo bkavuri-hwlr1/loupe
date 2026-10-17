@@ -22,6 +22,7 @@ Results are written as JSON; `--compare OLD NEW` prints how two runs differ.
 from __future__ import annotations
 
 import argparse
+import ast
 import functools
 import json
 import os
@@ -34,6 +35,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -611,50 +613,60 @@ def compare(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
 
 
 def seed_observed(task: Task, events: Sequence[tuple[str, Mapping[str, Any]]]) -> bool:
-    """Require a successful exact seeded edit before the first review starts."""
-    pending: dict[object, bool] = {}
-    seeded = False
-    if task.seed_after is None:
+    """Replay successful source edits and require the exact first proposal.
+
+    Unsupported mutations invalidate the witness instead of guessing from a
+    fragment that might have been repaired before review began.
+    """
+    if not all((task.fixture, task.seed_path, task.seed_before, task.seed_after)):
         return False
+    original = (FIXTURES / str(task.fixture) / str(task.seed_path)).read_text()
+    expected = original.replace(str(task.seed_before), str(task.seed_after), 1)
+    bodies: dict[str, str | None] = {str(task.seed_path): original}
+    pending: dict[object, tuple[object, Mapping[str, Any]]] = {}
+    changed = False
     for kind, payload in events:
         if kind == "review.started":
-            return seeded
+            return changed and bodies.get(str(task.seed_path)) == expected
         if kind == "model.tool_call":
             arguments = payload.get("arguments")
-            if not isinstance(arguments, Mapping):
-                continue
-            tool = payload.get("tool")
-            if tool == "write_file" and arguments.get("path") == task.seed_path:
-                text = arguments.get("content")
-                if isinstance(text, str):
-                    pending[payload.get("call_id")] = task.seed_after.strip() in {
-                        line.strip() for line in text.splitlines()
-                    }
-            elif tool == "apply_patch" and arguments.get("path") == task.seed_path:
-                new_text, old_text = (
-                    arguments.get("new_text"),
-                    arguments.get("old_text"),
-                )
-                if isinstance(new_text, str) and task.seed_after.strip() in {
-                    line.strip() for line in new_text.splitlines()
-                }:
-                    pending[payload.get("call_id")] = True
-                elif isinstance(old_text, str) and task.seed_after.strip() in {
-                    line.strip() for line in old_text.splitlines()
-                }:
-                    pending[payload.get("call_id")] = False
-            elif tool == "apply_patch":
-                text = arguments.get("patch")
-                if isinstance(text, str) and task.seed_path and task.seed_path in text:
-                    lines = text.splitlines()
-                    if "+" + task.seed_after in lines:
-                        pending[payload.get("call_id")] = True
-                    elif "-" + task.seed_after in lines:
-                        pending[payload.get("call_id")] = False
+            if isinstance(arguments, Mapping):
+                pending[payload.get("call_id")] = (payload.get("tool"), arguments)
         elif kind == "model.tool_result" and payload.get("call_id") in pending:
-            if not payload.get("is_error"):
-                seeded = pending[payload.get("call_id")]
-    return seeded
+            tool, arguments = pending.pop(payload.get("call_id"))
+            if payload.get("is_error"):
+                continue
+            path = arguments.get("path")
+            if tool == "rename_file":
+                source, destination = (
+                    arguments.get("source"),
+                    arguments.get("destination"),
+                )
+                if isinstance(source, str) and isinstance(destination, str):
+                    bodies[destination] = bodies.pop(source, None)
+                    changed |= task.seed_path in {source, destination}
+            elif isinstance(path, str) and path in bodies:
+                body = bodies[path]
+                if tool == "write_file":
+                    text = arguments.get("content")
+                    bodies[path] = text if isinstance(text, str) else None
+                elif tool == "apply_patch":
+                    old, new = arguments.get("old_text"), arguments.get("new_text")
+                    bodies[path] = (
+                        body.replace(old, new, 1)
+                        if isinstance(body, str)
+                        and isinstance(old, str)
+                        and old
+                        and isinstance(new, str)
+                        and body.count(old) == 1
+                        else None
+                    )
+                elif tool in {"delete_file", "write_binary", "write_symlink"}:
+                    bodies[path] = None
+                else:
+                    continue
+                changed |= path == task.seed_path
+    return changed and bodies.get(str(task.seed_path)) == expected
 
 
 def review_summary(document: Mapping[str, Any]) -> dict[str, Any]:
@@ -725,29 +737,42 @@ def review_summary(document: Mapping[str, Any]) -> dict[str, Any]:
             "review_cache_write_tokens": sum(
                 t.get("review_cache_write_tokens", 0) for t in rows
             ),
-            "median_wall_seconds": statistics.median(t["wall_seconds"] for t in rows),
+            "median_wall_seconds": statistics.median(
+                t["wall_seconds"] for t in measured
+            )
+            if measured
+            else None,
             "median_review_seconds": statistics.median(
-                t.get("review_seconds", 0) for t in rows
-            ),
+                t.get("review_seconds", 0) for t in measured
+            )
+            if measured
+            else None,
             # Subscription usage is not an API dollar price. A price policy
             # must be supplied separately before any currency can be claimed.
             "cost_usd": None,
             "per_case": {},
         }
         for case in sorted({t["id"] for t in rows}):
-            repeats = [t for t in rows if t["id"] == case]
+            attempted = [t for t in rows if t["id"] == case]
+            repeats = [t for t in measured if t["id"] == case]
             summary["per_case"][case] = {
-                "runs": len(repeats),
+                "runs": len(attempted),
+                "measured_runs": len(repeats),
+                "invalid_or_incomplete_runs": len(attempted) - len(repeats),
                 "hidden_passes": sum(
                     bool(t.get("hidden_acceptance", {}).get("passed")) for t in repeats
                 ),
                 "median_wall_seconds": statistics.median(
                     t["wall_seconds"] for t in repeats
-                ),
+                )
+                if repeats
+                else None,
                 "median_tokens": statistics.median(
                     t.get("prompt_tokens", 0) + t.get("output_tokens", 0)
                     for t in repeats
-                ),
+                )
+                if repeats
+                else None,
             }
         all_tokens = summary["prompt_tokens"] + summary["output_tokens"]
         review_tokens = (
@@ -771,6 +796,12 @@ def hidden_acceptance(
     if kind is None:
         return {"ran": False, "reason": "no working sandbox"}
     tests = Path(__file__).with_name("benchmark_acceptance") / task.acceptance
+    expected = sorted(
+        node.name
+        for path in tests.glob("test_*.py")
+        for node in ast.parse(path.read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+    )
     with tempfile.TemporaryDirectory(prefix="loupe-review-acceptance-") as temporary:
         root = Path(temporary).resolve()
         copy = root / "repo"
@@ -780,21 +811,31 @@ def hidden_acceptance(
             symlinks=True,
             ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"),
         )
-        shutil.copytree(tests, copy / "hidden_acceptance")
+        hidden = root / "hidden_acceptance"
+        shutil.copytree(tests, hidden)
+        configuration = root / "pytest.ini"
+        configuration.write_text("[pytest]\n", encoding="utf-8")
+        report = root / "acceptance.xml"
         environment = {
             "PATH": os.defpath,
             "HOME": str(root),
             "PYTHONDONTWRITEBYTECODE": "1",
             "BENCHMARK_REPOSITORY": str(copy),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         }
         command = [
             sys.executable,
+            "-I",
             "-m",
             "pytest",
             "-q",
             "-p",
             "no:cacheprovider",
-            "hidden_acceptance",
+            "--noconftest",
+            "-c",
+            str(configuration),
+            f"--junitxml={report}",
+            str(hidden),
         ]
         completed = subprocess.run(
             wrap(
@@ -809,13 +850,29 @@ def hidden_acceptance(
             timeout=120,
             check=False,
         )
+        cases = []
+        try:
+            if report.stat().st_size <= 1024 * 1024:
+                cases = list(ET.fromstring(report.read_bytes()).iter("testcase"))
+        except (OSError, ET.ParseError):
+            pass
+        witnessed = (
+            bool(expected) and sorted(case.get("name") for case in cases) == expected
+        )
+        ran = completed.returncode in {0, 1} and witnessed
         return {
-            "ran": completed.returncode in {0, 1},
-            "passed": completed.returncode == 0,
+            "ran": ran,
+            "passed": ran
+            and completed.returncode == 0
+            and all(
+                not any(
+                    case.find(tag) is not None
+                    for tag in ("failure", "error", "skipped")
+                )
+                for case in cases
+            ),
             "returncode": completed.returncode,
-            "reason": None
-            if completed.returncode in {0, 1}
-            else "acceptance runner failed",
+            "reason": None if ran else "acceptance runner failed or tests missing",
         }
 
 
@@ -1123,6 +1180,14 @@ def run(arguments: argparse.Namespace) -> int:
             "status": status,
         }
         document["review_summary"] = review_summary(document)
+        document["measurement_complete"] = (
+            document["complete"]
+            and all(
+                arm["invalid_or_incomplete_runs"] == 0
+                for arm in document["review_summary"].values()
+            )
+            and all(result["passed"] for result in results)
+        )
         target = Path(output)
         target.parent.mkdir(parents=True, exist_ok=True)
         pending = target.with_name(target.name + ".pending")
@@ -1319,9 +1384,9 @@ def run(arguments: argparse.Namespace) -> int:
                 spent += result["prompt_tokens"] + result["output_tokens"]
                 print(_line(result), flush=True)
                 save(results, spent, "running")
-                if result["runner_timed_out"]:
+                if result["runner_timed_out"] or failure == "PROVIDER_UNAVAILABLE":
                     print(
-                        "Stopping after an unsettled task reached its deadline.",
+                        "Stopping after task timeout or provider unavailability.",
                         flush=True,
                     )
                     break
