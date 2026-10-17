@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import sqlite3
+import stat
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +28,7 @@ from llm_cli.config.loader import load_settings
 from llm_cli.errors import LlmCoordError
 from llm_cli.knowledge.chunker import MAX_TEXT_BYTES, chunks
 from llm_cli.knowledge.indexer import KnowledgeIndex
+from llm_cli.knowledge.store import KnowledgeStore
 from llm_cli.workspace.batches import BatchFile
 from llm_cli.workspace.context import SharedCoordinationContext
 from llm_cli.workspace.external import ExternalWorkspaceScanner
@@ -554,3 +558,121 @@ def test_old_opaque_receipt_does_not_hide_newer_safe_git_baseline(
         "results"
     ][0]
     assert result["indexed_revision"].startswith("git:") and not result["stale"]
+
+
+def _foreign_database(path: Path) -> tuple[bytes, int]:
+    with sqlite3.connect(path) as con:
+        con.execute("CREATE TABLE user_table(value TEXT)")
+        con.execute("INSERT INTO user_table VALUES ('keep unrelated data')")
+    path.chmod(0o640)
+    return path.read_bytes(), stat.S_IMODE(path.stat().st_mode)
+
+
+def _assert_foreign_preserved(path: Path, before: tuple[bytes, int]) -> None:
+    assert path.read_bytes() == before[0]
+    assert stat.S_IMODE(path.stat().st_mode) == before[1]
+    with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as con:
+        assert con.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table'"
+        ).fetchall() == [("user_table",)]
+        assert con.execute("SELECT value FROM user_table").fetchone() == (
+            "keep unrelated data",
+        )
+
+
+@pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
+@pytest.mark.parametrize(
+    "operation",
+    ["store", "initialize", "build", "rebuild", "status", "search", "drop", "worker"],
+)
+def test_optional_store_refuses_hardlinked_database_and_sidecars_before_sqlite_setup(
+    batch_env: BatchEnvironment, tmp_path: Path, suffix: str, operation: str
+) -> None:
+    index, checkout = _index(batch_env, tmp_path)
+    assert index.build(checkout)["state"] == "ready"
+    foreign = tmp_path / "unrelated.sqlite3"
+    before = _foreign_database(foreign)
+    alias = index.store.path.with_name(index.store.path.name + suffix)
+    alias.unlink(missing_ok=True)
+    os.link(foreign, alias)
+    if operation == "store":
+        with pytest.raises(LlmCoordError, match="single-link"):
+            index.store.initialize()
+    elif operation == "initialize":
+        index.initialize()
+        assert index.error
+    elif operation in {"build", "rebuild"}:
+        assert (
+            index.build(checkout, rebuild=operation == "rebuild")["state"]
+            == "unavailable"
+        )
+    elif operation == "status":
+        assert index.status()["state"] == "unavailable"
+    elif operation == "search":
+        assert index.search_lexical(checkout, "old")["state"] == "unavailable"
+    elif operation == "drop":
+        assert index.drop(checkout)["state"] == "unavailable"
+    else:
+        assert index.process_pending() == 0 and index.error
+    _assert_foreign_preserved(foreign, before)
+    assert alias.is_file() and alias.stat().st_nlink == 2
+
+
+@pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
+def test_knowledge_diagnostics_and_profile_backup_preserve_foreign_hardlink_targets(
+    tmp_path: Path, service_factory: Any, suffix: str
+) -> None:
+    async def scenario() -> None:
+        service = service_factory(tmp_path)
+        service.initialize()
+        KnowledgeStore(service.paths.knowledge_db).initialize()
+        foreign = tmp_path / "unrelated.sqlite3"
+        before = _foreign_database(foreign)
+        alias = service.paths.knowledge_db.with_name(
+            service.paths.knowledge_db.name + suffix
+        )
+        alias.unlink(missing_ok=True)
+        os.link(foreign, alias)
+        try:
+            status = await service.handle(_request("db.status", {}))
+            assert status["control"]["state"] == "available"
+            assert status["knowledge"]["state"] == "unavailable"
+            checked = await service.handle(_request("db.check", {}))
+            assert checked["control"]["ok"] and not checked["knowledge"]["ok"]
+            doctor = await service.handle(_request("system.doctor", {}))
+            assert any(
+                check["name"] == "knowledge_storage" and not check["ok"]
+                for check in doctor["checks"]
+            )
+            with pytest.raises(LlmCoordError, match="unsafe"):
+                await service.handle(
+                    _request("db.backup", {"out": str(tmp_path / "backup")})
+                )
+            _assert_foreign_preserved(foreign, before)
+            assert alias.stat().st_nlink == 2
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
+@pytest.mark.parametrize("kind", ["dangling_link", "fifo", "directory"])
+def test_optional_store_refuses_nonregular_paths_without_creating_a_database(
+    tmp_path: Path, suffix: str, kind: str
+) -> None:
+    database = tmp_path / "knowledge.sqlite3"
+    alias = database.with_name(database.name + suffix)
+    if kind == "dangling_link":
+        alias.symlink_to(tmp_path / "missing-user-target")
+    elif kind == "fifo":
+        os.mkfifo(alias)
+    else:
+        alias.mkdir()
+    original_mode = alias.lstat().st_mode
+    with pytest.raises(LlmCoordError):
+        KnowledgeStore(database).initialize()
+    assert alias.lstat().st_mode == original_mode
+    assert not (tmp_path / "missing-user-target").exists()
+    if suffix:
+        assert not database.exists()

@@ -70,7 +70,7 @@ from llm_cli.execution.shared import SharedTaskExecutionRunner
 from llm_cli.git.inspect import RepositoryInfo, inspect_repository
 from llm_cli.ids import new_id
 from llm_cli.knowledge.indexer import KnowledgeIndex
-from llm_cli.paths import AppPaths
+from llm_cli.paths import AppPaths, validate_owned_sqlite_paths
 from llm_cli.protocol.envelopes import Request, Response
 from llm_cli.protocol.framing import DEFAULT_MAX_FRAME_BYTES
 from llm_cli.providers.anthropic_provider import AnthropicProvider
@@ -2542,6 +2542,8 @@ class DaemonService:
                 statuses[name] = {"path": str(database_path), "state": "not_created"}
                 continue
             try:
+                if name == "knowledge":
+                    validate_owned_sqlite_paths(database_path)
                 with closing(
                     sqlite3.connect(
                         f"{database_path.as_uri()}?mode=ro", uri=True, timeout=0.25
@@ -2560,7 +2562,7 @@ class DaemonService:
                             connection.execute("PRAGMA synchronous").fetchone()[0]
                         ),
                     }
-            except (sqlite3.Error, OSError) as exc:
+            except (sqlite3.Error, OSError, LlmCoordError) as exc:
                 statuses[name] = {
                     "path": str(database_path),
                     "state": "unavailable",
@@ -2580,13 +2582,15 @@ class DaemonService:
                 result[name] = {"ok": True, "detail": "not created (optional)"}
                 continue
             try:
+                if name == "knowledge":
+                    validate_owned_sqlite_paths(path)
                 with closing(
                     sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.25)
                 ) as connection:
                     value = connection.execute("PRAGMA integrity_check").fetchone()
                 detail = str(value[0]) if value is not None else "no result"
                 result[name] = {"ok": detail == "ok", "detail": detail}
-            except (sqlite3.Error, OSError) as exc:
+            except (sqlite3.Error, OSError, LlmCoordError) as exc:
                 result[name] = {"ok": False, "detail": type(exc).__name__}
         result["ok"] = all(bool(item["ok"]) for item in result.values())
         return result

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -160,6 +161,34 @@ def reject_symlink_components(path: Path) -> None:
             )
 
 
+def validate_owned_sqlite_paths(database: Path) -> tuple[Path, ...]:
+    """Validate SQLite-owned objects before opening can chmod or recover them.
+
+    Callers opt into this guard; it does not change the control-store policy.
+    Missing files are allowed and this function never creates or repairs paths.
+    """
+    paths = tuple(
+        database.with_name(database.name + suffix)
+        for suffix in ("", "-wal", "-shm", "-journal")
+    )
+    for path in paths:
+        reject_symlink_components(path)
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_nlink != 1
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "SQLite storage requires owned regular single-link files",
+            )
+    return paths
+
+
 def _ensure_private_directory(path: Path) -> None:
     reject_symlink_components(path)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -177,4 +206,7 @@ def make_private_file(path: Path) -> None:
         path.chmod(0o600)
 
 
-__all__ = ["AppPaths", "make_private_file", "reject_symlink_components"]
+__all__ = [
+    "AppPaths", "make_private_file", "reject_symlink_components",
+    "validate_owned_sqlite_paths",
+]

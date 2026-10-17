@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from llm_cli.knowledge.chunker import VERSION, chunks
-from llm_cli.paths import reject_symlink_components
+from llm_cli.paths import validate_owned_sqlite_paths
 from llm_cli.storage.connection import connect_knowledge, immediate_transaction
 from llm_cli.storage.migrations import KNOWLEDGE_MIGRATIONS, apply_migrations
 
@@ -31,9 +31,12 @@ class KnowledgeStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
+    def validate_paths(self) -> tuple[Path, ...]:
+        return validate_owned_sqlite_paths(self.path)
+
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        reject_symlink_components(self.path)
+        self.validate_paths()
         with closing(connect_knowledge(self.path, timeout_seconds=0.25)) as connection:
             connection.set_progress_handler(lambda: 0, 10_000)
             yield connection

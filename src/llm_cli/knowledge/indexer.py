@@ -199,6 +199,7 @@ class KnowledgeIndex:
 
     def _repair_store(self) -> bool:
         """Explicit rebuild may discard a damaged, owned, derived store only."""
+        self.store.validate_paths()
         if not self.store.path.exists():
             return False
         try:
@@ -222,10 +223,7 @@ class KnowledgeIndex:
                 raise
         except ValueError:
             pass
-        paths = [self.store.path] + [
-            self.store.path.with_name(self.store.path.name + suffix)
-            for suffix in ("-wal", "-shm")
-        ]
+        paths = self.store.validate_paths()
         identities = []
         for path in paths:
             reject_symlink_components(path)

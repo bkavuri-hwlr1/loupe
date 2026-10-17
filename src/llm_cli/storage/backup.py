@@ -17,7 +17,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from llm_cli.paths import AppPaths, reject_symlink_components
+from llm_cli.errors import LlmCoordError
+from llm_cli.paths import (
+    AppPaths,
+    reject_symlink_components,
+    validate_owned_sqlite_paths,
+)
 
 
 class BackupError(RuntimeError):
@@ -69,6 +74,11 @@ def backup_profile(paths: AppPaths, output: Path | None = None) -> dict[str, obj
         if source != paths.control_db and not source.exists():
             omitted.append(source.name)
             continue
+        if source == paths.knowledge_db:
+            try:
+                validate_owned_sqlite_paths(source)
+            except (OSError, LlmCoordError) as exc:
+                raise BackupError("optional knowledge database path is unsafe") from exc
         metadata = backup_database(source, directory / source.name)
         databases.append(
             {
