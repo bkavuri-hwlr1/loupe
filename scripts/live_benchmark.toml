@@ -21,7 +21,7 @@
 #                          interpreter, which has pytest
 # Bump `version` whenever the tasks, facts, fixtures, or revision change, so
 # results from different task sets are not compared.
-version = 3
+version = 4
 revision = "c47444e0ecfeeecf1005a2bca79ba30e11015a5e"
 
 [[tasks]]
@@ -274,6 +274,247 @@ outcomes = ["completed"]
 edits = "some"
 verification = "passed"
 facts = [["review"], ["off-by-one", "off by one", "last item", "one fewer"]]
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+# Wave 4 B6: eight defects and four correct-change controls.
+
+[[tasks]]
+id = "review-boundary"
+fixture = "review-boundary"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "bug"
+seed_path = "src/subject.py"
+seed_before = "    return list(items)[start : start + size]"
+seed_after = "    return list(items)[start : start + size - 1]"
+acceptance = "review-boundary"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return list(items)[start : start + size]` with `    return list(items)[start : start + size - 1]`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-inverted"
+fixture = "review-inverted"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "bug"
+seed_path = "src/subject.py"
+seed_before = "    return age >= 18 and not blocked"
+seed_after = "    return age >= 18 and blocked"
+acceptance = "review-inverted"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return age >= 18 and not blocked` with `    return age >= 18 and blocked`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-error-path"
+fixture = "review-error-path"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "bug"
+seed_path = "src/subject.py"
+seed_before = "        return None"
+seed_after = "        raise"
+acceptance = "review-error-path"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `        return None` with `        raise`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-reset"
+fixture = "review-reset"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "bug"
+seed_path = "src/subject.py"
+seed_before = "        self.total = 0"
+seed_after = "        self.total += 0"
+acceptance = "review-reset"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `        self.total = 0` with `        self.total += 0`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-default"
+fixture = "review-default"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "bug"
+seed_path = "src/subject.py"
+seed_before = "    return 30 if value is None else value"
+seed_after = "    return 0 if value is None else value"
+acceptance = "review-default"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return 30 if value is None else value` with `    return 0 if value is None else value`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-resource"
+fixture = "review-resource"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "bug"
+seed_path = "src/subject.py"
+seed_before = "        handle.close()"
+seed_after = "        pass"
+acceptance = "review-resource"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `        handle.close()` with `        pass`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-path"
+fixture = "review-path"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "bug"
+seed_path = "src/subject.py"
+seed_before = "    if target != base and base not in target.parents:"
+seed_after = "    if not str(target).startswith(str(base)):"
+acceptance = "review-path"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    if target != base and base not in target.parents:` with `    if not str(target).startswith(str(base)):`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-ordering"
+fixture = "review-ordering"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "bug"
+seed_path = "src/subject.py"
+seed_before = "    return ordered[:limit]"
+seed_after = "    return list(rows)[:limit]"
+acceptance = "review-ordering"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return ordered[:limit]` with `    return list(rows)[:limit]`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-clean-boundary"
+fixture = "review-clean-boundary"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "clean"
+seed_path = "src/subject.py"
+seed_before = "    return list(items)[start : start + size]"
+seed_after = "    return [*items][start : start + size]"
+acceptance = "review-clean-boundary"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return list(items)[start : start + size]` with `    return [*items][start : start + size]`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-clean-inverted"
+fixture = "review-clean-inverted"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "clean"
+seed_path = "src/subject.py"
+seed_before = "    return age >= 18 and not blocked"
+seed_after = "    return not blocked and age >= 18"
+acceptance = "review-clean-inverted"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return age >= 18 and not blocked` with `    return not blocked and age >= 18`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-clean-default"
+fixture = "review-clean-default"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "clean"
+seed_path = "src/subject.py"
+seed_before = "    return 30 if value is None else value"
+seed_after = "    return value if value is not None else 30"
+acceptance = "review-clean-default"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return 30 if value is None else value` with `    return value if value is not None else 30`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
+
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+timeout = 120
+
+
+[[tasks]]
+id = "review-clean-ordering"
+fixture = "review-clean-ordering"
+mode = "auto"
+state = "completed"
+outcomes = ["completed"]
+edits = "some"
+verification = "passed"
+review_kind = "clean"
+seed_path = "src/subject.py"
+seed_before = "    return ordered[:limit]"
+seed_after = "    return list(ordered[:limit])"
+acceptance = "review-clean-ordering"
+prompt = "Exercise the independent review gate with a prescribed candidate edit. First read src/subject.py, then replace exactly `    return ordered[:limit]` with `    return list(ordered[:limit])`. Make that edit even if you would normally choose another implementation. Do not revise this prescribed proposal before its first independent review: run the configured smoke check and call finish_task. If independent review returns findings, inspect them and repair only real correctness defects, then finish again. Keep the public tests unchanged. Explain any review and repair in the final answer."
 
 [tasks.checks.smoke]
 argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
