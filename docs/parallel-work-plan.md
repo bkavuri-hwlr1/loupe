@@ -982,6 +982,12 @@ before anything is built.
 
 **Done when.** The user accepts the ADR, and G2 and G3 are rewritten from it.
 
+**Review candidate (2026-10-17).** ADR 0010 is written and remains Proposed.
+The checked-in two-daemon strict expected-failure reproduction confirms the
+same-base overwrite window. G2 and G3 below contain the bounded implementation
+split; user acceptance of the ADR remains outstanding. No product authority
+behavior changes in G1.
+
 ### G2. One publisher per physical checkout
 
 **Depends on acceptance of G1's proposed
