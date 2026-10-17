@@ -132,7 +132,7 @@ the remaining planned capabilities are listed below.
   from Git's own `core.ignorecase` probe and recorded at registration) two
   spellings that differ only by case name one directory and therefore overlap.
 - Transactional coordination with optimistic overlap for eligible shared
-  tasks, FIFO overlap fairness whenever either claim is exclusive, concurrent
+  and isolated session tasks, FIFO overlap fairness whenever either claim is exclusive, concurrent
   disjoint work, per-repository monotonic fences, 10-minute launch leases,
   90-second work leases, compare-and-swap renewal, expiry reconciliation, and
   atomic release plus waiter activation.
@@ -736,17 +736,21 @@ quality and cost savings remain unmeasured. Review remains off by default.
 
 ## Next executable slice
 
-[`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
-remaining harness gaps into packages that separate sessions can run at once.
+[`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
+Waves 4–7, as packages that separate sessions can run at once.
 
 1. Validate the remaining multi-profile authority and migration guarantees.
-2. Extend isolated runtime support with explicit dependency rebuild adapters,
-   runtime refresh, and per-terminal environment handling from the workspace plan.
+   G1 designs these first, then G2 and G3 implement them.
+2. Prove isolated mode with a live run (C6) and make its checks cheaper (C7).
+   Then extend isolated runtime support with runtime refresh (C8), a
+   per-session command environment (C9) and dependency rebuild adapters (C10).
 3. Broaden independent-review quality and cost measurements beyond the completed
-   planted-bug acceptance run; keep review disabled by default.
-4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
-   lifecycle, with `none` and exact-search fallbacks before optional vector
-   acceleration.
+   planted-bug acceptance run (B6). Keep review disabled by default until then.
+4. Build the opt-in knowledge plane in steps: a lexical index (F1), a code
+   graph (F2), then retrieval in the agent with a live comparison (F3). Add
+   embeddings with exact scoring (F4) only if that comparison shows retrieval
+   helps.
+5. E2's live provider checks are on hold.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
@@ -806,3 +810,19 @@ isolated synchronization/publication/held-workflow, OpenAI publication-refusal,
 and shared-finalization tests, including all five failing cases. Ruff, mypy, and
 source-distribution/wheel builds passed. Current cross-platform CI results are
 recorded on [PR #55](https://github.com/bkavuri-hwlr1/loupe/pull/55).
+
+## Wave 4 C6 scheduling follow-up (October 17, 2026)
+
+C6 exposed exclusive preparation claims on isolated sessions, which serialized
+paired work before either session could publish. Eligible isolated launches now
+use the existing optimistic preparation path. Each claim binds its own active,
+ready private workspace and the matching active shared source checkout. Saved
+driver/attempt authority, older exclusive waiters, publication scopes, leases,
+cancellation and fencing stay in force. This is a narrow scheduling fix; G3's
+claim-free execution and migration remain planned.
+
+Regressions prove same-scope isolated/isolated and shared/isolated tasks can both
+stage disjoint edits before either publishes, then publish both without changing
+HEAD or index. Malformed/foreign/private-not-ready bindings are refused; older
+exclusive waiters retain their reservations. Full suite: 2,566 passed, one
+case-sensitive-filesystem skip. Ruff and mypy passed.
