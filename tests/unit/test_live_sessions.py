@@ -360,6 +360,8 @@ def test_isolation_audit_reports_leaks_without_returning_canary(
     paths = AppPaths.resolve("fixture", home=tmp_path, environ={})
     paths.ensure()
     with sqlite3.connect(paths.control_db) as con:
+        con.execute("CREATE TABLE sessions(session_id,workspace_mode,state)")
+        con.execute("INSERT INTO sessions VALUES ('session','isolated','closed')")
         con.execute("CREATE TABLE check_runs(task_id,name,state,output)")
         con.execute(
             "INSERT INTO check_runs VALUES (?,?,?,?)",
@@ -407,3 +409,26 @@ def test_runtime_fixture_requires_exact_consent_and_configured_check(
 ) -> None:
     with pytest.raises(ValueError, match="canary requires"):
         sessions.load_experiments(_experiment_file(tmp_path, runtime_canary="true"))
+
+
+def test_sandbox_setup_failure_is_not_scored_as_product_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    sessions.prepare_runtime(repository, experiment)
+    monkeypatch.setattr(sessions, "available_sandbox", lambda: "sandbox-exec")
+    monkeypatch.setattr(
+        sessions.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 126, "", "cannot execute"
+        ),
+    )
+    result = sessions.acceptance(
+        repository, sessions.ACCEPTANCE / experiment.acceptance, sys.executable, ()
+    )
+    assert result == {"ran": False, "reason": "sandboxed interpreter could not execute"}

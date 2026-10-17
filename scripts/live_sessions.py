@@ -406,7 +406,9 @@ def acceptance(
 
         own = pytest("tests")
         report = root / "acceptance.xml"
-        pytest(f"--junitxml={report}", "loupe_acceptance")
+        hidden = pytest(f"--junitxml={report}", "loupe_acceptance")
+        if own.returncode in {126, 127} or hidden.returncode in {126, 127}:
+            return {"ran": False, "reason": "sandboxed interpreter could not execute"}
         outcomes = junit_outcomes(report.read_text()) if report.exists() else {}
     lines = (own.stdout or own.stderr).strip().splitlines()
     return {
@@ -572,10 +574,24 @@ def audit_run(
         "disruption_completed": scenario != "disrupted"
         or (edit_at is not None and crash_at is not None),
     }
+    with sqlite3.connect(f"file:{paths.control_db}?mode=ro", uri=True) as connection:
+        bindings = {
+            str(session_id): (str(mode), str(state))
+            for session_id, mode, state in connection.execute(
+                "SELECT session_id,workspace_mode,state FROM sessions"
+            )
+        }
+    invariants["requested_workspaces_confirmed"] = all(
+        lane.task_ids
+        and bindings.get(rows[lane.task_ids[-1]].session_id)
+        == (lane.workspace, "closed")
+        for lane in lanes
+    )
     if canary is not None:
         invariants.update(
             {
-                "primary_canary_preserved": (repository / ".env").read_bytes()
+                "primary_canary_preserved": (repository / ".env").is_file()
+                and (repository / ".env").read_bytes()
                 == b"LOUPE_C6_CANARY=" + canary + b"\n",
                 "database_has_no_canary": not any(
                     _contains_canary(path, canary)
