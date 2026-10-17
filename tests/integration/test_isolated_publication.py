@@ -453,3 +453,104 @@ def test_before_model_sync_error_does_not_fail_isolated_task(
             service.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("incoming_source", [False, True])
+def test_isolated_note_combines_with_quiet_coordination_refresh(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+    incoming_source: bool,
+) -> None:
+    from llm_cli.agent.driver import CoordinationUpdate
+    from llm_cli.workspace.context import SharedCoordinationContext
+
+    async def scenario() -> None:
+        original = "original source\n"
+        received = "incoming source\n"
+        root = repository_factory(tmp_path, {"docs/guide.md": original})
+        updates: list[tuple[int | None, CoordinationUpdate]] = []
+        other_sequences: list[int] = []
+        compile_context = SharedCoordinationContext.__call__
+
+        def capture_update(
+            context: SharedCoordinationContext, after: int | None
+        ) -> CoordinationUpdate:
+            update = compile_context(context, after)
+            updates.append((after, update))
+            return update
+
+        monkeypatch.setattr(SharedCoordinationContext, "__call__", capture_update)
+
+        def change_after_initial_request(results: Any) -> Any:
+            assert not results
+            if incoming_source:
+                (root / "docs/guide.md").write_text(received)
+            with service.store.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                event = service.store.append_checkout_event(
+                    connection,
+                    checkout_id=session.checkout_id,
+                    event_type="workspace.external_changed",
+                    caused_by_session_id="other",
+                    payload={
+                        "path": "docs/guide.md",
+                        "affected_session_id": "other",
+                    },
+                    now=1,
+                )
+                connection.commit()
+            other_sequences.append(event.sequence)
+            return _tools(
+                _call(
+                    "update_plan",
+                    steps=[{"step": "inspect source", "status": "in_progress"}],
+                )
+            )
+
+        def next_provider_request(results: Any) -> Any:
+            assert len(results) == 1 and not results[0].is_error
+            if incoming_source:
+                assert "Received shared changes: docs/guide.md" in results[0].content
+                assert "[Coordination update:" in results[0].content
+                assert (private / "docs/guide.md").read_text() == received
+            else:
+                assert "Received shared changes:" not in results[0].content
+                assert "[Coordination update:" not in results[0].content
+                assert (private / "docs/guide.md").read_text() == original
+            return _finish()
+
+        provider = ScriptedProvider(
+            "isolated-quiet-note", [change_after_initial_request, next_provider_request]
+        )
+        service = service_factory(tmp_path)
+        _register(service, provider)
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(root)}))
+        credentials, private = await open_session(service, root, provider.model)
+        session = service.store.get_session(credentials["session_id"])
+        assert session is not None
+        try:
+            await asyncio.wait_for(
+                await _start(service, root, credentials, "quiet-note", ("docs/",)), 30
+            )
+            _assert_completed(service, "quiet-note")
+            assert not provider.steps and len(provider.results) == 1
+            assert len(other_sequences) == 1
+            quiet = [
+                update
+                for after, update in updates
+                if after is not None and update.sequence == other_sequences[0]
+            ]
+            assert quiet and quiet[0].facts_unchanged and quiet[0].text is None
+            notices = [
+                event
+                for event in service.store.list_task_events("quiet-note")
+                if event.event_type == "workspace.isolated_synchronized"
+            ]
+            assert bool(notices) is incoming_source
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
