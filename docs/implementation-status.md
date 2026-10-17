@@ -94,13 +94,21 @@ the remaining planned capabilities are listed below.
 - Private, profile-scoped XDG state with owner-only directories and files.
 - A singleton Unix-domain-socket daemon using a bounded, versioned,
   four-byte-length-prefixed JSON protocol.
-- Three independently migrated SQLite databases: control, knowledge, and
-  vectors. The control database uses WAL, `synchronous=FULL`, transactional
-  checksummed migrations, integrity checking, and an atomic online-backup API.
-  `loupe db backup [--out DIR]` exposes verified online snapshots through the
-  daemon, with a fresh timestamped `0700` directory, three `0600` database
-  files, and printed integrity/hash/schema metadata. The running-daemon
-  integration test confirms the latest committed task survives the snapshot.
+- Three independently migrated SQLite stores: required control and optional
+  knowledge/vectors. With indexing off, optional stores are not created; existing
+  files are preserved. The control database uses WAL, `synchronous=FULL`,
+  transactional checksummed migrations, integrity checking, and an atomic
+  online-backup API. `loupe db backup [--out DIR]` exposes verified snapshots of
+  control and optional stores that already exist, with a fresh timestamped
+  `0700` directory, `0600` files and printed integrity/hash/schema metadata.
+  Absent optional stores appear under `omitted`; backup, status and integrity
+  checks do not create them. A running-daemon integration test confirms the
+  latest committed task survives the snapshot.
+- Opt-in local lexical discovery (Wave 4 F1): `loupe index
+  status|build|rebuild|drop` and `loupe search lexical QUERY [--explain]` expose
+  immutable source chunks with revision, identity, line and generation citations.
+  `[knowledge] index = "off" | "lexical"` defaults off. See the
+  [lexical search guide](lexical-search.md) for setup and source boundaries.
 - `loupe db prune --older-than 30d` defaults to a dry run; `--apply` removes
   old model previews/deltas, tool results, command/check chunks and retained
   check text, slims settled execution checkpoints, then runs SQLite `VACUUM`.
@@ -433,10 +441,27 @@ and non-resumable drivers retain the conservative recovery path.
 
 ## Shared workspace integration and remaining boundaries
 
-The knowledge and vector databases are initialized with their own migration
-planes. Graph extraction, embedding providers, semantic retrieval, and
-`sqlite-vec` are deliberately deferred until the local execution and recovery
-loop is complete.
+The optional knowledge and vector stores have independent migration planes.
+F1 implements explicit local lexical CLI/RPC discovery, disabled by default.
+Builds read regular Git blobs at an exact HEAD and identity-matching accepted
+artifacts; later accepted shared publications and observed outside edits project
+through an ID-only control outbox to an independent worker. Knowledge writes
+happen outside the publication barrier. Search labels stale indexed versions,
+reapplies current source exclusions and withholds recognized secret material.
+An unavailable optional index records health without blocking sessions or source
+publication. Indexing does not acknowledge changes, choose write bases or grant
+publication authority. Agent retrieval tools and their live comparison, graph
+extraction, embedding providers, semantic retrieval and `sqlite-vec` remain
+planned.
+
+F1 validation at source revision `507bd41` passed 73 focused lexical, backup,
+configuration, schema and scanner regressions, repository Ruff, mypy over 116
+source files, and source-distribution/wheel builds. The full suite is pending.
+An offline acceptance run against Loupe at baseline `fa6632a` built 338 eligible
+documents and 2,560 chunks, returned cited `SharedBatchPublisher` results, and
+preserved chunk IDs after drop/rebuild. The complete build/search/drop/rebuild
+sequence took 7.16 seconds on this machine. This establishes local discovery;
+it is not a measurement of model answer quality or agent retrieval benefit.
 
 A task owned by a durable session settles its reservation as soon as its
 publication is confirmed: the claim is released, the task is recorded as
@@ -746,10 +771,9 @@ Waves 4–7, as packages that separate sessions can run at once.
    per-session command environment (C9) and dependency rebuild adapters (C10).
 3. Broaden independent-review quality and cost measurements beyond the completed
    planted-bug acceptance run (B6). Keep review disabled by default until then.
-4. Build the opt-in knowledge plane in steps: a lexical index (F1), a code
-   graph (F2), then retrieval in the agent with a live comparison (F3). Add
-   embeddings with exact scoring (F4) only if that comparison shows retrieval
-   helps.
+4. Extend F1's implemented opt-in lexical discovery with a code graph (F2),
+   then retrieval in the agent with a live comparison (F3). Add embeddings with
+   exact scoring (F4) only if that comparison shows retrieval helps.
 5. E2's live provider checks are on hold.
 
 The full phased design remains in

@@ -312,6 +312,15 @@ flowchart LR
     G --> L["Local target ref or integration adapter"]
 ```
 
+The diagram is the target architecture. Wave 4 F1 implements the optional
+Indexer → `knowledge.sqlite3`/FTS5 path and explicit lexical CLI/RPC discovery.
+Accepted shared-publication and outside-change event IDs enter a control outbox;
+an independent worker builds transactional knowledge generations outside the
+publication barrier. `[knowledge] index = "off"` is the default and leaves
+optional stores absent. The hybrid/vector, graph-expansion and agent retrieval
+tool paths remain planned. See [lexical search](lexical-search.md) and the
+[current implementation boundaries](implementation-status.md).
+
 The control and knowledge planes share identifiers but not authority. Retrieval
 may inform planning and provide context; it cannot grant, renew, expand, or
 release a claim.

@@ -125,3 +125,18 @@ outage. Exact scoring is the correctness reference for optional accelerators.
   gate outside development.
 - Define index-size thresholds that recommend or require bounded candidate
   selection rather than full exact scans.
+
+
+## F1 implementation boundary (Wave 4)
+
+F1 supplies local FTS5/BM25 discovery through explicit index/search CLI and RPC
+commands. `[knowledge] index = "off" | "lexical"` defaults off; enabling it needs
+no model, embedding provider, native extension or new dependency. Results cite
+immutable source revisions, content identities, line ranges and generation, with
+stale labeling and current source/privacy filtering. Retrieval remains
+nonauthoritative and optional-index failure does not block source publication.
+
+This implements the lexical foundation of the decision. Agent retrieval tools,
+the code graph, embeddings, exact-vector scoring and `sqlite-vec` qualification
+remain planned. F1's offline build/search checks do not establish model
+answer-quality improvement. See [lexical search](../lexical-search.md).

@@ -637,7 +637,7 @@ it starts as an opt-in setting.
 
 - **Setting.** `agent.command_environment = "minimal" | "session"`, default
   `minimal`. It applies to both commands and checks. The config file
-  currently accepts only `agent`, `core`, `hooks`, `leases` and `mcp`
+  currently accepts `agent`, `core`, `hooks`, `leases`, `mcp` and `knowledge`
   sections.
 - **Transport.** Under `session`, the chat client sends its environment over
   the owner-only socket when it opens or resumes a session. The daemon keeps
@@ -792,12 +792,13 @@ Record results in the harness plan.
 
 ## Lane F — knowledge
 
-Phase 12 of the workspace plan (§13.4, §13.6) and ADR 0005. Today
-`knowledge.sqlite3` and `vectors.sqlite3` hold only bootstrap tables, and the
-agent finds code with exact and regular-expression search (B5). Nothing
-measured so far has been limited by retrieval. F1 and F2 are therefore local,
-opt-in and cheap to drop, and F3 measures whether retrieval helps before F4
-adds embeddings. Throughout this lane, retrieval may only help discovery. It
+Phase 12 of the workspace plan (§13.4, §13.6) and ADR 0005. F1 now provides an
+opt-in local lexical store with source, document, chunk, FTS, job and generation
+metadata. Knowledge and vector stores remain absent by default; existing stores
+are preserved when indexing is off. The agent still finds code with exact and
+regular-expression search (B5); F1 is explicit CLI/RPC discovery. F2 adds the
+optional graph, and F3 measures agent retrieval benefit before F4 adds embeddings.
+Throughout this lane, retrieval may only help discovery. It
 never answers coordination questions, such as who changed a file, what a
 current base is, or whether a candidate can publish. Coordination output must
 be identical with the lane's features on or off.
@@ -843,6 +844,24 @@ worker scheduling in `src/llm_cli/daemon/service.py`, the setting in
 - An unwritable `knowledge.sqlite3` leaves publication and sessions working,
   with an error in health.
 - Dropping and rebuilding gives identical chunk IDs.
+
+**Implemented (Wave 4 F1):** Explicit lexical CLI/RPC discovery uses the shared
+`[knowledge] index = "off" | "lexical"` configuration, default off. A build
+subscribes one registered checkout and captures exact Git/accepted-artifact
+versions; an independent worker projects accepted publication/outside-event IDs
+into transactional knowledge generations. Citations include exact revisions,
+identities, line ranges and generation, with stale labels and current privacy
+filtering. Private isolated intermediates are excluded. Off creates no optional
+store, worker or projection intent; failures do not block sessions/publication.
+Drop disables the checkout subscription before derived deletion. The
+[lexical search guide](lexical-search.md) covers commands, limits and recovery.
+
+Source revision `507bd41` passed 73 focused lexical/backup/configuration/schema/
+scanner tests, repository Ruff, mypy on 116 source files and distribution builds;
+the full suite is pending. An offline real-Loupe build/search/drop/rebuild at
+`fa6632a` produced 338 documents and 2,560 chunks in 7.16 seconds, with cited
+results and identical rebuilt chunk IDs. Agent retrieval, graph and embedding
+behavior remain F2/F3/F4 work; this run does not establish answer-quality gains.
 
 ### F2. Deterministic code graph
 
