@@ -818,8 +818,9 @@ def test_verified_copy_evidence_does_not_hide_source_race(tmp_path: Path) -> Non
     assert (target / "node_modules/pkg/index.js").read_text() == "first"
 
 
+@pytest.mark.parametrize("clone_capable", [True, False], ids=["clone", "byte-copy"])
 def test_private_parallel_copy_is_bounded_and_drains_after_worker_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone_capable: bool
 ) -> None:
     from llm_cli.workspace import isolated
 
@@ -829,15 +830,14 @@ def test_private_parallel_copy_is_bounded_and_drains_after_worker_failure(
     target.mkdir()
     for index in range(12):
         (package / str(index)).write_bytes(b"original " + str(index).encode())
-    original_clone = isolated._clone
+    original_write = isolated._write_body
     lock = threading.Lock()
     active = peak = completed = 0
     failures = False
+    clone_calls: list[str] = []
 
-    def observed_clone(descriptor: int, parent: int, name: str) -> bool:
+    def observed_copy(parent: int, name: str, body: bytes, permissions: int) -> None:
         nonlocal active, peak, completed
-        if name == "target":
-            return original_clone(descriptor, parent, name)
         with lock:
             active += 1
             peak = max(peak, active)
@@ -845,16 +845,33 @@ def test_private_parallel_copy_is_bounded_and_drains_after_worker_failure(
             time.sleep(0.02)
             if failures and name == "3":
                 raise RuntimeError("copy worker failed")
-            return original_clone(descriptor, parent, name)
+            original_write(parent, name, body, permissions)
         finally:
             with lock:
                 active -= 1
                 completed += 1
 
-    monkeypatch.setattr(isolated, "_clone", observed_clone)
+    def private_clone(descriptor: int, parent: int, name: str) -> bool:
+        with lock:
+            clone_calls.append(name)
+        if not clone_capable:
+            return False
+        # Emulate the clone API using real private writes so both backend paths
+        # run on every filesystem, without hardlinks or native COW support.
+        body = isolated._read(descriptor, 1024)
+        if name == "target":
+            original_write(parent, name, body, 0o600)
+        else:
+            observed_copy(parent, name, body, 0o600)
+        return True
+
+    monkeypatch.setattr(isolated, "_clone", private_clone)
+    monkeypatch.setattr(isolated, "_write_body", observed_copy)
     copy_dependency_tree(source, target, "node_modules", pinned_private=True)
     assert 1 < peak <= 4
     assert active == 0 and completed == 12
+    assert clone_calls.count("target") == 1
+    assert len(clone_calls) == (13 if clone_capable else 1)
     for original in package.iterdir():
         copied = target / "node_modules/pkg" / original.name
         assert copied.read_bytes() == original.read_bytes()
