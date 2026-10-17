@@ -345,6 +345,16 @@ unknown. Deciding the default needs those numbers.
   two arms and three repeats takes roughly 2.5 million tokens. That is close to
   the default `--budget-tokens` of 3 million, so set the cap explicitly.
 
+**Implemented and measured (October 17, 2026).** Twelve corpus tasks, exact seed
+witnesses, trusted hidden tests, paired alternating arms and three repetitions
+produced 72 final comparison cells (66 retained plus six new controls), with
+six saved resource proposals re-scored against a corrected file double. Review on passed 24/24 hidden bug cases
+versus 0/24 off, with 0/12 harmful clean repairs. All attempts together
+used 2,317,163/3,000,000 observed tokens; medium effort did not fit the
+remaining budget. The [experiment](experiments/review-corpus-b6-2026-10-17.md)
+records per-case results, latency, usage and exclusions. Review remains off by
+default, with a recommendation to retain that setting.
+
 ## Lane C — workspace modes
 
 ### C1. Isolated mode: design and hydration planner
