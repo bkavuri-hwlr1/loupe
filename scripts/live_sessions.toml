@@ -19,7 +19,7 @@
 #                 this interpreter, which has pytest
 # Bump `version` whenever the experiments, fixtures, or acceptance tests
 # change, so results from different versions are not compared.
-version = 3
+version = 4
 
 [[experiments]]
 id = "shop"
@@ -115,3 +115,56 @@ crash = true
 [experiments.checks.test]
 argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
 timeout = 120
+
+[[experiments]]
+id = "toolkit-runtime"
+fixture = "toolkit-runtime"
+acceptance = "toolkit-runtime"
+mode = "auto"
+runtime_canary = true
+runtime_paths = [".env"]
+approved_runtime_files = [".env"]
+answer = "Use your judgment and follow the request as written."
+follow_up = "Your earlier change was not applied ({reason}). Make it again from the current files: {prompt}"
+max_follow_ups = 1
+
+[[experiments.parts]]
+name = "text"
+prompt = """
+Add text helpers to the toolkit package. In src/toolkit/text.py add \
+normalize_space(value), joining whitespace-separated words with one space \
+and trimming the ends, including Unicode whitespace; and slug(value), \
+lowercasing the input and replacing every run of characters outside ASCII \
+a-z and 0-9 with one hyphen, with no leading or trailing hyphens. In \
+src/toolkit/registry.py set only the text entry in FEATURES to True. Keep \
+identity and the other registry entry intact. Add tests in tests/test_text.py."""
+
+[[experiments.parts]]
+name = "numbers"
+prompt = """
+Add numeric helpers to the toolkit package. In src/toolkit/numbers.py add \
+mean(values), accepting any iterable of numbers, returning their arithmetic \
+mean as a float, and raising ValueError on an empty iterable; and \
+clamp(value, lower, upper), returning the value bounded inclusively by lower \
+and upper, and raising ValueError when lower exceeds upper. In \
+src/toolkit/registry.py set only the numbers entry in FEATURES to True. Keep \
+identity and the other registry entry intact. Add tests in tests/test_numbers.py."""
+
+[experiments.disruption]
+edit_path = "src/toolkit/registry.py"
+edit_append = '''
+
+
+def operator_note() -> str:
+    """A note added by the operator during the experiment."""
+    return "registry edited outside Loupe"
+'''
+crash = true
+
+[experiments.checks.test]
+argv = ["{python}", "-m", "pytest", "-q", "-s", "-p", "no:cacheprovider"]
+timeout = 120
+
+[experiments.checks.runtime]
+argv = ["{python}", "-c", "from pathlib import Path; name, sep, value = Path('.env').read_text().strip().partition('='); assert name == 'LOUPE_C6_CANARY' and sep and value.startswith('sk-') and len(value) == 43; print('C6 runtime read passed')"]
+timeout = 30

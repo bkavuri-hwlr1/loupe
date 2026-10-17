@@ -520,6 +520,56 @@ it is not yet a comparison of coding quality or throughput against one agent.
 
 ## Live two-session experiment
 
+### Wave 4 isolated and mixed smoke (October 17, 2026)
+
+The session runner supports `--workspace shared|isolated|mixed`. Its
+`toolkit-runtime` fixture has an ignored generated canary, exact `.env` consent
+for isolated lanes, and a required check that reads the private runtime without
+printing it. Trusted hidden acceptance ignores candidate pytest configuration
+and hooks. Each run checks primary HEAD/index, physical session modes, canary
+exclusion from control data and logs, and removal of private worktrees and
+`.env` copies.
+
+The [sanitized measurement record](experiments/wave4-isolated-smoke-2026-10-17.json)
+keeps two source cohorts separate. Before the incoming-sync fix, four pilots and
+seven repeats passed; a mixed disrupted repeat lost the outside operator note,
+so the original matrix stopped with four repeats unstarted. A deterministic
+witness traced that failure to a false conflict on an unchanged private file
+when a published batch already included an outside edit. After fix `2a3e12e`,
+one new mixed disrupted pilot and three repetitions preserved the note and
+passed every hidden test, own check, and runtime/privacy/cleanup audit.
+
+Two of those three repetitions needed one follow-up each: their original
+isolated tasks failed before the daemon restart when a synchronization notice
+was attached to a quiet coordination update without clearing `facts_unchanged`.
+The harness correctly rejected that contradictory update. The record retains
+both original failures, both permitted follow-ups, their time and tokens, and
+the no-provider reproduction. Fix `608dd2b` passed 56 focused and 30 independent
+tests, Ruff and mypy; it is validated offline only. The live candidate
+`eb2d6f5` does not contain it. A full matrix on one final candidate was
+not completed.
+
+| Repeat cohort and condition | Samples | Median wall time | Median tokens |
+| --- | ---: | ---: | ---: |
+| Before incoming fix: isolated clean | 3 | 90.4 s | 154,485 |
+| Before incoming fix: isolated disrupted | 3 | 100.1 s | 212,088 |
+| After incoming fix: mixed disrupted | 3 | 96.9 s | 166,798 |
+
+The mixed disrupted median includes the two permitted recoveries. Historical
+shared v3 pair medians were 74.4 s / 124,159 tokens clean and 84.0 s / 162,268
+tokens disrupted. That older fixture had no runtime canary/check; full offline
+suites also ran on the same host during some live cases. These wall times do
+not establish a matched throughput comparison. All initial, failed and
+follow-up attempts count against the 3M budget: **2,892,023 tokens spent,
+107,977 remaining**. No further live calls were made.
+
+The frozen C6 runner branch `4cf7819` passed 2,575 tests with one expected
+filesystem skip, Ruff, mypy over 110 files, and wheel/sdist builds. The live
+product candidates also include C7 and the isolated scheduling follow-up;
+the record pins exact sources, fixture trees and archive hashes.
+
+### Earlier shared-mode experiments
+
 `scripts/live_sessions.py` runs the same multi-file change two ways with a
 real model: one session given every part, and one session per part working
 at once in one shared checkout. The `shop` experiment (`live_sessions.toml`)
@@ -736,17 +786,21 @@ quality and cost savings remain unmeasured. Review remains off by default.
 
 ## Next executable slice
 
-[`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
-remaining harness gaps into packages that separate sessions can run at once.
+[`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
+Waves 4–7, as packages that separate sessions can run at once.
 
 1. Validate the remaining multi-profile authority and migration guarantees.
-2. Extend isolated runtime support with explicit dependency rebuild adapters,
-   runtime refresh, and per-terminal environment handling from the workspace plan.
+   G1 designs these first, then G2 and G3 implement them.
+2. Prove isolated mode with a live run (C6) and make its checks cheaper (C7).
+   Then extend isolated runtime support with runtime refresh (C8), a
+   per-session command environment (C9) and dependency rebuild adapters (C10).
 3. Broaden independent-review quality and cost measurements beyond the completed
-   planted-bug acceptance run; keep review disabled by default.
-4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
-   lifecycle, with `none` and exact-search fallbacks before optional vector
-   acceleration.
+   planted-bug acceptance run (B6). Keep review disabled by default until then.
+4. Build the opt-in knowledge plane in steps: a lexical index (F1), a code
+   graph (F2), then retrieval in the agent with a live comparison (F3). Add
+   embeddings with exact scoring (F4) only if that comparison shows retrieval
+   helps.
+5. E2's live provider checks are on hold.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).

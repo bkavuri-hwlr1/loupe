@@ -29,6 +29,7 @@ import argparse
 import ast
 import json
 import os
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -38,12 +39,14 @@ import time
 import tomllib
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import live_benchmark as benchmark
 
+from llm_cli.cli.session import remove_session_secret, session_resume_secret
 from llm_cli.execution.sandbox import (
     SandboxPolicy,
     available_sandbox,
@@ -59,6 +62,8 @@ ARMS = ("single", "pair")
 # Acceptance tests named test_operator_* check the disruption's hand edit.
 OPERATOR_GROUP = "operator"
 SCENARIOS = ("clean", "disrupted")
+WORKSPACES = ("shared", "isolated", "mixed")
+_RUNTIME_CHECK_MARKER = "C6 runtime read passed"
 # Task titles keep the prompt's first 500 characters.
 _TITLE_KEY = 200
 _POLL_SECONDS = 2.0
@@ -91,6 +96,9 @@ class Experiment:
     follow_up: str = "Your earlier change was not applied ({reason}). {prompt}"
     max_follow_ups: int = 1
     checks: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    runtime_canary: bool = False
+    runtime_paths: tuple[str, ...] = ()
+    approved_runtime_files: tuple[str, ...] = ()
 
     def lanes(self, arm: str) -> list[tuple[str, str]]:
         """(name, prompt) for each session the arm starts."""
@@ -130,6 +138,9 @@ def load_experiments(path: Path = EXPERIMENTS) -> tuple[int, tuple[Experiment, .
             follow_up=str(raw.get("follow_up", Experiment.follow_up)).strip(),
             max_follow_ups=raw.get("max_follow_ups", 1),
             checks=raw.get("checks", {}),
+            runtime_canary=raw.get("runtime_canary", False),
+            runtime_paths=tuple(raw.get("runtime_paths", ())),
+            approved_runtime_files=tuple(raw.get("approved_runtime_files", ())),
         )
         _validate(experiment)
         experiments.append(experiment)
@@ -178,6 +189,22 @@ def _validate(experiment: Experiment) -> None:
         for spec in experiment.checks.values()
     ):
         raise refuse("each check needs an argv list")
+    if type(experiment.runtime_canary) is not bool:
+        raise refuse("runtime_canary must be a boolean")
+    for path in (*experiment.runtime_paths, *experiment.approved_runtime_files):
+        if (
+            not isinstance(path, str)
+            or PurePosixPath(path).is_absolute()
+            or ".." in PurePosixPath(path).parts
+            or path != PurePosixPath(path).as_posix()
+        ):
+            raise refuse("runtime paths must be canonical relative paths")
+    if experiment.runtime_canary and (
+        ".env" not in experiment.runtime_paths
+        or ".env" not in experiment.approved_runtime_files
+        or not experiment.checks
+    ):
+        raise refuse("runtime canary requires .env runtime, exact consent and checks")
 
 
 def acceptance_tests(directory: Path) -> list[str]:
@@ -277,6 +304,7 @@ class Lane:
     processes: list[subprocess.Popen[str]] = field(default_factory=list)
     started: list[float] = field(default_factory=list)
     follow_ups: int = 0
+    workspace: str = "shared"
 
     def waiting_for_task(self) -> bool:
         return len(self.task_ids) < len(self.texts)
@@ -365,12 +393,29 @@ def acceptance(
             "PYTHONDONTWRITEBYTECODE": "1",
         }
 
-        def pytest(*arguments: str) -> subprocess.CompletedProcess[str]:
-            argv = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", *arguments]
+        trusted_config = root / "hidden-pytest.ini"
+        trusted_config.write_text("[pytest]\npythonpath = repo/src\n", encoding="utf-8")
+
+        def pytest(
+            *arguments: str, hidden: bool = False
+        ) -> subprocess.CompletedProcess[str]:
+            argv = [
+                python,
+                *(["-I"] if hidden else []),
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                *(["-c", str(trusted_config), "--noconftest"] if hidden else []),
+                *arguments,
+            ]
             return subprocess.run(
                 wrap(kind, policy, argv, cwd=copy),
                 cwd=copy,
-                env=environment,
+                env={**environment, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+                if hidden
+                else environment,
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -379,7 +424,9 @@ def acceptance(
 
         own = pytest("tests")
         report = root / "acceptance.xml"
-        pytest(f"--junitxml={report}", "loupe_acceptance")
+        hidden = pytest(f"--junitxml={report}", "loupe_acceptance", hidden=True)
+        if own.returncode in {126, 127} or hidden.returncode in {126, 127}:
+            return {"ran": False, "reason": "sandboxed interpreter could not execute"}
         outcomes = junit_outcomes(report.read_text()) if report.exists() else {}
     lines = (own.stdout or own.stderr).strip().splitlines()
     return {
@@ -399,16 +446,275 @@ class Context:
     work: Path
     configs: Path
     timeout: float
+    workspace: str = "shared"
+    token_budget: int | None = None
+
+
+def lane_workspace(selection: str, index: int) -> str:
+    """Mixed pairs put the first lane in shared and later lanes in isolated."""
+    if selection not in WORKSPACES:
+        raise ValueError("unknown workspace selection")
+    return (
+        "shared"
+        if selection == "mixed" and index == 0
+        else ("isolated" if selection == "mixed" else selection)
+    )
+
+
+def event_tokens(events: Iterable[tuple[str, Mapping[str, Any]]]) -> int:
+    usage = benchmark.summarize_events(events).usage
+    return int(usage.get("prompt_tokens", usage.get("input_tokens", 0))) + int(
+        usage.get("output_tokens", 0)
+    )
+
+
+def prepare_runtime(repository: Path, experiment: Experiment) -> bytes | None:
+    if not experiment.runtime_canary:
+        return None
+    canary = ("sk-" + secrets.token_hex(20)).encode()
+    (repository / ".env").write_bytes(b"LOUPE_C6_CANARY=" + canary + b"\n")
+    (repository / ".env").chmod(0o600)
+    ignored = subprocess.run(
+        ["git", "-C", str(repository), "check-ignore", "--", ".env"],
+        capture_output=True,
+        check=False,
+    )
+    if ignored.returncode:
+        raise ValueError("runtime canary must be ignored by the fixture")
+    return canary
+
+
+def git_invariants(repository: Path) -> dict[str, str]:
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    return {
+        "head": git("rev-parse", "HEAD"),
+        "index": git("write-tree"),
+        "worktrees": git("worktree", "list", "--porcelain"),
+    }
+
+
+def _private_workspaces(
+    paths: AppPaths, session_ids: set[str]
+) -> list[tuple[str, str]]:
+    if not session_ids:
+        return []
+    with closing(
+        sqlite3.connect(f"file:{paths.control_db}?mode=ro", uri=True)
+    ) as connection:
+        marks = ",".join("?" for _ in session_ids)
+        return [
+            (str(path), str(state))
+            for path, state in connection.execute(
+                "SELECT w.canonical_path,w.state FROM sessions s JOIN workspaces w "
+                f"USING(workspace_id) WHERE s.session_id IN ({marks}) "
+                "AND w.mode='isolated'",
+                sorted(session_ids),
+            )
+        ]
+
+
+def close_run_sessions(
+    context: Context, session_ids: set[str], task_ids: set[str]
+) -> bool:
+    """Dispose only settled held proposals, then close this run's conversations."""
+    client = DaemonClient(context.paths, timeout_seconds=60)
+    with closing(
+        sqlite3.connect(f"file:{context.paths.control_db}?mode=ro", uri=True)
+    ) as con:
+        retained = [
+            str(task_id)
+            for task_id, status, proposal in con.execute(
+                "SELECT task_id,status,proposal_json FROM task_workflows"
+            )
+            if task_id in task_ids
+            and proposal is not None
+            and status in {"awaiting_review", "cancelled"}
+        ]
+        states = dict(con.execute("SELECT session_id,state FROM sessions"))
+    for task_id in retained:
+        client.call("task.discard", {"task_id": task_id}, autostart=False)
+    for session_id in sorted(session_ids):
+        if states.get(session_id) != "closed":
+            client.call(
+                "session.close",
+                {
+                    "session_id": session_id,
+                    "resume_secret": session_resume_secret(context.paths, session_id),
+                },
+                autostart=False,
+            )
+        remove_session_secret(context.paths, session_id)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        private = _private_workspaces(context.paths, session_ids)
+        if all(
+            state == "removed" and not Path(path).exists() for path, state in private
+        ):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _contains_canary(path: Path, canary: bytes) -> bool:
+    if not path.is_file():
+        return False
+    tail = b""
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            combined = tail + chunk
+            if canary in combined:
+                return True
+            tail = combined[-len(canary) :]
+    return False
+
+
+def _database_contains_canary(database: Path, canary: bytes) -> bool:
+    # Closing any raw descriptor for a SQLite DB or SHM inode releases this
+    # process's POSIX locks, including locks owned by live SQLite connections.
+    # Use a fresh process; send the value privately on stdin, never argv/env.
+    program = """
+import pathlib, sys
+canary = sys.stdin.buffer.read()
+for path in pathlib.Path(sys.argv[1]).parent.glob('control.sqlite3*'):
+    if not path.is_file():
+        continue
+    tail = b''
+    with path.open('rb') as source:
+        while chunk := source.read(1024 * 1024):
+            combined = tail + chunk
+            if canary in combined:
+                sys.exit(1)
+            tail = combined[-len(canary):]
+sys.exit(0)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program, str(database)],
+        input=canary,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode not in {0, 1}:
+        raise RuntimeError("private database canary scan did not complete")
+    return result.returncode == 1
+
+
+def audit_run(
+    paths: AppPaths,
+    repository: Path,
+    before: Mapping[str, str],
+    canary: bytes | None,
+    lanes: Sequence[Lane],
+    rows: Mapping[str, TaskRow],
+    scenario: str,
+    edit_at: float | None,
+    crash_at: float | None,
+    cleanup: bool,
+) -> dict[str, bool]:
+    after = git_invariants(repository)
+    invariants = {
+        "head_unchanged": before["head"] == after["head"],
+        "index_unchanged": before["index"] == after["index"],
+        "worktree_registry_restored": before["worktrees"] == after["worktrees"],
+        "sessions_closed_private_workspaces_removed": cleanup,
+        "disruption_completed": scenario != "disrupted"
+        or (edit_at is not None and crash_at is not None),
+    }
+    with closing(
+        sqlite3.connect(f"file:{paths.control_db}?mode=ro", uri=True)
+    ) as connection:
+        bindings = {
+            str(session_id): (str(mode), str(state))
+            for session_id, mode, state in connection.execute(
+                "SELECT session_id,workspace_mode,state FROM sessions"
+            )
+        }
+    invariants["requested_workspaces_confirmed"] = all(
+        lane.task_ids
+        and bindings.get(rows[lane.task_ids[-1]].session_id)
+        == (lane.workspace, "closed")
+        for lane in lanes
+    )
+    if canary is not None:
+        invariants.update(
+            {
+                "primary_canary_preserved": (repository / ".env").is_file()
+                and (repository / ".env").read_bytes()
+                == b"LOUPE_C6_CANARY=" + canary + b"\n",
+                "database_has_no_canary": not _database_contains_canary(
+                    paths.control_db, canary
+                ),
+                "daemon_log_has_no_canary": not _contains_canary(
+                    paths.log_file, canary
+                ),
+                "chat_logs_have_no_canary": not any(
+                    _contains_canary(path, canary)
+                    for path in repository.parent.glob("*.log")
+                ),
+                "session_files_have_no_canary": not any(
+                    _contains_canary(path, canary)
+                    for path in paths.session_dir.rglob("*")
+                ),
+                "managed_env_copies_absent": not any(paths.data_dir.rglob(".env")),
+            }
+        )
+        completed = {
+            lane.task_ids[-1]
+            for lane in lanes
+            if lane.task_ids and rows[lane.task_ids[-1]].state == "completed"
+        }
+        with closing(
+            sqlite3.connect(f"file:{paths.control_db}?mode=ro", uri=True)
+        ) as connection:
+            passed = {
+                str(task_id)
+                for task_id, name, state, output in connection.execute(
+                    "SELECT task_id,name,state,output FROM check_runs"
+                )
+                if name == "runtime"
+                and state == "passed"
+                and _RUNTIME_CHECK_MARKER in (output or "")
+            }
+        invariants["each_lane_ran_runtime_check"] = (
+            len(completed) == len(lanes) and completed <= passed
+        )
+    return invariants
 
 
 def _start(
-    context: Context, repository: Path, mode: str, lane: Lane, text: str
+    context: Context,
+    repository: Path,
+    mode: str,
+    lane: Lane,
+    text: str,
+    approved_runtime_files: Sequence[str] = (),
 ) -> None:
     attempt = len(lane.texts)
     log = context.work / f"{repository.name}-{lane.name}-{attempt}.log"
     with open(log, "w") as output:
         process = subprocess.Popen(
-            [*context.chat, "--mode", mode, "--repo", str(repository)],
+            [
+                *context.chat,
+                "--mode",
+                mode,
+                "--repo",
+                str(repository),
+                "--workspace",
+                lane.workspace,
+                *(
+                    argument
+                    for path in (
+                        approved_runtime_files if lane.workspace == "isolated" else ()
+                    )
+                    for argument in ("--approve-secret", path)
+                ),
+            ],
             stdin=subprocess.PIPE,
             stdout=output,
             stderr=subprocess.STDOUT,
@@ -436,10 +742,16 @@ def run_arm(
 ) -> dict[str, Any]:
     name = f"{experiment.id}-{arm}-{scenario}-{repetition}"
     repository = benchmark._fixture(context.work / name, experiment.fixture)
+    before = git_invariants(repository)
+    canary = prepare_runtime(repository, experiment)
     if experiment.checks:
         config = context.configs / f"{name}-checks.toml"
         config.write_text(
-            benchmark.checks_toml(experiment.checks, sys.executable), encoding="utf-8"
+            "runtime_paths = "
+            + json.dumps(list(experiment.runtime_paths))
+            + "\n"
+            + benchmark.checks_toml(experiment.checks, sys.executable),
+            encoding="utf-8",
         )
         for command in (
             ["repo", "add", str(repository)],
@@ -453,17 +765,28 @@ def run_arm(
             )
     database = context.paths.control_db
     disrupted = scenario == "disrupted"
-    lanes = [Lane(lane, prompt) for lane, prompt in experiment.lanes(arm)]
+    lanes = [
+        Lane(lane, prompt, workspace=lane_workspace(context.workspace, index))
+        for index, (lane, prompt) in enumerate(experiment.lanes(arm))
+    ]
     since = int(time.time() * 1000)
     wall, started = time.time(), time.monotonic()
     deadline = started + context.timeout
     for lane in lanes:
-        _start(context, repository, experiment.mode, lane, lane.prompt)
+        _start(
+            context,
+            repository,
+            experiment.mode,
+            lane,
+            lane.prompt,
+            experiment.approved_runtime_files,
+        )
     rows: dict[str, TaskRow] = {}
     answers_given: dict[str, int] = {}
     interventions = {"answers": 0, "follow_ups": 0}
     edit_at = crash_at = None
     timed_out = False
+    budget_stopped = False
     while True:
         for row in _task_rows(database, since):
             if row.task_id not in rows:
@@ -551,12 +874,19 @@ def run_arm(
                     experiment.mode,
                     lane,
                     experiment.follow_up.format(reason=reason, prompt=lane.prompt),
+                    experiment.approved_runtime_files,
                 )
                 pending = True
         if not pending:
             break
-        if time.monotonic() >= deadline:
-            timed_out = True
+        observed_tokens = sum(
+            event_tokens(task_events) for task_events in events.values()
+        )
+        budget_stopped = context.token_budget is not None and observed_tokens >= max(
+            0, context.token_budget - 100_000
+        )
+        if time.monotonic() >= deadline or budget_stopped:
+            timed_out = not budget_stopped
             for task_id, row in rows.items():
                 if row.state not in benchmark._SETTLED:
                     benchmark._cancel(context.loupe, context.environment, task_id)
@@ -593,13 +923,36 @@ def run_arm(
         context.paths.runtime_dir,
         *protected_home_paths(Path.home()),
     )
-    return {
+    acceptance_result = acceptance(
+        repository,
+        ACCEPTANCE / experiment.acceptance,
+        sys.executable,
+        protected,
+        skip=() if edit_at is not None else (OPERATOR_GROUP,),
+    )
+    session_ids = {row.session_id for row in rows.values() if row.session_id}
+    cleanup = close_run_sessions(context, session_ids, set(rows))
+    invariants = audit_run(
+        context.paths,
+        repository,
+        before,
+        canary,
+        lanes,
+        rows,
+        scenario,
+        edit_at,
+        crash_at,
+        cleanup,
+    )
+    result = {
         "experiment": experiment.id,
+        "workspace": context.workspace,
         "arm": arm,
         "scenario": scenario,
         "repetition": repetition,
         "repository": str(repository),
         "timed_out": timed_out,
+        "budget_stopped": budget_stopped,
         "wall_seconds": round(wall_seconds, 1),
         "suspended_seconds": round(max(0.0, wall_seconds - elapsed), 1),
         "lanes": {
@@ -610,6 +963,7 @@ def run_arm(
                 )
                 is None,
                 "follow_ups": lane.follow_ups,
+                "workspace": lane.workspace,
             }
             for lane in lanes
         },
@@ -622,15 +976,29 @@ def run_arm(
             database, (row.session_id for row in rows.values() if row.session_id)
         ),
         "changed_files": _changed_files(repository),
-        "acceptance": acceptance(
-            repository,
-            ACCEPTANCE / experiment.acceptance,
-            sys.executable,
-            protected,
-            # The operator's edit can only survive if it was made.
-            skip=() if edit_at is not None else (OPERATOR_GROUP,),
+        "acceptance": acceptance_result,
+        "invariants": invariants,
+        "passed": (
+            not timed_out
+            and not budget_stopped
+            and acceptance_result.get("ran", False)
+            and acceptance_result.get("own_tests_passed", False)
+            and acceptance_result.get("passed") == acceptance_result.get("total")
+            and all(invariants.values())
+            and all(task["recorded_once"] for task in tasks)
+            and all(
+                lane.task_ids and rows[lane.task_ids[-1]].state == "completed"
+                for lane in lanes
+            )
         ),
     }
+    if canary is not None:
+        encoded = json.dumps(result)
+        exposed = canary.decode() in encoded
+        result = json.loads(encoded.replace(canary.decode(), "[canary withheld]"))
+        result["invariants"]["report_has_no_canary"] = not exposed
+        result["passed"] = result["passed"] and not exposed
+    return result
 
 
 def _task_result(
@@ -703,11 +1071,33 @@ def describe(result: Mapping[str, Any]) -> str:
         f"{interventions['answers']} answers + {interventions['follow_ups']} "
         f"follow-ups, {result['diverged_batches']} rejected batches; {tests}"
     )
+    failed = [key for key, passed in result.get("invariants", {}).items() if not passed]
+    if failed:
+        line += "; FAILED invariants: " + ", ".join(failed)
+    if result.get("budget_stopped"):
+        line += "; TOKEN BUDGET STOP"
     if result["timed_out"]:
         line += "; TIMED OUT"
     if result["suspended_seconds"] > benchmark._SUSPENSION_NOTICE_SECONDS:
         line += f"; the machine slept {result['suspended_seconds']}s"
     return line
+
+
+def _checkpoint(output: Path, document: Mapping[str, Any]) -> None:
+    """Retain completed measurements before starting another billed case."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=output.parent, delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(document, handle, indent=2)
+            handle.write("\n")
+        os.replace(temporary, output)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def run(arguments: argparse.Namespace) -> int:
@@ -719,6 +1109,14 @@ def run(arguments: argparse.Namespace) -> int:
         raise SystemExit("no experiment matches --only")
     if arguments.profile == "default":
         raise SystemExit("use a separate, signed-in profile, not the default one")
+    if any(e.runtime_canary for e in experiments) and not all(
+        os.environ.get(name)
+        for name in ("LLM_COORD_DATA_HOME", "LLM_COORD_RUNTIME_DIR")
+    ):
+        raise SystemExit(
+            "runtime smoke runs require separate LLM_COORD_DATA_HOME and "
+            "LLM_COORD_RUNTIME_DIR; keep the credential state directory unchanged"
+        )
     if available_sandbox() is None:
         raise SystemExit("acceptance tests need a working sandbox on this machine")
     paths = AppPaths.resolve(arguments.profile)
@@ -729,17 +1127,76 @@ def run(arguments: argparse.Namespace) -> int:
         if value:
             chat += [f"--{option}", value]
     results: list[dict[str, Any]] = []
+    expected = (
+        len(experiments)
+        * arguments.repeat
+        * len(arguments.scenarios)
+        * len(arguments.arms)
+    )
+    spent = 0
+    output = arguments.out or (
+        paths.state_dir
+        / "benchmark"
+        / f"sessions-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    )
+    head = subprocess.run(
+        ["git", "-C", str(benchmark.ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    document: dict[str, Any] = {
+        "experiment_version": version,
+        "loupe_commit": head,
+        "settings": {
+            "set": list(arguments.set),
+            "provider": arguments.provider,
+            "model": arguments.model,
+            "effort": arguments.effort,
+            "workspace": arguments.workspace,
+        },
+        "runs": results,
+        "errors": [],
+        "expected_runs": expected,
+        "budget_tokens": arguments.budget_tokens,
+    }
+
+    def save(status: str) -> None:
+        document.update(
+            spent_tokens=spent,
+            budget_respected=spent <= arguments.budget_tokens,
+            complete=bool(results)
+            and len(results) == expected
+            and all(result["passed"] for result in results)
+            and spent <= arguments.budget_tokens,
+            status=status,
+        )
+        _checkpoint(output, document)
+
+    save("running")
     with tempfile.TemporaryDirectory(prefix="loupe-sessions-") as temporary:
         config_home = Path(temporary).resolve()
         benchmark.write_config(config_home, arguments.set, arguments.profile)
         environment = {**os.environ, "LLM_COORD_CONFIG_HOME": str(config_home)}
-        work = paths.state_dir / "benchmark" / "sessions"
-        shutil.rmtree(work, ignore_errors=True)
+        paths = AppPaths.resolve(arguments.profile, environ=environment)
+        work = paths.state_dir / "benchmark" / "sessions" / str(time.time_ns())
         work.mkdir(parents=True)
         context = Context(
-            paths, loupe, chat, environment, work, config_home, arguments.timeout
+            paths,
+            loupe,
+            chat,
+            environment,
+            work,
+            config_home,
+            arguments.timeout,
+            arguments.workspace,
         )
-        subprocess.run([*loupe, "daemon", "stop"], capture_output=True, check=False)
+        subprocess.run(
+            [*loupe, "daemon", "stop"],
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
         started = subprocess.run(
             [*loupe, "daemon", "start"],
             env=environment,
@@ -759,47 +1216,52 @@ def run(arguments: argparse.Namespace) -> int:
             for scenario in arguments.scenarios
             for arm in arguments.arms[:: 1 if repetition % 2 else -1]
         ]
-        spent = 0
         try:
             for repetition, experiment, scenario, arm in runs:
-                if spent >= arguments.budget_tokens:
+                if spent + 250_000 >= arguments.budget_tokens:
                     print("Stopping: the token budget is spent.")
                     break
                 print(
                     f"Running {experiment.id} {arm}/{scenario} #{repetition}…",
                     flush=True,
                 )
-                result = run_arm(context, experiment, arm, scenario, repetition)
+                context.token_budget = arguments.budget_tokens - spent
+                try:
+                    result = run_arm(context, experiment, arm, scenario, repetition)
+                except BaseException as error:
+                    # Error messages can include subprocess output. Retain only
+                    # the error class and case identity, never private bytes.
+                    document["errors"].append(
+                        {
+                            "kind": type(error).__name__,
+                            "experiment": experiment.id,
+                            "arm": arm,
+                            "scenario": scenario,
+                            "repetition": repetition,
+                        }
+                    )
+                    save("running")
+                    raise
                 results.append(result)
                 spent += result["prompt_tokens"] + result["output_tokens"]
+                save("running")
                 print(describe(result), flush=True)
+                if not result["passed"]:
+                    print(
+                        "Stopping: acceptance or an isolation invariant failed.",
+                        flush=True,
+                    )
+                    break
         finally:
-            subprocess.run([*loupe, "daemon", "stop"], capture_output=True, check=False)
-    output = arguments.out or (
-        paths.state_dir
-        / "benchmark"
-        / f"sessions-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    )
-    head = subprocess.run(
-        ["git", "-C", str(benchmark.ROOT), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout.strip()
-    document = {
-        "experiment_version": version,
-        "loupe_commit": head,
-        "settings": {
-            "set": list(arguments.set),
-            "provider": arguments.provider,
-            "model": arguments.model,
-            "effort": arguments.effort,
-        },
-        "runs": results,
-    }
-    Path(output).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+            subprocess.run(
+                [*loupe, "daemon", "stop"],
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+            save("finished")
     print(f"Results: {output}")
-    return 0
+    return 0 if document["complete"] else 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -812,6 +1274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--scenarios", nargs="+", choices=SCENARIOS, default=list(SCENARIOS)
     )
     parser.add_argument("--repeat", type=int, default=1, help="runs of each arm")
+    parser.add_argument("--workspace", choices=WORKSPACES, default="shared")
     parser.add_argument(
         "--set",
         action="append",
