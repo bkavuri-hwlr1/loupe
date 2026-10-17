@@ -393,12 +393,29 @@ def acceptance(
             "PYTHONDONTWRITEBYTECODE": "1",
         }
 
-        def pytest(*arguments: str) -> subprocess.CompletedProcess[str]:
-            argv = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", *arguments]
+        trusted_config = root / "hidden-pytest.ini"
+        trusted_config.write_text("[pytest]\npythonpath = repo/src\n", encoding="utf-8")
+
+        def pytest(
+            *arguments: str, hidden: bool = False
+        ) -> subprocess.CompletedProcess[str]:
+            argv = [
+                python,
+                *(["-I"] if hidden else []),
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                *(["-c", str(trusted_config), "--noconftest"] if hidden else []),
+                *arguments,
+            ]
             return subprocess.run(
                 wrap(kind, policy, argv, cwd=copy),
                 cwd=copy,
-                env=environment,
+                env={**environment, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+                if hidden
+                else environment,
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -407,7 +424,7 @@ def acceptance(
 
         own = pytest("tests")
         report = root / "acceptance.xml"
-        hidden = pytest(f"--junitxml={report}", "loupe_acceptance")
+        hidden = pytest(f"--junitxml={report}", "loupe_acceptance", hidden=True)
         if own.returncode in {126, 127} or hidden.returncode in {126, 127}:
             return {"ran": False, "reason": "sandboxed interpreter could not execute"}
         outcomes = junit_outcomes(report.read_text()) if report.exists() else {}

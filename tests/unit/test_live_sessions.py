@@ -542,3 +542,38 @@ def test_completed_results_survive_a_later_run_error(
         }
     ]
     assert "private-canary" not in output.read_text()
+
+
+@pytest.mark.skipif(available_sandbox() is None, reason="needs a working sandbox")
+@pytest.mark.parametrize("interference", ["hook", "config"])
+def test_hidden_acceptance_ignores_candidate_collection_controls(
+    tmp_path: Path, interference: str
+) -> None:
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    sessions.prepare_runtime(repository, experiment)
+    if interference == "hook":
+        (repository / "conftest.py").write_text(
+            "import pytest\n"
+            "def pytest_collection_modifyitems(items):\n"
+            "    for item in items:\n"
+            "        item.add_marker(pytest.mark.skip(reason='candidate hook'))\n"
+        )
+    else:
+        (repository / "pytest.ini").write_text(
+            "[pytest]\naddopts = -k test_operator_hand_edit_is_preserved\n"
+        )
+    result = sessions.acceptance(
+        repository, sessions.ACCEPTANCE / experiment.acceptance, sys.executable, ()
+    )
+    assert result["ran"]
+    # The untouched fixture's runtime contract executes and passes; its other
+    # hidden contracts execute and fail, regardless of candidate hooks/config.
+    assert result["passed"] == 1
+    assert result["total"] == 17
+    assert result["groups"]["runtime"] == [1, 1]
+    if interference == "hook":
+        # The ordinary test run retains the project's collection behavior.
+        assert result["own_tests_passed"]
+        assert "skipped" in result["own_tests"]
