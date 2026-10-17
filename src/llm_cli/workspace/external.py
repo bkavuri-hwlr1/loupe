@@ -17,7 +17,7 @@ import os
 import sqlite3
 import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -137,7 +137,11 @@ def _identity(identity: FileIdentity) -> str:
 
 
 def _source(
-    root: Path, relative: str, expected: str, remaining: int
+    root: Path,
+    relative: str,
+    expected: str,
+    remaining: int,
+    capture: Callable[[bytes], None] | None = None,
 ) -> tuple[str | None, int]:
     """Hash only stable, bounded, screened regular source; everything else opaque."""
     with _parent(root, relative) as (parent, leaf):
@@ -176,6 +180,8 @@ def _source(
         content = b"".join(chunks)
         if contains_secret_material(content):
             return None, count
+        if capture is not None:
+            capture(content)
         mode = EXECUTABLE_MODE if before.st_mode & stat.S_IXUSR else REGULAR_MODE
         return _identity(
             FileIdentity(
@@ -265,6 +271,15 @@ class ExternalWorkspaceScanner:
             [path for path, stamp in stamps.items() if stamp != "unavailable"],
             remaining=remaining,
         )
+        from llm_cli.knowledge import outbox
+        from llm_cli.workspace.broker import store_candidate_content
+
+        artifact_root = outbox.artifact_directory(self.store)
+        with self.store.connection() as connection:
+            project = artifact_root is not None and outbox.subscribed(
+                connection, self.store, str(binding["checkout_id"])
+            )
+        artifact_hashes: dict[str, str] = {}
         results: list[tuple[sqlite3.Row, str, str | None, bool]] = []
         consumed = 0
         for row in rows:
@@ -279,7 +294,26 @@ class ExternalWorkspaceScanner:
             identity = None
             if path not in excluded and stamp != "unavailable":
                 try:
-                    identity, count = _source(root, path, stamp, MAX_BYTES - consumed)
+
+                    def capture(content: bytes, relative: str = path) -> None:
+                        # Optional projection failure must not suppress an
+                        # ordinary outside-edit notice or its cursor progress.
+                        if project and artifact_root is not None:
+                            with suppress(OSError, ValueError, LlmCoordError):
+                                artifact_hashes[relative] = store_candidate_content(
+                                    artifact_root, content
+                                )
+
+                    if project:
+                        identity, count = _source(
+                            root, path, stamp, MAX_BYTES - consumed, capture=capture
+                        )
+                    else:
+                        # Keep the ordinary source-reader call unchanged when
+                        # optional projection is off.
+                        identity, count = _source(
+                            root, path, stamp, MAX_BYTES - consumed
+                        )
                 except _Deferred:
                     continue
                 except (OSError, ValueError):
@@ -354,6 +388,16 @@ class ExternalWorkspaceScanner:
                         now=int(time.time() * 1_000),
                     )
                     sequence = event.sequence
+                    outbox.enqueue_external(
+                        connection,
+                        self.store,
+                        checkout_id=str(binding["checkout_id"]),
+                        path=str(row["relative_path"]),
+                        identity=identity,
+                        content_hash=artifact_hashes.get(str(row["relative_path"])),
+                        sequence=sequence,
+                        now=int(time.time() * 1_000),
+                    )
                     emitted += 1
                 connection.execute(
                     "INSERT INTO workspace_external_observations(session_id, "

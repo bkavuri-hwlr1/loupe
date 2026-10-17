@@ -54,7 +54,10 @@ def test_live_daemon_backup_keeps_latest_task_and_private_files(
             result = dispatch(arguments, client)
             directory = Path(result["directory"])
             assert stat.S_IMODE(directory.stat().st_mode) == 0o700
-            assert len(result["databases"]) == 3
+            assert len(result["databases"]) == 1
+            assert result["omitted"] == ["knowledge.sqlite3", "vectors.sqlite3"]
+            assert not client.paths.knowledge_db.exists()
+            assert not client.paths.vectors_db.exists()
             for database in result["databases"]:
                 path = Path(database["path"])
                 assert path.parent == directory

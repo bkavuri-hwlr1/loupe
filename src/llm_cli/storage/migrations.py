@@ -977,6 +977,35 @@ CREATE TABLE isolated_sync_journal (
 );
 """,
     ),
+    Migration(
+        23,
+        "optional_knowledge_projection_outbox",
+        """
+CREATE TABLE knowledge_subscriptions (
+    checkout_id TEXT PRIMARY KEY REFERENCES checkouts(checkout_id),
+    source_id TEXT NOT NULL UNIQUE,
+    enabled INTEGER NOT NULL CHECK(enabled IN (0,1))
+);
+CREATE TABLE knowledge_external_versions (
+    version_id TEXT PRIMARY KEY,
+    checkout_id TEXT NOT NULL REFERENCES checkouts(checkout_id),
+    relative_path TEXT NOT NULL,
+    identity_json TEXT,
+    content_hash TEXT
+);
+CREATE TABLE knowledge_outbox (
+    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    checkout_id TEXT NOT NULL REFERENCES checkouts(checkout_id),
+    event_sequence INTEGER NOT NULL,
+    batch_id TEXT REFERENCES workspace_batches(batch_id),
+    version_id TEXT REFERENCES knowledge_external_versions(version_id),
+    created_at INTEGER NOT NULL,
+    UNIQUE(checkout_id,event_sequence),
+    CHECK ((batch_id IS NULL) <> (version_id IS NULL))
+);
+CREATE INDEX knowledge_outbox_checkout ON knowledge_outbox(checkout_id,outbox_id);
+""",
+    ),
 )
 
 
@@ -989,6 +1018,72 @@ CREATE TABLE store_metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
+);
+""",
+    ),
+    Migration(
+        2,
+        "local_lexical_generations",
+        """
+CREATE TABLE knowledge_sources (
+    source_id TEXT PRIMARY KEY,
+    checkout_id TEXT NOT NULL UNIQUE,
+    canonical_path TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+    base_oid TEXT NOT NULL,
+    active_generation TEXT,
+    chunker_version TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE knowledge_generations (
+    generation_id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL REFERENCES knowledge_sources(source_id),
+    state TEXT NOT NULL CHECK(state IN ('staging','active','superseded')),
+    source_sequence INTEGER NOT NULL,
+    document_count INTEGER NOT NULL,
+    chunk_count INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE knowledge_documents (
+    document_id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL REFERENCES knowledge_sources(source_id),
+    relative_path TEXT NOT NULL,
+    content_identity TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    indexed_revision TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    UNIQUE(source_id,relative_path)
+);
+CREATE TABLE knowledge_chunks (
+    rowid INTEGER PRIMARY KEY,
+    chunk_id TEXT NOT NULL UNIQUE,
+    document_id TEXT NOT NULL REFERENCES knowledge_documents(document_id),
+    source_id TEXT NOT NULL REFERENCES knowledge_sources(source_id),
+    relative_path TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    text TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE knowledge_fts USING fts5(
+    relative_path,text,content='knowledge_chunks',content_rowid='rowid',
+    tokenize='unicode61'
+);
+CREATE TABLE projection_jobs (
+    job_id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL REFERENCES knowledge_sources(source_id),
+    target_sequence INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending','running','completed','failed')),
+    error_code TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE projection_cursors (
+    checkout_id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL REFERENCES knowledge_sources(source_id),
+    event_sequence INTEGER NOT NULL,
+    outbox_id INTEGER NOT NULL
 );
 """,
     ),

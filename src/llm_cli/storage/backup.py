@@ -17,7 +17,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from llm_cli.paths import AppPaths, reject_symlink_components
+from llm_cli.errors import LlmCoordError
+from llm_cli.paths import (
+    AppPaths,
+    reject_symlink_components,
+    validate_owned_sqlite_paths,
+)
 
 
 class BackupError(RuntimeError):
@@ -44,7 +49,7 @@ class BackupMetadata:
 
 
 def backup_profile(paths: AppPaths, output: Path | None = None) -> dict[str, object]:
-    """Back up all three databases into a fresh private timestamped directory.
+    """Back up control and existing optional stores into a fresh private directory.
 
     Each file is a verified online snapshot. The databases have independent
     transactions, so the directory does not claim a cross-database atomic view.
@@ -64,7 +69,16 @@ def backup_profile(paths: AppPaths, output: Path | None = None) -> dict[str, obj
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ-")
     directory = Path(tempfile.mkdtemp(prefix=stamp, dir=parent))
     databases = []
+    omitted = []
     for source in (paths.control_db, paths.knowledge_db, paths.vectors_db):
+        if source != paths.control_db and not source.exists():
+            omitted.append(source.name)
+            continue
+        if source == paths.knowledge_db:
+            try:
+                validate_owned_sqlite_paths(source)
+            except (OSError, LlmCoordError) as exc:
+                raise BackupError("optional knowledge database path is unsafe") from exc
         metadata = backup_database(source, directory / source.name)
         databases.append(
             {
@@ -77,7 +91,7 @@ def backup_profile(paths: AppPaths, output: Path | None = None) -> dict[str, obj
             }
         )
     _fsync_directory(parent)
-    return {"directory": str(directory), "databases": databases}
+    return {"directory": str(directory), "databases": databases, "omitted": omitted}
 
 
 def backup_database(
