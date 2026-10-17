@@ -22,17 +22,20 @@ Results are written as JSON; `--compare OLD NEW` prints how two runs differ.
 from __future__ import annotations
 
 import argparse
+import ast
 import functools
 import json
 import os
 import shutil
 import signal
 import sqlite3
+import statistics
 import subprocess
 import sys
 import tempfile
 import time
 import tomllib
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +43,12 @@ from typing import Any
 
 from llm_cli.config.loader import load_settings
 from llm_cli.errors import LlmCoordError
+from llm_cli.execution.sandbox import (
+    SandboxPolicy,
+    available_sandbox,
+    protected_home_paths,
+    wrap,
+)
 from llm_cli.paths import AppPaths
 from llm_cli.protocol.client import DaemonClient
 
@@ -96,6 +105,12 @@ class Task:
     interrupt: str | None = None
     # Require one completed independent review with at least this many findings.
     min_review_findings: int | None = None
+    # B6 corpus metadata; the exact planted replacement must precede review.
+    review_kind: str | None = None
+    seed_path: str | None = None
+    seed_before: str | None = None
+    seed_after: str | None = None
+    acceptance: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +152,11 @@ def load_suite(path: Path = TASKS) -> Suite:
             max_main_turns=raw.get("max_main_turns"),
             interrupt=raw.get("interrupt"),
             min_review_findings=raw.get("min_review_findings"),
+            review_kind=raw.get("review_kind"),
+            seed_path=raw.get("seed_path"),
+            seed_before=raw.get("seed_before"),
+            seed_after=raw.get("seed_after"),
+            acceptance=raw.get("acceptance"),
         )
         _validate(task)
         tasks.append(task)
@@ -201,6 +221,34 @@ def _validate(task: Task) -> None:
     ):
         raise refuse("min_review_findings needs an edit mode and a count from 0 to 10")
 
+    if task.review_kind is not None:
+        if task.review_kind not in {"bug", "clean"} or task.mode != "auto":
+            raise refuse("review_kind needs bug or clean in auto mode")
+        if not all(
+            isinstance(v, str) and v
+            for v in (
+                task.seed_path,
+                task.seed_before,
+                task.seed_after,
+                task.acceptance,
+            )
+        ):
+            raise refuse("review corpus tasks need seed and acceptance metadata")
+        assert task.seed_path and task.seed_before and task.acceptance
+        path = Path(task.seed_path)
+        if path.is_absolute() or ".." in path.parts or task.fixture is None:
+            raise refuse("seed_path must stay in its fixture")
+        if not task.acceptance.replace("-", "").isalnum():
+            raise refuse("acceptance must name a fixture")
+        hidden = Path(__file__).with_name("benchmark_acceptance") / task.acceptance
+        if not hidden.is_dir() or not any(hidden.glob("test_*.py")):
+            raise refuse("review corpus needs hidden acceptance tests")
+        source = (FIXTURES / task.fixture / path).read_text()
+        if source.count(task.seed_before) != 1 or task.seed_after not in task.prompt:
+            raise refuse("seed must match one fixture line and appear in the prompt")
+        if "\n" in task.prompt:
+            raise refuse("piped review prompts must use one physical line")
+
 
 def fact_coverage(
     answer: str, facts: Sequence[Sequence[str]]
@@ -235,6 +283,10 @@ class Metrics:
     resumed: bool = False
     review_attempts: int = 0
     reviews: list[dict[str, object]] = field(default_factory=list)
+    review_seconds: float = 0.0
+    review_incomplete: int = 0
+    review_timeouts: int = 0
+    review_repair_edits: int = 0
 
 
 def awaiting_answer(events: Iterable[tuple[str, Mapping[str, Any]]]) -> bool:
@@ -272,6 +324,8 @@ def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics
     answers: set[tuple[object, object]] = set()
     # A task that stops without an answer reports no total; add its turns.
     turn_usage: dict[str, int] = {}
+    review_started_ms: int | None = None
+    repairing_review = False
     for kind, payload in events:
         if kind == "model.turn.completed":
             metrics.main_turns += 1
@@ -292,6 +346,7 @@ def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics
             results.add(key)
             if payload.get("tool") in _EDIT_TOOLS and not payload.get("is_error"):
                 metrics.edits += 1
+                metrics.review_repair_edits += int(repairing_review)
         elif kind == "question.asked":
             metrics.questions += 1
         elif kind == "execution.resuming":
@@ -306,9 +361,31 @@ def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics
             efforts[payload.get("exploration_id")] = payload.get("effort")
         elif kind == "review.started":
             metrics.review_attempts += 1
+            stamp = payload.get("_benchmark_created_at")
+            review_started_ms = stamp if type(stamp) is int else None
         elif kind == "review.finished" and len(metrics.reviews) < 8:
             count = payload.get("findings")
             state = payload.get("state")
+            repairing_review = state == "completed" and type(count) is int and count > 0
+            metrics.review_incomplete += int(state != "completed")
+            reason = payload.get("reason")
+            if state != "completed" and isinstance(reason, str):
+                metrics.review_timeouts += int(
+                    any(
+                        word in reason.lower()
+                        for word in (
+                            "timeout",
+                            "timed out",
+                            "time limit",
+                            "deadline",
+                            "time budget",
+                        )
+                    )
+                )
+            stamp = payload.get("_benchmark_created_at")
+            if review_started_ms is not None and type(stamp) is int:
+                metrics.review_seconds += max(0, stamp - review_started_ms) / 1000
+            review_started_ms = None
             metrics.reviews.append(
                 {
                     "state": (
@@ -440,12 +517,19 @@ def task_result(
         "prompt_tokens": usage.get("prompt_tokens", usage.get("input_tokens", 0)),
         "output_tokens": usage.get("output_tokens", 0),
         "cached_tokens": usage.get("cache_read_input_tokens", 0),
+        "cache_write_tokens": usage.get("cache_creation_input_tokens", 0),
         "helper_prompt_tokens": usage.get("explore_prompt_tokens", 0),
         "explorations": metrics.explorations,
         "review_attempts": metrics.review_attempts,
         "reviews": metrics.reviews,
         "review_prompt_tokens": usage.get("review_prompt_tokens", 0),
         "review_output_tokens": usage.get("review_output_tokens", 0),
+        "review_cached_tokens": usage.get("review_cache_read_input_tokens", 0),
+        "review_cache_write_tokens": usage.get("review_cache_creation_input_tokens", 0),
+        "review_seconds": round(metrics.review_seconds, 3),
+        "review_incomplete": metrics.review_incomplete,
+        "review_timeouts": metrics.review_timeouts,
+        "review_repair_edits": metrics.review_repair_edits,
         "answer_characters": len(metrics.answer),
         "questions": metrics.questions,
         "edits": metrics.edits,
@@ -493,11 +577,15 @@ def compare(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
     lines: list[str] = []
     if old.get("suite_version") != new.get("suite_version"):
         lines.append("! These runs used different task versions; compare with care.")
-    previous = {task["id"]: task for task in old.get("tasks", [])}
+
+    def key(task: Mapping[str, Any]) -> tuple[object, object, object]:
+        return task["id"], task.get("repetition", 1), task.get("review_arm", "off")
+
+    previous = {key(task): task for task in old.get("tasks", [])}
     header = f"{'task':<20} {'passed':>11} {'wall s':>15} {'main calls':>13} "
     lines.append(header + f"{'prompt tokens':>19} {'cached':>17} {'facts':>9}")
     for task in new.get("tasks", []):
-        before = previous.get(task["id"])
+        before = previous.get(key(task))
         if before is None:
             lines.append(f"{task['id']:<20} (new task)")
             continue
@@ -516,7 +604,288 @@ def compare(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
             f"{task['id']:<20} {passed:>11} {wall:>15} {calls:>13} {tokens:>19} "
             f"{cached:>17} {facts:>9}"
         )
+    if any(task.get("review_kind") for task in new.get("tasks", [])):
+        lines += ["", "Review arms (counts and tokens are totals; time is median):"]
+        for label, document in (("old", old), ("new", new)):
+            for arm, summary in review_summary(document).items():
+                lines.append(f"{label} {arm}: {json.dumps(summary, sort_keys=True)}")
     return lines
+
+
+def seed_observed(task: Task, events: Sequence[tuple[str, Mapping[str, Any]]]) -> bool:
+    """Replay successful source edits and require the exact first proposal.
+
+    Unsupported mutations invalidate the witness instead of guessing from a
+    fragment that might have been repaired before review began.
+    """
+    if not all((task.fixture, task.seed_path, task.seed_before, task.seed_after)):
+        return False
+    original = (FIXTURES / str(task.fixture) / str(task.seed_path)).read_text()
+    expected = original.replace(str(task.seed_before), str(task.seed_after), 1)
+    bodies: dict[str, str | None] = {str(task.seed_path): original}
+    pending: dict[object, tuple[object, Mapping[str, Any]]] = {}
+    changed = False
+    for kind, payload in events:
+        if kind == "review.started":
+            return changed and bodies.get(str(task.seed_path)) == expected
+        if kind == "model.tool_call":
+            arguments = payload.get("arguments")
+            if isinstance(arguments, Mapping):
+                pending[payload.get("call_id")] = (payload.get("tool"), arguments)
+        elif kind == "model.tool_result" and payload.get("call_id") in pending:
+            tool, arguments = pending.pop(payload.get("call_id"))
+            if payload.get("is_error"):
+                continue
+            path = arguments.get("path")
+            if tool == "rename_file":
+                source, destination = (
+                    arguments.get("source"),
+                    arguments.get("destination"),
+                )
+                if isinstance(source, str) and isinstance(destination, str):
+                    bodies[destination] = bodies.pop(source, None)
+                    changed |= task.seed_path in {source, destination}
+            elif isinstance(path, str) and path in bodies:
+                body = bodies[path]
+                if tool == "write_file":
+                    text = arguments.get("content")
+                    bodies[path] = text if isinstance(text, str) else None
+                elif tool == "apply_patch":
+                    old, new = arguments.get("old_text"), arguments.get("new_text")
+                    bodies[path] = (
+                        body.replace(old, new, 1)
+                        if isinstance(body, str)
+                        and isinstance(old, str)
+                        and old
+                        and isinstance(new, str)
+                        and body.count(old) == 1
+                        else None
+                    )
+                elif tool in {"delete_file", "write_binary", "write_symlink"}:
+                    bodies[path] = None
+                else:
+                    continue
+                changed |= path == task.seed_path
+    return changed and bodies.get(str(task.seed_path)) == expected
+
+
+def review_summary(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Report measured repairs, not semantic precision inferred from counts."""
+    summaries: dict[str, Any] = {}
+    tasks = document.get("tasks", [])
+    arms = sorted(
+        {str(t.get("review_arm", "unspecified")) for t in tasks if t.get("review_kind")}
+    )
+    for arm in arms:
+        rows = [
+            t
+            for t in tasks
+            if t.get("review_kind") and t.get("review_arm", "unspecified") == arm
+        ]
+        measured = [
+            t
+            for t in rows
+            if t.get("seed_observed")
+            and t.get("state") == "completed"
+            and t.get("passed")
+            and t.get("hidden_acceptance", {}).get("ran")
+        ]
+        bugs = [t for t in measured if t["review_kind"] == "bug"]
+        clean = [t for t in measured if t["review_kind"] == "clean"]
+        fixed = sum(t["hidden_acceptance"].get("passed", False) for t in bugs)
+        review_fixed = sum(
+            bool(
+                t["hidden_acceptance"].get("passed")
+                and t.get("review_repair_edits")
+                and any(r.get("findings", 0) > 0 for r in t.get("reviews", []))
+            )
+            for t in bugs
+        )
+        harmed = sum(
+            bool(
+                not t["hidden_acceptance"].get("passed")
+                and t.get("review_repair_edits")
+                and any(r.get("findings", 0) > 0 for r in t.get("reviews", []))
+            )
+            for t in clean
+        )
+        summary = {
+            "runs": len(rows),
+            "measured_runs": len(measured),
+            "invalid_or_incomplete_runs": len(rows) - len(measured),
+            "bug_runs": len(bugs),
+            "bugs_fixed": fixed,
+            "hidden_pass_rate": fixed / len(bugs) if bugs else None,
+            "review_caught_and_fixed": review_fixed,
+            "clean_runs": len(clean),
+            "harmful_review_repairs": harmed,
+            "clean_failures": sum(
+                not t["hidden_acceptance"].get("passed", False) for t in clean
+            ),
+            "findings": sum(
+                sum(r.get("findings", 0) for r in t.get("reviews", [])) for t in rows
+            ),
+            "timeouts": sum(t.get("review_timeouts", 0) for t in rows),
+            "incomplete_reviews": sum(t.get("review_incomplete", 0) for t in rows),
+            "prompt_tokens": sum(t.get("prompt_tokens", 0) for t in rows),
+            "output_tokens": sum(t.get("output_tokens", 0) for t in rows),
+            "cached_tokens": sum(t.get("cached_tokens", 0) for t in rows),
+            "cache_write_tokens": sum(t.get("cache_write_tokens", 0) for t in rows),
+            "review_prompt_tokens": sum(t.get("review_prompt_tokens", 0) for t in rows),
+            "review_output_tokens": sum(t.get("review_output_tokens", 0) for t in rows),
+            "review_cached_tokens": sum(t.get("review_cached_tokens", 0) for t in rows),
+            "review_cache_write_tokens": sum(
+                t.get("review_cache_write_tokens", 0) for t in rows
+            ),
+            "median_wall_seconds": statistics.median(
+                t["wall_seconds"] for t in measured
+            )
+            if measured
+            else None,
+            "median_review_seconds": statistics.median(
+                t.get("review_seconds", 0) for t in measured
+            )
+            if measured
+            else None,
+            # Subscription usage is not an API dollar price. A price policy
+            # must be supplied separately before any currency can be claimed.
+            "cost_usd": None,
+            "per_case": {},
+        }
+        for case in sorted({t["id"] for t in rows}):
+            attempted = [t for t in rows if t["id"] == case]
+            repeats = [t for t in measured if t["id"] == case]
+            summary["per_case"][case] = {
+                "runs": len(attempted),
+                "measured_runs": len(repeats),
+                "invalid_or_incomplete_runs": len(attempted) - len(repeats),
+                "hidden_passes": sum(
+                    bool(t.get("hidden_acceptance", {}).get("passed")) for t in repeats
+                ),
+                "median_wall_seconds": statistics.median(
+                    t["wall_seconds"] for t in repeats
+                )
+                if repeats
+                else None,
+                "median_tokens": statistics.median(
+                    t.get("prompt_tokens", 0) + t.get("output_tokens", 0)
+                    for t in repeats
+                )
+                if repeats
+                else None,
+            }
+        all_tokens = summary["prompt_tokens"] + summary["output_tokens"]
+        review_tokens = (
+            summary["review_prompt_tokens"] + summary["review_output_tokens"]
+        )
+        summary["review_token_share"] = (
+            review_tokens / all_tokens if all_tokens else None
+        )
+        summary["usage_accounting_valid"] = review_tokens <= all_tokens
+        summaries[arm] = summary
+    return summaries
+
+
+def hidden_acceptance(
+    task: Task, repository: Path, protected: Sequence[Path]
+) -> dict[str, Any]:
+    """Execute only shipped hidden tests on a sandboxed disposable copy."""
+    if task.acceptance is None:
+        return {"ran": False, "reason": "not a review corpus task"}
+    kind = available_sandbox()
+    if kind is None:
+        return {"ran": False, "reason": "no working sandbox"}
+    tests = Path(__file__).with_name("benchmark_acceptance") / task.acceptance
+    expected = sorted(
+        node.name
+        for path in tests.glob("test_*.py")
+        for node in ast.parse(path.read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+    )
+    with tempfile.TemporaryDirectory(prefix="loupe-review-acceptance-") as temporary:
+        root = Path(temporary).resolve()
+        copy = root / "repo"
+        shutil.copytree(
+            repository,
+            copy,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"),
+        )
+        hidden = root / "hidden_acceptance"
+        shutil.copytree(tests, hidden)
+        configuration = root / "pytest.ini"
+        configuration.write_text("[pytest]\n", encoding="utf-8")
+        report = root / "acceptance.xml"
+        environment = {
+            "PATH": os.defpath,
+            "HOME": str(root),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "BENCHMARK_REPOSITORY": str(copy),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        }
+        command = [
+            sys.executable,
+            "-I",
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--noconftest",
+            "-c",
+            str(configuration),
+            f"--junitxml={report}",
+            str(hidden),
+        ]
+        completed = subprocess.run(
+            wrap(
+                kind,
+                SandboxPolicy(writable=(root,), protected=tuple(protected)),
+                command,
+                cwd=copy,
+            ),
+            cwd=copy,
+            env=environment,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        cases = []
+        try:
+            if report.stat().st_size <= 1024 * 1024:
+                cases = list(ET.fromstring(report.read_bytes()).iter("testcase"))
+        except (OSError, ET.ParseError):
+            pass
+        witnessed = (
+            bool(expected) and sorted(case.get("name") for case in cases) == expected
+        )
+        ran = completed.returncode in {0, 1} and witnessed
+        return {
+            "ran": ran,
+            "passed": ran
+            and completed.returncode == 0
+            and all(
+                not any(
+                    case.find(tag) is not None
+                    for tag in ("failure", "error", "skipped")
+                )
+                for case in cases
+            ),
+            "returncode": completed.returncode,
+            "reason": None if ran else "acceptance runner failed or tests missing",
+        }
+
+
+def execution_order(
+    tasks: Sequence[Task], repeat: int, paired: bool
+) -> list[tuple[int, Task, str | None]]:
+    order: list[tuple[int, Task, str | None]] = []
+    for iteration in range(1, repeat + 1):
+        arms: Sequence[str | None] = (
+            (("off", "on") if iteration % 2 else ("on", "off")) if paired else (None,)
+        )
+        order.extend((iteration, task, arm) for task in tasks for arm in arms)
+    return order
 
 
 def _loupe() -> list[str]:
@@ -630,7 +999,12 @@ def _settle(
         finally:
             connection.close()
         state, failure = (row[0], row[1]) if row else (None, None)
-        if state in _SETTLED or time.time() >= deadline:
+        if state in _SETTLED:
+            return state, failure, stranded
+        if time.time() >= deadline:
+            # A detached chat must not leave a provider task running while the
+            # benchmark admits another arm. The caller stops the run too.
+            cancel()
             return state, failure, stranded
         if not stranded and awaiting_answer(_events(database, task_id)):
             if remaining:
@@ -712,28 +1086,114 @@ def _interrupt(
 def _events(database: Path, task_id: str) -> list[tuple[str, dict[str, Any]]]:
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
-        return [
-            (str(kind), json.loads(payload))
-            for kind, payload in connection.execute(
-                "SELECT event_type, payload_json FROM task_events "
-                "WHERE task_id = ? ORDER BY sequence",
-                (task_id,),
-            )
-        ]
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(task_events)")
+        }
+        timestamp = "created_at" if "created_at" in columns else "NULL"
+        rows = connection.execute(
+            f"SELECT event_type, payload_json, {timestamp} FROM task_events "
+            "WHERE task_id = ? ORDER BY sequence",
+            (task_id,),
+        )
+        result = []
+        for kind, payload, created_at in rows:
+            value = json.loads(payload)
+            if type(created_at) is int:
+                value["_benchmark_created_at"] = created_at
+            result.append((str(kind), value))
+        return result
+    finally:
+        connection.close()
+
+
+def durable_usage(database: Path, task_id: str) -> dict[str, int]:
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(
+            "SELECT c.checkpoint_json FROM execution_checkpoints c "
+            "JOIN task_executions e ON e.execution_id = c.execution_id "
+            "WHERE e.task_id = ? ORDER BY e.task_attempt DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        checkpoint = json.loads(rows[0]) if rows else {}
+        usage = checkpoint.get("usage_total", {})
+        return {
+            key: value
+            for key, value in usage.items()
+            if isinstance(key, str) and type(value) is int and value >= 0
+        }
     finally:
         connection.close()
 
 
 def run(arguments: argparse.Namespace) -> int:
-    suite = load_suite(arguments.tasks)
-    tasks = [t for t in suite.tasks if not arguments.only or t.id in arguments.only]
-    if not tasks:
-        raise SystemExit("no task matches --only")
     profile = arguments.profile
     if profile == "default":
         raise SystemExit("use a separate, signed-in profile, not the default one")
+    suite = load_suite(arguments.tasks)
+    repeat = getattr(arguments, "repeat", 1)
+    paired = getattr(arguments, "review_paired", False)
+    tasks = [t for t in suite.tasks if not arguments.only or t.id in arguments.only]
+    if paired and not arguments.only:
+        tasks = [t for t in tasks if t.review_kind is not None]
+    if not tasks:
+        raise SystemExit("no task matches --only")
+    if repeat < 1 or arguments.budget_tokens < 1:
+        raise SystemExit("repeat and token budget must be positive")
+    if paired and any(task.review_kind is None for task in tasks):
+        raise SystemExit("--review-paired requires only review corpus tasks")
+    if any(task.acceptance for task in tasks) and available_sandbox() is None:
+        raise SystemExit("hidden acceptance requires a working sandbox")
     paths = AppPaths.resolve(profile)
     loupe = [*_loupe(), "--profile", profile]
+    output = arguments.out or (
+        paths.state_dir / "benchmark" / f"results-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    )
+    head = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    expected = len(tasks) * repeat * (2 if paired else 1)
+
+    def save(results: list[dict[str, Any]], spent: int, status: str) -> None:
+        document = {
+            "suite_version": suite.version,
+            "revision": suite.revision,
+            "loupe_commit": head,
+            "settings": {
+                "set": list(arguments.set),
+                "provider": arguments.provider,
+                "model": arguments.model,
+                "effort": arguments.effort,
+            },
+            "tasks": results,
+            "run_kind": "live",
+            "repeat": repeat,
+            "review_paired": paired,
+            "budget_tokens": arguments.budget_tokens,
+            "spent_tokens": spent,
+            "budget_respected": spent <= arguments.budget_tokens,
+            "expected_runs": expected,
+            "complete": len(results) == expected,
+            "status": status,
+        }
+        document["review_summary"] = review_summary(document)
+        document["measurement_complete"] = (
+            document["complete"]
+            and all(
+                arm["invalid_or_incomplete_runs"] == 0
+                for arm in document["review_summary"].values()
+            )
+            and all(result["passed"] for result in results)
+        )
+        target = Path(output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        pending = target.with_name(target.name + ".pending")
+        pending.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        os.replace(pending, target)
+
     with tempfile.TemporaryDirectory(prefix="loupe-benchmark-") as temporary:
         # Loupe refuses configuration paths through symlinks, and macOS's
         # temporary directory is reached through one.
@@ -766,14 +1226,46 @@ def run(arguments: argparse.Namespace) -> int:
         results: list[dict[str, Any]] = []
         spent = 0
         try:
-            for task in tasks:
-                if spent >= arguments.budget_tokens:
+            for repetition, task, review_arm in execution_order(tasks, repeat, paired):
+                # Keep a conservative measured per-task reserve. Provider usage
+                # is known after requests, so this is admission control rather
+                # than a false claim of a provider-side hard billing limit.
+                reserve = max(
+                    100_000,
+                    2
+                    * max(
+                        (r["prompt_tokens"] + r["output_tokens"] for r in results),
+                        default=0,
+                    ),
+                )
+                if spent >= arguments.budget_tokens or (
+                    paired and spent and arguments.budget_tokens - spent < reserve
+                ):
                     print(f"Stopping before {task.id}: the token budget is spent.")
                     break
-                print(f"Running {task.id}…", flush=True)
+                print(
+                    f"Running {task.id} #{repetition} {review_arm or ''}…", flush=True
+                )
+                if review_arm is not None:
+                    subprocess.run(
+                        [*loupe, "daemon", "stop"],
+                        env=environment,
+                        capture_output=True,
+                        check=False,
+                    )
+                    write_config(
+                        config_home, [*arguments.set, f"review={review_arm}"], profile
+                    )
+                    subprocess.run(
+                        [*loupe, "daemon", "start"],
+                        env=environment,
+                        capture_output=True,
+                        check=True,
+                    )
                 repository = clone
                 if task.fixture is not None:
-                    repository = _fixture(fixtures / task.id, task.fixture)
+                    run_id = f"{task.id}-{repetition}-{review_arm or 'single'}"
+                    repository = _fixture(fixtures / run_id, task.fixture)
                     if task.checks:
                         config = Path(temporary) / f"{task.id}-checks.toml"
                         config.write_text(
@@ -798,7 +1290,11 @@ def run(arguments: argparse.Namespace) -> int:
                 since = int(time.time() * 1000)
                 wall, monotonic = time.time(), time.monotonic()
                 deadline = wall + arguments.timeout
-                log_path = paths.state_dir / "benchmark" / f"{task.id}.log"
+                log_path = (
+                    paths.state_dir
+                    / "benchmark"
+                    / f"{task.id}-{repetition}-{review_arm or 'single'}.log"
+                )
                 with open(log_path, "w") as log:
                     process = subprocess.Popen(
                         [*chat, "--mode", task.mode, "--repo", str(repository)],
@@ -844,7 +1340,10 @@ def run(arguments: argparse.Namespace) -> int:
                 )
                 wall_seconds = time.time() - wall
                 suspended = max(0.0, wall_seconds - (time.monotonic() - monotonic))
-                metrics = summarize_events(_events(paths.control_db, task_id))
+                events = _events(paths.control_db, task_id)
+                metrics = summarize_events(events)
+                for key, value in durable_usage(paths.control_db, task_id).items():
+                    metrics.usage[key] = max(metrics.usage.get(key, 0), value)
                 result = task_result(
                     task,
                     state,
@@ -856,37 +1355,53 @@ def run(arguments: argparse.Namespace) -> int:
                     interrupted=interrupted,
                 )
                 result["task_id"] = task_id
+                result["repetition"] = repetition
+                result["review_arm"] = review_arm or next(
+                    (
+                        item.partition("=")[2]
+                        for item in reversed(arguments.set)
+                        if item.startswith("review=")
+                    ),
+                    "off",
+                )
+                if task.review_kind is not None:
+                    result["review_kind"] = task.review_kind
+                    result["seed_observed"] = seed_observed(task, events)
+                    result["hidden_acceptance"] = hidden_acceptance(
+                        task,
+                        repository,
+                        (
+                            *protected_home_paths(Path.home()),
+                            paths.data_dir,
+                            paths.state_dir,
+                            paths.config_dir,
+                        ),
+                    )
                 # Left waiting on a question after its chat had gone.
                 result["stranded_question"] = stranded
+                result["runner_timed_out"] = state not in _SETTLED
                 results.append(result)
                 spent += result["prompt_tokens"] + result["output_tokens"]
                 print(_line(result), flush=True)
+                save(results, spent, "running")
+                if result["runner_timed_out"] or failure == "PROVIDER_UNAVAILABLE":
+                    print(
+                        "Stopping after task timeout or provider unavailability.",
+                        flush=True,
+                    )
+                    break
         finally:
             subprocess.run([*loupe, "daemon", "stop"], capture_output=True, check=False)
-    output = arguments.out or (
-        paths.state_dir / "benchmark" / f"results-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    )
-    head = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout.strip()
-    document = {
-        "suite_version": suite.version,
-        "revision": suite.revision,
-        "loupe_commit": head,
-        "settings": {
-            "set": list(arguments.set),
-            "provider": arguments.provider,
-            "model": arguments.model,
-            "effort": arguments.effort,
-        },
-        "tasks": results,
-    }
-    Path(output).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    save(results, spent, "finished")
     print(f"Results: {output}")
-    return 0 if results and all(result["passed"] for result in results) else 1
+    return (
+        0
+        if results
+        and len(results) == expected
+        and spent <= arguments.budget_tokens
+        and all(result["passed"] for result in results)
+        else 1
+    )
 
 
 def _line(result: Mapping[str, Any]) -> str:
@@ -913,6 +1428,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--profile", help="a signed-in profile other than default")
     parser.add_argument("--tasks", type=Path, default=TASKS, help="task file")
     parser.add_argument("--only", nargs="+", metavar="ID", help="run these tasks")
+    parser.add_argument("--repeat", type=int, default=1, help="repetitions per task")
+    parser.add_argument(
+        "--review-paired",
+        action="store_true",
+        help="alternate review off/on for each corpus task and repetition",
+    )
     parser.add_argument(
         "--set",
         action="append",
