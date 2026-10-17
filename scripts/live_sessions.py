@@ -1127,6 +1127,13 @@ def run(arguments: argparse.Namespace) -> int:
         if value:
             chat += [f"--{option}", value]
     results: list[dict[str, Any]] = []
+    expected = (
+        len(experiments)
+        * arguments.repeat
+        * len(arguments.scenarios)
+        * len(arguments.arms)
+    )
+    spent = 0
     output = arguments.out or (
         paths.state_dir
         / "benchmark"
@@ -1150,8 +1157,23 @@ def run(arguments: argparse.Namespace) -> int:
         },
         "runs": results,
         "errors": [],
+        "expected_runs": expected,
+        "budget_tokens": arguments.budget_tokens,
     }
-    _checkpoint(output, document)
+
+    def save(status: str) -> None:
+        document.update(
+            spent_tokens=spent,
+            budget_respected=spent <= arguments.budget_tokens,
+            complete=bool(results)
+            and len(results) == expected
+            and all(result["passed"] for result in results)
+            and spent <= arguments.budget_tokens,
+            status=status,
+        )
+        _checkpoint(output, document)
+
+    save("running")
     with tempfile.TemporaryDirectory(prefix="loupe-sessions-") as temporary:
         config_home = Path(temporary).resolve()
         benchmark.write_config(config_home, arguments.set, arguments.profile)
@@ -1194,7 +1216,6 @@ def run(arguments: argparse.Namespace) -> int:
             for scenario in arguments.scenarios
             for arm in arguments.arms[:: 1 if repetition % 2 else -1]
         ]
-        spent = 0
         try:
             for repetition, experiment, scenario, arm in runs:
                 if spent + 250_000 >= arguments.budget_tokens:
@@ -1219,11 +1240,11 @@ def run(arguments: argparse.Namespace) -> int:
                             "repetition": repetition,
                         }
                     )
-                    _checkpoint(output, document)
+                    save("running")
                     raise
                 results.append(result)
-                _checkpoint(output, document)
                 spent += result["prompt_tokens"] + result["output_tokens"]
+                save("running")
                 print(describe(result), flush=True)
                 if not result["passed"]:
                     print(
@@ -1238,9 +1259,9 @@ def run(arguments: argparse.Namespace) -> int:
                 capture_output=True,
                 check=False,
             )
-    _checkpoint(output, document)
+            save("finished")
     print(f"Results: {output}")
-    return 0 if results and all(result["passed"] for result in results) else 1
+    return 0 if document["complete"] else 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:

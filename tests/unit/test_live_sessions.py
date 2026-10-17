@@ -477,8 +477,9 @@ with sqlite3.connect(sys.argv[1], timeout=0.1) as connection:
         assert reader.execute("SELECT content FROM data").fetchone() == before
 
 
-def test_completed_results_survive_a_later_run_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("stop", ["error", "budget"])
+def test_completed_results_remain_in_incomplete_run_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop: str
 ) -> None:
     import argparse
     import json
@@ -500,7 +501,11 @@ def test_completed_results_survive_a_later_run_error(
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "head", ""),
     )
-    completed = {"passed": True, "prompt_tokens": 100, "output_tokens": 10}
+    completed = {
+        "passed": True,
+        "prompt_tokens": 800_000 if stop == "budget" else 100,
+        "output_tokens": 10,
+    }
     calls = 0
 
     def run_arm(*args):
@@ -528,19 +533,31 @@ def test_completed_results_survive_a_later_run_error(
         budget_tokens=1_000_000,
         out=output,
     )
-    with pytest.raises(sqlite3.DatabaseError):
-        sessions.run(arguments)
+    if stop == "error":
+        with pytest.raises(sqlite3.DatabaseError):
+            sessions.run(arguments)
+    else:
+        assert sessions.run(arguments) == 1
+        assert calls == 1  # Reserve prevents starting a second billed case.
     document = json.loads(output.read_text())
     assert document["runs"] == [completed]
-    assert document["errors"] == [
-        {
-            "kind": "DatabaseError",
-            "experiment": "toolkit-runtime",
-            "arm": "pair",
-            "scenario": "disrupted",
-            "repetition": 1,
-        }
-    ]
+    assert document["expected_runs"] == 2
+    assert document["spent_tokens"] == completed["prompt_tokens"] + 10
+    assert document["budget_respected"] is True
+    assert document["complete"] is False
+    assert document["status"] == "finished"
+    if stop == "error":
+        assert document["errors"] == [
+            {
+                "kind": "DatabaseError",
+                "experiment": "toolkit-runtime",
+                "arm": "pair",
+                "scenario": "disrupted",
+                "repetition": 1,
+            }
+        ]
+    else:
+        assert document["errors"] == []
     assert "private-canary" not in output.read_text()
 
 
