@@ -49,7 +49,7 @@ This decision selects its first independently useful piece: a read-only plan.
    | Ordinary ignored regular file | Prefer a verified COW clone; otherwise a private byte copy within all budgets. |
    | Ordinary ignored directory | A private container; inventory children independently except dependency trees handled by their directory-level adapter below. |
    | Git-ignored `node_modules` directory | Select the private directory-level adapter without previewing descendants. Counts and bytes remain unknown until bounded materialization; no installer runs. Nonignored source is inventoried normally. |
-   | Likely secret by path | Require exact-file consent; an approved file plans a private copy with mode at most `0600`, under `0700` containers. |
+   | Likely secret by path | Opening may omit the file with an exact-path `--approve-secret PATH` notice; an approved exact file plans a private copy with mode at most `0600`, under `0700` containers. |
    | Git-ignored `.venv` or `venv` directory | Select the bounded private portability adapter. Materialization verifies base-interpreter metadata and relocates supported launchers/configuration; the preview does not read file contents. |
    | Runtime symlink outside a supported dependency adapter | Refuse and describe its shape without following it. The dependency adapter separately validates contained links and narrowly pinned base-Python executable links. |
    | FIFO, socket, device, or other special file | Refuse and report its kind. |
@@ -160,3 +160,34 @@ and managed background processes remain outside this package. Publication is the
 C3 dependency.
 
 See [Isolated workspaces](../isolated-workspaces.md) for usage and limits.
+
+
+## C7 follow-up decision (Wave 4)
+
+Unapproved likely-secret runtime files are optional inputs. Opening an isolated
+conversation succeeds while omitting each unapproved file and naming its exact
+`--approve-secret PATH` in the notice. Omitted paths remain frozen runtime
+exclusions; omission never falls back to primary checkout bytes. Exact consent
+still applies to one new conversation, never a directory, resumed session, or
+later conversation. No setup command runs implicitly. A check requiring an
+omitted file can fail and the user can reopen with that exact approval.
+
+Screened ordinary source fixtures receive identity-checked incoming updates
+privately. If local bytes diverge, retain both versions and emit one path-only
+conflict notice. Durable synchronization metadata contains identities and random
+tokens, while incoming raw bodies are staged only inside the pinned private
+worktree Git directory, outside ordinary artifacts and model file tools.
+Recovery validates the private staged identity before any write, accepts only
+the recorded before/after states, and refuses later local edits. The existing
+8 MiB changed-path boundary remains; larger fixture transitions are deferred
+with an exact-path notice while other source changes proceed. Closing the
+session prunes that private Git directory and its staged incoming material.
+
+Commands and checks keep writable disposable private copies. Bounded COW workers,
+exact-metadata digest reuse, digest transfer from verified copies, bounded pinned
+source-parent descriptors, and exact-content secret-classification caching remove
+repeated work without sharing writable runtime or persisting secret bodies in a
+cache. Changed metadata or bytes invalidates the corresponding evidence. All copy
+workers drain before cleanup or error. The measured Loupe/APFS repeated check
+falls from about 3.03 seconds to 1.43–1.47 seconds, below the 1.5-second target;
+actual-value output screening remains before events and durable check output.

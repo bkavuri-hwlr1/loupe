@@ -345,3 +345,26 @@ def test_sandboxed_command_cannot_read_the_real_checkout(
     assert real.content.startswith("exit 1")
     assert not (repository / ".venv" / "lib" / "new.txt").exists()
     assert not write.content.startswith("exit 0")
+
+
+@pytest.mark.usefixtures("unsandboxed")
+def test_new_screened_fixture_values_are_filtered_without_initial_path_list(
+    repository: Path, tmp_path: Path
+) -> None:
+    body = "FAKE = 'AKIA" + "A" * 16 + "'\nPASSWORD = 'new-fixture-private-value'\n"
+    (repository / "fixture.py").write_text(body)
+    events: list[tuple[str, dict[str, object]]] = []
+    runner = _runner(repository, tmp_path, events=events)
+    result = runner.run(
+        [
+            sys.executable,
+            "-c",
+            "import fixture; print('useful assertion detail'); print(fixture.PASSWORD)",
+        ],
+        ".",
+        20,
+    )
+    assert not result.is_error
+    assert "useful assertion detail" in result.content
+    assert "new-fixture-private-value" not in repr((result, events))
+    assert "[private value]" in result.content

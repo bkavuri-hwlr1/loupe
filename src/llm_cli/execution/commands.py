@@ -33,7 +33,7 @@ from llm_cli.execution.sandbox import SandboxPolicy, uses_reaper, wrap
 from llm_cli.git.environment import run_git
 from llm_cli.ids import new_id
 from llm_cli.workspace.batches import BatchFile, candidate_target
-from llm_cli.workspace.identity import DIRECTORY_MODE, read_identified_path
+from llm_cli.workspace.identity import DIRECTORY_MODE
 from llm_cli.workspace.isolated import copy_runtime_files
 
 # Ignored dependency folders a command may read in place. Copying them would
@@ -182,7 +182,7 @@ class CommandRunner:
             source.mkdir(parents=True)
             home.mkdir(mode=0o700)
             (home / "tmp").mkdir()
-            self._capture(source)
+            screened = self._capture(source)
             if self.runtime_files:
                 copy_runtime_files(self.root, source, self.runtime_files)
             readable = () if self.runtime_files else self._link_dependencies(source)
@@ -191,7 +191,7 @@ class CommandRunner:
             sensitive_values = private_output_values(
                 source,
                 tuple(sorted(self.runtime_files)),
-                source_paths=tuple(sorted(set(self.sensitive_paths))),
+                source_paths=tuple(sorted(set(self.sensitive_paths) | screened)),
             )
             source = source.resolve()
             home = home.resolve()
@@ -264,17 +264,16 @@ class CommandRunner:
             raise TaskCancelled("task stopped")
         return state, exit_code, output, clipped, duration, files
 
-    def _capture(self, target: Path) -> None:
+    def _capture(self, target: Path) -> set[str]:
         """Copy the checkout's source and apply pending edits on top."""
 
         with self.lock:
             files = self.candidates()
-            _, bodies = source_snapshot(self.root, contents=True)
-            modes = {
-                path: read_identified_path(candidate_target(self.root, path))[0].mode
-                for path, body in bodies.items()
-                if body is not None
-            }
+            modes: dict[str, str] = {}
+            screened: set[str] = set()
+            _, bodies = source_snapshot(
+                self.root, contents=True, _modes=modes, _screened=screened
+            )
         for path, body in bodies.items():
             if body is not None:
                 materialize_snapshot_file(target, path, body, modes[path])
@@ -288,6 +287,8 @@ class CommandRunner:
             materialize_snapshot_file(
                 target, file.relative_path, file.content, file.mode
             )
+
+        return screened
 
     def _link_dependencies(self, source: Path) -> tuple[Path, ...]:
         """Expose ignored dependency folders read-only at their usual paths."""

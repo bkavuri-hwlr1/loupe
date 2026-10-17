@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -466,8 +467,11 @@ def _real_capture(env: Environment) -> None:
         root, env.publisher.candidate_dir, protected_paths=protected, cache=cache
     )
     env.sync.refresh_capture = lambda root, protected=(): capture_source(
-        root, env.publisher.candidate_dir, protected_paths=protected,
-        cache=cache, defer_changed=True,
+        root,
+        env.publisher.candidate_dir,
+        protected_paths=protected,
+        cache=cache,
+        defer_changed=True,
     )
 
 
@@ -505,9 +509,10 @@ def test_new_screened_source_does_not_block_other_incoming_changes(
     (env.primary / "fixture.py").write_bytes(secret)
     (env.primary / "b.txt").write_text("new ordinary source\n")
     report = env.sync.synchronize(env.workspace_id)
-    assert report.deferred == ("fixture.py",)
+    assert report.deferred == ()
+    assert report.applied == ("b.txt", "fixture.py")
     assert (env.local / "b.txt").read_text() == "new ordinary source\n"
-    assert not (env.local / "fixture.py").exists()
+    assert (env.local / "fixture.py").read_bytes() == secret
     assert env.sync.publication_files(env.workspace_id, ()) == ()
     assert all(
         secret not in path.read_bytes()
@@ -615,3 +620,209 @@ def test_source_cache_evicts_closed_root_metadata_without_losing_source(
     refreshed = capture_source(env.primary, env.publisher.candidate_dir, cache=cache)
     assert refreshed == initial
     assert len(cache.entries) == 2
+
+
+def _screened_fixture(env: Environment, label: bytes) -> bytes:
+    body = b"KEY = 'AKIA" + label * 16 + b"'\n"
+    (env.primary / "fixture.py").write_bytes(body)
+    return body
+
+
+def _no_private_artifacts(env: Environment, *bodies: bytes) -> None:
+    assert all(
+        all(body not in path.read_bytes() for body in bodies)
+        for path in env.publisher.candidate_dir.iterdir()
+        if path.is_file()
+    )
+    with env.store.connection() as con:
+        journals = con.execute("SELECT * FROM isolated_sync_journal").fetchall()
+    assert all(
+        body.decode() not in repr(tuple(row)) for row in journals for body in bodies
+    )
+
+
+def test_screened_incoming_conflict_preserves_both_and_notifies_once(
+    env: Environment,
+) -> None:
+    _real_capture(env)
+    initial = _screened_fixture(env, b"A")
+    assert env.sync.synchronize(env.workspace_id).applied == ("fixture.py",)
+    local = initial.replace(b"A" * 16, b"L" * 16)
+    (env.local / "fixture.py").write_bytes(local)
+    incoming = _screened_fixture(env, b"B")
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.conflicted == ("fixture.py",)
+    assert incoming.decode() not in report.note()
+    assert (env.local / "fixture.py").read_bytes() == local
+    staged = list((env.local / ".git/loupe-screened-incoming").iterdir())
+    assert any(path.read_bytes() == incoming for path in staged)
+    assert all(not path.stat().st_mode & 0o077 for path in staged)
+    assert env.sync.synchronize(env.workspace_id).note() == ""
+    latest = _screened_fixture(env, b"C")
+    assert env.sync.synchronize(env.workspace_id).note() == ""
+    assert (env.local / "fixture.py").read_bytes() == local
+    assert any(
+        path.read_bytes() == latest
+        for path in (env.local / ".git/loupe-screened-incoming").iterdir()
+    )
+    _no_private_artifacts(env, initial, local, incoming, latest)
+    with pytest.raises(WorkspaceBrokerError, match="conflict"):
+        env.sync.publication_files(env.workspace_id, ())
+
+
+@pytest.mark.parametrize("after_write", [False, True])
+def test_screened_sync_crash_replays_private_body_not_later_primary(
+    env: Environment, monkeypatch: pytest.MonkeyPatch, after_write: bool
+) -> None:
+    _real_capture(env)
+    captured = _screened_fixture(env, b"A")
+    original = isolated_sync.atomic_replace_regular_file
+
+    def crash(**kwargs: object) -> None:
+        if after_write:
+            original(**kwargs)
+        raise RuntimeError("daemon interrupted")
+
+    monkeypatch.setattr(isolated_sync, "atomic_replace_regular_file", crash)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        env.sync.synchronize(env.workspace_id)
+    later = _screened_fixture(env, b"B")
+    monkeypatch.setattr(isolated_sync, "atomic_replace_regular_file", original)
+    env.sync.recover(env.workspace_id)
+    assert (env.local / "fixture.py").read_bytes() == captured
+    assert not list((env.local / ".git/loupe-screened-incoming").iterdir())
+    assert env.sync.synchronize(env.workspace_id).applied == ("fixture.py",)
+    assert (env.local / "fixture.py").read_bytes() == later
+    _no_private_artifacts(env, captured, later)
+
+
+def test_screened_recovery_preserves_later_private_edit(
+    env: Environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _real_capture(env)
+    incoming = _screened_fixture(env, b"A")
+    original = isolated_sync.atomic_replace_regular_file
+
+    def crash(**kwargs: object) -> None:
+        raise RuntimeError("daemon interrupted")
+
+    monkeypatch.setattr(isolated_sync, "atomic_replace_regular_file", crash)
+    with pytest.raises(RuntimeError):
+        env.sync.synchronize(env.workspace_id)
+    local = b"private later edit\n"
+    (env.local / "fixture.py").write_bytes(local)
+    monkeypatch.setattr(isolated_sync, "atomic_replace_regular_file", original)
+    with pytest.raises(WorkspaceBrokerError, match="unrecognized local state"):
+        env.sync.recover(env.workspace_id)
+    assert (env.local / "fixture.py").read_bytes() == local
+    assert (env.primary / "fixture.py").read_bytes() == incoming
+    _no_private_artifacts(env, incoming, local)
+
+
+def test_screened_save_between_scan_and_copy_defers_only_that_path(
+    env: Environment,
+) -> None:
+    _real_capture(env)
+    first = _screened_fixture(env, b"A")
+    original = env.sync.refresh_capture
+
+    def moving(root: Path, protected: Sequence[str]) -> Manifest:
+        captured = original(root, protected)
+        _screened_fixture(env, b"B")
+        return captured
+
+    env.sync.refresh_capture = moving
+    (env.primary / "b.txt").write_text("ordinary update\n")
+    result = env.sync.synchronize(env.workspace_id)
+    assert result.applied == ("b.txt",)
+    assert result.deferred == ("fixture.py",)
+    assert not (env.local / "fixture.py").exists()
+    env.sync.refresh_capture = original
+    assert env.sync.synchronize(env.workspace_id).applied == ("fixture.py",)
+    assert (env.local / "fixture.py").read_bytes() != first
+
+
+def test_screened_deletion_conflict_keeps_private_cleanup_identity(
+    env: Environment,
+) -> None:
+    _real_capture(env)
+    initial = _screened_fixture(env, b"A")
+    env.sync.synchronize(env.workspace_id)
+    local = initial.replace(b"A" * 16, b"L" * 16)
+    (env.local / "fixture.py").write_bytes(local)
+    (env.primary / "fixture.py").unlink()
+    assert env.sync.synchronize(env.workspace_id).conflicted == ("fixture.py",)
+    assert env.sync.synchronize(env.workspace_id).note() == ""
+    assert (env.local / "fixture.py").read_bytes() == local
+    with env.store.connection() as con:
+        manifest = json.loads(
+            con.execute("SELECT manifest_json FROM isolated_sync_state").fetchone()[0]
+        )
+    assert manifest["fixture.py"]["screened"]
+    assert manifest["fixture.py"]["kind"] == "absent"
+    _no_private_artifacts(env, initial, local)
+
+
+def test_nested_screened_fixture_arrives_and_its_directory_can_later_be_deleted(
+    env: Environment,
+) -> None:
+    _real_capture(env)
+    (env.primary / "fixtures").mkdir()
+    private = b"KEY = 'AKIA" + b"A" * 16 + b"'\n"
+    (env.primary / "fixtures/key.py").write_bytes(private)
+    assert env.sync.synchronize(env.workspace_id).applied == ("fixtures/key.py",)
+    assert (env.local / "fixtures/key.py").read_bytes() == private
+    (env.primary / "fixtures/key.py").unlink()
+    (env.primary / "fixtures").rmdir()
+    result = env.sync.synchronize(env.workspace_id)
+    assert "fixtures/key.py" in result.applied
+    assert not result.conflicted
+    assert not (env.local / "fixtures").exists()
+    assert env.sync.synchronize(env.workspace_id).note() == ""
+    _no_private_artifacts(env, private)
+
+
+def test_screened_staging_symlink_is_refused_before_private_write(
+    env: Environment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.errors import LlmCoordError
+
+    _real_capture(env)
+    incoming = _screened_fixture(env, b"A")
+    original = isolated_sync.atomic_replace_regular_file
+
+    def crash(**kwargs: object) -> None:
+        raise RuntimeError("daemon interrupted")
+
+    monkeypatch.setattr(isolated_sync, "atomic_replace_regular_file", crash)
+    with pytest.raises(RuntimeError):
+        env.sync.synchronize(env.workspace_id)
+    staged = next((env.local / ".git/loupe-screened-incoming").iterdir())
+    outside = tmp_path / "outside-private"
+    outside.write_bytes(incoming)
+    staged.unlink()
+    staged.symlink_to(outside)
+    monkeypatch.setattr(isolated_sync, "atomic_replace_regular_file", original)
+    with pytest.raises((LlmCoordError, OSError)):
+        env.sync.recover(env.workspace_id)
+    assert not (env.local / "fixture.py").exists()
+    assert outside.read_bytes() == incoming
+    _no_private_artifacts(env, incoming)
+
+
+def test_screened_fixture_above_changed_path_limit_defers_without_failing_others(
+    env: Environment,
+) -> None:
+    from llm_cli.workspace.broker import MAX_SHARED_TEXT_BYTES
+
+    _real_capture(env)
+    private = b"AKIA" + b"A" * 16 + b"\n" + b"x" * MAX_SHARED_TEXT_BYTES
+    (env.primary / "large_fixture.py").write_bytes(private)
+    (env.primary / "b.txt").write_text("ordinary update\n")
+    result = env.sync.synchronize(env.workspace_id)
+    assert result.applied == ("b.txt",)
+    assert result.deferred == ("large_fixture.py",)
+    assert "large_fixture.py" in result.note()
+    assert not (env.local / "large_fixture.py").exists()
+    assert not (env.local / ".git/loupe-screened-incoming").exists()
+    _no_private_artifacts(env, private)
