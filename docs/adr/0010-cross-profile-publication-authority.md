@@ -125,13 +125,20 @@ not call that contract the claim-free `workspace` regime of §14.22.
 
 Create a cryptographically random database-instance ID once in SQLite and bind it
 to an owner-only external installation record in that profile's data directory.
-The physical database binding and IDs must agree on every acquisition. A copied,
-replaced or manually restored database cannot adopt ownership by sharing a
-profile name. Backups preserve provenance, not publisher capability; missing or
-mismatched bindings require explicit rebind/repair and remain read-only. A dirty
-marker always requires its exact referenced local journal and current owner
-binding, even when the profile string matches. G2 introduces no restore command
-and no automatic authority repair.
+The physical database binding and IDs must agree on every acquisition. A copy
+or replacement at a different physical object cannot adopt ownership by sharing
+a profile name. Missing/mismatched bindings require explicit rebind/repair and
+remain read-only. A dirty marker always requires its exact referenced local
+journal and current owner binding, even when the profile string matches.
+
+This binding does **not** detect an in-place manual restore that preserves the
+inode and database-instance ID. Restoring an earlier SQLite snapshot and its
+external record in place can roll back both local witnesses. Such a restore is
+an unsupported operation outside G2's protocol; no anti-rollback guarantee is
+claimed. A missing/mismatched dirty journal still fails closed, but that check
+is not a general database freshness proof. Complete restore fencing needs the
+larger generation/tombstone or global monotonic watermark design and fault tests.
+G2 introduces no restore command and no automatic authority repair.
 
 For each mutation: reserve its journal ID, write/fsync dirty **before** making
 that journal applicable or changing any checkout path, then use the existing
@@ -215,7 +222,7 @@ for one compatibility release; inspection remains available in both modes.
 | --- | --- |
 | Global protected handoff equality key and exact cross-profile manifest comparison | Deferred. G2 never compares protected bytes across profiles or claims exact shared history; it records a gap and re-observes current source. |
 | Offline-drift adoption with immutable reconciliation member chains | Deferred. No fabricated intermediate authorship/history; unstable current source blocks mutation. C4 is advisory, not a substitute for the larger reconciliation protocol. |
-| `CURRENT` state-generation layout, fixed-path tombstone, restore/GC lock handoff | Deferred. G2's DB-instance binding prevents foreign-journal adoption but does not implement restore, downgrade fencing or the full §14.1.1 installation model. |
+| `CURRENT` state-generation layout, fixed-path tombstone, restore/GC lock handoff | Deferred. G2 rejects changed physical DB objects, missing bindings and dirty-journal mismatches. In-place manual restoration preserving the inode/ID is unsupported and not fenced; no general anti-rollback or downgrade guarantee is claimed. |
 | Authenticated import of a foreign profile's journal | Deferred. Recover through the recorded owner; no cross-profile journal copying. |
 | Shared global revision/event ledger across profiles | Not promised by these packages. Profiles retain independent histories and explicitly report handoff gaps. |
 | Claim-free workspace execution and irreversible regime cutover | Retained in G3, not smuggled into G2 or bypassed by optimistic claims. |

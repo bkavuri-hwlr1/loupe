@@ -1031,8 +1031,10 @@ Coordinate all storage and daemon wiring under one integration owner.
 - Crash injection at dirty/journal/file/DB/clean-marker boundaries prevents a
   foreign profile from publishing or recovering; original-owner exact recovery
   succeeds or retains explicit attention when proof is unavailable.
-- Copied/replaced DBs, missing/corrupt/unknown markers, unsafe roots and unknown
-  filesystem semantics cannot silently initialize authority. One blocked checkout
+- Changed physical DB objects or missing bindings, dirty-journal mismatches,
+  missing/corrupt/unknown markers, unsafe roots and unknown filesystem semantics
+  cannot silently initialize authority. In-place manual restore preserving inode
+  and ID is explicitly unsupported, not claimed to be fenced. One blocked checkout
   does not disable status/read-only access or unrelated checkouts.
 - Clean handoff notices expose no runtime/source bytes, do not invent history,
   and stale retained proposals still pass ordinary merge/check/base validation.
