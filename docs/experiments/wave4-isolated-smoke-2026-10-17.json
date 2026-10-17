@@ -3,13 +3,11 @@
   "measured_on_america_new_york": "2026-10-17",
   "scope": "Wave 4 C6; isolated and mixed live pair smoke with runtime hydration, publication, crash recovery and cleanup",
   "measurement_complete": false,
-  "measurement_blocker": "Mixed disrupted repeat lost the outside operator note: a verified incoming batch whose base includes unseen outside edits falsely conflicts with unchanged private source. Four repeat cases were not started after the runner stopped.",
-  "expected_corrected_runs": 16,
-  "recorded_post_initial_runs": 12,
-  "successful_post_initial_runs": 11,
+  "recorded_post_initial_runs": 16,
+  "successful_post_initial_runs": 15,
   "failed_post_initial_runs": 1,
-  "pilot_runs": 4,
-  "recorded_repeat_runs": 8,
+  "pilot_runs": 5,
+  "recorded_repeat_runs": 11,
   "experiment_version": 4,
   "settings": {
     "provider": "codex",
@@ -29,17 +27,37 @@
     "component_commits": {
       "C6_runner": "4cf7819736eb7ef8ff6241c781412df102371b6b",
       "C7": "3ecf6b1d24c160799679f2fd3295637f3b26cc92",
-      "isolated_scheduling": "ff4ce0957ee2ef9f396cec6709a34679d8450a15"
+      "isolated_scheduling": "ff4ce0957ee2ef9f396cec6709a34679d8450a15",
+      "incoming_sync_followup": "2a3e12ea45d3238933b97f3fcdcabf857ef84cac"
     },
     "frozen_commits": [
       "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
-      "d80547d5f7b750e715bf56490d83f965ca7c10a7"
+      "d80547d5f7b750e715bf56490d83f965ca7c10a7",
+      "eb2d6f5428707a6e3033a4cfbaef709f125ffb87"
     ],
-    "product_source_tree": "24992151318efe3b049c1502ee16554dfb155d0b",
     "fixture_tree": "e5b9797d66d261df21c871c96ed54d9d377b62f3",
     "hidden_acceptance_tree": "00bc5ae2a2d29ad82e7153320568c7528b81a290",
-    "final_archive_sha256": "8e87f4cb9627b3f3cd3abfd5da7bf99e1244dca4867319db07fad407f4849b6c",
-    "pilot_and_repeat_product_source_identical": true
+    "product_source_trees_by_cohort": {
+      "before_incoming_fix": "24992151318efe3b049c1502ee16554dfb155d0b",
+      "after_incoming_fix": "1200f228c977bce723d5b70ac57c1e938c0cffee"
+    },
+    "pre_incoming_archive_sha256": "8e87f4cb9627b3f3cd3abfd5da7bf99e1244dca4867319db07fad407f4849b6c",
+    "post_incoming_archive_sha256": "d8e2bb3c901a9b2129dec8ea0e6c4e7d4b152e6c87a0f14517d65531c97f9c54",
+    "pre_incoming_pilot_and_repeat_product_source_identical": true,
+    "offline_only_followups": [
+      {
+        "commit": "608dd2b1f56446242b6bb4ea0bf7c7079a368e64",
+        "purpose": "Clear facts_unchanged when adding a nonempty isolated synchronization notice.",
+        "included_in_live_candidates": false,
+        "billed_live_calls_after_fix": 0,
+        "validation": {
+          "focused_tests_passed": 56,
+          "independent_tests_passed": 30,
+          "ruff": "passed",
+          "mypy_source_files": 110
+        }
+      }
+    ]
   },
   "protocol": [
     "Run one clean and one disrupted pilot in each mode, then three repeats for each mode/scenario. Mixed maps text to shared and numbers to isolated.",
@@ -47,15 +65,16 @@
     "Disrupted runs preserve a hand edit to the shared registry and kill/restart the dedicated daemon after both agents have edited.",
     "Use fresh data and socket roots, keeping the original credential-state location. No Anthropic/OpenAI API checks are included.",
     "Score trusted sandboxed hidden tests with candidate collection hooks/config disabled. Audit every run after sessions close, including control DB/WAL, logs/session files, primary HEAD/index, linked worktree registration and private .env removal.",
-    "Medians use only the three repeat samples per condition; four successful pilots are recorded separately."
+    "After the original mixed disrupted repeat exposed a deterministic C3 false conflict, stop the original matrix. Validate the incoming fix with a new mixed disrupted pilot and up to three repeats under the remaining 799390-token allowance; keep this acceptance cohort and its medians separate from every pre-fix outcome.",
+    "Use repeat medians within each source cohort and condition; pilots stay separate. A recovered case accepted under the unchanged maximum-one-follow-up-per-lane protocol retains every failed original task and follow-up, elapsed time and token usage."
   ],
   "budget": {
     "cap_tokens": 3000000,
     "counting": "prompt_tokens plus output_tokens, including cached input; cache/review subsets are not added again",
     "excluded_initial_tokens": 186326,
-    "post_initial_attempt_tokens": 2014284,
-    "spent_tokens": 2200610,
-    "remaining_tokens": 799390,
+    "post_initial_attempt_tokens": 2705697,
+    "spent_tokens": 2892023,
+    "remaining_tokens": 107977,
     "respected": true
   },
   "medians": [
@@ -67,7 +86,8 @@
       "wall_seconds": 90.4,
       "tokens": 154485,
       "hidden_passed": 16,
-      "hidden_total": 16
+      "hidden_total": 16,
+      "cohort": "before_incoming_fix"
     },
     {
       "workspace": "isolated",
@@ -77,7 +97,8 @@
       "wall_seconds": 100.1,
       "tokens": 212088,
       "hidden_passed": 17,
-      "hidden_total": 17
+      "hidden_total": 17,
+      "cohort": "before_incoming_fix"
     },
     {
       "workspace": "mixed",
@@ -87,7 +108,8 @@
       "wall_seconds": 82.5,
       "tokens": 141400,
       "hidden_passed": 16,
-      "hidden_total": 16
+      "hidden_total": 16,
+      "cohort": "before_incoming_fix"
     },
     {
       "workspace": "mixed",
@@ -97,7 +119,19 @@
       "wall_seconds": null,
       "tokens": null,
       "hidden_passed": null,
-      "hidden_total": null
+      "hidden_total": null,
+      "cohort": "before_incoming_fix"
+    },
+    {
+      "cohort": "after_incoming_fix",
+      "workspace": "mixed",
+      "scenario": "disrupted",
+      "arm": "pair",
+      "samples": 3,
+      "wall_seconds": 96.9,
+      "tokens": 166798,
+      "hidden_passed": 17,
+      "hidden_total": 17
     }
   ],
   "historical_shared_context": {
@@ -133,9 +167,10 @@
     "all_hidden_tests_passed": false,
     "hidden_test_contract": "16 clean and 17 disrupted, including operator preservation in disrupted cases",
     "answers": 0,
-    "follow_ups": 0,
+    "follow_ups": 2,
     "diverged_batches": 0,
-    "repeated_task_results_or_answers": 0
+    "repeated_task_results_or_answers": 0,
+    "failed_task_records": 2
   },
   "excluded_initial_runs": [
     {
@@ -194,7 +229,8 @@
       "source_commit": "d80547d5f7b750e715bf56490d83f965ca7c10a7",
       "expected_runs": 2,
       "recorded_runs": 2,
-      "spent_tokens": 358023
+      "spent_tokens": 358023,
+      "cohort": "before_incoming_fix"
     },
     {
       "name": "loupe-c6-final-pilot-mixed.json",
@@ -203,7 +239,8 @@
       "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
       "expected_runs": 2,
       "recorded_runs": 2,
-      "spent_tokens": 279318
+      "spent_tokens": 279318,
+      "cohort": "before_incoming_fix"
     },
     {
       "name": "loupe-c6-final-repeats-isolated.json",
@@ -212,7 +249,8 @@
       "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
       "expected_runs": 6,
       "recorded_runs": 6,
-      "spent_tokens": 1073144
+      "spent_tokens": 1073144,
+      "cohort": "before_incoming_fix"
     },
     {
       "name": "loupe-c6-final-repeats-mixed.json",
@@ -221,14 +259,37 @@
       "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
       "expected_runs": 6,
       "recorded_runs": 2,
-      "spent_tokens": 303799
+      "spent_tokens": 303799,
+      "cohort": "before_incoming_fix"
+    },
+    {
+      "name": "loupe-c6-incoming-pilot-mixed-disrupted.json",
+      "sha256": "fa72e27317b85e72ca98f1994177b3ef8813ca8370f2764a20941dcadf24aa46",
+      "phase": "pilot",
+      "cohort": "after_incoming_fix",
+      "source_commit": "eb2d6f5428707a6e3033a4cfbaef709f125ffb87",
+      "expected_runs": 1,
+      "recorded_runs": 1,
+      "spent_tokens": 183394
+    },
+    {
+      "name": "loupe-c6-incoming-repeats-mixed-disrupted.json",
+      "sha256": "e0a10dd8d56c3c314e3feab1ba43690475eaa06f1aad5139eeb7549f9e141918",
+      "phase": "repeat",
+      "cohort": "after_incoming_fix",
+      "source_commit": "eb2d6f5428707a6e3033a4cfbaef709f125ffb87",
+      "expected_runs": 3,
+      "recorded_runs": 3,
+      "spent_tokens": 508019
     }
   ],
   "limitations": [
     "A small subscription smoke corpus does not establish general coding quality, reliability rates or provider comparisons.",
-    "Other validation jobs ran on the same host during part of the measurement; wall times are descriptive.",
+    "Full offline test suites ran on the same host during part of the live measurement. Together with the different historical source/fixture, this prevents an isolated-host throughput comparison; wall times are descriptive.",
     "The initial two cases are excluded from corrected medians but included in the cumulative budget. No failed or incomplete case is admitted as a successful measurement.",
-    "E2 live Anthropic/OpenAI checks remain deferred."
+    "E2 live Anthropic/OpenAI checks remain deferred.",
+    "The full normal/disrupted matrix was not completed on one corrected product candidate. The targeted incoming-fix cohort covers mixed disrupted runs only; pre-fix normal/isolated results and the failed pre-fix mixed case are retained separately.",
+    "The post-incoming-fix candidate does not include the quiet-coordination notice fix. Two targeted repeat cases needed the existing one-follow-up recovery after that defect failed an original task. Their acceptance success is not evidence of uninterrupted task resumption or a live validation of the later offline fix."
   ],
   "runs": [
     {
@@ -376,7 +437,8 @@
       "passed": true,
       "admitted_to_repeat_medians": false,
       "phase": "pilot",
-      "source_commit": "d80547d5f7b750e715bf56490d83f965ca7c10a7"
+      "source_commit": "d80547d5f7b750e715bf56490d83f965ca7c10a7",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -527,7 +589,8 @@
       "passed": true,
       "admitted_to_repeat_medians": false,
       "phase": "pilot",
-      "source_commit": "d80547d5f7b750e715bf56490d83f965ca7c10a7"
+      "source_commit": "d80547d5f7b750e715bf56490d83f965ca7c10a7",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -672,7 +735,8 @@
       "passed": true,
       "admitted_to_repeat_medians": false,
       "phase": "pilot",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -822,7 +886,8 @@
       "passed": true,
       "admitted_to_repeat_medians": false,
       "phase": "pilot",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -969,7 +1034,8 @@
       "passed": true,
       "admitted_to_repeat_medians": true,
       "phase": "repeat",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -1120,7 +1186,8 @@
       "passed": true,
       "admitted_to_repeat_medians": true,
       "phase": "repeat",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -1267,7 +1334,8 @@
       "passed": true,
       "admitted_to_repeat_medians": true,
       "phase": "repeat",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -1418,7 +1486,8 @@
       "passed": true,
       "admitted_to_repeat_medians": true,
       "phase": "repeat",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -1565,7 +1634,8 @@
       "passed": true,
       "admitted_to_repeat_medians": true,
       "phase": "repeat",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -1716,7 +1786,8 @@
       "passed": true,
       "admitted_to_repeat_medians": true,
       "phase": "repeat",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -1863,7 +1934,8 @@
       "passed": true,
       "admitted_to_repeat_medians": true,
       "phase": "repeat",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
     },
     {
       "experiment": "toolkit-runtime",
@@ -2017,7 +2089,753 @@
       "passed": false,
       "admitted_to_repeat_medians": false,
       "phase": "repeat",
-      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb"
+      "source_commit": "c46ddab123ee0d21745f55a958dd1a2f582ff6eb",
+      "cohort": "before_incoming_fix"
+    },
+    {
+      "experiment": "toolkit-runtime",
+      "workspace": "mixed",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 1,
+      "timed_out": false,
+      "budget_stopped": false,
+      "wall_seconds": 206.3,
+      "suspended_seconds": 0.0,
+      "lanes": {
+        "text": {
+          "applied": true,
+          "follow_ups": 0,
+          "workspace": "shared"
+        },
+        "numbers": {
+          "applied": true,
+          "follow_ups": 0,
+          "workspace": "isolated"
+        }
+      },
+      "tasks": [
+        {
+          "lane": "text",
+          "task_id": "chat_01a148c9b3cfe935b01b919ee0335a45",
+          "state": "completed",
+          "failure_code": null,
+          "outcome": "completed",
+          "seconds": 49.0,
+          "main_turns": 14,
+          "main_tool_calls": 24,
+          "tools": {
+            "update_plan": 4,
+            "list_files": 3,
+            "read_file": 9,
+            "apply_patch": 3,
+            "read_diff": 1,
+            "run_check": 2,
+            "validate_changes": 1,
+            "finish_task": 1
+          },
+          "edits": 3,
+          "questions": 0,
+          "verification": "passed",
+          "resumed": true,
+          "recorded_once": true,
+          "coordination_updates": 3,
+          "prompt_tokens": 65651,
+          "output_tokens": 1386,
+          "cached_tokens": 59136,
+          "helper_prompt_tokens": 0
+        },
+        {
+          "lane": "numbers",
+          "task_id": "chat_01a148c9b3cd324ee1c167f5f98acc9d",
+          "state": "completed",
+          "failure_code": null,
+          "outcome": "completed",
+          "seconds": 204.5,
+          "main_turns": 19,
+          "main_tool_calls": 32,
+          "tools": {
+            "update_plan": 4,
+            "list_files": 3,
+            "read_file": 12,
+            "apply_patch": 5,
+            "run_check": 4,
+            "read_diff": 2,
+            "validate_changes": 2
+          },
+          "edits": 5,
+          "questions": 0,
+          "verification": "passed",
+          "resumed": true,
+          "recorded_once": true,
+          "coordination_updates": 4,
+          "prompt_tokens": 113346,
+          "output_tokens": 3011,
+          "cached_tokens": 104064,
+          "helper_prompt_tokens": 0
+        }
+      ],
+      "prompt_tokens": 178997,
+      "output_tokens": 4397,
+      "cached_tokens": 163200,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 20.1,
+      "crash_seconds": 35.5,
+      "diverged_batches": 0,
+      "changed_files": [
+        "src/toolkit/numbers.py",
+        "src/toolkit/registry.py",
+        "src/toolkit/text.py",
+        "tests/test_numbers.py",
+        "tests/test_text.py"
+      ],
+      "acceptance": {
+        "ran": true,
+        "own_tests_passed": true,
+        "own_tests": "12 passed in 0.23s",
+        "passed": 17,
+        "total": 17,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ],
+          "runtime": [
+            1,
+            1
+          ]
+        },
+        "failed": []
+      },
+      "invariants": {
+        "head_unchanged": true,
+        "index_unchanged": true,
+        "worktree_registry_restored": true,
+        "sessions_closed_private_workspaces_removed": true,
+        "disruption_completed": true,
+        "requested_workspaces_confirmed": true,
+        "primary_canary_preserved": true,
+        "database_has_no_canary": true,
+        "daemon_log_has_no_canary": true,
+        "chat_logs_have_no_canary": true,
+        "session_files_have_no_canary": true,
+        "managed_env_copies_absent": true,
+        "each_lane_ran_runtime_check": true,
+        "report_has_no_canary": true
+      },
+      "passed": true,
+      "phase": "pilot",
+      "cohort": "after_incoming_fix",
+      "source_commit": "eb2d6f5428707a6e3033a4cfbaef709f125ffb87",
+      "admitted_to_repeat_medians": false
+    },
+    {
+      "experiment": "toolkit-runtime",
+      "workspace": "mixed",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 1,
+      "timed_out": false,
+      "budget_stopped": false,
+      "wall_seconds": 181.3,
+      "suspended_seconds": 0.0,
+      "lanes": {
+        "text": {
+          "applied": true,
+          "follow_ups": 0,
+          "workspace": "shared"
+        },
+        "numbers": {
+          "applied": true,
+          "follow_ups": 1,
+          "workspace": "isolated"
+        }
+      },
+      "tasks": [
+        {
+          "lane": "text",
+          "task_id": "chat_01a148cdb16d5c7934a449c9b7fa529d",
+          "state": "completed",
+          "failure_code": null,
+          "outcome": "completed",
+          "seconds": 48.0,
+          "main_turns": 15,
+          "main_tool_calls": 21,
+          "tools": {
+            "list_files": 2,
+            "read_file": 8,
+            "update_plan": 4,
+            "apply_patch": 3,
+            "run_check": 2,
+            "read_diff": 1,
+            "validate_changes": 1
+          },
+          "edits": 3,
+          "questions": 0,
+          "verification": "passed",
+          "resumed": true,
+          "recorded_once": true,
+          "coordination_updates": 4,
+          "prompt_tokens": 70960,
+          "output_tokens": 1482,
+          "cached_tokens": 64128,
+          "helper_prompt_tokens": 0
+        },
+        {
+          "lane": "numbers",
+          "task_id": "chat_01a148cdb16e2ec39f52a5ae16ce19f2",
+          "state": "failed",
+          "failure_code": "EXECUTION_FAILED",
+          "outcome": null,
+          "seconds": 23.4,
+          "main_turns": 4,
+          "main_tool_calls": 13,
+          "tools": {
+            "update_plan": 2,
+            "list_files": 3,
+            "read_file": 8
+          },
+          "edits": 0,
+          "questions": 0,
+          "verification": null,
+          "resumed": false,
+          "recorded_once": true,
+          "coordination_updates": 1,
+          "prompt_tokens": 11542,
+          "output_tokens": 865,
+          "cached_tokens": 9728,
+          "helper_prompt_tokens": 0
+        },
+        {
+          "lane": "numbers",
+          "task_id": "chat_01a148ce18a8721ac27e60c86f41b8fa",
+          "state": "completed",
+          "failure_code": null,
+          "outcome": "completed",
+          "seconds": 152.6,
+          "main_turns": 17,
+          "main_tool_calls": 26,
+          "tools": {
+            "update_plan": 4,
+            "list_files": 3,
+            "read_file": 10,
+            "apply_patch": 4,
+            "read_diff": 1,
+            "run_check": 3,
+            "validate_changes": 1
+          },
+          "edits": 4,
+          "questions": 0,
+          "verification": "passed",
+          "resumed": false,
+          "recorded_once": true,
+          "coordination_updates": 2,
+          "prompt_tokens": 95348,
+          "output_tokens": 2645,
+          "cached_tokens": 71936,
+          "helper_prompt_tokens": 0
+        }
+      ],
+      "prompt_tokens": 177850,
+      "output_tokens": 4992,
+      "cached_tokens": 145792,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 1
+      },
+      "operator_edit_seconds": 16.1,
+      "crash_seconds": 26.5,
+      "diverged_batches": 0,
+      "changed_files": [
+        "src/toolkit/numbers.py",
+        "src/toolkit/registry.py",
+        "src/toolkit/text.py",
+        "tests/test_numbers.py",
+        "tests/test_text.py"
+      ],
+      "acceptance": {
+        "ran": true,
+        "own_tests_passed": true,
+        "own_tests": "19 passed in 0.23s",
+        "passed": 17,
+        "total": 17,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ],
+          "runtime": [
+            1,
+            1
+          ]
+        },
+        "failed": []
+      },
+      "invariants": {
+        "head_unchanged": true,
+        "index_unchanged": true,
+        "worktree_registry_restored": true,
+        "sessions_closed_private_workspaces_removed": true,
+        "disruption_completed": true,
+        "requested_workspaces_confirmed": true,
+        "primary_canary_preserved": true,
+        "database_has_no_canary": true,
+        "daemon_log_has_no_canary": true,
+        "chat_logs_have_no_canary": true,
+        "session_files_have_no_canary": true,
+        "managed_env_copies_absent": true,
+        "each_lane_ran_runtime_check": true,
+        "report_has_no_canary": true
+      },
+      "passed": true,
+      "phase": "repeat",
+      "cohort": "after_incoming_fix",
+      "source_commit": "eb2d6f5428707a6e3033a4cfbaef709f125ffb87",
+      "admitted_to_repeat_medians": true
+    },
+    {
+      "experiment": "toolkit-runtime",
+      "workspace": "mixed",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 2,
+      "timed_out": false,
+      "budget_stopped": false,
+      "wall_seconds": 85.8,
+      "suspended_seconds": 0.0,
+      "lanes": {
+        "text": {
+          "applied": true,
+          "follow_ups": 0,
+          "workspace": "shared"
+        },
+        "numbers": {
+          "applied": true,
+          "follow_ups": 0,
+          "workspace": "isolated"
+        }
+      },
+      "tasks": [
+        {
+          "lane": "text",
+          "task_id": "chat_01a148d07a792b4c718b842b5488460b",
+          "state": "completed",
+          "failure_code": null,
+          "outcome": "completed",
+          "seconds": 42.4,
+          "main_turns": 14,
+          "main_tool_calls": 21,
+          "tools": {
+            "update_plan": 4,
+            "list_files": 3,
+            "read_file": 8,
+            "apply_patch": 3,
+            "validate_changes": 1,
+            "run_check": 2
+          },
+          "edits": 3,
+          "questions": 0,
+          "verification": "passed",
+          "resumed": true,
+          "recorded_once": true,
+          "coordination_updates": 3,
+          "prompt_tokens": 60876,
+          "output_tokens": 1318,
+          "cached_tokens": 55424,
+          "helper_prompt_tokens": 0
+        },
+        {
+          "lane": "numbers",
+          "task_id": "chat_01a148d07a77974eb1e7b28328fd773c",
+          "state": "completed",
+          "failure_code": null,
+          "outcome": "completed",
+          "seconds": 84.7,
+          "main_turns": 18,
+          "main_tool_calls": 34,
+          "tools": {
+            "update_plan": 4,
+            "list_files": 3,
+            "read_file": 11,
+            "apply_patch": 5,
+            "run_check": 6,
+            "read_diff": 2,
+            "validate_changes": 3
+          },
+          "edits": 5,
+          "questions": 0,
+          "verification": "passed",
+          "resumed": true,
+          "recorded_once": true,
+          "coordination_updates": 4,
+          "prompt_tokens": 101989,
+          "output_tokens": 2615,
+          "cached_tokens": 87296,
+          "helper_prompt_tokens": 0
+        }
+      ],
+      "prompt_tokens": 162865,
+      "output_tokens": 3933,
+      "cached_tokens": 142720,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 0
+      },
+      "operator_edit_seconds": 20.1,
+      "crash_seconds": 33.5,
+      "diverged_batches": 0,
+      "changed_files": [
+        "src/toolkit/numbers.py",
+        "src/toolkit/registry.py",
+        "src/toolkit/text.py",
+        "tests/test_numbers.py",
+        "tests/test_text.py"
+      ],
+      "acceptance": {
+        "ran": true,
+        "own_tests_passed": true,
+        "own_tests": "11 passed in 0.21s",
+        "passed": 17,
+        "total": 17,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ],
+          "runtime": [
+            1,
+            1
+          ]
+        },
+        "failed": []
+      },
+      "invariants": {
+        "head_unchanged": true,
+        "index_unchanged": true,
+        "worktree_registry_restored": true,
+        "sessions_closed_private_workspaces_removed": true,
+        "disruption_completed": true,
+        "requested_workspaces_confirmed": true,
+        "primary_canary_preserved": true,
+        "database_has_no_canary": true,
+        "daemon_log_has_no_canary": true,
+        "chat_logs_have_no_canary": true,
+        "session_files_have_no_canary": true,
+        "managed_env_copies_absent": true,
+        "each_lane_ran_runtime_check": true,
+        "report_has_no_canary": true
+      },
+      "passed": true,
+      "phase": "repeat",
+      "cohort": "after_incoming_fix",
+      "source_commit": "eb2d6f5428707a6e3033a4cfbaef709f125ffb87",
+      "admitted_to_repeat_medians": true
+    },
+    {
+      "experiment": "toolkit-runtime",
+      "workspace": "mixed",
+      "arm": "pair",
+      "scenario": "disrupted",
+      "repetition": 3,
+      "timed_out": false,
+      "budget_stopped": false,
+      "wall_seconds": 96.9,
+      "suspended_seconds": 0.0,
+      "lanes": {
+        "text": {
+          "applied": true,
+          "follow_ups": 0,
+          "workspace": "shared"
+        },
+        "numbers": {
+          "applied": true,
+          "follow_ups": 1,
+          "workspace": "isolated"
+        }
+      },
+      "tasks": [
+        {
+          "lane": "text",
+          "task_id": "chat_01a148d1cd2268f8ec5c12ea83cb940b",
+          "state": "completed",
+          "failure_code": null,
+          "outcome": "completed",
+          "seconds": 42.7,
+          "main_turns": 13,
+          "main_tool_calls": 22,
+          "tools": {
+            "update_plan": 4,
+            "list_files": 3,
+            "read_file": 8,
+            "apply_patch": 3,
+            "read_diff": 1,
+            "run_check": 2,
+            "validate_changes": 1
+          },
+          "edits": 3,
+          "questions": 0,
+          "verification": "passed",
+          "resumed": true,
+          "recorded_once": true,
+          "coordination_updates": 4,
+          "prompt_tokens": 59380,
+          "output_tokens": 1358,
+          "cached_tokens": 52736,
+          "helper_prompt_tokens": 0
+        },
+        {
+          "lane": "numbers",
+          "task_id": "chat_01a148d1cd23fc05ea2e41218d1c5b5a",
+          "state": "failed",
+          "failure_code": "EXECUTION_FAILED",
+          "outcome": null,
+          "seconds": 25.2,
+          "main_turns": 4,
+          "main_tool_calls": 13,
+          "tools": {
+            "update_plan": 2,
+            "list_files": 3,
+            "read_file": 8
+          },
+          "edits": 0,
+          "questions": 0,
+          "verification": null,
+          "resumed": false,
+          "recorded_once": true,
+          "coordination_updates": 1,
+          "prompt_tokens": 11550,
+          "output_tokens": 1279,
+          "cached_tokens": 7680,
+          "helper_prompt_tokens": 0
+        },
+        {
+          "lane": "numbers",
+          "task_id": "chat_01a148d23c52d333d5f5053df8fca019",
+          "state": "completed",
+          "failure_code": null,
+          "outcome": "completed",
+          "seconds": 66.0,
+          "main_turns": 16,
+          "main_tool_calls": 25,
+          "tools": {
+            "update_plan": 4,
+            "list_files": 3,
+            "read_file": 8,
+            "apply_patch": 4,
+            "run_check": 4,
+            "read_diff": 1,
+            "validate_changes": 1
+          },
+          "edits": 4,
+          "questions": 0,
+          "verification": "passed",
+          "resumed": false,
+          "recorded_once": true,
+          "coordination_updates": 2,
+          "prompt_tokens": 82607,
+          "output_tokens": 2205,
+          "cached_tokens": 71808,
+          "helper_prompt_tokens": 0
+        }
+      ],
+      "prompt_tokens": 153537,
+      "output_tokens": 4842,
+      "cached_tokens": 132224,
+      "helper_prompt_tokens": 0,
+      "interventions": {
+        "answers": 0,
+        "follow_ups": 1
+      },
+      "operator_edit_seconds": 18.1,
+      "crash_seconds": 28.5,
+      "diverged_batches": 0,
+      "changed_files": [
+        "src/toolkit/numbers.py",
+        "src/toolkit/registry.py",
+        "src/toolkit/text.py",
+        "tests/test_numbers.py",
+        "tests/test_text.py"
+      ],
+      "acceptance": {
+        "ran": true,
+        "own_tests_passed": true,
+        "own_tests": "11 passed in 0.20s",
+        "passed": 17,
+        "total": 17,
+        "groups": {
+          "text": [
+            7,
+            7
+          ],
+          "numbers": [
+            7,
+            7
+          ],
+          "both": [
+            1,
+            1
+          ],
+          "operator": [
+            1,
+            1
+          ],
+          "runtime": [
+            1,
+            1
+          ]
+        },
+        "failed": []
+      },
+      "invariants": {
+        "head_unchanged": true,
+        "index_unchanged": true,
+        "worktree_registry_restored": true,
+        "sessions_closed_private_workspaces_removed": true,
+        "disruption_completed": true,
+        "requested_workspaces_confirmed": true,
+        "primary_canary_preserved": true,
+        "database_has_no_canary": true,
+        "daemon_log_has_no_canary": true,
+        "chat_logs_have_no_canary": true,
+        "session_files_have_no_canary": true,
+        "managed_env_copies_absent": true,
+        "each_lane_ran_runtime_check": true,
+        "report_has_no_canary": true
+      },
+      "passed": true,
+      "phase": "repeat",
+      "cohort": "after_incoming_fix",
+      "source_commit": "eb2d6f5428707a6e3033a4cfbaef709f125ffb87",
+      "admitted_to_repeat_medians": true
+    }
+  ],
+  "single_candidate_full_matrix_complete": false,
+  "targeted_incoming_fix_validation_complete": true,
+  "original_matrix": {
+    "expected_runs": 16,
+    "recorded_runs": 12,
+    "passed_runs": 11,
+    "failed_runs": 1,
+    "unstarted_runs": 4,
+    "status": "stopped after mixed disrupted repeat exposed C3 false incoming conflict; not resumed on the old candidate"
+  },
+  "targeted_followup": {
+    "condition": "mixed/disrupted",
+    "reason": "Validate the changed incoming-source boundary without exceeding the remaining cumulative cap. Do not pool pre-fix outcomes with this cohort.",
+    "expected_pilot_runs": 1,
+    "expected_repeat_runs": 3,
+    "recorded_pilot_runs": 1,
+    "recorded_repeat_runs": 3,
+    "passed_runs": 4,
+    "complete": true,
+    "budget_tokens": 799390,
+    "spent_tokens": 691413,
+    "source_commit": "eb2d6f5428707a6e3033a4cfbaef709f125ffb87",
+    "source_tree": "1200f228c977bce723d5b70ac57c1e938c0cffee",
+    "incoming_fix_commit": "2a3e12ea45d3238933b97f3fcdcabf857ef84cac",
+    "installed_source_files_verified": 110,
+    "installed_sources_match": true,
+    "archive_sha256": "d8e2bb3c901a9b2129dec8ea0e6c4e7d4b152e6c87a0f14517d65531c97f9c54",
+    "deterministic_operator_witness": "passed against the noneditable installed corrected package",
+    "acceptance_complete_under_existing_followup_protocol": true,
+    "all_original_tasks_completed_without_followup": false,
+    "failed_original_tasks": 2,
+    "follow_ups": 2,
+    "quiet_coordination_fix_present_in_live_candidate": false,
+    "recovery_limit": "Existing runner protocol permits at most one follow-up per lane. The failed original tasks, follow-up tasks, elapsed time and all tokens remain in the per-run records."
+  },
+  "cohorts": [
+    {
+      "id": "before_incoming_fix",
+      "recorded_runs": 12,
+      "passed_runs": 11,
+      "failed_runs": 1,
+      "unstarted_original_matrix_runs": 4
+    },
+    {
+      "id": "after_incoming_fix",
+      "recorded_runs": 4,
+      "passed_runs": 4,
+      "failed_runs": 0,
+      "targeted_validation_complete": true
+    }
+  ],
+  "observed_defects": [
+    {
+      "id": "isolated_claim_serialization",
+      "observed_in": "excluded initial clean pilot",
+      "resolution": "isolated scheduling follow-up ff4ce0957ee2ef9f396cec6709a34679d8450a15 is present in both subsequent live cohorts"
+    },
+    {
+      "id": "runner_sqlite_lock_interference",
+      "observed_in": "excluded initial disrupted pilot",
+      "resolution": "C6 subprocess physical scans and explicit connection closing ce439c7; cold database integrity check passed; excluded case cost retained"
+    },
+    {
+      "id": "incoming_base_false_conflict",
+      "observed_in": "before_incoming_fix mixed/disrupted repeat 1",
+      "failure": "An unchanged private registry was falsely preserved as divergent because a published batch base already included an outside edit. A later private publication lost the operator note.",
+      "resolution_commit": "2a3e12ea45d3238933b97f3fcdcabf857ef84cac",
+      "deterministic_witness": "passed against noneditable installed corrected package",
+      "targeted_live_followup": "one mixed/disrupted pilot plus three repeats passed operator preservation; separate cohort"
+    },
+    {
+      "id": "isolated_note_quiet_coordination_contract",
+      "observed_in": "after_incoming_fix mixed/disrupted repeats 1 and 3",
+      "failure": "Attaching an isolated synchronization notice to a quiet facts_unchanged coordination update retains facts_unchanged=true. The harness rejects the contradictory update before the next provider request.",
+      "error_type": "ValueError",
+      "error_message": "coordination refresh returned an invalid update",
+      "phase": "tool_results.refresh_coordination",
+      "failed_original_task_ids": [
+        "chat_01a148cdb16e2ec39f52a5ae16ce19f2",
+        "chat_01a148d1cd23fc05ea2e41218d1c5b5a"
+      ],
+      "deterministic_witness": "Real ControlStore and SharedCoordinationContext plus exact runner transformation reproduce the error before the second scripted provider call; no billed provider used.",
+      "recovery": "Both cases passed with the existing one-follow-up-per-lane limit. Original failures are retained and included in timing and token totals.",
+      "fix_validation": "Offline only: 56 focused tests plus 30 independent tests passed; Ruff and mypy over 110 files passed. No billed live calls after the fix; it is absent from live candidate eb2d6f5.",
+      "fix_commit": "608dd2b1f56446242b6bb4ea0bf7c7079a368e64"
     }
   ]
 }

@@ -522,33 +522,51 @@ it is not yet a comparison of coding quality or throughput against one agent.
 
 ### Wave 4 isolated and mixed smoke (October 17, 2026)
 
-The session runner now supports `--workspace shared|isolated|mixed`. Its
+The session runner supports `--workspace shared|isolated|mixed`. Its
 `toolkit-runtime` fixture has an ignored generated canary, exact `.env` consent
 for isolated lanes, and a required check that reads the private runtime without
-printing it. Hidden acceptance ignores candidate pytest configuration and hooks.
-Each run checks the primary HEAD/index, physical session modes, canary exclusion
-from control data and logs, and removal of private worktrees and `.env` copies.
+printing it. Trusted hidden acceptance ignores candidate pytest configuration
+and hooks. Each run checks primary HEAD/index, physical session modes, canary
+exclusion from control data and logs, and removal of private worktrees and
+`.env` copies.
 
 The [sanitized measurement record](experiments/wave4-isolated-smoke-2026-10-17.json)
-currently contains four successful pilots and eight repeat attempts: eleven runs
-passed, while one mixed disrupted repeat lost the outside operator note. The
-runner stopped before the last four repeats. All fourteen runtime, privacy and
-cleanup audit flags passed even in that failed case; hidden operator preservation
-failed, so the case is excluded from successful-repeat medians. A no-provider
-reproduction traced it to a false incoming conflict when an unchanged isolated
-file receives a verified batch containing an outside edit it has not seen.
-The repeat measurement remains incomplete pending the C3 follow-up.
+keeps two source cohorts separate. Before the incoming-sync fix, four pilots and
+seven repeats passed; a mixed disrupted repeat lost the outside operator note,
+so the original matrix stopped with four repeats unstarted. A deterministic
+witness traced that failure to a false conflict on an unchanged private file
+when a published batch already included an outside edit. After fix `2a3e12e`,
+one new mixed disrupted pilot and three repetitions preserved the note and
+passed every hidden test, own check, and runtime/privacy/cleanup audit.
 
-The isolated repeats passed all three samples per scenario: median 90.4 s and
-154,485 tokens clean; 100.1 s and 212,088 tokens disrupted. Historical shared v3
-pair medians were 74.4 s / 124,159 tokens clean and 84.0 s / 162,268 tokens
-disrupted. That older fixture had no runtime canary/check; these are context,
-not a matched throughput comparison. All initial and failed attempts count
-against the 3M budget: 2,200,610 tokens spent, 799,390 remaining.
+Two of those three repetitions needed one follow-up each: their original
+isolated tasks failed before the daemon restart when a synchronization notice
+was attached to a quiet coordination update without clearing `facts_unchanged`.
+The harness correctly rejected that contradictory update. The record retains
+both original failures, both permitted follow-ups, their time and tokens, and
+the no-provider reproduction. Fix `608dd2b` passed 56 focused and 30 independent
+tests, Ruff and mypy; it is validated offline only. The live candidate
+`eb2d6f5` does not contain it. A full matrix on one final candidate was
+not completed.
 
-The frozen C6 runner branch passed 2,575 tests with one expected filesystem skip,
-Ruff, mypy over 110 files, and wheel/sdist builds. The live product candidate also
-includes C7 and the isolated scheduling follow-up; the record pins both sources.
+| Repeat cohort and condition | Samples | Median wall time | Median tokens |
+| --- | ---: | ---: | ---: |
+| Before incoming fix: isolated clean | 3 | 90.4 s | 154,485 |
+| Before incoming fix: isolated disrupted | 3 | 100.1 s | 212,088 |
+| After incoming fix: mixed disrupted | 3 | 96.9 s | 166,798 |
+
+The mixed disrupted median includes the two permitted recoveries. Historical
+shared v3 pair medians were 74.4 s / 124,159 tokens clean and 84.0 s / 162,268
+tokens disrupted. That older fixture had no runtime canary/check; full offline
+suites also ran on the same host during some live cases. These wall times do
+not establish a matched throughput comparison. All initial, failed and
+follow-up attempts count against the 3M budget: **2,892,023 tokens spent,
+107,977 remaining**. No further live calls were made.
+
+The frozen C6 runner branch `4cf7819` passed 2,575 tests with one expected
+filesystem skip, Ruff, mypy over 110 files, and wheel/sdist builds. The live
+product candidates also include C7 and the isolated scheduling follow-up;
+the record pins exact sources, fixture trees and archive hashes.
 
 ### Earlier shared-mode experiments
 
