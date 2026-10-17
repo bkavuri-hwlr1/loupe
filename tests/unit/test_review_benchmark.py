@@ -357,3 +357,38 @@ def test_event_timestamps_are_taken_from_database_not_provider_payload(
         benchmark.summarize_events(benchmark._events(database, "t")).review_seconds
         == 2.5
     )
+
+
+def test_structured_patch_seed_and_noop_repair_are_measured() -> None:
+    task = _corpus()[0]
+
+    def patch(old, new, call_id):
+        return [
+            (
+                "model.tool_call",
+                {
+                    "call_id": call_id,
+                    "tool": "apply_patch",
+                    "arguments": {
+                        "path": task.seed_path,
+                        "old_text": old,
+                        "new_text": new,
+                    },
+                },
+            ),
+            ("model.tool_result", {"call_id": call_id, "tool": "apply_patch"}),
+        ]
+
+    seeded = patch(task.seed_before.strip(), task.seed_after.strip(), "seed")
+    repaired = patch(task.seed_after, task.seed_before, "repair")
+    assert benchmark.seed_observed(task, [*seeded, ("review.started", {}), *repaired])
+    assert not benchmark.seed_observed(
+        task, [*seeded, *repaired, ("review.started", {})]
+    )
+    # A repair equal to the original has no final diff; core correctly reports
+    # verification not_required even though its public smoke checks ran.
+    metrics = benchmark.Metrics(
+        edits=2, outcome="completed", verification="not_required"
+    )
+    assert benchmark.checks(task, "completed", metrics)["state"]
+    assert "verification" not in benchmark.checks(task, "completed", metrics)

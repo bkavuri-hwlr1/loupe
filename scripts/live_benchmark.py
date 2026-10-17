@@ -627,9 +627,22 @@ def seed_observed(task: Task, events: Sequence[tuple[str, Mapping[str, Any]]]) -
             if tool == "write_file" and arguments.get("path") == task.seed_path:
                 text = arguments.get("content")
                 if isinstance(text, str):
-                    pending[payload.get("call_id")] = (
-                        task.seed_after in text.splitlines()
-                    )
+                    pending[payload.get("call_id")] = task.seed_after.strip() in {
+                        line.strip() for line in text.splitlines()
+                    }
+            elif tool == "apply_patch" and arguments.get("path") == task.seed_path:
+                new_text, old_text = (
+                    arguments.get("new_text"),
+                    arguments.get("old_text"),
+                )
+                if isinstance(new_text, str) and task.seed_after.strip() in {
+                    line.strip() for line in new_text.splitlines()
+                }:
+                    pending[payload.get("call_id")] = True
+                elif isinstance(old_text, str) and task.seed_after.strip() in {
+                    line.strip() for line in old_text.splitlines()
+                }:
+                    pending[payload.get("call_id")] = False
             elif tool == "apply_patch":
                 text = arguments.get("patch")
                 if isinstance(text, str) and task.seed_path and task.seed_path in text:
@@ -797,9 +810,12 @@ def hidden_acceptance(
             check=False,
         )
         return {
-            "ran": True,
+            "ran": completed.returncode in {0, 1},
             "passed": completed.returncode == 0,
             "returncode": completed.returncode,
+            "reason": None
+            if completed.returncode in {0, 1}
+            else "acceptance runner failed",
         }
 
 
