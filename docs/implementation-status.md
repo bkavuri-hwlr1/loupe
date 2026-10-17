@@ -132,7 +132,7 @@ the remaining planned capabilities are listed below.
   from Git's own `core.ignorecase` probe and recorded at registration) two
   spellings that differ only by case name one directory and therefore overlap.
 - Transactional coordination with optimistic overlap for eligible shared
-  tasks, FIFO overlap fairness whenever either claim is exclusive, concurrent
+  and isolated session tasks, FIFO overlap fairness whenever either claim is exclusive, concurrent
   disjoint work, per-repository monotonic fences, 10-minute launch leases,
   90-second work leases, compare-and-swap renewal, expiry reconciliation, and
   atomic release plus waiter activation.
@@ -810,3 +810,19 @@ isolated synchronization/publication/held-workflow, OpenAI publication-refusal,
 and shared-finalization tests, including all five failing cases. Ruff, mypy, and
 source-distribution/wheel builds passed. Current cross-platform CI results are
 recorded on [PR #55](https://github.com/bkavuri-hwlr1/loupe/pull/55).
+
+## Wave 4 C6 scheduling follow-up (October 17, 2026)
+
+C6 exposed exclusive preparation claims on isolated sessions, which serialized
+paired work before either session could publish. Eligible isolated launches now
+use the existing optimistic preparation path. Each claim binds its own active,
+ready private workspace and the matching active shared source checkout. Saved
+driver/attempt authority, older exclusive waiters, publication scopes, leases,
+cancellation and fencing stay in force. This is a narrow scheduling fix; G3's
+claim-free execution and migration remain planned.
+
+Regressions prove same-scope isolated/isolated and shared/isolated tasks can both
+stage disjoint edits before either publishes, then publish both without changing
+HEAD or index. Malformed/foreign/private-not-ready bindings are refused; older
+exclusive waiters retain their reservations. Full suite: 2,566 passed, one
+case-sensitive-filesystem skip. Ruff and mypy passed.
