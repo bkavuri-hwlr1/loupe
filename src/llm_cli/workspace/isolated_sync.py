@@ -655,9 +655,15 @@ class IsolatedSynchronizer:
                 # A later disjoint edit in the same file must not silently
                 # resolve an earlier overlap the user has not addressed.
                 disposition = "divergence_preserved"
-            elif current == _identity(accepted) and incoming.base == _identity(
-                accepted
+            elif current == _identity(accepted) and (
+                current.absent
+                or incoming.result.absent
+                or current.kind is incoming.result.kind
             ):
+                # A shared batch can include outside edits absent from this
+                # session's baseline. Only private divergence blocks receiving
+                # its exact result; unsupported cross-kind replacements remain
+                # conflicts rather than reaching a typed writer that refuses them.
                 after, content_hash = incoming.result, incoming.content_hash
                 disposition = "applied"
                 applied.append(path)
