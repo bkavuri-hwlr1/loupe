@@ -52,6 +52,7 @@ class Settings:
     profile_id: str = "default"
     coordination_mode: str = "enforce"
     workspace_mode: str = "shared"
+    knowledge_index: str = "off"
     agent_provider: str = "anthropic"
     agent_model: str | None = None
     # Sandboxed run_command policy: "ask" needs the user's approval in an

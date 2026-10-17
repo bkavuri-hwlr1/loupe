@@ -9,6 +9,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from llm_cli.paths import AppPaths
 
@@ -21,7 +22,9 @@ class Check:
     warning: bool = False
 
 
-def run_doctor(paths: AppPaths) -> list[dict[str, object]]:
+def run_doctor(
+    paths: AppPaths, *, knowledge_status: dict[str, Any] | None = None
+) -> list[dict[str, object]]:
     checks = [
         _python_check(),
         _git_check(),
@@ -34,6 +37,16 @@ def run_doctor(paths: AppPaths) -> list[dict[str, object]]:
     for database in (paths.control_db, paths.knowledge_db, paths.vectors_db):
         if database.exists():
             checks.extend((_file_mode_check(database), _integrity_check(database)))
+    if knowledge_status is not None:
+        state = str(knowledge_status.get("state", "unavailable"))
+        checks.append(
+            Check(
+                "knowledge_index",
+                state in {"ready", "off"},
+                str(knowledge_status.get("error", state)),
+                warning=True,
+            )
+        )
     return [asdict(check) for check in checks]
 
 

@@ -137,6 +137,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prune.add_argument("--apply", action="store_true", help="delete output and VACUUM")
 
+    index = commands.add_parser("index", help="manage the optional local lexical index")
+    index_commands = index.add_subparsers(dest="index_command", required=True)
+    for action in ("status", "build", "rebuild", "drop"):
+        index_action = index_commands.add_parser(action)
+        index_action.add_argument("--repo", default=None if action == "status" else ".")
+    search = commands.add_parser("search", help="search the local repository index")
+    search_commands = search.add_subparsers(dest="search_command", required=True)
+    lexical = search_commands.add_parser("lexical")
+    lexical.add_argument("query")
+    lexical.add_argument("--repo", default=".")
+    lexical.add_argument("--limit", type=int, default=8)
+    lexical.add_argument("--explain", action="store_true")
+
     config = commands.add_parser("config", help="inspect and edit validated settings")
     config_commands = config.add_subparsers(dest="config_command", required=True)
     config_commands.add_parser("show")
@@ -477,6 +490,28 @@ def _hydration_preview_text(plan: HydrationPlan) -> str:
     return "\n".join(lines)
 
 
+def _lexical_search_text(result: dict[str, Any]) -> str:
+    if result.get("state") != "ready":
+        return "Lexical index: " + str(result.get("state", "unavailable")) + (
+            "; " + str(result["error"]) if result.get("error") else ""
+        )
+    if not result.get("results"):
+        return "No lexical matches."
+    lines: list[str] = []
+    for item in result["results"]:
+        lines.extend((
+            f"{item['path']}:{item['start_line']}-{item['end_line']} "
+            f"[{item['label']}]",
+            f"  revision {item['indexed_revision']}",
+            f"  identity {item['content_identity']} generation {item['generation']}",
+        ))
+        if item.get("explain"):
+            lines.append(f"  lexical: {item['explain']['reason']}")
+        lines.extend("  " + line for line in str(item["text"]).splitlines())
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
     command = arguments.command
     if command == "chat" or (
@@ -554,6 +589,26 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 },
             )
         return client.call(f"db.{arguments.db_command}")
+    if command == "index":
+        index_params = (
+            {"path": str(Path(arguments.repo).expanduser().resolve())}
+            if arguments.repo
+            else {}
+        )
+        return _patient(client, 90).call(
+            f"index.{arguments.index_command}", index_params
+        )
+    if command == "search":
+        result = client.call(
+            "search.lexical",
+            {
+                "path": str(Path(arguments.repo).expanduser().resolve()),
+                "query": arguments.query,
+                "limit": arguments.limit,
+                "explain": arguments.explain,
+            },
+        )
+        return result if arguments.as_json else _lexical_search_text(result)
     if command == "config":
         if arguments.config_command == "show":
             return client.call("config.show")

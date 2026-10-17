@@ -15,7 +15,7 @@ from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.web.fetch import WebFetchError, check_proxy
 
-_ROOT_KEYS = {"agent", "core", "hooks", "leases", "mcp"}
+_ROOT_KEYS = {"agent", "core", "hooks", "leases", "mcp", "knowledge"}
 _HOOK_KINDS = ("pre_tool", "post_edit")
 _HOOK_KEYS = {"match", "command", "timeout", "name"}
 _MAX_HOOKS = 16
@@ -87,6 +87,17 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
     core = _table(data, "core")
     agent = _table(data, "agent")
     leases = _table(data, "leases")
+    knowledge = _table(data, "knowledge")
+    if set(knowledge) - {"index"}:
+        raise _unknown("knowledge", set(knowledge) - {"index"})
+    knowledge_index = knowledge.get("index", settings.knowledge_index)
+    if not isinstance(knowledge_index, str) or knowledge_index not in {
+        "off",
+        "lexical",
+    }:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID, 'knowledge.index must be "off" or "lexical"'
+        )
     if set(core) - _CORE_KEYS:
         raise _unknown("core", set(core) - _CORE_KEYS)
     if set(leases) - _LEASE_KEYS:
@@ -175,6 +186,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
             raise LlmCoordError(ErrorCode.CONFIG_INVALID, str(exc)) from None
     updates: dict[str, Any] = {
         "coordination_mode": mode,
+        "knowledge_index": knowledge_index,
         "agent_provider": provider,
         "agent_model": model,
         "agent_commands": commands,
