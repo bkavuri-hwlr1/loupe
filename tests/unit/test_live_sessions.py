@@ -47,16 +47,23 @@ def test_the_shipped_experiments_are_valid() -> None:
 
 
 @pytest.mark.skipif(available_sandbox() is None, reason="needs a working sandbox")
-def test_toolkit_hidden_tests_fail_untouched_and_pass_reference(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("experiment_id", "untouched_passed", "total"),
+    [("toolkit", 0, 16), ("toolkit-runtime", 1, 17)],
+)
+def test_toolkit_hidden_tests_fail_untouched_and_pass_reference(
+    tmp_path: Path, experiment_id: str, untouched_passed: int, total: int
+) -> None:
     version, experiments = sessions.load_experiments()
     assert version >= 3
-    experiment = next(e for e in experiments if e.id == "toolkit")
-    repository = benchmark._fixture(tmp_path / "toolkit", experiment.fixture)
+    experiment = next(e for e in experiments if e.id == experiment_id)
+    repository = benchmark._fixture(tmp_path / experiment_id, experiment.fixture)
+    sessions.prepare_runtime(repository, experiment)
     tests = sessions.ACCEPTANCE / experiment.acceptance
     untouched = sessions.acceptance(repository, tests, sys.executable, ())
     assert untouched["ran"] and untouched["own_tests_passed"]
-    assert untouched["passed"] == 0
-    assert untouched["total"] == 16
+    assert untouched["passed"] == untouched_passed
+    assert untouched["total"] == total
     text = repository / "src/toolkit/text.py"
     text.write_text(
         text.read_text()
@@ -98,7 +105,7 @@ def clamp(value, lower, upper):
     )
     solution = sessions.acceptance(repository, tests, sys.executable, ())
     assert solution["ran"] and solution["own_tests_passed"]
-    assert solution["passed"] == solution["total"] == 16
+    assert solution["passed"] == solution["total"] == total
 
 
 def test_toolkit_registry_parts_merge_without_conflict() -> None:
@@ -275,3 +282,128 @@ def test_hidden_tests_need_the_requested_changes(tmp_path: Path) -> None:
     assert edited["own_tests_passed"]
     assert edited["groups"]["operator"] == [1, 1]
     assert edited["passed"] == 2
+
+
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        ("shared", ["shared", "shared"]),
+        ("isolated", ["isolated", "isolated"]),
+        ("mixed", ["shared", "isolated"]),
+    ],
+)
+def test_workspace_mapping_is_explicit(selection: str, expected: list[str]) -> None:
+    assert [sessions.lane_workspace(selection, index) for index in range(2)] == expected
+    with pytest.raises(ValueError, match="workspace"):
+        sessions.lane_workspace("not-a-mode", 0)
+
+
+def test_runtime_canary_stays_ignored_and_out_of_git_baseline(tmp_path: Path) -> None:
+    from llm_cli.agent.source_policy import contains_secret_material
+
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    before = sessions.git_invariants(repository)
+    canary = sessions.prepare_runtime(repository, experiment)
+    assert contains_secret_material(canary)
+    assert not (repository / ".env").stat().st_mode & 0o077
+    assert sessions.git_invariants(repository) == before
+
+
+def test_workspace_and_exact_runtime_consent_reach_chat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    from types import SimpleNamespace
+
+    from llm_cli.paths import AppPaths
+
+    started = []
+    stream = io.StringIO()
+
+    def start(argv, **kwargs):
+        started.append((argv, kwargs))
+        return SimpleNamespace(stdin=stream)
+
+    monkeypatch.setattr(sessions.subprocess, "Popen", start)
+    context = sessions.Context(
+        AppPaths.resolve("fixture", home=tmp_path, environ={}),
+        ["loupe"],
+        ["loupe", "chat", "--plain"],
+        {"LLM_COORD_RUNTIME_DIR": "isolated-socket"},
+        tmp_path,
+        tmp_path,
+        10,
+    )
+    lane = sessions.Lane("text", "Do text.", workspace="isolated")
+    sessions._start(context, tmp_path / "repo", "auto", lane, "Do text.", (".env",))
+    argv, options = started[0]
+    assert argv[-4:] == ["--workspace", "isolated", "--approve-secret", ".env"]
+    assert options["env"] == context.environment
+    assert len(lane.processes) == 1
+
+
+@pytest.mark.parametrize("leak", [None, "database", "log", "session", "managed"])
+def test_isolation_audit_reports_leaks_without_returning_canary(
+    tmp_path: Path, leak: str | None
+) -> None:
+    import sqlite3
+
+    from llm_cli.paths import AppPaths
+
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    before = sessions.git_invariants(repository)
+    canary = sessions.prepare_runtime(repository, experiment)
+    paths = AppPaths.resolve("fixture", home=tmp_path, environ={})
+    paths.ensure()
+    with sqlite3.connect(paths.control_db) as con:
+        con.execute("CREATE TABLE check_runs(task_id,name,state,output)")
+        con.execute(
+            "INSERT INTO check_runs VALUES (?,?,?,?)",
+            ("task", "runtime", "passed", "C6 runtime read passed"),
+        )
+        if leak == "database":
+            con.execute("CREATE TABLE accidental_content(value)")
+            con.execute("INSERT INTO accidental_content VALUES (?)", (canary.decode(),))
+    if leak == "log":
+        paths.log_file.write_bytes(canary)
+    if leak == "session":
+        (paths.session_dir / "accidental").write_bytes(canary)
+    if leak == "managed":
+        target = paths.data_dir / "isolated-worktrees/private/.env"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(canary)
+    lane = sessions.Lane("text", "Do text.", task_ids=["task"], workspace="isolated")
+    row = sessions.TaskRow("task", "Do text.", "completed", None, "session", 0, 1)
+    audit = sessions.audit_run(
+        paths,
+        repository,
+        before,
+        canary,
+        [lane],
+        {"task": row},
+        "clean",
+        None,
+        None,
+        True,
+    )
+    assert all(audit.values()) == (leak is None)
+    if leak is not None:
+        key = {
+            "database": "database_has_no_canary",
+            "log": "daemon_log_has_no_canary",
+            "session": "session_files_have_no_canary",
+            "managed": "managed_env_copies_absent",
+        }[leak]
+        assert audit[key] is False
+    assert canary.decode() not in repr(audit)
+
+
+def test_runtime_fixture_requires_exact_consent_and_configured_check(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="canary requires"):
+        sessions.load_experiments(_experiment_file(tmp_path, runtime_canary="true"))
