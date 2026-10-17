@@ -39,6 +39,7 @@ import time
 import tomllib
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -487,7 +488,9 @@ def _private_workspaces(
 ) -> list[tuple[str, str]]:
     if not session_ids:
         return []
-    with sqlite3.connect(f"file:{paths.control_db}?mode=ro", uri=True) as connection:
+    with closing(
+        sqlite3.connect(f"file:{paths.control_db}?mode=ro", uri=True)
+    ) as connection:
         marks = ",".join("?" for _ in session_ids)
         return [
             (str(path), str(state))
@@ -505,7 +508,9 @@ def close_run_sessions(
 ) -> bool:
     """Dispose only settled held proposals, then close this run's conversations."""
     client = DaemonClient(context.paths, timeout_seconds=60)
-    with sqlite3.connect(f"file:{context.paths.control_db}?mode=ro", uri=True) as con:
+    with closing(
+        sqlite3.connect(f"file:{context.paths.control_db}?mode=ro", uri=True)
+    ) as con:
         retained = [
             str(task_id)
             for task_id, status, proposal in con.execute(
@@ -553,6 +558,36 @@ def _contains_canary(path: Path, canary: bytes) -> bool:
     return False
 
 
+def _database_contains_canary(database: Path, canary: bytes) -> bool:
+    # Closing any raw descriptor for a SQLite DB or SHM inode releases this
+    # process's POSIX locks, including locks owned by live SQLite connections.
+    # Use a fresh process; send the value privately on stdin, never argv/env.
+    program = """
+import pathlib, sys
+canary = sys.stdin.buffer.read()
+for path in pathlib.Path(sys.argv[1]).parent.glob('control.sqlite3*'):
+    if not path.is_file():
+        continue
+    tail = b''
+    with path.open('rb') as source:
+        while chunk := source.read(1024 * 1024):
+            combined = tail + chunk
+            if canary in combined:
+                sys.exit(1)
+            tail = combined[-len(canary):]
+sys.exit(0)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program, str(database)],
+        input=canary,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode not in {0, 1}:
+        raise RuntimeError("private database canary scan did not complete")
+    return result.returncode == 1
+
+
 def audit_run(
     paths: AppPaths,
     repository: Path,
@@ -574,7 +609,9 @@ def audit_run(
         "disruption_completed": scenario != "disrupted"
         or (edit_at is not None and crash_at is not None),
     }
-    with sqlite3.connect(f"file:{paths.control_db}?mode=ro", uri=True) as connection:
+    with closing(
+        sqlite3.connect(f"file:{paths.control_db}?mode=ro", uri=True)
+    ) as connection:
         bindings = {
             str(session_id): (str(mode), str(state))
             for session_id, mode, state in connection.execute(
@@ -593,9 +630,8 @@ def audit_run(
                 "primary_canary_preserved": (repository / ".env").is_file()
                 and (repository / ".env").read_bytes()
                 == b"LOUPE_C6_CANARY=" + canary + b"\n",
-                "database_has_no_canary": not any(
-                    _contains_canary(path, canary)
-                    for path in paths.control_db.parent.glob("control.sqlite3*")
+                "database_has_no_canary": not _database_contains_canary(
+                    paths.control_db, canary
                 ),
                 "daemon_log_has_no_canary": not _contains_canary(
                     paths.log_file, canary
@@ -616,8 +652,8 @@ def audit_run(
             for lane in lanes
             if lane.task_ids and rows[lane.task_ids[-1]].state == "completed"
         }
-        with sqlite3.connect(
-            f"file:{paths.control_db}?mode=ro", uri=True
+        with closing(
+            sqlite3.connect(f"file:{paths.control_db}?mode=ro", uri=True)
         ) as connection:
             passed = {
                 str(task_id)
@@ -656,7 +692,9 @@ def _start(
                 lane.workspace,
                 *(
                     argument
-                    for path in approved_runtime_files
+                    for path in (
+                        approved_runtime_files if lane.workspace == "isolated" else ()
+                    )
                     for argument in ("--approve-secret", path)
                 ),
             ],
@@ -1028,6 +1066,23 @@ def describe(result: Mapping[str, Any]) -> str:
     return line
 
 
+def _checkpoint(output: Path, document: Mapping[str, Any]) -> None:
+    """Retain completed measurements before starting another billed case."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=output.parent, delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(document, handle, indent=2)
+            handle.write("\n")
+        os.replace(temporary, output)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def run(arguments: argparse.Namespace) -> int:
     version, experiments = load_experiments(arguments.experiments)
     experiments = tuple(
@@ -1055,6 +1110,31 @@ def run(arguments: argparse.Namespace) -> int:
         if value:
             chat += [f"--{option}", value]
     results: list[dict[str, Any]] = []
+    output = arguments.out or (
+        paths.state_dir
+        / "benchmark"
+        / f"sessions-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    )
+    head = subprocess.run(
+        ["git", "-C", str(benchmark.ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    document: dict[str, Any] = {
+        "experiment_version": version,
+        "loupe_commit": head,
+        "settings": {
+            "set": list(arguments.set),
+            "provider": arguments.provider,
+            "model": arguments.model,
+            "effort": arguments.effort,
+            "workspace": arguments.workspace,
+        },
+        "runs": results,
+        "errors": [],
+    }
+    _checkpoint(output, document)
     with tempfile.TemporaryDirectory(prefix="loupe-sessions-") as temporary:
         config_home = Path(temporary).resolve()
         benchmark.write_config(config_home, arguments.set, arguments.profile)
@@ -1108,8 +1188,24 @@ def run(arguments: argparse.Namespace) -> int:
                     flush=True,
                 )
                 context.token_budget = arguments.budget_tokens - spent
-                result = run_arm(context, experiment, arm, scenario, repetition)
+                try:
+                    result = run_arm(context, experiment, arm, scenario, repetition)
+                except BaseException as error:
+                    # Error messages can include subprocess output. Retain only
+                    # the error class and case identity, never private bytes.
+                    document["errors"].append(
+                        {
+                            "kind": type(error).__name__,
+                            "experiment": experiment.id,
+                            "arm": arm,
+                            "scenario": scenario,
+                            "repetition": repetition,
+                        }
+                    )
+                    _checkpoint(output, document)
+                    raise
                 results.append(result)
+                _checkpoint(output, document)
                 spent += result["prompt_tokens"] + result["output_tokens"]
                 print(describe(result), flush=True)
                 if not result["passed"]:
@@ -1125,30 +1221,7 @@ def run(arguments: argparse.Namespace) -> int:
                 capture_output=True,
                 check=False,
             )
-    output = arguments.out or (
-        paths.state_dir
-        / "benchmark"
-        / f"sessions-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    )
-    head = subprocess.run(
-        ["git", "-C", str(benchmark.ROOT), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout.strip()
-    document = {
-        "experiment_version": version,
-        "loupe_commit": head,
-        "settings": {
-            "set": list(arguments.set),
-            "provider": arguments.provider,
-            "model": arguments.model,
-            "effort": arguments.effort,
-            "workspace": arguments.workspace,
-        },
-        "runs": results,
-    }
-    Path(output).write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    _checkpoint(output, document)
     print(f"Results: {output}")
     return 0 if results and all(result["passed"] for result in results) else 1
 

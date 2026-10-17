@@ -311,8 +311,9 @@ def test_runtime_canary_stays_ignored_and_out_of_git_baseline(tmp_path: Path) ->
     assert sessions.git_invariants(repository) == before
 
 
+@pytest.mark.parametrize("workspace", ["shared", "isolated"])
 def test_workspace_and_exact_runtime_consent_reach_chat(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace: str
 ) -> None:
     import io
     from types import SimpleNamespace
@@ -336,10 +337,14 @@ def test_workspace_and_exact_runtime_consent_reach_chat(
         tmp_path,
         10,
     )
-    lane = sessions.Lane("text", "Do text.", workspace="isolated")
+    lane = sessions.Lane("text", "Do text.", workspace=workspace)
     sessions._start(context, tmp_path / "repo", "auto", lane, "Do text.", (".env",))
     argv, options = started[0]
-    assert argv[-4:] == ["--workspace", "isolated", "--approve-secret", ".env"]
+    if workspace == "isolated":
+        assert argv[-4:] == ["--workspace", "isolated", "--approve-secret", ".env"]
+    else:
+        assert argv[-2:] == ["--workspace", "shared"]
+        assert "--approve-secret" not in argv
     assert options["env"] == context.environment
     assert len(lane.processes) == 1
 
@@ -420,7 +425,7 @@ def test_sandbox_setup_failure_is_not_scored_as_product_failure(
     experiment = next(e for e in experiments if e.id == "toolkit-runtime")
     repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
     sessions.prepare_runtime(repository, experiment)
-    monkeypatch.setattr(sessions, "available_sandbox", lambda: "sandbox-exec")
+    monkeypatch.setattr(sessions, "available_sandbox", lambda: "seatbelt")
     monkeypatch.setattr(
         sessions.subprocess,
         "run",
@@ -432,3 +437,108 @@ def test_sandbox_setup_failure_is_not_scored_as_product_failure(
         repository, sessions.ACCEPTANCE / experiment.acceptance, sys.executable, ()
     )
     assert result == {"ran": False, "reason": "sandboxed interpreter could not execute"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor lock semantics")
+def test_database_canary_scan_preserves_live_reader_locks(tmp_path: Path) -> None:
+    import json
+    import sqlite3
+    import subprocess
+    from contextlib import closing
+
+    database = tmp_path / "control.sqlite3"
+    worker = """
+import json, sqlite3, sys
+with sqlite3.connect(sys.argv[1], timeout=0.1) as connection:
+    connection.execute("UPDATE data SET content = printf('%08000d', 2) WHERE id=1")
+    connection.commit()
+    print(json.dumps(connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()))
+"""
+
+    def checkpoint() -> list[int]:
+        return json.loads(
+            subprocess.check_output([sys.executable, "-c", worker, str(database)])
+        )
+
+    with (
+        closing(sqlite3.connect(database)) as writer,
+        closing(sqlite3.connect(database)) as reader,
+    ):
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE data(id INTEGER PRIMARY KEY, content)")
+        writer.execute("INSERT INTO data VALUES (1, printf('%08000d', 1))")
+        writer.commit()
+        reader.execute("BEGIN")
+        before = reader.execute("SELECT content FROM data").fetchone()
+        assert checkpoint()[0] == 1  # This live reader pins its old WAL snapshot.
+        assert not sessions._database_contains_canary(database, b"not-present-canary")
+        assert checkpoint()[0] == 1  # Raw scans must not release the reader's locks.
+        assert reader.in_transaction
+        assert reader.execute("SELECT content FROM data").fetchone() == before
+
+
+def test_completed_results_survive_a_later_run_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import argparse
+    import json
+    import sqlite3
+    import subprocess
+
+    for name in (
+        "LLM_COORD_DATA_HOME",
+        "LLM_COORD_STATE_HOME",
+        "LLM_COORD_RUNTIME_DIR",
+    ):
+        monkeypatch.setenv(name, str(tmp_path / name))
+    monkeypatch.setattr(sessions, "available_sandbox", lambda: "seatbelt")
+    monkeypatch.setattr(sessions.benchmark, "write_config", lambda *args: None)
+    monkeypatch.setattr(sessions.benchmark, "_loupe", lambda: ["loupe"])
+    monkeypatch.setattr(sessions, "describe", lambda result: "completed pilot")
+    monkeypatch.setattr(
+        sessions.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "head", ""),
+    )
+    completed = {"passed": True, "prompt_tokens": 100, "output_tokens": 10}
+    calls = 0
+
+    def run_arm(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return completed
+        raise sqlite3.DatabaseError("private-canary-must-not-be-recorded")
+
+    monkeypatch.setattr(sessions, "run_arm", run_arm)
+    output = tmp_path / "measurements.json"
+    arguments = argparse.Namespace(
+        profile="fixture",
+        experiments=sessions.EXPERIMENTS,
+        only=["toolkit-runtime"],
+        provider="codex",
+        model="fixture",
+        effort="low",
+        set=[],
+        workspace="isolated",
+        timeout=30,
+        repeat=1,
+        scenarios=["clean", "disrupted"],
+        arms=["pair"],
+        budget_tokens=1_000_000,
+        out=output,
+    )
+    with pytest.raises(sqlite3.DatabaseError):
+        sessions.run(arguments)
+    document = json.loads(output.read_text())
+    assert document["runs"] == [completed]
+    assert document["errors"] == [
+        {
+            "kind": "DatabaseError",
+            "experiment": "toolkit-runtime",
+            "arm": "pair",
+            "scenario": "disrupted",
+            "repetition": 1,
+        }
+    ]
+    assert "private-canary" not in output.read_text()
