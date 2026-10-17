@@ -942,7 +942,12 @@ def _settle(
         finally:
             connection.close()
         state, failure = (row[0], row[1]) if row else (None, None)
-        if state in _SETTLED or time.time() >= deadline:
+        if state in _SETTLED:
+            return state, failure, stranded
+        if time.time() >= deadline:
+            # A detached chat must not leave a provider task running while the
+            # benchmark admits another arm. The caller stops the run too.
+            cancel()
             return state, failure, stranded
         if not stranded and awaiting_answer(_events(database, task_id)):
             if remaining:
@@ -1309,10 +1314,17 @@ def run(arguments: argparse.Namespace) -> int:
                     )
                 # Left waiting on a question after its chat had gone.
                 result["stranded_question"] = stranded
+                result["runner_timed_out"] = state not in _SETTLED
                 results.append(result)
                 spent += result["prompt_tokens"] + result["output_tokens"]
                 print(_line(result), flush=True)
                 save(results, spent, "running")
+                if result["runner_timed_out"]:
+                    print(
+                        "Stopping after an unsettled task reached its deadline.",
+                        flush=True,
+                    )
+                    break
         finally:
             subprocess.run([*loupe, "daemon", "stop"], capture_output=True, check=False)
     save(results, spent, "finished")
