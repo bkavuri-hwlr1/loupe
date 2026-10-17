@@ -52,6 +52,17 @@ the remaining planned capabilities are listed below.
   Incoming journals recognize exact before/after states, and a private catch-up
   failure cannot turn confirmed primary publication into a failed task.
 
+- Faster isolated checks and incoming private fixtures (Wave 4 C7): fresh
+  writable runtime copies use bounded verified COW and descriptor identity scans.
+  Repeated full checks on this checkout's 6,576-target `.venv` took
+  1.428/1.452/1.471 seconds, down from 3.032/3.033/3.037 seconds. Screened fixture
+  changes reach an unchanged private copy through identity-only journals and
+  private Git staging; divergence preserves private bytes and reports the path
+  once. Incoming changes larger than 8 MiB defer that path. Unapproved optional
+  secrets are omitted with an exact consent notice. See
+  [measurements](experiments/isolated-runtime-c7-2026-10-17.md) and
+  [ADR 0009](adr/0009-isolated-runtime-hydration.md).
+
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
   retained review proposals, task diffs, apply, undo, and cancellation. Shared
@@ -741,7 +752,7 @@ Waves 4–7, as packages that separate sessions can run at once.
 
 1. Validate the remaining multi-profile authority and migration guarantees.
    G1 designs these first, then G2 and G3 implement them.
-2. Prove isolated mode with a live run (C6) and make its checks cheaper (C7).
+2. Complete isolated-mode live validation (C6); C7 implements faster checks.
    Then extend isolated runtime support with runtime refresh (C8), a
    per-session command environment (C9) and dependency rebuild adapters (C10).
 3. Broaden independent-review quality and cost measurements beyond the completed
