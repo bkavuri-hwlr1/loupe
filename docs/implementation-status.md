@@ -734,19 +734,44 @@ is now one physical line and its scoring/prompt tests pass (31 tests). This
 controlled example demonstrates the finding/repair gate. Broader bug-detection
 quality and cost savings remain unmeasured. Review remains off by default.
 
+## Wave 4 G1: proposed cross-profile authority decision (October 17, 2026)
+
+[ADR 0010](adr/0010-cross-profile-publication-authority.md) is **Proposed**, pending
+user review. A checked-in integration reproduction runs two real profile daemons
+and ordinary shared publication RPCs. With both renames paused after their final
+base checks, both independent journals prepare and then confirm different
+same-base results; the second replaces the first. Its strict expected failure
+accepts only the specific final violation after all preconditions and durable
+witnesses pass; startup, RPC and unrelated failures remain test failures.
+`--runxfail` independently confirms that exact known violation.
+
+The ADR selects profile-independent physical ownership and conservative dirty
+journal recovery for G2, with read-only peer status, stable errors, database
+instance binding and clean idle release. G3 separately adds claim-free workspace
+execution and explicit, recoverable legacy migration. G2/G3 scope, file ownership
+and acceptance criteria have been rewritten in the parallel plan. Global
+protected handoff equality, complete offline-drift history, generation-based
+restore/downgrade fencing and foreign-journal import remain explicit deferrals.
+No authority product behavior changed in G1. Focused reproduction: one strict
+expected failure; Ruff passes. Acceptance of the proposed ADR remains outstanding.
+
 ## Next executable slice
 
-[`parallel-work-plan.md`](parallel-work-plan.md) splits this list and the
-remaining harness gaps into packages that separate sessions can run at once.
+[`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
+Waves 4–7, as packages that separate sessions can run at once.
 
 1. Validate the remaining multi-profile authority and migration guarantees.
-2. Extend isolated runtime support with explicit dependency rebuild adapters,
-   runtime refresh, and per-terminal environment handling from the workspace plan.
+   G1 designs these first, then G2 and G3 implement them.
+2. Prove isolated mode with a live run (C6) and make its checks cheaper (C7).
+   Then extend isolated runtime support with runtime refresh (C8), a
+   per-session command environment (C9) and dependency rebuild adapters (C10).
 3. Broaden independent-review quality and cost measurements beyond the completed
-   planted-bug acceptance run; keep review disabled by default.
-4. Build the opt-in knowledge/RAG and graph planes on top of that durable task
-   lifecycle, with `none` and exact-search fallbacks before optional vector
-   acceleration.
+   planted-bug acceptance run (B6). Keep review disabled by default until then.
+4. Build the opt-in knowledge plane in steps: a lexical index (F1), a code
+   graph (F2), then retrieval in the agent with a live comparison (F3). Add
+   embeddings with exact scoring (F4) only if that comparison shows retrieval
+   helps.
+5. E2's live provider checks are on hold.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
