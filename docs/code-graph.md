@@ -14,7 +14,7 @@ loupe repo add .
 loupe index build --repo .
 loupe graph neighbors workspace/batches.py --repo .
 loupe graph neighbors workspace/batches.py --edge tests --depth 2
-loupe --json graph neighbors pkg.workspace.batches --edge imports
+loupe --json graph neighbors llm_cli.workspace.batches --edge imports
 ```
 
 `index build` and `index rebuild` construct both lexical and graph projections.
