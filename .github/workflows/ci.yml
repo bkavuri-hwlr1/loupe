@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
+    # Pull requests cover feature branches.
     # Release tags run this same matrix through release.yml's workflow_call.
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_call:
 

@@ -459,3 +459,81 @@ def test_optimistic_publication_cannot_switch_execution_workspace(
             changed_paths=claim.scopes,
         )
     assert harness.store.get_claim(claim.claim_id) == claim
+
+
+def _isolate(harness: Harness, task_id: str) -> str:
+    workspace_id = f"private-{task_id}"
+    with harness.store.connection() as connection:
+        connection.execute(
+            "INSERT INTO workspaces(workspace_id, checkout_id, kind, mode, state, "
+            "canonical_path, source_workspace_id, created_at, updated_at) "
+            "SELECT ?,checkout_id,'linked_worktree','isolated','active',?,?,?,? "
+            "FROM workspaces WHERE workspace_id=?",
+            (
+                workspace_id,
+                f"/private/{task_id}",
+                harness.workspace_id,
+                NOW,
+                NOW,
+                harness.workspace_id,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO isolated_workspaces VALUES "
+            "(?,?,'base',0,'{}','[]','[]','[]','fingerprint','owner','ready')",
+            (workspace_id, f"session-{task_id}"),
+        )
+        connection.execute(
+            "UPDATE sessions SET workspace_id=?,workspace_mode='isolated' "
+            "WHERE session_id=?",
+            (workspace_id, f"session-{task_id}"),
+        )
+    return workspace_id
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_isolated_preparation_binds_private_workspace_and_preserves_fifo(
+    tmp_path: Path, mixed: bool
+) -> None:
+    harness = _harness(tmp_path, "first", "second", "exclusive", "later")
+    first_workspace = harness.workspace_id if mixed else _isolate(harness, "first")
+    second_workspace = _isolate(harness, "second")
+    _isolate(harness, "later")
+    first = harness.claim("first")
+    second = harness.claim("second")
+    assert first.granted and second.granted
+    assert first.workspace_id == first_workspace
+    assert second.workspace_id == second_workspace
+    assert first.workspace_id != second.workspace_id
+    exclusive = harness.claim("exclusive", mode="exclusive")
+    later = harness.claim("later")
+    assert exclusive.state is later.state is ClaimState.QUEUED
+    assert later.blocking_claim_ids == (exclusive.claim_id,)
+    harness.coordinator.release_claim(first.claim_id, reason="finished")
+    released = harness.coordinator.release_claim(second.claim_id, reason="finished")
+    assert [claim.task_id for claim in released.activated] == ["exclusive"]
+    released = harness.coordinator.release_claim(exclusive.claim_id, reason="finished")
+    assert [claim.task_id for claim in released.activated] == ["later"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "UPDATE isolated_workspaces SET stage='attention'",
+        "UPDATE isolated_workspaces SET session_id='another-session'",
+        "UPDATE workspaces SET source_workspace_id=NULL WHERE mode='isolated'",
+        "UPDATE workspaces SET state='quarantined' WHERE mode='shared'",
+        "UPDATE workspaces SET canonical_path='/wrong' WHERE mode='shared'",
+        "UPDATE sessions SET workspace_mode='shared'",
+    ],
+)
+def test_isolated_optimism_requires_ready_owned_private_and_valid_source_binding(
+    tmp_path: Path, mutation: str
+) -> None:
+    harness = _harness(tmp_path, "task")
+    _isolate(harness, "task")
+    with harness.store.connection() as connection:
+        connection.execute(mutation)
+    with pytest.raises(ClaimAuthorityError, match="ready isolated session workspace"):
+        harness.claim("task")
+    assert harness.store.list_claims(REPO_KEY) == ()
