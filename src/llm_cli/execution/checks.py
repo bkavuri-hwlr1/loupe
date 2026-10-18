@@ -11,16 +11,19 @@ import posixpath
 import re
 import selectors
 import shutil
+import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable
-from contextlib import suppress
+from collections import OrderedDict
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 from llm_cli.agent.source_policy import (
+    contains_secret_material,
     ensure_safe_content,
     register_runtime_paths,
     runtime_path,
@@ -37,11 +40,16 @@ from llm_cli.git.worktrees import (
 from llm_cli.ids import new_id
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.batches import BatchFile, candidate_target
-from llm_cli.workspace.broker import read_candidate_path, validate_symlink_target
+from llm_cli.workspace.broker import validate_symlink_target
 from llm_cli.workspace.identity import (
+    ABSENT,
     DIRECTORY_MODE,
+    EXECUTABLE_MODE,
+    REGULAR_MODE,
     SYMLINK_MODE,
+    FileIdentity,
     ObjectKind,
+    content_identity,
     read_identified_path,
 )
 from llm_cli.workspace.workflow import TaskWorkflow, encode_files
@@ -139,8 +147,124 @@ def _argv(value: Any) -> list[str]:
     return value
 
 
+# Secret classification depends only on exact captured bytes. Keep its boolean
+# result, never a body, across repeated checks of the same source identity.
+_SOURCE_SCREENING: dict[str, bool] = {}
+
+
+@contextmanager
+def _source_reader(
+    root: Path,
+) -> Iterator[Callable[[str], tuple[FileIdentity, bytes | None]]]:
+    """Share pinned nofollow parents within one bounded source capture."""
+    from llm_cli.workspace.isolated import _read
+
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    parents: OrderedDict[str, int] = OrderedDict()
+    observed: dict[str, tuple[int, int]] = {}
+
+    def parent(relative: str) -> int:
+        if not relative:
+            return root_fd
+        if relative in parents:
+            parents.move_to_end(relative)
+            return parents[relative]
+        prefix, _, name = relative.rpartition("/")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent(prefix),
+        )
+        try:
+            status = os.fstat(descriptor)
+            evidence = (status.st_dev, status.st_ino)
+            if relative in observed and observed[relative] != evidence:
+                raise ValueError("source parent changed during capture")
+            try:
+                os.stat(".git", dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError("source snapshot cannot enter a nested repository")
+            observed[relative] = evidence
+            parents[relative] = descriptor
+            if len(parents) > 128:
+                _, expired = parents.popitem(last=False)
+                os.close(expired)
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def read(relative: str) -> tuple[FileIdentity, bytes | None]:
+        relative = normalize_changed_path(relative)
+        prefix, _, name = relative.rpartition("/")
+        try:
+            directory = parent(prefix)
+            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return ABSENT, None
+        if stat.S_ISLNK(before.st_mode):
+            body = os.fsencode(os.readlink(name, dir_fd=directory))
+            mode, kind = SYMLINK_MODE, ObjectKind.SYMLINK
+        elif stat.S_ISREG(before.st_mode):
+            descriptor = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+            )
+            try:
+                if _stat_signature(os.fstat(descriptor)) != _stat_signature(before):
+                    raise ValueError("source changed during capture")
+                body = _read(descriptor, 256 * 1024 * 1024)
+                if len(body) != before.st_size or _stat_signature(
+                    os.fstat(descriptor)
+                ) != _stat_signature(before):
+                    raise ValueError("source changed during capture")
+            finally:
+                os.close(descriptor)
+            mode = EXECUTABLE_MODE if before.st_mode & stat.S_IXUSR else REGULAR_MODE
+            kind = ObjectKind.REGULAR
+        else:
+            raise ValueError(
+                "source snapshot cannot include special files or repositories"
+            )
+        if _stat_signature(
+            os.stat(name, dir_fd=directory, follow_symlinks=False)
+        ) != _stat_signature(before):
+            raise ValueError("source path changed during capture")
+        return FileIdentity(
+            kind,
+            mode,
+            content_identity(kind, mode, body),
+            len(body),
+            stat.S_IMODE(before.st_mode),
+        ), body
+
+    try:
+        yield read
+        pinned, current = os.fstat(root_fd), root.lstat()
+        if (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino):
+            raise ValueError("source root changed during capture")
+        for relative, evidence in observed.items():
+            target = candidate_target(root, relative)
+            status = target.lstat()
+            if (status.st_dev, status.st_ino) != evidence or not stat.S_ISDIR(
+                status.st_mode
+            ):
+                raise ValueError("source parent changed during capture")
+            if (target / ".git").exists() or (target / ".git").is_symlink():
+                raise ValueError("source snapshot cannot enter a nested repository")
+    finally:
+        for descriptor in parents.values():
+            os.close(descriptor)
+        os.close(root_fd)
+
+
 def source_snapshot(
-    root: Path, *, contents: bool = False
+    root: Path,
+    *,
+    contents: bool = False,
+    _modes: dict[str, str] | None = None,
+    _screened: set[str] | None = None,
 ) -> tuple[str, dict[str, bytes | None]]:
     result = run_git(
         root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
@@ -156,25 +280,37 @@ def source_snapshot(
     manifest: list[tuple[str, str, str, str]] = []
     bodies: dict[str, bytes | None] = {}
     total = 0
-    for path in paths:
-        target = candidate_target(root, path)
-        identity, body = read_candidate_path(target, max_bytes=256 * 1024 * 1024)
-        if identity.kind is ObjectKind.SYMLINK:
-            validate_symlink_target(root, path, body or b"")
-        if identity.kind not in {
-            ObjectKind.REGULAR,
-            ObjectKind.SYMLINK,
-            ObjectKind.ABSENT,
-        }:
-            raise ValueError(
-                f"Snapshot cannot include special files or nested repositories: {path}"
-            )
-        total += identity.size
-        if total > 1024**3:
-            raise ValueError("source snapshot exceeds 1 GiB")
-        manifest.append((path, str(identity.kind), identity.mode, identity.digest))
-        if contents:
-            bodies[path] = body
+    with _source_reader(root) as read:
+        for path in paths:
+            identity, body = read(path)
+            if identity.kind is ObjectKind.SYMLINK:
+                validate_symlink_target(root, path, body or b"")
+            if identity.kind not in {
+                ObjectKind.REGULAR,
+                ObjectKind.SYMLINK,
+                ObjectKind.ABSENT,
+            }:
+                raise ValueError(
+                    "Snapshot cannot include special files "
+                    f"or nested repositories: {path}"
+                )
+            total += identity.size
+            if total > 1024**3:
+                raise ValueError("source snapshot exceeds 1 GiB")
+            manifest.append((path, str(identity.kind), identity.mode, identity.digest))
+            if contents:
+                bodies[path] = body
+            if _modes is not None:
+                _modes[path] = identity.mode
+            if _screened is not None and body is not None:
+                screened = _SOURCE_SCREENING.get(identity.digest)
+                if screened is None:
+                    screened = contains_secret_material(body)
+                    if len(_SOURCE_SCREENING) >= 40_000:
+                        _SOURCE_SCREENING.clear()
+                    _SOURCE_SCREENING[identity.digest] = screened
+                if screened:
+                    _screened.add(path)
     return digest(json.dumps(manifest)), bodies
 
 
@@ -217,70 +353,126 @@ def _stat_signature(status: os.stat_result) -> tuple[int, ...]:
     )
 
 
+def _remember_runtime_copy(
+    source: Path,
+    target: Path,
+    relative: str,
+    before: os.stat_result,
+    installed: os.stat_result,
+) -> None:
+    """Carry verified private-copy evidence to its fresh destination identity."""
+    cached = _RUNTIME_DIGESTS.get(os.fsdecode(source) + "/" + relative)
+    if cached is None or cached[0] != _stat_signature(before):
+        return
+    if before.st_size <= 1024 * 1024 < installed.st_size:
+        return
+    if len(_RUNTIME_DIGESTS) >= _RUNTIME_DIGESTS_LIMIT:
+        _RUNTIME_DIGESTS.clear()
+    _RUNTIME_DIGESTS[os.fsdecode(target) + "/" + relative] = (
+        _stat_signature(installed),
+        cached[1],
+        installed.st_size,
+    )
+
+
 def runtime_identity(root: Path, paths: list[str]) -> str:
-    """Bind copied inputs to evidence without exposing their contents."""
+    """Bind stable private inputs with descriptor-based, cached observations."""
+    from llm_cli.workspace.isolated import _parent, _read
+    from llm_cli.workspace.runtime import (
+        _trusted_python,
+        relocated_venv_text,
+        workspace_dependency_link,
+    )
+
     manifest: list[tuple[str, str]] = []
-    total = 0
-    for path in paths:
-        target = candidate_target(root, path)
-        entries = [target, *target.rglob("*")] if target.is_dir() else [target]
-        if len(entries) + len(manifest) > 200_000:
+    total = count = 0
+    root_name = os.fsdecode(root)
+
+    def observe(parent: int, name: str, relative: str, runtime_root: str) -> None:
+        nonlocal count, total
+        count += 1
+        if count > 200_000:
             raise ValueError("runtime snapshot exceeds 200,000 entries")
-        for entry in sorted(entries):
-            if entry.is_symlink():
-                link = os.readlink(entry)
-                if Path(link).is_absolute():
-                    from llm_cli.workspace.runtime import _trusted_python
-
-                    executable = _trusted_python(
-                        root, entry.relative_to(root).as_posix(), link
-                    )
-                    identity, _ = read_identified_path(executable)
-                    manifest.append(
-                        (
-                            entry.relative_to(root).as_posix() + ":base-python",
-                            identity.digest,
-                        )
-                    )
-                else:
-                    destination = posixpath.normpath(
-                        posixpath.join(entry.parent.relative_to(root).as_posix(), link)
-                    )
-                    if destination != path and not destination.startswith(path + "/"):
-                        from llm_cli.workspace.runtime import workspace_dependency_link
-
-                        workspace_dependency_link(
-                            root, entry.relative_to(root).as_posix(), link
-                        )
-                manifest.append((entry.relative_to(root).as_posix(), digest(link)))
-                continue
-            if entry.is_dir():
-                continue
-            key = os.fsdecode(entry)
-            before = _stat_signature(entry.lstat())
-            cached = _RUNTIME_DIGESTS.get(key)
-            if cached is not None and cached[0] == before:
-                file_digest, size = cached[1], cached[2]
+        status = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if stat.S_ISLNK(status.st_mode):
+            link = os.readlink(name, dir_fd=parent)
+            if Path(link).is_absolute():
+                executable = _trusted_python(root, relative, link)
+                identity, _ = read_identified_path(executable)
+                manifest.append((relative + ":base-python", identity.digest))
             else:
-                identity, body = read_identified_path(entry)
-                if identity.kind is not ObjectKind.REGULAR or body is None:
-                    raise ValueError(
-                        "runtime snapshot contains an absent or special file"
+                destination = posixpath.normpath(
+                    posixpath.join(posixpath.dirname(relative), link)
+                )
+                if destination != runtime_root and not destination.startswith(
+                    runtime_root + "/"
+                ):
+                    workspace_dependency_link(root, relative, link)
+            manifest.append((relative, digest(link)))
+            return
+        if stat.S_ISDIR(status.st_mode):
+            descriptor = os.open(
+                name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
+            )
+            try:
+                if _stat_signature(os.fstat(descriptor)) != _stat_signature(status):
+                    raise ValueError("runtime directory changed during observation")
+                with os.scandir(descriptor) as entries:
+                    for entry in entries:
+                        observe(
+                            descriptor,
+                            entry.name,
+                            relative + "/" + entry.name,
+                            runtime_root,
+                        )
+                if _stat_signature(os.fstat(descriptor)) != _stat_signature(status):
+                    raise ValueError("runtime directory changed during observation")
+            finally:
+                os.close(descriptor)
+            return
+        if not stat.S_ISREG(status.st_mode):
+            raise ValueError("runtime snapshot contains an absent or special file")
+        key = root_name + "/" + relative
+        before = _stat_signature(status)
+        cached = _RUNTIME_DIGESTS.get(key)
+        if cached is not None and cached[0] == before:
+            file_digest, size = cached[1], cached[2]
+        else:
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                if _stat_signature(os.fstat(descriptor)) != before:
+                    raise ValueError("runtime file changed during observation")
+                body = _read(descriptor, 256 * 1024 * 1024)
+                if (
+                    _stat_signature(os.fstat(descriptor)) != before
+                    or _stat_signature(
+                        os.stat(name, dir_fd=parent, follow_symlinks=False)
                     )
-                from llm_cli.workspace.runtime import relocated_venv_text
+                    != before
+                ):
+                    raise ValueError("runtime file changed during observation")
+            finally:
+                os.close(descriptor)
+            if relocated_venv_text(relative, body):
+                body = body.replace(os.fsencode(root), b"<private-runtime-root>")
+            file_digest, size = hashlib.sha256(body).hexdigest(), status.st_size
+            if len(_RUNTIME_DIGESTS) >= _RUNTIME_DIGESTS_LIMIT:
+                _RUNTIME_DIGESTS.clear()
+            _RUNTIME_DIGESTS[key] = (before, file_digest, size)
+        total += size
+        if total > 5 * 1024**3:
+            raise ValueError("runtime snapshot exceeds 5 GiB")
+        manifest.append((relative, file_digest))
 
-                if relocated_venv_text(entry.relative_to(root).as_posix(), body):
-                    body = body.replace(os.fsencode(root), b"<private-runtime-root>")
-                file_digest, size = hashlib.sha256(body).hexdigest(), identity.size
-                if _stat_signature(entry.lstat()) == before:
-                    if len(_RUNTIME_DIGESTS) >= _RUNTIME_DIGESTS_LIMIT:
-                        _RUNTIME_DIGESTS.clear()
-                    _RUNTIME_DIGESTS[key] = (before, file_digest, size)
-            total += size
-            if total > 5 * 1024**3:
-                raise ValueError("runtime snapshot exceeds 5 GiB")
-            manifest.append((entry.relative_to(root).as_posix(), file_digest))
-    encoded = json.dumps(manifest)
+    selected: list[str] = []
+    for path in sorted(set(paths)):
+        if any(path.startswith(parent + "/") for parent in selected):
+            continue
+        candidate_target(root, path)
+        selected.append(path)
+        with _parent(root, path) as (parent, name):
+            observe(parent, name, path, path)
+    encoded = json.dumps(sorted(manifest))
     if not paths:
         return digest(encoded)
     return hmac.new(_RUNTIME_EVIDENCE_KEY, encoded.encode(), "sha256").hexdigest()
@@ -587,7 +779,9 @@ class CheckRunner:
             self.sensitive_values = private_output_values(
                 snapshot,
                 tuple(sorted(set(self.config.get("runtime_paths", [])))),
-                source_paths=tuple(sorted(set(self.sensitive_paths))),
+                source_paths=tuple(
+                    sorted(set(self.sensitive_paths) | self._snapshot_sensitive_paths)
+                ),
             )
             before = source_snapshot(snapshot)[0]
             commands = [*self.config.get("setup", []), spec["argv"]]
@@ -687,11 +881,11 @@ class CheckRunner:
         )
         for _ in range(3):
             with self.lock:
-                source, bodies = source_snapshot(self.root, contents=True)
-                modes = {
-                    p: read_identified_path(candidate_target(self.root, p))[0].mode
-                    for p in bodies
-                }
+                modes: dict[str, str] = {}
+                screened: set[str] = set()
+                source, bodies = source_snapshot(
+                    self.root, contents=True, _modes=modes, _screened=screened
+                )
             if source_snapshot(self.root)[0] == source:
                 break
         else:
@@ -756,6 +950,7 @@ class CheckRunner:
                     force=True,
                 )
             raise
+        self._snapshot_sensitive_paths = screened
         return worktree, digest(source + runtime)
 
     def _copy_runtime(self, path: str, snapshot: Path) -> None:
@@ -786,7 +981,14 @@ class CheckRunner:
                     parents=True, exist_ok=True, mode=0o700
                 )
                 return
-            copy_pinned_runtime_file(self.runtime_root, snapshot, path)
+            copy_pinned_runtime_file(
+                self.runtime_root,
+                snapshot,
+                path,
+                copy_observer=lambda relative, before, after: _remember_runtime_copy(
+                    self.runtime_root, snapshot, relative, before, after
+                ),
+            )
             return
         source = candidate_target(self.runtime_root, path)
         target = candidate_target(snapshot, path)

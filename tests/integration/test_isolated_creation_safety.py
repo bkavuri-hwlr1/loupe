@@ -128,9 +128,19 @@ def test_runtime_secret_is_not_copied_without_exact_consent(
     env = batch_env
     (env.repository / ".gitignore").write_text(".env\n")
     (env.repository / ".env").write_text("LOCAL_TEST_TOKEN=private\n")
-    with pytest.raises(LlmCoordError, match="consent"):
-        manager(env, tmp_path).open(checkout(env), "no-consent")
-    assert not list((tmp_path / "private-worktrees").glob("*"))
+    workspace, notices = manager(env, tmp_path).open(checkout(env), "no-consent")
+    private = Path(workspace.canonical_path)
+    assert not (private / ".env").exists()
+    assert (private / "a.txt").read_text() == "old a\n"
+    assert any("--approve-secret .env" in notice for notice in notices)
+    state = manager(env, tmp_path).get(workspace.workspace_id)
+    assert state is not None and ".env" in state.runtime_paths
+    assert ".env" not in state.runtime_files
+    assert all(
+        b"LOCAL_TEST_TOKEN=private" not in path.read_bytes()
+        for path in env.publisher.candidate_dir.iterdir()
+        if path.is_file()
+    )
 
 
 def test_recovery_preserves_unknown_files_after_interrupted_creation(
@@ -221,3 +231,56 @@ def test_creation_retries_a_concurrent_source_save(
     assert (Path(workspace.canonical_path) / "a.txt").read_text() == (
         "saved while opening\n"
     )
+
+
+def test_close_scrubs_incoming_screened_copies_and_private_staging(
+    batch_env: BatchEnvironment, tmp_path: Path
+) -> None:
+    from llm_cli.workspace.isolated_sync import IsolatedSynchronizer
+
+    env = batch_env
+    isolate = manager(env, tmp_path)
+    workspace, _ = isolate.open(checkout(env), "first")
+    state = isolate.validate(workspace.workspace_id)
+    private = Path(workspace.canonical_path)
+    sync = IsolatedSynchronizer(
+        env.store,
+        env.publisher,
+        lambda root, protected=(): isolated.capture_source(
+            root, env.publisher.candidate_dir, protected_paths=protected
+        ),
+        isolate.validate,
+    )
+    sync.register(
+        workspace.workspace_id,
+        state.source_manifest,
+        state.source_sequence,
+        state.runtime_paths,
+    )
+    initial = b"KEY = 'AKIA" + b"A" * 16 + b"'\n"
+    (env.repository / "fixture.py").write_bytes(initial)
+    sync.synchronize(workspace.workspace_id)
+    local = initial.replace(b"A" * 16, b"L" * 16)
+    (private / "fixture.py").write_bytes(local)
+    incoming = initial.replace(b"A" * 16, b"B" * 16)
+    (env.repository / "fixture.py").write_bytes(incoming)
+    assert sync.synchronize(workspace.workspace_id).conflicted == ("fixture.py",)
+    with env.store.connection() as con:
+        git_dir = Path(
+            con.execute(
+                "SELECT git_dir FROM workspaces WHERE workspace_id=?",
+                (workspace.workspace_id,),
+            ).fetchone()[0]
+        )
+    assert any(
+        path.read_bytes() == incoming
+        for path in (git_dir / "loupe-screened-incoming").iterdir()
+    )
+    env.store.close_session("first")
+    isolate.cleanup_closed("first")
+    assert not private.exists()
+    assert not git_dir.exists()
+    assert env.store.get_workspace(workspace.workspace_id).state == "removed"
+    for archive in (tmp_path / "private-worktrees").glob(".recovery-*/files"):
+        assert not (archive / "fixture.py").exists()
+    assert (env.repository / "fixture.py").read_bytes() == incoming

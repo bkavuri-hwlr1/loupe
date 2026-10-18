@@ -72,3 +72,51 @@ def test_private_key_split_across_check_output_blocks_is_never_persisted(
             service.close()
 
     asyncio.run(scenario())
+
+
+def test_incoming_screened_fixture_value_only_output_never_reaches_records(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+) -> None:
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
+        (root / "fixture.py").write_text(
+            "FAKE = 'AKIA" + "A" * 16 + "'\nPASSWORD = 'newly-screened-private-value'\n"
+        )
+        service = service_factory(tmp_path)
+        provider = edit_provider(
+            _tools(ToolCallRequest("check", "run_check", {"name": "test"})), _finish()
+        )
+        credentials = await setup(
+            service,
+            root,
+            provider,
+            required=False,
+            code=(
+                "import fixture; print('useful assertion diagnostic'); "
+                "print(fixture.PASSWORD)"
+            ),
+        )
+        try:
+            await await_task(service, root, credentials)
+            with service.store.connection() as connection:
+                row = connection.execute(
+                    "SELECT state,output FROM check_runs WHERE task_id='task'"
+                ).fetchone()
+            assert row is not None and row[0] == "passed"
+            assert "useful assertion diagnostic" in row[1]
+            assert "[private value]" in row[1]
+            observed = repr(
+                (
+                    row[1],
+                    service.store.list_task_events("task"),
+                    provider.results,
+                    provider.recorded_results,
+                )
+            )
+            assert "newly-screened-private-value" not in observed
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
