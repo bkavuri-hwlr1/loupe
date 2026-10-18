@@ -89,7 +89,7 @@ class RepositoryCoordinator:
         """Reserve scopes, optionally allowing concurrent private preparation.
 
         ``optimistic_driver`` is the trusted execution registry's attestation
-        that the saved launch can prepare scoped, resumable shared edits. It
+        that the saved launch can prepare scoped, resumable workspace edits. It
         must match the immutable launch; it is never a user-supplied RPC flag.
         The workspace binding and scheduling mode are immutable per attempt.
         """
@@ -1512,12 +1512,29 @@ class RepositoryCoordinator:
                 ON checkout.checkout_id = session.checkout_id
             JOIN task_execution_launches AS launch
                 ON launch.task_id = ? AND launch.task_attempt = ?
+            LEFT JOIN isolated_workspaces AS isolated
+                ON isolated.workspace_id = workspace.workspace_id
+            LEFT JOIN workspaces AS source
+                ON source.workspace_id = workspace.source_workspace_id
             WHERE session.session_id = ? AND session.state = 'active'
-                AND session.workspace_mode = 'shared'
-                AND workspace.state = 'active' AND workspace.mode = 'shared'
-                AND workspace.kind = 'shared_checkout'
+                AND workspace.state = 'active'
                 AND workspace.checkout_id = checkout.checkout_id
-                AND workspace.canonical_path = checkout.canonical_path
+                AND (
+                    (session.workspace_mode = 'shared'
+                        AND workspace.mode = 'shared'
+                        AND workspace.kind = 'shared_checkout'
+                        AND workspace.canonical_path = checkout.canonical_path)
+                    OR
+                    (session.workspace_mode = 'isolated'
+                        AND workspace.mode = 'isolated'
+                        AND workspace.kind = 'linked_worktree'
+                        AND isolated.session_id = session.session_id
+                        AND isolated.stage = 'ready'
+                        AND source.state = 'active' AND source.mode = 'shared'
+                        AND source.kind = 'shared_checkout'
+                        AND source.checkout_id = checkout.checkout_id
+                        AND source.canonical_path = checkout.canonical_path)
+                )
                 AND checkout.repository_id = ? AND checkout.repo_key = ?
                 AND launch.driver = ?
             """,
@@ -1533,7 +1550,7 @@ class RepositoryCoordinator:
         if binding is None:
             raise ClaimAuthorityError(
                 "optimistic scheduling requires an approved saved launch and "
-                "an active shared session workspace"
+                "an active shared session workspace or ready isolated session workspace"
             )
         workspace_id = str(binding["workspace_id"])
         execution = connection.execute(

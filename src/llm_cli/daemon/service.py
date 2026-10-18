@@ -1434,7 +1434,7 @@ class DaemonService:
             scheduling_mode = prior_claim.scheduling_mode
         elif (
             session is not None
-            and session.workspace_mode == "shared"
+            and session.workspace_mode in {"shared", "isolated"}
             and driver is not None
             and self._shared_capable(driver)
         ):
