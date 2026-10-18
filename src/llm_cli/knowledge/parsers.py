@@ -77,6 +77,65 @@ def parse(path: str, text: str) -> Parsed:
         return Parsed(parser, (file_node,), (), (), type(exc).__name__)
 
 
+_PYTHON_STATEMENTS = (
+    ast.ClassDef,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Import,
+    ast.ImportFrom,
+    ast.If,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.With,
+    ast.AsyncWith,
+    ast.Try,
+    ast.TryStar,
+    ast.Match,
+)
+
+
+def _python_children(item: ast.AST) -> tuple[ast.stmt, ...]:
+    """Visit statement containers, never argument/annotation/expression trees.
+
+    Python expressions cannot contain a definition or import statement. Handler
+    and match-case bodies are flattened in AST field order, preserving the
+    original fact order and the lexical scope carried by the traversal stack.
+    """
+    bodies: list[list[ast.stmt]]
+    if isinstance(item, (ast.Try, ast.TryStar)):
+        bodies = [
+            item.body,
+            *(handler.body for handler in item.handlers),
+            item.orelse,
+            item.finalbody,
+        ]
+    elif isinstance(item, ast.Match):
+        bodies = [case.body for case in item.cases]
+    elif isinstance(item, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+        bodies = [item.body, item.orelse]
+    elif isinstance(
+        item,
+        (
+            ast.Module,
+            ast.ClassDef,
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.With,
+            ast.AsyncWith,
+        ),
+    ):
+        bodies = [item.body]
+    else:
+        return ()
+    return tuple(
+        child
+        for body in bodies
+        for child in body
+        if isinstance(child, _PYTHON_STATEMENTS)
+    )
+
+
 def _python(path: str, text: str, file_node: Node) -> Parsed:
     tree = ast.parse(text, filename="<indexed source>")
     module = python_module(path)
@@ -143,8 +202,7 @@ def _python(path: str, text: str, file_node: Node) -> Parsed:
         if len(nodes) + len(edges) > MAX_ITEMS:
             raise ValueError("source graph exceeds its item budget")
         stack.extend(
-            (child, qualified, parent)
-            for child in reversed(list(ast.iter_child_nodes(item)))
+            (child, qualified, parent) for child in reversed(_python_children(item))
         )
     return Parsed("python-ast", tuple(nodes), tuple(aliases), tuple(edges))
 

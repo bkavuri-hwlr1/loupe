@@ -195,3 +195,89 @@ def test_token_budget_failure_remains_local_to_one_file(
     assert result.error == "ValueError"
     assert [node.kind for node in result.nodes] == ["file"]
     assert not result.edges
+
+
+def test_python_walk_preserves_nested_scopes_and_statement_containers() -> None:
+    result = parse(
+        "pkg/work.py",
+        """if condition:
+    import if_body
+else:
+    import if_else
+for item in items:
+    import for_body
+else:
+    import for_else
+while condition:
+    import while_body
+else:
+    import while_else
+with manager:
+    import with_body
+try:
+    import try_body
+except Exception:
+    class Handler:
+        def method(self):
+            import handler_method
+else:
+    import try_else
+finally:
+    import try_finally
+try:
+    import star_body
+except* Exception:
+    import star_handler
+async def async_worker():
+    async for item in items:
+        import async_for_body
+    else:
+        import async_for_else
+    async with manager:
+        import async_with_body
+def outer():
+    match subject:
+        case 1:
+            def case_inner():
+                import match_one
+        case _:
+            import match_other
+    return sum(value * value for value in range(2_000_000))
+""",
+    )
+    assert result.error is None
+    assert {edge.target for edge in result.edges if edge.kind == "imports"} == {
+        "python:" + name
+        for name in (
+            "if_body",
+            "if_else",
+            "for_body",
+            "for_else",
+            "while_body",
+            "while_else",
+            "with_body",
+            "try_body",
+            "handler_method",
+            "try_else",
+            "try_finally",
+            "star_body",
+            "star_handler",
+            "async_for_body",
+            "async_for_else",
+            "async_with_body",
+            "match_one",
+            "match_other",
+        )
+    }
+    assert {
+        node.name for node in result.nodes if node.kind in {"function", "class"}
+    } == {
+        "Handler",
+        "Handler.method",
+        "async_worker",
+        "outer",
+        "outer.case_inner",
+    }
+    inner = next(node.key for node in result.nodes if node.name == "outer.case_inner")
+    outer = next(node.key for node in result.nodes if node.name == "outer")
+    assert any(edge.source == outer and edge.target == inner for edge in result.edges)

@@ -222,9 +222,23 @@ def test_one_publication_work_stays_bounded_at_one_and_ten_thousand_files(
         git_run(env.repository, "add", "src")
         git_run(env.repository, "commit", "-m", f"scale {count}")
         index, checkout = _index(env, tmp_path)
+        baseline_started = time.perf_counter()
         built = index.build(checkout)
+        baseline_elapsed = time.perf_counter() - baseline_started
         assert built["state"] == "ready", built
+        assert baseline_elapsed < 30, (count, baseline_elapsed)
         assert built["documents"] == count + 2
+        with index.store.connection() as con:
+            assert (
+                con.execute(
+                    "SELECT count(*) FROM knowledge_graph_nodes WHERE kind='function'"
+                ).fetchone()[0]
+                == count * 40
+            )
+        print(
+            f"dense graph baseline: {count} files, {count * 40} functions "
+            f"in {baseline_elapsed:.3f}s"
+        )
         elapsed: list[float] = []
 
         def forbidden(*args: Any, **kwargs: Any) -> Any:
