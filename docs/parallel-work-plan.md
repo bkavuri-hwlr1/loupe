@@ -539,6 +539,23 @@ before Waves 5–6 build on isolated mode.
 **Done when.** The option and fixture validate in unit tests, and the
 recorded runs meet every check above or name the defects that block them.
 
+**Implemented and measured with named defects (October 17, 2026).**
+The runner supports all three workspace selections and exact consent for isolated
+lanes. Required runtime checks, trusted hidden acceptance, per-case checkpoints
+and post-close privacy/cleanup audits are covered by focused tests. The frozen
+C6 branch passed 2,575 tests with one expected filesystem skip, Ruff, mypy and
+package builds. The original 16-run matrix stopped after eleven passes and one
+operator-preservation failure, with four repeats unstarted. The C3 incoming-sync
+fix then passed a separate mixed disrupted pilot and three repetitions. Two
+repetitions needed the existing one-follow-up recovery after a second defect:
+a synchronization notice contradicted a quiet coordination flag. The later
+flag fix `608dd2b` has offline validation only; no final-candidate full live matrix is
+claimed. The [measurement record](experiments/wave4-isolated-smoke-2026-10-17.json)
+retains both cohorts, the failed case and original tasks, all follow-ups and
+all costs: 2,892,023 of 3,000,000 tokens. All fourteen runtime/privacy/cleanup
+flags passed on every recorded post-initial run. Historical shared medians are
+context only because source, fixture and host load differ.
+
 ### C7. Faster isolated checks and Wave 3 leftovers
 
 **Why.** These are the items left open by the Wave 3 review.

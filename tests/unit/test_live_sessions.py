@@ -47,16 +47,23 @@ def test_the_shipped_experiments_are_valid() -> None:
 
 
 @pytest.mark.skipif(available_sandbox() is None, reason="needs a working sandbox")
-def test_toolkit_hidden_tests_fail_untouched_and_pass_reference(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("experiment_id", "untouched_passed", "total"),
+    [("toolkit", 0, 16), ("toolkit-runtime", 1, 17)],
+)
+def test_toolkit_hidden_tests_fail_untouched_and_pass_reference(
+    tmp_path: Path, experiment_id: str, untouched_passed: int, total: int
+) -> None:
     version, experiments = sessions.load_experiments()
     assert version >= 3
-    experiment = next(e for e in experiments if e.id == "toolkit")
-    repository = benchmark._fixture(tmp_path / "toolkit", experiment.fixture)
+    experiment = next(e for e in experiments if e.id == experiment_id)
+    repository = benchmark._fixture(tmp_path / experiment_id, experiment.fixture)
+    sessions.prepare_runtime(repository, experiment)
     tests = sessions.ACCEPTANCE / experiment.acceptance
     untouched = sessions.acceptance(repository, tests, sys.executable, ())
     assert untouched["ran"] and untouched["own_tests_passed"]
-    assert untouched["passed"] == 0
-    assert untouched["total"] == 16
+    assert untouched["passed"] == untouched_passed
+    assert untouched["total"] == total
     text = repository / "src/toolkit/text.py"
     text.write_text(
         text.read_text()
@@ -98,7 +105,7 @@ def clamp(value, lower, upper):
     )
     solution = sessions.acceptance(repository, tests, sys.executable, ())
     assert solution["ran"] and solution["own_tests_passed"]
-    assert solution["passed"] == solution["total"] == 16
+    assert solution["passed"] == solution["total"] == total
 
 
 def test_toolkit_registry_parts_merge_without_conflict() -> None:
@@ -275,3 +282,350 @@ def test_hidden_tests_need_the_requested_changes(tmp_path: Path) -> None:
     assert edited["own_tests_passed"]
     assert edited["groups"]["operator"] == [1, 1]
     assert edited["passed"] == 2
+
+
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        ("shared", ["shared", "shared"]),
+        ("isolated", ["isolated", "isolated"]),
+        ("mixed", ["shared", "isolated"]),
+    ],
+)
+def test_workspace_mapping_is_explicit(selection: str, expected: list[str]) -> None:
+    assert [sessions.lane_workspace(selection, index) for index in range(2)] == expected
+    with pytest.raises(ValueError, match="workspace"):
+        sessions.lane_workspace("not-a-mode", 0)
+
+
+def test_runtime_canary_stays_ignored_and_out_of_git_baseline(tmp_path: Path) -> None:
+    from llm_cli.agent.source_policy import contains_secret_material
+
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    before = sessions.git_invariants(repository)
+    canary = sessions.prepare_runtime(repository, experiment)
+    assert canary is not None and len(canary) >= 8
+    assert not contains_secret_material(canary)
+    assert not contains_secret_material((repository / ".env").read_bytes())
+    assert not (repository / ".env").stat().st_mode & 0o077
+    assert sessions.git_invariants(repository) == before
+
+
+@pytest.mark.parametrize("check", ["frozen", "fixture"])
+def test_required_runtime_check_prints_canary_once(tmp_path: Path, check: str) -> None:
+    import subprocess
+    import tomllib
+
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    canary = sessions.prepare_runtime(repository, experiment)
+    assert canary is not None
+    if check == "frozen":
+        config = tomllib.loads(benchmark.checks_toml(experiment.checks, sys.executable))
+        assert config["checks"]["runtime"].get("required", True)
+        argv = config["checks"]["runtime"]["argv"]
+    else:
+        argv = [
+            sys.executable,
+            "-c",
+            "import runpy; runpy.run_path('tests/test_runtime.py')"
+            "['test_runtime_canary_is_available']()",
+        ]
+    result = subprocess.run(argv, cwd=repository, capture_output=True, check=True)
+    assert result.stdout.count(canary) == 1
+    assert sessions._RUNTIME_CHECK_MARKER.encode() in result.stdout
+
+
+@pytest.mark.parametrize("workspace", ["shared", "isolated"])
+def test_workspace_and_exact_runtime_consent_reach_chat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workspace: str
+) -> None:
+    import io
+    from types import SimpleNamespace
+
+    from llm_cli.paths import AppPaths
+
+    started = []
+    stream = io.StringIO()
+
+    def start(argv, **kwargs):
+        started.append((argv, kwargs))
+        return SimpleNamespace(stdin=stream)
+
+    monkeypatch.setattr(sessions.subprocess, "Popen", start)
+    context = sessions.Context(
+        AppPaths.resolve("fixture", home=tmp_path, environ={}),
+        ["loupe"],
+        ["loupe", "chat", "--plain"],
+        {"LLM_COORD_RUNTIME_DIR": "isolated-socket"},
+        tmp_path,
+        tmp_path,
+        10,
+    )
+    lane = sessions.Lane("text", "Do text.", workspace=workspace)
+    sessions._start(context, tmp_path / "repo", "auto", lane, "Do text.", (".env",))
+    argv, options = started[0]
+    if workspace == "isolated":
+        assert argv[-4:] == ["--workspace", "isolated", "--approve-secret", ".env"]
+    else:
+        assert argv[-2:] == ["--workspace", "shared"]
+        assert "--approve-secret" not in argv
+    assert options["env"] == context.environment
+    assert len(lane.processes) == 1
+
+
+@pytest.mark.parametrize("redacted", [False, True])
+@pytest.mark.parametrize("leak", [None, "database", "log", "session", "managed"])
+def test_isolation_audit_reports_leaks_without_returning_canary(
+    tmp_path: Path, leak: str | None, redacted: bool
+) -> None:
+    import sqlite3
+
+    from llm_cli.paths import AppPaths
+
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    before = sessions.git_invariants(repository)
+    canary = sessions.prepare_runtime(repository, experiment)
+    paths = AppPaths.resolve("fixture", home=tmp_path, environ={})
+    paths.ensure()
+    with sqlite3.connect(paths.control_db) as con:
+        con.execute("CREATE TABLE sessions(session_id,workspace_mode,state)")
+        con.execute("INSERT INTO sessions VALUES ('session','isolated','closed')")
+        con.execute("CREATE TABLE check_runs(task_id,name,state,output)")
+        con.execute(
+            "INSERT INTO check_runs VALUES (?,?,?,?)",
+            (
+                "task",
+                "runtime",
+                "passed",
+                "C6 runtime read passed\n" + ("[private value]\n" if redacted else ""),
+            ),
+        )
+        if leak == "database":
+            con.execute("CREATE TABLE accidental_content(value)")
+            con.execute("INSERT INTO accidental_content VALUES (?)", (canary.decode(),))
+    if leak == "log":
+        paths.log_file.write_bytes(canary)
+    if leak == "session":
+        (paths.session_dir / "accidental").write_bytes(canary)
+    if leak == "managed":
+        target = paths.data_dir / "isolated-worktrees/private/.env"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(canary)
+    lane = sessions.Lane("text", "Do text.", task_ids=["task"], workspace="isolated")
+    row = sessions.TaskRow("task", "Do text.", "completed", None, "session", 0, 1)
+    audit = sessions.audit_run(
+        paths,
+        repository,
+        before,
+        canary,
+        [lane],
+        {"task": row},
+        "clean",
+        None,
+        None,
+        True,
+    )
+    assert all(audit.values()) == (leak is None and redacted)
+    assert audit["each_lane_ran_runtime_check"] is redacted
+    if leak is not None:
+        key = {
+            "database": "database_has_no_canary",
+            "log": "daemon_log_has_no_canary",
+            "session": "session_files_have_no_canary",
+            "managed": "managed_env_copies_absent",
+        }[leak]
+        assert audit[key] is False
+    assert canary.decode() not in repr(audit)
+
+
+def test_runtime_fixture_requires_exact_consent_and_configured_check(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="canary requires"):
+        sessions.load_experiments(_experiment_file(tmp_path, runtime_canary="true"))
+
+
+def test_sandbox_setup_failure_is_not_scored_as_product_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    sessions.prepare_runtime(repository, experiment)
+    monkeypatch.setattr(sessions, "available_sandbox", lambda: "seatbelt")
+    monkeypatch.setattr(
+        sessions.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 126, "", "cannot execute"
+        ),
+    )
+    result = sessions.acceptance(
+        repository, sessions.ACCEPTANCE / experiment.acceptance, sys.executable, ()
+    )
+    assert result == {"ran": False, "reason": "sandboxed interpreter could not execute"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor lock semantics")
+def test_database_canary_scan_preserves_live_reader_locks(tmp_path: Path) -> None:
+    import json
+    import sqlite3
+    import subprocess
+    from contextlib import closing
+
+    database = tmp_path / "control.sqlite3"
+    worker = """
+import json, sqlite3, sys
+with sqlite3.connect(sys.argv[1], timeout=0.1) as connection:
+    connection.execute("UPDATE data SET content = printf('%08000d', 2) WHERE id=1")
+    connection.commit()
+    print(json.dumps(connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()))
+"""
+
+    def checkpoint() -> list[int]:
+        return json.loads(
+            subprocess.check_output([sys.executable, "-c", worker, str(database)])
+        )
+
+    with (
+        closing(sqlite3.connect(database)) as writer,
+        closing(sqlite3.connect(database)) as reader,
+    ):
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE data(id INTEGER PRIMARY KEY, content)")
+        writer.execute("INSERT INTO data VALUES (1, printf('%08000d', 1))")
+        writer.commit()
+        reader.execute("BEGIN")
+        before = reader.execute("SELECT content FROM data").fetchone()
+        assert checkpoint()[0] == 1  # This live reader pins its old WAL snapshot.
+        assert not sessions._database_contains_canary(database, b"not-present-canary")
+        assert checkpoint()[0] == 1  # Raw scans must not release the reader's locks.
+        assert reader.in_transaction
+        assert reader.execute("SELECT content FROM data").fetchone() == before
+
+
+@pytest.mark.parametrize("stop", ["error", "budget"])
+def test_completed_results_remain_in_incomplete_run_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop: str
+) -> None:
+    import argparse
+    import json
+    import sqlite3
+    import subprocess
+
+    for name in (
+        "LLM_COORD_DATA_HOME",
+        "LLM_COORD_STATE_HOME",
+        "LLM_COORD_RUNTIME_DIR",
+    ):
+        monkeypatch.setenv(name, str(tmp_path / name))
+    monkeypatch.setattr(sessions, "available_sandbox", lambda: "seatbelt")
+    monkeypatch.setattr(sessions.benchmark, "write_config", lambda *args: None)
+    monkeypatch.setattr(sessions.benchmark, "_loupe", lambda: ["loupe"])
+    monkeypatch.setattr(sessions, "describe", lambda result: "completed pilot")
+    monkeypatch.setattr(
+        sessions.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "head", ""),
+    )
+    completed = {
+        "passed": True,
+        "prompt_tokens": 800_000 if stop == "budget" else 100,
+        "output_tokens": 10,
+    }
+    calls = 0
+
+    def run_arm(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return completed
+        raise sqlite3.DatabaseError("private-canary-must-not-be-recorded")
+
+    monkeypatch.setattr(sessions, "run_arm", run_arm)
+    output = tmp_path / "measurements.json"
+    arguments = argparse.Namespace(
+        profile="fixture",
+        experiments=sessions.EXPERIMENTS,
+        only=["toolkit-runtime"],
+        provider="codex",
+        model="fixture",
+        effort="low",
+        set=[],
+        workspace="isolated",
+        timeout=30,
+        repeat=1,
+        scenarios=["clean", "disrupted"],
+        arms=["pair"],
+        budget_tokens=1_000_000,
+        out=output,
+    )
+    if stop == "error":
+        with pytest.raises(sqlite3.DatabaseError):
+            sessions.run(arguments)
+    else:
+        assert sessions.run(arguments) == 1
+        assert calls == 1  # Reserve prevents starting a second billed case.
+    document = json.loads(output.read_text())
+    assert document["runs"] == [completed]
+    assert document["expected_runs"] == 2
+    assert document["spent_tokens"] == completed["prompt_tokens"] + 10
+    assert document["budget_respected"] is True
+    assert document["complete"] is False
+    assert document["status"] == "finished"
+    if stop == "error":
+        assert document["errors"] == [
+            {
+                "kind": "DatabaseError",
+                "experiment": "toolkit-runtime",
+                "arm": "pair",
+                "scenario": "disrupted",
+                "repetition": 1,
+            }
+        ]
+    else:
+        assert document["errors"] == []
+    assert "private-canary" not in output.read_text()
+
+
+@pytest.mark.skipif(available_sandbox() is None, reason="needs a working sandbox")
+@pytest.mark.parametrize("interference", ["hook", "config"])
+def test_hidden_acceptance_ignores_candidate_collection_controls(
+    tmp_path: Path, interference: str
+) -> None:
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    sessions.prepare_runtime(repository, experiment)
+    if interference == "hook":
+        (repository / "conftest.py").write_text(
+            "import pytest\n"
+            "def pytest_collection_modifyitems(items):\n"
+            "    for item in items:\n"
+            "        item.add_marker(pytest.mark.skip(reason='candidate hook'))\n"
+        )
+    else:
+        (repository / "pytest.ini").write_text(
+            "[pytest]\naddopts = -k test_operator_hand_edit_is_preserved\n"
+        )
+    result = sessions.acceptance(
+        repository, sessions.ACCEPTANCE / experiment.acceptance, sys.executable, ()
+    )
+    assert result["ran"]
+    # The untouched fixture's runtime contract executes and passes; its other
+    # hidden contracts execute and fail, regardless of candidate hooks/config.
+    assert result["passed"] == 1
+    assert result["total"] == 17
+    assert result["groups"]["runtime"] == [1, 1]
+    if interference == "hook":
+        # The ordinary test run retains the project's collection behavior.
+        assert result["own_tests_passed"]
+        assert "skipped" in result["own_tests"]
