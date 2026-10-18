@@ -306,9 +306,37 @@ def test_runtime_canary_stays_ignored_and_out_of_git_baseline(tmp_path: Path) ->
     repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
     before = sessions.git_invariants(repository)
     canary = sessions.prepare_runtime(repository, experiment)
-    assert contains_secret_material(canary)
+    assert canary is not None and len(canary) >= 8
+    assert not contains_secret_material(canary)
+    assert not contains_secret_material((repository / ".env").read_bytes())
     assert not (repository / ".env").stat().st_mode & 0o077
     assert sessions.git_invariants(repository) == before
+
+
+@pytest.mark.parametrize("check", ["frozen", "fixture"])
+def test_required_runtime_check_prints_canary_once(tmp_path: Path, check: str) -> None:
+    import subprocess
+    import tomllib
+
+    _, experiments = sessions.load_experiments()
+    experiment = next(e for e in experiments if e.id == "toolkit-runtime")
+    repository = benchmark._fixture(tmp_path / "runtime", experiment.fixture)
+    canary = sessions.prepare_runtime(repository, experiment)
+    assert canary is not None
+    if check == "frozen":
+        config = tomllib.loads(benchmark.checks_toml(experiment.checks, sys.executable))
+        assert config["checks"]["runtime"].get("required", True)
+        argv = config["checks"]["runtime"]["argv"]
+    else:
+        argv = [
+            sys.executable,
+            "-c",
+            "import runpy; runpy.run_path('tests/test_runtime.py')"
+            "['test_runtime_canary_is_available']()",
+        ]
+    result = subprocess.run(argv, cwd=repository, capture_output=True, check=True)
+    assert result.stdout.count(canary) == 1
+    assert sessions._RUNTIME_CHECK_MARKER.encode() in result.stdout
 
 
 @pytest.mark.parametrize("workspace", ["shared", "isolated"])
@@ -349,9 +377,10 @@ def test_workspace_and_exact_runtime_consent_reach_chat(
     assert len(lane.processes) == 1
 
 
+@pytest.mark.parametrize("redacted", [False, True])
 @pytest.mark.parametrize("leak", [None, "database", "log", "session", "managed"])
 def test_isolation_audit_reports_leaks_without_returning_canary(
-    tmp_path: Path, leak: str | None
+    tmp_path: Path, leak: str | None, redacted: bool
 ) -> None:
     import sqlite3
 
@@ -370,7 +399,12 @@ def test_isolation_audit_reports_leaks_without_returning_canary(
         con.execute("CREATE TABLE check_runs(task_id,name,state,output)")
         con.execute(
             "INSERT INTO check_runs VALUES (?,?,?,?)",
-            ("task", "runtime", "passed", "C6 runtime read passed"),
+            (
+                "task",
+                "runtime",
+                "passed",
+                "C6 runtime read passed\n" + ("[private value]\n" if redacted else ""),
+            ),
         )
         if leak == "database":
             con.execute("CREATE TABLE accidental_content(value)")
@@ -397,7 +431,8 @@ def test_isolation_audit_reports_leaks_without_returning_canary(
         None,
         True,
     )
-    assert all(audit.values()) == (leak is None)
+    assert all(audit.values()) == (leak is None and redacted)
+    assert audit["each_lane_ran_runtime_check"] is redacted
     if leak is not None:
         key = {
             "database": "database_has_no_canary",

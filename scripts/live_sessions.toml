@@ -166,5 +166,5 @@ argv = ["{python}", "-m", "pytest", "-q", "-s", "-p", "no:cacheprovider"]
 timeout = 120
 
 [experiments.checks.runtime]
-argv = ["{python}", "-c", "from pathlib import Path; name, sep, value = Path('.env').read_text().strip().partition('='); assert name == 'LOUPE_C6_CANARY' and sep and value.startswith('sk-') and len(value) == 43; print('C6 runtime read passed')"]
+argv = ["{python}", "-c", "from pathlib import Path; name, sep, value = Path('.env').read_text().strip().partition('='); assert name == 'LOUPE_C6_CANARY' and sep and value.startswith('c6-') and len(value) == 43; print(value); print('C6 runtime read passed')"]
 timeout = 30

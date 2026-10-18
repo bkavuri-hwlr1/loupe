@@ -471,7 +471,9 @@ def event_tokens(events: Iterable[tuple[str, Mapping[str, Any]]]) -> int:
 def prepare_runtime(repository: Path, experiment: Experiment) -> bytes | None:
     if not experiment.runtime_canary:
         return None
-    canary = ("sk-" + secrets.token_hex(20)).encode()
+    # Keep this outside generic key signatures: the audit must exercise exact
+    # private-value redaction, including values under non-secret field names.
+    canary = ("c6-" + secrets.token_hex(20)).encode()
     (repository / ".env").write_bytes(b"LOUPE_C6_CANARY=" + canary + b"\n")
     (repository / ".env").chmod(0o600)
     ignored = subprocess.run(
@@ -680,6 +682,7 @@ def audit_run(
                 if name == "runtime"
                 and state == "passed"
                 and _RUNTIME_CHECK_MARKER in (output or "")
+                and "[private value]" in (output or "")
             }
         invariants["each_lane_ran_runtime_check"] = (
             len(completed) == len(lanes) and completed <= passed

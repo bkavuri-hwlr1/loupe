@@ -116,4 +116,4 @@ def test_runtime_primary_canary_is_preserved() -> None:
     setting = Path(".env").read_text().strip()
     name, separator, value = setting.partition("=")
     assert name == "LOUPE_C6_CANARY" and separator
-    assert value.startswith("sk-") and len(value) == 43
+    assert value.startswith("c6-") and len(value) == 43
