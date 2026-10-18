@@ -1,8 +1,8 @@
 # ADR 0010: Bounded publication authority across profiles
 
-Status: **Proposed** (2026-10-17). G1 supplies a reproduction and an implementation
-contract for review. This ADR has not been accepted, and neither G2 nor G3 is
-implemented by this change.
+Status: **Accepted** (2026-10-18), by explicit user acceptance of the Wave 5
+plan and this ADR. G1 supplies the reproduction and implementation contract.
+Acceptance authorizes G2 implementation; it does not claim G2/G3 are complete.
 
 ## Context and measured risk
 
@@ -245,6 +245,6 @@ each cutover boundary. Old history/refs remain inspectable/exportable; old clien
 receive explicit capability errors for unsupported mutation. No feature rollback
 may erase new ledger data or restore obsolete physical authority.
 
-This proposed contract requires user review before G2/G3 implementation. G1's
-reproduction is executable now; accepting this ADR does not automatically perform
-an irreversible migration on any user's checkout.
+The user accepted this contract on 2026-10-18 before G2 implementation.
+Acceptance does not automatically perform an irreversible G3 migration on any
+user's checkout.
