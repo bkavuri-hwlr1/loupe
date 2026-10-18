@@ -83,6 +83,7 @@ from llm_cli.storage.migrations import (
     current_schema_version,
 )
 from llm_cli.storage.retention import prune_task_output
+from llm_cli.workspace.authority import OwnershipPin, PhysicalAuthority
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
@@ -175,6 +176,7 @@ class DaemonService:
         *,
         boot_id: str,
         config_sources: Mapping[str, str] | None = None,
+        authority_root: Path | None = None,
     ) -> None:
         self.paths = paths
         self.settings = settings
@@ -186,6 +188,10 @@ class DaemonService:
         self.shutdown = shutdown
         self.boot_id = boot_id
         self.store = ControlStore(paths.control_db)
+        self.physical_authority = PhysicalAuthority(
+            self.store, paths.profile_id, boot_id, paths.socket, root=authority_root
+        )
+        self.store.authority = self.physical_authority
         self.knowledge = KnowledgeIndex(
             self.store,
             paths.knowledge_db,
@@ -193,6 +199,7 @@ class DaemonService:
             enabled=settings.knowledge_index == "lexical",
         )
         self._knowledge_task: asyncio.Task[None] | None = None
+        self._ownership_idle_task: asyncio.Task[None] | None = None
         self.coordinator = RepositoryCoordinator(
             self.store,
             launch_lease_ms=settings.launch_lease_ms,
@@ -318,16 +325,29 @@ class DaemonService:
             outcomes=shared_recovery + legacy_recovery.outcomes,
         )
         self._schedule_ready_launches()
+        self._start_ownership_idle_worker()
 
     def _recover_shared_executions(self) -> tuple[RecoveryOutcome, ...]:
         with self.workspace_batches.lock:
             self._recover_shared_workspace_publications()
             self.workspace_batches.recover()
+            self._recover_authority_markers()
             return self.shared_runner.recover(
                 self.drivers.capabilities,
                 can_launch=self._can_reconstruct_launch,
                 driver_for=self._driver_for_launch,
             )
+
+    def _recover_authority_markers(self) -> None:
+        with self.store.connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT c.canonical_path FROM authority_journals j JOIN "
+                "authority_checkouts a ON a.physical_key=j.physical_key JOIN checkouts"
+                " c ON c.checkout_id=a.checkout_id WHERE j.kind IN ('manual','batch')"
+            ).fetchall()
+        for row in rows:
+            with suppress(LlmCoordError, OSError, ValueError):
+                self.physical_authority.finish_recovery(Path(row[0]))
 
     def _recover_shared_workspace_publications(self) -> None:
         """Resolve pre-replace journals strictly from the current path state."""
@@ -338,25 +358,34 @@ class DaemonService:
             if candidate is None or workspace is None:
                 continue
             try:
-                target = workspace_target(
-                    Path(workspace.canonical_path), candidate.relative_path
-                )
-                current = identify_path(target)
-                base = _candidate_identity(candidate, "base")
-                result = _candidate_identity(candidate, "result")
-                if _same_identity(current, result):
-                    self.store.confirm_workspace_publication(
-                        candidate_id=candidate.candidate_id
+                with self.physical_authority.mutation(
+                    Path(workspace.canonical_path),
+                    "manual",
+                    candidate.candidate_id,
+                    recovery=True,
+                ) as operation:
+                    target = workspace_target(
+                        Path(workspace.canonical_path), candidate.relative_path
                     )
-                elif _same_identity(current, base):
-                    self.store.rollback_workspace_publication(
-                        candidate_id=candidate.candidate_id
-                    )
-                else:
-                    self.store.record_workspace_divergence(
-                        candidate_id=candidate.candidate_id, current=current
-                    )
-            except (OSError, ScopeValidationError, ValueError):
+                    current = identify_path(target)
+                    base = _candidate_identity(candidate, "base")
+                    result = _candidate_identity(candidate, "result")
+                    if _same_identity(current, result):
+                        self.store.confirm_workspace_publication(
+                            candidate_id=candidate.candidate_id
+                        )
+                    elif _same_identity(current, base):
+                        self.store.rollback_workspace_publication(
+                            candidate_id=candidate.candidate_id
+                        )
+                    else:
+                        self.store.record_workspace_divergence(
+                            candidate_id=candidate.candidate_id, current=current
+                        )
+                    if _same_identity(current, result) or _same_identity(current, base):
+                        operation.confirm()
+
+            except (LlmCoordError, OSError, ScopeValidationError, ValueError):
                 # The journal and candidate remain retained for a later, more
                 # informed recovery. Startup must never overwrite a strange
                 # filesystem state merely to make its own journal disappear.
@@ -397,7 +426,31 @@ class DaemonService:
         self._background_tasks.clear()
         if self._knowledge_task is not None:
             self._knowledge_task.cancel()
+        if self._ownership_idle_task is not None:
+            self._ownership_idle_task.cancel()
         self._execution_pool.shutdown(wait=False)
+        self.physical_authority.close()
+
+    def _start_ownership_idle_worker(self) -> None:
+        if self._ownership_idle_task is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._ownership_idle_task = loop.create_task(
+            self._ownership_idle_loop(), name="physical-ownership-idle"
+        )
+
+    async def _ownership_idle_loop(self) -> None:
+        # Legacy reconciliation may run only once every 30 seconds. An idle
+        # release must not wait for a second 30-second scheduling boundary.
+        while not self.shutdown.is_set():
+            try:
+                await asyncio.wait_for(self.shutdown.wait(), timeout=0.5)
+            except TimeoutError:
+                with suppress(LlmCoordError, OSError, sqlite3.Error):
+                    await asyncio.to_thread(self.physical_authority.release_idle)
 
     def _start_knowledge_worker(self) -> None:
         if not self.knowledge.enabled or self._knowledge_task is not None:
@@ -470,6 +523,7 @@ class DaemonService:
                 if time.monotonic() >= self._next_external_scan_at:
                     await asyncio.to_thread(self._scan_external_changes)
                     self._next_external_scan_at = time.monotonic() + 2.0
+                self.physical_authority.release_idle()
 
     def _scan_external_changes(self) -> None:
         with self.workspace_batches.lock:
@@ -585,6 +639,54 @@ class DaemonService:
         return asdict(self.store.begin_new_attempt(task_id))
 
     async def _dispatch(self, request: Request) -> Any:
+        method, params = request.method, request.params
+        managed = {
+            "session.open",
+            "session.resume",
+            "workspace.read_file",
+            "workspace.stage_file",
+            "workspace.publish_candidate",
+            "task.run",
+            "task.retry",
+            "task.apply",
+            "task.undo",
+            "task.discard",
+            "checks.configure",
+            "claim.release",
+            "claim.renew",
+        }
+        if method not in managed or (
+            method == "workspace.read_file" and params.get("read_only") is True
+        ):
+            return await self._dispatch_owned(request)
+        root: Path | None = None
+        if "path" in params:
+            # Git discovers the selected worktree, never another remote clone.
+            checkout = await self._registered_checkout_for_path(_path(params, "path"))
+            root = Path(checkout.canonical_path)
+        elif "session_id" in params:
+            session = self._authenticated_session(params)
+            session_checkout = self.store.get_checkout(session.checkout_id)
+            if session_checkout is not None:
+                root = Path(session_checkout.canonical_path)
+        else:
+            task_id = params.get("task_id")
+            if not task_id and "claim_id" in params:
+                claim = self.store.get_claim(_string(params, "claim_id"))
+                task_id = claim.task_id if claim is not None else None
+            task = self.store.get_task(str(task_id)) if task_id else None
+            if task is not None:
+                repository = self.store.get_repository_by_key(task.repo_key)
+                if repository is not None:
+                    root = Path(
+                        self._execution_repository(repository, task).main_worktree_path
+                    )
+        if root is None:
+            return await self._dispatch_owned(request)
+        with self.physical_authority.pin(root):
+            return await self._dispatch_owned(request)
+
+    async def _dispatch_owned(self, request: Request) -> Any:
         method = request.method
         params = request.params
         if method == "system.init":
@@ -592,7 +694,13 @@ class DaemonService:
             return {"initialized": True, **self._ping(), "paths": self._safe_paths()}
         if method == "system.doctor":
             checks = await asyncio.to_thread(
-                run_doctor, self.paths, knowledge_status=self.knowledge.status()
+                run_doctor,
+                self.paths,
+                knowledge_status=self.knowledge.status(),
+                authority_status=[
+                    self.physical_authority.status(Path(c.canonical_path))
+                    for c in self.store.list_checkouts()
+                ],
             )
             return {
                 "ok": all(
@@ -659,6 +767,32 @@ class DaemonService:
             return {"session": asdict(updated)}
         if method == "workspace.status":
             return await self._workspace_status(params)
+        if method == "workspace.observe":
+            checkout = await self._registered_checkout_for_path(_path(params, "path"))
+            relative = normalize_changed_path(_string(params, "relative_path"))
+            from llm_cli.agent.source_policy import ensure_safe_content, excluded_paths
+
+            if relative in excluded_paths(Path(checkout.canonical_path), [relative]):
+                raise LlmCoordError(
+                    ErrorCode.REPOSITORY_UNSAFE,
+                    "read-only observation is restricted to ordinary source paths",
+                )
+            identity, raw = read_identified_path(
+                workspace_target(Path(checkout.canonical_path), relative),
+                max_bytes=MAX_SHARED_TEXT_BYTES,
+            )
+            if raw is not None:
+                ensure_safe_content(raw)
+            return {
+                "relative_path": relative,
+                "content": raw.decode("utf-8") if raw is not None else None,
+                "identity": _identity_payload(identity),
+                "cooperative_read_barrier": False,
+                "edit_capability": False,
+                "authority": self.physical_authority.status(
+                    Path(checkout.canonical_path)
+                ),
+            }
         if method in {
             "workspace.read_file",
             "workspace.stage_file",
@@ -981,6 +1115,13 @@ class DaemonService:
             workspace = await asyncio.to_thread(
                 self.store.ensure_shared_workspace, checkout
             )
+        if self.physical_authority.status(Path(checkout.canonical_path)).get(
+            "history_gap"
+        ):
+            notices += (
+                "Checkout ownership changed; earlier ownership history is incomplete. "
+                "Re-read current source before applying retained proposals.",
+            )
         session, event, bootstrap_sequence = self.store.open_session(
             session_id=session_id,
             checkout_id=checkout.checkout_id,
@@ -1028,6 +1169,7 @@ class DaemonService:
                 if session.state in {"active", "opening"}
             ),
             "guarantees": _WORKSPACE_GUARANTEES,
+            "authority": self.physical_authority.status(Path(checkout.canonical_path)),
         }
 
     async def _workspace_read_file(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1046,16 +1188,22 @@ class DaemonService:
                 raise ValueError(
                     "shared broker reads only UTF-8 text in this release"
                 ) from exc
-        self.store.record_workspace_read(
-            session_id=session.session_id,
-            relative_path=relative_path,
-            identity=identity,
-        )
+        read_only = params.get("read_only", False)
+        if not isinstance(read_only, bool):
+            raise ValueError("read_only must be a boolean")
+        if not read_only:
+            self.store.record_workspace_read(
+                session_id=session.session_id,
+                relative_path=relative_path,
+                identity=identity,
+            )
         return {
             "workspace": asdict(workspace),
             "relative_path": relative_path,
             "identity": _identity_payload(identity),
             "content": content,
+            "cooperative_read_barrier": not read_only,
+            "edit_capability": not read_only,
         }
 
     async def _workspace_stage_file(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1174,57 +1322,66 @@ class DaemonService:
                 ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
                 "candidate content no longer matches its durable identity",
             )
-        candidate, publication, workspace = self.store.begin_workspace_publication(
-            candidate_id=candidate_id, session_id=session.session_id
-        )
-        if publication.operation_state == "confirmed":
-            return _published_workspace_response(
-                candidate,
-                publication,
-                workspace,
-                _published_event(self.store, publication),
+        with self.physical_authority.mutation(
+            Path(workspace.canonical_path), "manual", candidate_id
+        ) as operation:
+            candidate, publication, workspace = self.store.begin_workspace_publication(
+                candidate_id=candidate_id, session_id=session.session_id
             )
-        if publication.operation_state != "prepared":
+            if publication.operation_state == "confirmed":
+                operation.confirm()
+                return _published_workspace_response(
+                    candidate,
+                    publication,
+                    workspace,
+                    _published_event(self.store, publication),
+                )
+            if publication.operation_state != "prepared":
+                raise LlmCoordError(
+                    ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
+                    "candidate publication needs an explicit recovery decision",
+                )
+            current = identify_path(target)
+            if not _same_identity(current, base):
+                divergence, event = self.store.record_workspace_divergence(
+                    candidate_id=candidate_id, current=current
+                )
+                operation.confirm()
+                return _diverged_workspace_response(candidate, divergence, event)
+            try:
+                self.physical_authority.validate_current()
+                atomic_replace_regular_file(
+                    checkout_root=Path(workspace.canonical_path),
+                    git_common_dir=Path(workspace.git_dir or ""),
+                    relative_path=candidate.relative_path,
+                    content=content,
+                    mode=result.mode,
+                    publication_id=publication.publication_id,
+                )
+            except WorkspaceBrokerError:
+                # If no target effect began, recovery is unnecessary: preserve the
+                # candidate as retryable rather than stranding a prepared journal.
+                if _same_identity(identify_path(target), base):
+                    self.store.rollback_workspace_publication(candidate_id=candidate_id)
+                    operation.confirm()
+                raise
+            observed = identify_path(target)
+            if _same_identity(observed, result):
+                confirmed = self.store.confirm_workspace_publication(
+                    candidate_id=candidate_id
+                )
+                operation.confirm()
+                return _published_workspace_response(*confirmed)
+            if not _same_identity(observed, base):
+                divergence, event = self.store.record_workspace_divergence(
+                    candidate_id=candidate_id, current=observed
+                )
+                operation.confirm()
+                return _diverged_workspace_response(candidate, divergence, event)
             raise LlmCoordError(
                 ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
-                "candidate publication needs an explicit recovery decision",
+                "atomic publication left the candidate outcome unresolved",
             )
-        current = identify_path(target)
-        if not _same_identity(current, base):
-            divergence, event = self.store.record_workspace_divergence(
-                candidate_id=candidate_id, current=current
-            )
-            return _diverged_workspace_response(candidate, divergence, event)
-        try:
-            atomic_replace_regular_file(
-                checkout_root=Path(workspace.canonical_path),
-                git_common_dir=Path(workspace.git_dir or ""),
-                relative_path=candidate.relative_path,
-                content=content,
-                mode=result.mode,
-                publication_id=publication.publication_id,
-            )
-        except WorkspaceBrokerError:
-            # If no target effect began, recovery is unnecessary: preserve the
-            # candidate as retryable rather than stranding a prepared journal.
-            if _same_identity(identify_path(target), base):
-                self.store.rollback_workspace_publication(candidate_id=candidate_id)
-            raise
-        observed = identify_path(target)
-        if _same_identity(observed, result):
-            confirmed = self.store.confirm_workspace_publication(
-                candidate_id=candidate_id
-            )
-            return _published_workspace_response(*confirmed)
-        if not _same_identity(observed, base):
-            divergence, event = self.store.record_workspace_divergence(
-                candidate_id=candidate_id, current=observed
-            )
-            return _diverged_workspace_response(candidate, divergence, event)
-        raise LlmCoordError(
-            ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
-            "atomic publication left the candidate outcome unresolved",
-        )
 
     async def _session_list(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         state = _optional_string(params, "state")
@@ -2029,8 +2186,12 @@ class DaemonService:
             event_type="execution.scheduled",
             payload={"attempt": task.attempt, "driver": driver.name},
         )
+        pin = self.physical_authority.acquire(Path(repository.main_worktree_path))
+        ownership_started = threading.Event()
         background = asyncio.create_task(
             self._run_execution(
+                ownership_pin=pin,
+                ownership_started=ownership_started,
                 repository=repository,
                 task=task,
                 claim=claim,
@@ -2041,9 +2202,13 @@ class DaemonService:
             name=f"execution:{task.task_id}:{task.attempt}",
         )
         self._background_tasks[key] = background
-        background.add_done_callback(
-            lambda completed: self._forget_background_task(key, completed)
-        )
+
+        def forget(completed: asyncio.Task[None]) -> None:
+            self._forget_background_task(key, completed)
+            if not ownership_started.is_set():
+                pin.close()
+
+        background.add_done_callback(forget)
         return "scheduled", event
 
     def _forget_background_task(
@@ -2055,6 +2220,8 @@ class DaemonService:
     async def _run_execution(
         self,
         *,
+        ownership_pin: OwnershipPin,
+        ownership_started: threading.Event,
         repository: RepositoryRecord,
         task: TaskRecord,
         claim: ClaimRecord,
@@ -2064,10 +2231,21 @@ class DaemonService:
     ) -> None:
         """Run outside the request lock and surface failure to every session."""
 
+        ownership_started.set()
+        submitted = False
+
+        def execute_pinned(**kwargs: Any) -> None:
+            try:
+                ownership_pin.validate()
+                with self.physical_authority.pin(Path(repository.main_worktree_path)):
+                    self._execute(**kwargs)
+            finally:
+                ownership_pin.close()
+
         try:
             operation = functools.partial(
                 contextvars.copy_context().run,
-                self._execute,
+                execute_pinned,
                 repository=repository,
                 task=task,
                 claim=claim,
@@ -2075,9 +2253,12 @@ class DaemonService:
                 instructions=instructions,
                 interactive=interactive,
             )
-            await asyncio.get_running_loop().run_in_executor(
-                self._execution_pool, operation
-            )
+            # A concurrent-future callback follows the actual worker lifetime,
+            # even when cancelling the asyncio waiter cannot stop that thread.
+            worker = self._execution_pool.submit(operation)
+            submitted = True
+            worker.add_done_callback(lambda _completed: ownership_pin.close())
+            await asyncio.wrap_future(worker)
             if task.session_id is not None:
                 await asyncio.to_thread(self._settle_session_task, task)
         except asyncio.CancelledError:
@@ -2090,6 +2271,9 @@ class DaemonService:
             raise
         except Exception as exc:
             self._fail_unstarted_launch(task, claim, exc)
+        finally:
+            if not submitted:
+                ownership_pin.close()
 
     def _settle_session_task(self, task: TaskRecord) -> None:
         """End a session task's reservation once its result is safely published.

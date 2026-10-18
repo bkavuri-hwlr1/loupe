@@ -175,6 +175,38 @@ class SharedTaskExecutionRunner:
         coordination_context: str | None = None,
         asker: Callable[[str], str] | None = None,
     ) -> ExecutionRecord:
+        from llm_cli.workspace.authority import managed_pin
+
+        primary = Path(repository.main_worktree_path)
+        if task.session_id:
+            session = self.store.get_session(task.session_id)
+            checkout = self.store.get_checkout(session.checkout_id) if session else None
+            if checkout is not None:
+                primary = Path(checkout.canonical_path)
+        with managed_pin(self.store, primary):
+            return self._execute_owned(
+                repository=repository,
+                task=task,
+                claim=claim,
+                driver=driver,
+                instructions=instructions,
+                conversation_state=conversation_state,
+                coordination_context=coordination_context,
+                asker=asker,
+            )
+
+    def _execute_owned(
+        self,
+        *,
+        repository: RepositoryRecord,
+        task: TaskRecord,
+        claim: ClaimRecord,
+        driver: AgentDriver,
+        instructions: str,
+        conversation_state: Mapping[str, object] | None = None,
+        coordination_context: str | None = None,
+        asker: Callable[[str], str] | None = None,
+    ) -> ExecutionRecord:
         if not (
             driver.capabilities.shared_workspace
             and driver.capabilities.enforces_scope
@@ -1024,87 +1056,118 @@ class SharedTaskExecutionRunner:
             execution = self.store.execution_from_row(row)
             resolution = "operator_attention"
             try:
-                workspace = self.store.get_workspace(execution.workspace_id or "")
-                batch = self.publisher.get(execution.execution_id)
-                if (
-                    workspace
-                    and workspace.mode == "isolated"
-                    and not (
-                        batch is not None and batch.state in {"published", "diverged"}
-                    )
-                ):
-                    self._prepare_isolated(workspace.workspace_id)
-                    self.isolated_sync.synchronize(workspace.workspace_id)
-                if batch is not None and batch.state in {"published", "diverged"}:
-                    self._finish_interrupted_response(
-                        execution,
-                        batch.state,
-                        self._recovery_driver(execution, driver_for),
-                    )
-                    self.coordinator.settle_shared_execution(
-                        execution.execution_id, outcome=batch.state
-                    )
-                    resolution = (
-                        "confirmed" if batch.state == "published" else "failed_safe"
-                    )
+                primary_workspace = self.store.get_workspace(
+                    execution.workspace_id or ""
+                )
+                primary_checkout = (
+                    self.store.get_checkout(primary_workspace.checkout_id)
+                    if primary_workspace
+                    else None
+                )
+                if primary_checkout is None:
+                    raise ValueError("recovery execution has no selected checkout")
+                from llm_cli.workspace.authority import managed_pin
+
+                with managed_pin(self.store, Path(primary_checkout.canonical_path)):
+                    workspace = self.store.get_workspace(execution.workspace_id or "")
+                    batch = self.publisher.get(execution.execution_id)
                     if (
                         workspace
                         and workspace.mode == "isolated"
-                        and batch.state == "published"
-                    ):
-                        self.isolated_sync.after_publication(
-                            execution.execution_id, workspace.workspace_id
+                        and not (
+                            batch is not None
+                            and batch.state in {"published", "diverged"}
                         )
-                elif batch is not None:
-                    self.store.update_execution(
-                        execution.execution_id,
-                        state="operator_attention",
-                        failure_code=ErrorCode.CHECKOUT_RECOVERY_REQUIRED.value,
+                    ):
+                        self._prepare_isolated(workspace.workspace_id)
+                        self.isolated_sync.synchronize(workspace.workspace_id)
+                    if batch is not None and batch.state in {"published", "diverged"}:
+                        self._finish_interrupted_response(
+                            execution,
+                            batch.state,
+                            self._recovery_driver(execution, driver_for),
+                        )
+                        self.coordinator.settle_shared_execution(
+                            execution.execution_id, outcome=batch.state
+                        )
+                        resolution = (
+                            "confirmed" if batch.state == "published" else "failed_safe"
+                        )
+                        if (
+                            workspace
+                            and workspace.mode == "isolated"
+                            and batch.state == "published"
+                        ):
+                            self.isolated_sync.after_publication(
+                                execution.execution_id, workspace.workspace_id
+                            )
+                    elif batch is not None:
+                        self.store.update_execution(
+                            execution.execution_id,
+                            state="operator_attention",
+                            failure_code=ErrorCode.CHECKOUT_RECOVERY_REQUIRED.value,
+                        )
+                    elif (
+                        workflow := self.workflow.get(
+                            execution.task_id, execution.task_attempt
+                        )
+                    ) and (
+                        workflow["status"] in {"awaiting_review", "cancelled"}
+                        or workflow["stop_requested"]
+                    ):
+                        if workflow["proposal_json"] is None:
+                            self._retain_checkpoint_candidates(execution)
+                        retained = self.workflow.get(
+                            execution.task_id, execution.task_attempt
+                        )
+                        encoded = retained["proposal_json"] if retained else None
+                        files = (
+                            decode_files(encoded) if isinstance(encoded, str) else ()
+                        )
+                        verification = verification_status(
+                            self.store,
+                            retained or workflow,
+                            Path(execution.worktree_path),
+                            files,
+                        )
+                        self.workflow.hold(
+                            execution.task_id,
+                            execution.task_attempt,
+                            execution.execution_id,
+                            cancelled=bool(workflow["stop_requested"]),
+                            completion_outcome=(
+                                "cancelled"
+                                if workflow["stop_requested"]
+                                else "completed"
+                            ),
+                            verification=verification,
+                            file_count=len(files),
+                        )
+                        resolution = "failed_safe"
+                    elif self._can_resume(execution, capabilities, can_launch):
+                        self._adopt(execution)
+                        resolution = "resuming"
+                    else:
+                        self.coordinator.settle_shared_execution(
+                            execution.execution_id, outcome="failed_safe"
+                        )
+                        resolution = "failed_safe"
+            except (ValueError, LlmCoordError, CoordinationError) as exc:
+                if isinstance(exc, LlmCoordError) and exc.code in {
+                    ErrorCode.CHECKOUT_OWNED_BY_OTHER_PROFILE,
+                    ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
+                    ErrorCode.CHECKOUT_IDENTITY_CHANGED,
+                }:
+                    outcomes.append(
+                        RecoveryOutcome(
+                            task_id=execution.task_id,
+                            task_attempt=execution.task_attempt,
+                            resolution="operator_attention",
+                            detail=exc.code.value,
+                            execution_id=execution.execution_id,
+                        )
                     )
-                elif (
-                    workflow := self.workflow.get(
-                        execution.task_id, execution.task_attempt
-                    )
-                ) and (
-                    workflow["status"] in {"awaiting_review", "cancelled"}
-                    or workflow["stop_requested"]
-                ):
-                    if workflow["proposal_json"] is None:
-                        self._retain_checkpoint_candidates(execution)
-                    retained = self.workflow.get(
-                        execution.task_id, execution.task_attempt
-                    )
-                    encoded = retained["proposal_json"] if retained else None
-                    files = decode_files(encoded) if isinstance(encoded, str) else ()
-                    verification = verification_status(
-                        self.store,
-                        retained or workflow,
-                        Path(execution.worktree_path),
-                        files,
-                    )
-                    self.workflow.hold(
-                        execution.task_id,
-                        execution.task_attempt,
-                        execution.execution_id,
-                        cancelled=bool(workflow["stop_requested"]),
-                        completion_outcome=(
-                            "cancelled"
-                            if workflow["stop_requested"]
-                            else "completed"
-                        ),
-                        verification=verification,
-                        file_count=len(files),
-                    )
-                    resolution = "failed_safe"
-                elif self._can_resume(execution, capabilities, can_launch):
-                    self._adopt(execution)
-                    resolution = "resuming"
-                else:
-                    self.coordinator.settle_shared_execution(
-                        execution.execution_id, outcome="failed_safe"
-                    )
-                    resolution = "failed_safe"
-            except (ValueError, LlmCoordError, CoordinationError):
+                    continue
                 # An unreadable/malformed execution is local operator work;
                 # it must not prevent recovery of the other checkout tasks.
                 self.store.update_execution(

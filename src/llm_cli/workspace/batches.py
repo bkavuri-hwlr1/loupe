@@ -25,6 +25,7 @@ from llm_cli.coordination.scopes import (
     normalize_scopes,
     uncovered_paths,
 )
+from llm_cli.errors import LlmCoordError
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.broker import (
@@ -455,6 +456,45 @@ class SharedBatchPublisher:
         scopes: tuple[str, ...],
         case_insensitive_filesystem: bool = False,
     ) -> BatchPublication:
+        authority = self.store.authority
+        if authority is None:
+            return self._publish(
+                batch_id, session_id, files, scopes, case_insensitive_filesystem
+            )
+        with self.store.connection() as connection:
+            row = connection.execute(
+                "SELECT c.canonical_path FROM sessions s JOIN checkouts c ON "
+                "c.checkout_id=s.checkout_id WHERE s.session_id=?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            raise WorkspaceBrokerError("batch session has no checkout")
+        with (
+            self.lock,
+            authority.mutation(Path(row[0]), "batch", batch_id) as operation,
+        ):
+            try:
+                result = self._publish(
+                    batch_id, session_id, files, scopes, case_insensitive_filesystem
+                )
+            except Exception:
+                # Live control flow proves _apply cannot have run without its
+                # domain journal. Crash recovery never infers this from absence.
+                if self.get(batch_id) is None:
+                    operation.confirm()
+                raise
+            if result.state in {"published", "diverged"}:
+                operation.confirm()
+            return result
+
+    def _publish(
+        self,
+        batch_id: str,
+        session_id: str,
+        files: Sequence[BatchFile],
+        scopes: tuple[str, ...],
+        case_insensitive_filesystem: bool = False,
+    ) -> BatchPublication:
         if not isinstance(batch_id, str) or not batch_id or len(batch_id) > 256:
             raise WorkspaceBrokerError("batch ID must contain 1 to 256 characters")
         request_json = _request(session_id, files, scopes, case_insensitive_filesystem)
@@ -695,9 +735,35 @@ class SharedBatchPublisher:
                     "AND (? IS NULL OR batch_id = ?) ORDER BY created_at, batch_id",
                     (batch_id, batch_id),
                 ).fetchall()
-            return [self._apply(str(row["batch_id"])) for row in rows]
+            results: list[BatchPublication] = []
+            for row in rows:
+                try:
+                    results.append(self._apply(str(row["batch_id"])))
+                except LlmCoordError:
+                    # A foreign/changed checkout must not prevent independent
+                    # checkouts from being recovered by this daemon.
+                    continue
+            return results
 
     def _apply(self, batch_id: str) -> BatchPublication:
+        authority = self.store.authority
+        if authority is None:
+            return self._apply_owned(batch_id)
+        with self.store.connection() as connection:
+            row = connection.execute(
+                "SELECT canonical_path FROM workspace_batches WHERE batch_id=?",
+                (batch_id,),
+            ).fetchone()
+        assert row is not None
+        with authority.mutation(
+            Path(row[0]), "batch", batch_id, recovery=True
+        ) as operation:
+            result = self._apply_owned(batch_id)
+            if result.state in {"published", "diverged"}:
+                operation.confirm()
+            return result
+
+    def _apply_owned(self, batch_id: str) -> BatchPublication:
         with self.store.connection() as connection:
             row = connection.execute(
                 "SELECT * FROM workspace_batches WHERE batch_id = ?", (batch_id,)
@@ -791,6 +857,8 @@ class SharedBatchPublisher:
                     f"batch:{batch_id}:{ordinal}".encode()
                 ).hexdigest()
                 target = _target(root, item.relative_path)
+                if self.store.authority is not None:
+                    self.store.authority.validate_current()
                 if item.result.kind is ObjectKind.DIRECTORY_MARKER:
                     target.mkdir(mode=0o700)
                     _sync_parent(target)

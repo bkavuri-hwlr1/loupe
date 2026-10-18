@@ -454,9 +454,7 @@ def test_an_edit_made_outside_loupe_is_merged_with_the_agents_edits(
         await asyncio.wait_for(background, timeout=20)
 
         _assert_completed(service, "merge")
-        assert (repository / "docs/b.md").read_text() == (
-            "agent 1\nline 2\neditor 3\n"
-        )
+        assert (repository / "docs/b.md").read_text() == ("agent 1\nline 2\neditor 3\n")
         events = service.store.list_task_events("merge")
         assert [e.payload for e in events if e.event_type == "edits.reconciled"] == [
             {
@@ -677,6 +675,7 @@ def test_restart_restores_private_files_without_replaying_completed_writes(
             dead.settings,
             asyncio.Event(),
             boot_id="boot-resumed-shared-agent",
+            authority_root=dead.physical_authority.root,
         )
         _register(live, resumed)
         live.initialize()
@@ -887,7 +886,11 @@ def test_restart_terminalizes_an_abandoned_execution_without_rewriting_its_task(
 
         unused_provider = ScriptedProvider(provider.model, [])
         live = DaemonService(
-            dead.paths, dead.settings, asyncio.Event(), boot_id="boot-after-cancel"
+            dead.paths,
+            dead.settings,
+            asyncio.Event(),
+            boot_id="boot-after-cancel",
+            authority_root=dead.physical_authority.root,
         )
         _register(live, unused_provider)
         live.initialize()
@@ -975,7 +978,11 @@ def test_restart_settles_a_published_journal_and_promotes_conversation_exactly_o
 
         unused_provider = ScriptedProvider(provider.model, [])
         live = DaemonService(
-            dead.paths, dead.settings, asyncio.Event(), boot_id="boot-after-publish"
+            dead.paths,
+            dead.settings,
+            asyncio.Event(),
+            boot_id="boot-after-publish",
+            authority_root=dead.physical_authority.root,
         )
         _register(live, unused_provider)
         live.initialize()

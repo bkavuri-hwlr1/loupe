@@ -24,7 +24,10 @@ class Check:
 
 
 def run_doctor(
-    paths: AppPaths, *, knowledge_status: dict[str, Any] | None = None
+    paths: AppPaths,
+    *,
+    knowledge_status: dict[str, Any] | None = None,
+    authority_status: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, object]]:
     checks = [
         _python_check(),
@@ -52,6 +55,16 @@ def run_doctor(
                 state in {"ready", "off"},
                 str(knowledge_status.get("error", state)),
                 warning=True,
+            )
+        )
+    for authority in authority_status or []:
+        state = str(authority.get("state", "foreign_recovery"))
+        checks.append(
+            Check(
+                "physical_authority",
+                state in {"owned", "observed_only"},
+                str(authority),
+                warning=state == "observed_only",
             )
         )
     return [asdict(check) for check in checks]

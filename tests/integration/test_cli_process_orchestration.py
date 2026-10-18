@@ -213,6 +213,8 @@ def _both(text: str) -> str:
 
 
 def _daemon_entry() -> None:
+    from authority_helpers import install_test_authority
+    install_test_authority()
     """Install the test model at the provider seam, then run the normal daemon."""
     from llm_cli.daemon import main
 

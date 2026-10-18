@@ -81,7 +81,11 @@ def test_daemon_ping_reports_the_code_it_runs(tmp_path: Path) -> None:
         home=tmp_path,
     )
     service = DaemonService(
-        paths, Settings(profile_id="test"), asyncio.Event(), boot_id="boot-ping"
+        paths,
+        Settings(profile_id="test"),
+        asyncio.Event(),
+        boot_id="boot-ping",
+        authority_root=paths.data_dir.parents[2] / "physical-authority" / "v1",
     )
     try:
         ping = service._ping()

@@ -32,7 +32,10 @@ def recovery_error(message: str, **details: Any) -> LlmCoordError:
 
 
 def private_directory(path: Path) -> None:
-    reject_symlink_components(path)
+    try:
+        reject_symlink_components(path)
+    except LlmCoordError as exc:
+        raise recovery_error("authority storage contains a symlink") from exc
     # Never chmod existing storage: an unsafe installation is an error.
     missing: list[Path] = []
     cursor = path
@@ -53,11 +56,16 @@ def private_directory(path: Path) -> None:
 
 
 def private_read(path: Path) -> dict[str, Any] | None:
-    reject_symlink_components(path)
+    try:
+        reject_symlink_components(path)
+    except LlmCoordError as exc:
+        raise recovery_error("authority record contains a symlink") from exc
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise recovery_error("authority record cannot be safely opened") from exc
     try:
         status = os.fstat(fd)
         if (

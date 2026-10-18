@@ -76,6 +76,7 @@ def service_factory() -> Callable[[Path], DaemonService]:
             Settings(profile_id="test"),
             asyncio.Event(),
             boot_id="boot-shared-workspace",
+            authority_root=tmp_path / "physical-authority" / "v1",
         )
 
     return create

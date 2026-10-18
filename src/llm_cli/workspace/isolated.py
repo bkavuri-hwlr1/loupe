@@ -237,9 +237,9 @@ class SourceCaptureCache:
     """Cache regular source only while its pinned filesystem identity matches."""
 
     max_entries: int = 40_000
-    entries: OrderedDict[
-        tuple[Path, str], tuple[dict[str, int], dict[str, Any]]
-    ] = field(default_factory=OrderedDict)
+    entries: OrderedDict[tuple[Path, str], tuple[dict[str, int], dict[str, Any]]] = (
+        field(default_factory=OrderedDict)
+    )
     lock: RLock = field(default_factory=RLock, repr=False)
 
     def lookup(
@@ -829,7 +829,7 @@ class IsolatedWorkspaceManager:
     def _scrub_removed_archives(self) -> None:
         with self.store.connection() as con:
             rows = con.execute(
-                "SELECT workspace_id,canonical_path FROM workspaces WHERE "
+                "SELECT workspace_id,canonical_path,checkout_id FROM workspaces WHERE "
                 "mode='isolated' AND state='removed'"
             ).fetchall()
         for row in rows:
@@ -838,49 +838,59 @@ class IsolatedWorkspaceManager:
             if Path(row["canonical_path"]) != expected:
                 continue
             archive = self.managed_root / (".recovery-" + workspace_id)
+            if not archive.exists() and not archive.is_symlink():
+                continue
             try:
-                if archive.is_symlink() or archive.stat().st_mode & 0o077:
+                checkout = self.store.get_checkout(str(row["checkout_id"]))
+                if checkout is None:
                     continue
-                with _source(archive, "owner.json") as descriptor:
-                    owner = json.loads(_read(descriptor, 32 * 1024 * 1024))
-                if not isinstance(owner, dict):
-                    continue
-                if not isinstance(owner.get("token"), str) or not owner[
-                    "token"
-                ].startswith("owner_"):
-                    continue
-                private_paths = owner.get("private_paths", [])
-                if not isinstance(private_paths, list) or any(
-                    not isinstance(relative, str)
-                    or normalize_changed_path(relative) != relative
-                    or any(part in _ADMIN for part in Path(relative).parts)
-                    for relative in private_paths
-                ):
-                    continue
-                paths = set(private_paths)
-                data = archive / "files"
-                if data.is_symlink():
-                    continue
-                # Older archives predate the pinned-path owner metadata. Only
-                # unmistakably private names can be retired without guessing
-                # which ordinary file was copied.
-                for directory, directories, files in os.walk(data, followlinks=False):
-                    base = Path(directory)
-                    for name in list(directories) + files:
-                        relative = (base / name).relative_to(data).as_posix()
-                        if _private_path(relative):
-                            paths.add(relative)
-                            if name in directories:
-                                directories.remove(name)
-                for relative in sorted(
-                    paths, key=lambda item: (len(Path(item).parts), item)
-                ):
-                    with (
-                        suppress(FileNotFoundError),
-                        _parent(data, relative) as (parent, leaf),
+                from llm_cli.workspace.authority import managed_pin
+
+                with managed_pin(self.store, Path(checkout.canonical_path)):
+                    if archive.is_symlink() or archive.stat().st_mode & 0o077:
+                        continue
+                    with _source(archive, "owner.json") as descriptor:
+                        owner = json.loads(_read(descriptor, 32 * 1024 * 1024))
+                    if not isinstance(owner, dict):
+                        continue
+                    if not isinstance(owner.get("token"), str) or not owner[
+                        "token"
+                    ].startswith("owner_"):
+                        continue
+                    private_paths = owner.get("private_paths", [])
+                    if not isinstance(private_paths, list) or any(
+                        not isinstance(relative, str)
+                        or normalize_changed_path(relative) != relative
+                        or any(part in _ADMIN for part in Path(relative).parts)
+                        for relative in private_paths
                     ):
-                        self._remove_private_entry(parent, leaf)
-                        os.fsync(parent)
+                        continue
+                    paths = set(private_paths)
+                    data = archive / "files"
+                    if data.is_symlink():
+                        continue
+                    # Older archives predate the pinned-path owner metadata. Only
+                    # unmistakably private names can be retired without guessing
+                    # which ordinary file was copied.
+                    for directory, directories, files in os.walk(
+                        data, followlinks=False
+                    ):
+                        base = Path(directory)
+                        for name in list(directories) + files:
+                            relative = (base / name).relative_to(data).as_posix()
+                            if _private_path(relative):
+                                paths.add(relative)
+                                if name in directories:
+                                    directories.remove(name)
+                    for relative in sorted(
+                        paths, key=lambda item: (len(Path(item).parts), item)
+                    ):
+                        with (
+                            suppress(FileNotFoundError),
+                            _parent(data, relative) as (parent, leaf),
+                        ):
+                            self._remove_private_entry(parent, leaf)
+                            os.fsync(parent)
             except (LlmCoordError, OSError, TypeError, ValueError):
                 # A corrupt or replaced archive is evidence, not authority to
                 # remove an arbitrary path.
@@ -947,19 +957,62 @@ class IsolatedWorkspaceManager:
                 workspace_id = str(row["workspace_id"])
                 if not self._cleanup_needed(workspace_id, str(row["session_id"])):
                     continue
-                with self.store.connection() as con:
-                    con.execute(
-                        "UPDATE workspaces SET state='cleaning', "
-                        "state_version=state_version+1 WHERE workspace_id=?",
-                        (workspace_id,),
-                    )
+
                 try:
                     if not self._clean_incomplete(workspace_id, closed=True):
                         self._quarantine(workspace_id, closed=True)
-                except (LlmCoordError, OSError, ValueError):
+                except (LlmCoordError, OSError, ValueError) as exc:
+                    if isinstance(exc, LlmCoordError) and exc.code in {
+                        ErrorCode.CHECKOUT_OWNED_BY_OTHER_PROFILE,
+                        ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
+                        ErrorCode.CHECKOUT_IDENTITY_CHANGED,
+                    }:
+                        continue
                     self._quarantine(workspace_id, closed=True)
 
     def _clean_incomplete(self, workspace_id: str, *, closed: bool = False) -> bool:
+        authority = self.store.authority
+        if authority is None:
+            return self._clean_incomplete_owned(workspace_id, closed=closed)
+        workspace = self.store.get_workspace(workspace_id)
+        state = self.get(workspace_id)
+        checkout = self.store.get_checkout(workspace.checkout_id) if workspace else None
+        if state is None or checkout is None:
+            return False
+        primary = Path(checkout.canonical_path)
+        with authority.pin(primary, recovery=True) as pin:
+            kind, reference = "isolated_cleanup", workspace_id
+            if pin.owner.marker["state"] != "clean":
+                with self.store.connection() as con:
+                    journal = con.execute(
+                        "SELECT kind,reference_id FROM authority_journals WHERE "
+                        "journal_id=?",
+                        (pin.owner.marker["journal_id"],),
+                    ).fetchone()
+                if journal is not None and tuple(journal) == (
+                    "isolated_create",
+                    state.session_id,
+                ):
+                    kind, reference = "isolated_create", state.session_id
+            with authority.mutation(
+                primary, kind, reference, recovery=True
+            ) as operation:
+                result = self._clean_incomplete_owned(workspace_id, closed=closed)
+                if result:
+                    operation.confirm()
+                return result
+
+    def _clean_incomplete_owned(
+        self, workspace_id: str, *, closed: bool = False
+    ) -> bool:
+        if closed:
+            with self.store.connection() as con:
+                con.execute(
+                    "UPDATE workspaces SET "
+                    "state='cleaning',state_version=state_version+1 WHERE "
+                    "workspace_id=?",
+                    (workspace_id,),
+                )
         state = self.get(workspace_id)
         workspace = self.store.get_workspace(workspace_id)
         assert state is not None and workspace is not None
@@ -1192,14 +1245,65 @@ class IsolatedWorkspaceManager:
                 if row["stage"] == "attention":
                     continue
                 try:
-                    if row["stage"] == "ready":
-                        self.validate(workspace_id)
-                    elif not self._clean_incomplete(workspace_id):
-                        self._quarantine(workspace_id)
-                except (LlmCoordError, OSError, ValueError):
+                    workspace = self.store.get_workspace(workspace_id)
+                    checkout = (
+                        self.store.get_checkout(workspace.checkout_id)
+                        if workspace
+                        else None
+                    )
+                    state = self.get(workspace_id)
+                    if checkout is None or state is None:
+                        continue
+                    from llm_cli.workspace.authority import managed_pin
+
+                    with managed_pin(
+                        self.store, Path(checkout.canonical_path), recovery=True
+                    ):
+                        if row["stage"] == "ready":
+                            self.validate(workspace_id)
+                        elif not self._clean_incomplete(workspace_id):
+                            self._quarantine(workspace_id)
+                except (LlmCoordError, OSError, ValueError) as exc:
+                    if isinstance(exc, LlmCoordError) and exc.code in {
+                        ErrorCode.CHECKOUT_OWNED_BY_OTHER_PROFILE,
+                        ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
+                        ErrorCode.CHECKOUT_IDENTITY_CHANGED,
+                    }:
+                        continue
                     self._quarantine(workspace_id)
 
     def open(
+        self,
+        checkout: CheckoutRecord,
+        session_id: str,
+        *,
+        approved_secrets: tuple[str, ...] = (),
+    ) -> tuple[WorkspaceRecord, tuple[str, ...]]:
+        authority = self.store.authority
+        if authority is None:
+            return self._open_owned(
+                checkout, session_id, approved_secrets=approved_secrets
+            )
+        with authority.mutation(
+            Path(checkout.canonical_path), "isolated_create", session_id
+        ) as operation:
+            try:
+                result = self._open_owned(
+                    checkout, session_id, approved_secrets=approved_secrets
+                )
+            except Exception:
+                with self.store.connection() as con:
+                    planned = con.execute(
+                        "SELECT 1 FROM isolated_workspaces WHERE session_id=?",
+                        (session_id,),
+                    ).fetchone()
+                if planned is None:
+                    operation.confirm()
+                raise
+            operation.confirm()
+            return result
+
+    def _open_owned(
         self,
         checkout: CheckoutRecord,
         session_id: str,
@@ -1389,9 +1493,12 @@ class IsolatedWorkspaceManager:
                         else:
                             with _source(root, relative) as descriptor:
                                 body = _read(descriptor, _MAX_SOURCE_FILE)
-                        if content_identity(
-                            ObjectKind(entry["kind"]), entry["mode"], body
-                        ) != entry["digest"]:
+                        if (
+                            content_identity(
+                                ObjectKind(entry["kind"]), entry["mode"], body
+                            )
+                            != entry["digest"]
+                        ):
                             raise _error(
                                 "source changed during isolated creation: " + relative
                             )

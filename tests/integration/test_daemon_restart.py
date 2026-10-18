@@ -53,6 +53,8 @@ class _HangingModel:
 
 
 def _daemon_entry() -> None:
+    from authority_helpers import install_test_authority
+    install_test_authority()
     """Install the hanging model and a short drain, then run the real daemon."""
     from llm_cli.config.models import Settings
     from llm_cli.daemon import main

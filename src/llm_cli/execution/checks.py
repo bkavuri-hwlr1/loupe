@@ -1224,9 +1224,12 @@ def cleanup_interrupted_checks(store: ControlStore, managed_root: Path) -> None:
     """Retire only recorded old check snapshots, after supervisor shutdown grace."""
     with store.connection() as connection:
         rows = connection.execute(
-            "SELECT c.run_id,e.worktree_path FROM check_runs c "
+            "SELECT c.run_id,e.worktree_path,p.canonical_path FROM check_runs c "
             "JOIN task_workflows w ON w.task_id=c.task_id AND w.attempt=c.attempt "
             "JOIN task_executions e ON e.execution_id=w.execution_id "
+            "JOIN tasks t ON t.task_id=c.task_id JOIN sessions s ON "
+            "s.session_id=t.session_id "
+            "JOIN checkouts p ON p.checkout_id=s.checkout_id "
             "WHERE c.state='uncertain'"
         ).fetchall()
     for row in rows:
@@ -1235,16 +1238,21 @@ def cleanup_interrupted_checks(store: ControlStore, managed_root: Path) -> None:
             continue
         path = managed_root / run_id
         runtime = managed_root / (run_id + "-runtime")
+        if not path.exists() and not runtime.exists():
+            continue
         try:
-            if path.exists():
-                remove_managed_worktree(
-                    Path(row["worktree_path"]),
-                    managed_root=managed_root,
-                    registered_path=path,
-                    force=True,
-                )
-            if runtime.exists() and not runtime.is_symlink():
-                shutil.rmtree(runtime)
+            from llm_cli.workspace.authority import managed_pin
+
+            with managed_pin(store, Path(row["canonical_path"])):
+                if path.exists():
+                    remove_managed_worktree(
+                        Path(row["worktree_path"]),
+                        managed_root=managed_root,
+                        registered_path=path,
+                        force=True,
+                    )
+                if runtime.exists() and not runtime.is_symlink():
+                    shutil.rmtree(runtime)
         except (OSError, ValueError, LlmCoordError):
             # Preserve the registered artifact when identity or removal is uncertain.
             continue

@@ -117,7 +117,11 @@ def test_run_schedules_background_work_and_exposes_events_to_other_sessions(
         )
         shutdown = asyncio.Event()
         service = DaemonService(
-            paths, Settings(profile_id="test"), shutdown, boot_id="boot"
+            paths,
+            Settings(profile_id="test"),
+            shutdown,
+            boot_id="boot",
+            authority_root=paths.data_dir.parents[2] / "physical-authority" / "v1",
         )
         service.initialize()
         started = threading.Event()
@@ -222,7 +226,11 @@ def test_daemon_starts_a_queued_fixture_when_its_claim_activates(
             home=tmp_path,
         )
         service = DaemonService(
-            paths, Settings(profile_id="test"), asyncio.Event(), boot_id="boot"
+            paths,
+            Settings(profile_id="test"),
+            asyncio.Event(),
+            boot_id="boot",
+            authority_root=paths.data_dir.parents[2] / "physical-authority" / "v1",
         )
         service.initialize()
         release = threading.Event()

@@ -865,13 +865,11 @@ savings remain unmeasured. Review remains off by default.
 ## Wave 4 G1: accepted cross-profile authority decision (October 18, 2026)
 
 [ADR 0010](adr/0010-cross-profile-publication-authority.md) was explicitly
-**Accepted** by the user on October 18, 2026. A checked-in integration reproduction runs two real profile daemons
-and ordinary shared publication RPCs. With both renames paused after their final
-base checks, both independent journals prepare and then confirm different
-same-base results; the second replaces the first. Its strict expected failure
-accepts only the specific final violation after all preconditions and durable
-witnesses pass; startup, RPC and unrelated failures remain test failures.
-`--runxfail` independently confirms that exact known violation.
+**Accepted** by the user on October 18, 2026. The original G1 integration reproduction used two real profile daemons and
+ordinary shared publication RPCs to prove two same-base publications could both
+confirm. Its strict expected failure isolated that specific final violation.
+G2 below converts the checked-in reproduction into a passing ownership/refusal
+regression while retaining the real daemon/publication boundaries.
 
 The ADR selects profile-independent physical ownership and conservative dirty
 journal recovery for G2, with read-only peer status, stable errors, database
@@ -884,13 +882,46 @@ No authority product behavior changed in G1. Focused reproduction: one strict
 expected failure; Ruff passes. The acceptance gate is satisfied; G2 implementation
 is now authorized, with completion recorded separately below.
 
+## Wave 5 G2: bounded physical checkout authority (October 18, 2026)
+
+The accepted [ADR 0010](adr/0010-cross-profile-publication-authority.md) now has
+product implementation for profile-independent physical checkout ownership,
+verified Git relationships/common-store locks, kernel-held pins, PID/start
+metadata, database-instance/external binding, checksummed fsynced markers and
+conservative original-owner recovery. Task workers retain pins until their actual
+thread finishes; clean ownership releases after 30 seconds idle independently of
+the legacy reconciliation timer. Background scans do not keep conversations
+owning a checkout. Held proposals keep their bases/private runtime across release.
+
+Batch/manual publication, direct shared/legacy runner entries, isolated
+creation/cleanup, final Git side effects and per-checkout startup recovery are
+fenced. Explicit `workspace observe` gives peers source reads labeled outside the
+owner's barrier with no edit capability. Workspace status/doctor expose ownership,
+foreign recovery and changed identity. Handoffs re-observe stable source, advance
+the workspace epoch and deliver a bounded history-gap notice to model/terminal;
+they do not reconstruct another profile's history.
+
+The real daemon regression covers competition, actual 30-second idle handoff,
+stale retained bases and SIGKILL/original-owner recovery. A fault matrix covers
+dirty, journal, file, DB-confirm and clean-marker gaps; physical tests cover
+aliases/clones/linked worktrees, a real-process common-store lock, unsafe roots,
+unknown/network filesystem semantics, database replacement, missing/corrupt
+markers, PID reuse, running shutdown workers and private-value absence.
+Full-suite validation is recorded after the current verification run completes.
+
+[Cross-profile guide](cross-profile-authority.md) documents read-only commands,
+stable errors and recovery. G3's claim-free cutover, foreign journal import,
+global equality/history and complete restore/downgrade fencing remain deferred.
+In-place manual restore preserving the database inode/ID is unsupported. E2 stays
+deferred; this work adds no billed live provider run, release or version change.
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
 Waves 4–7, as packages that separate sessions can run at once.
 
-1. Validate the remaining multi-profile authority and migration guarantees.
-   G1 designs these first, then G2 and G3 implement them.
+1. Complete reviewed G2 validation, then implement G3's explicit claim-free legacy
+   migration under the accepted authority contract.
 2. Complete isolated-mode live validation (C6); C7 implements faster checks.
    Then extend isolated runtime support with runtime refresh (C8), a
    per-session command environment (C9) and dependency rebuild adapters (C10).

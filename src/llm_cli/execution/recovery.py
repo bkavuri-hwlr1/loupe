@@ -31,6 +31,7 @@ from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.integrate import read_task_ref
 from llm_cli.git.worktrees import prune_managed_worktrees, remove_managed_worktree
 from llm_cli.storage.control import ControlStore
+from llm_cli.workspace.authority import managed_mutation, managed_pin
 
 DAEMON_INTERRUPTED = "DAEMON_INTERRUPTED"
 PUBLICATION_AMBIGUOUS = "PUBLICATION_AMBIGUOUS"
@@ -126,10 +127,36 @@ class ExecutionReconciler:
             if execution.workspace_id is not None:
                 continue
             handled.add((execution.task_id, execution.task_attempt))
-            if self._can_resume(execution):
-                outcomes.append(self._adopt_resumable_execution(execution))
-            else:
-                outcomes.append(self._recover_execution(execution))
+            try:
+                repository = self._repository(execution.task_id)
+                with managed_pin(
+                    self.store, Path(repository.main_worktree_path), recovery=True
+                ):
+                    if self._can_resume(execution):
+                        outcomes.append(self._adopt_resumable_execution(execution))
+                    else:
+                        with managed_mutation(
+                            self.store,
+                            Path(repository.main_worktree_path),
+                            "legacy_execution",
+                            execution.execution_id,
+                            recovery=True,
+                        ) as operation:
+                            outcome = self._recover_execution(execution)
+                            if not outcome.blocking and operation is not None:
+                                operation.confirm()
+                            outcomes.append(outcome)
+            except LlmCoordError as exc:
+                outcomes.append(
+                    RecoveryOutcome(
+                        execution.task_id,
+                        execution.task_attempt,
+                        "operator_attention",
+                        exc.code.value,
+                        execution.execution_id,
+                    )
+                )
+
         for intent in self.store.list_open_publication_intents():
             key = (intent.task_id, intent.task_attempt)
             if key in handled:
@@ -138,8 +165,42 @@ class ExecutionReconciler:
             if self._in_flight_here(paired):
                 continue
             handled.add(key)
-            outcomes.append(self._resolve_intent(paired, intent))
+            try:
+                repository = self._repository(intent.task_id)
+                with managed_pin(
+                    self.store, Path(repository.main_worktree_path), recovery=True
+                ):
+                    outcomes.append(self._resolve_intent(paired, intent))
+            except LlmCoordError as exc:
+                outcomes.append(
+                    RecoveryOutcome(
+                        intent.task_id,
+                        intent.task_attempt,
+                        "operator_attention",
+                        exc.code.value,
+                        paired.execution_id if paired else None,
+                        intent.intent_id,
+                    )
+                )
         return RecoveryReport(boot_id=self.boot_id, outcomes=tuple(outcomes))
+
+    def _repository(self, task_id: str) -> RepositoryRecord:
+        task = self.store.get_task(task_id)
+        repository = self.store.get_repository_by_key(task.repo_key) if task else None
+        if repository is None:
+            raise LlmCoordError(
+                ErrorCode.REPOSITORY_NOT_FOUND, "recovery repository is missing"
+            )
+        if task is not None and task.session_id:
+            from dataclasses import replace
+
+            session = self.store.get_session(task.session_id)
+            checkout = self.store.get_checkout(session.checkout_id) if session else None
+            if checkout is not None:
+                repository = replace(
+                    repository, main_worktree_path=checkout.canonical_path
+                )
+        return repository
 
     def _can_resume(self, execution: ExecutionRecord) -> bool:
         """Whether this exact unfinished turn has the evidence to continue.

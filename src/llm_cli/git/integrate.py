@@ -10,6 +10,7 @@ from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
 from llm_cli.git.validate import WorktreeValidation
 from llm_cli.git.worktrees import canonical_linked_worktree_path, resolve_exact_commit
+from llm_cli.workspace.authority import managed_git_operation
 
 _TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
@@ -23,6 +24,7 @@ class TaskRefPublication:
     expected_old_oid: str | None
 
 
+@managed_git_operation
 def create_result_commit(
     worktree: Path,
     validation: WorktreeValidation,
@@ -58,6 +60,7 @@ def create_result_commit(
     return resolve_exact_commit(canonical, commit_oid)
 
 
+@managed_git_operation
 def publish_task_ref(
     repository: Path,
     *,
@@ -136,6 +139,7 @@ def read_task_ref(repository: Path, task_id: str) -> str | None:
     return _read_ref(repository, f"refs/llm-coord/tasks/{task_id}")
 
 
+@managed_git_operation
 def publish_validated_result(
     worktree: Path,
     validation: WorktreeValidation,

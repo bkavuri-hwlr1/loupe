@@ -8,6 +8,7 @@ from pathlib import Path
 
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
+from llm_cli.workspace.authority import managed_git_operation
 
 _TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _OBJECT_ID = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
@@ -35,6 +36,7 @@ class GitWorktreeRecord:
     lock_reason: str | None = None
 
 
+@managed_git_operation
 def create_managed_worktree(
     repository: Path,
     *,
@@ -243,6 +245,7 @@ def resume_managed_worktree(
     )
 
 
+@managed_git_operation
 def remove_managed_worktree(
     repository: Path,
     *,
@@ -333,6 +336,7 @@ def remove_managed_worktree(
         )
 
 
+@managed_git_operation
 def prune_managed_worktrees(
     repository: Path, *, managed_root: Path
 ) -> tuple[Path, ...]:

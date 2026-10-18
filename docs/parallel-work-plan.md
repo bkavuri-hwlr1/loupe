@@ -1035,11 +1035,11 @@ before anything is built.
 
 **Done when.** The user accepts the ADR, and G2 and G3 are rewritten from it.
 
-**Accepted (2026-10-18).** The user explicitly accepted ADR 0010 and the Wave 5 plan.
-The checked-in two-daemon strict expected-failure reproduction confirms the
-same-base overwrite window. G2 and G3 below contain the bounded implementation
-split; the acceptance gate is satisfied. No product authority
-behavior changes in G1.
+**Accepted (2026-10-18).** The user explicitly accepted ADR 0010 and the Wave 5
+plan. G1's original real-daemon strict expected-failure witness proved the same-base
+overwrite window. G2 converts that checked-in witness to passing owner/refusal
+assertions. The bounded G2/G3 split below remains the accepted implementation
+contract; G1 itself introduced no product authority behavior.
 
 ### G2. One publisher per physical checkout
 

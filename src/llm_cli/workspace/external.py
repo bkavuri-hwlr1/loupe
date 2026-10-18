@@ -216,12 +216,33 @@ class ExternalWorkspaceScanner:
         for row in sessions:
             self._last_session = str(row[0])
             with suppress(LlmCoordError, OSError, ValueError, sqlite3.Error):
-                emitted += self.scan_session(self._last_session)
+                emitted += self.scan_session(self._last_session, background=True)
             if time.monotonic() >= deadline:
                 break
         return emitted
 
-    def scan_session(self, session_id: str) -> int:
+    def scan_session(self, session_id: str, *, background: bool = False) -> int:
+        from llm_cli.workspace.authority import managed_pin
+
+        with self.store.connection() as connection:
+            row = connection.execute(
+                "SELECT c.canonical_path FROM sessions s JOIN checkouts c ON "
+                "c.checkout_id=s.checkout_id WHERE s.session_id=?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return 0
+        root = Path(row[0])
+        if (
+            background
+            and self.store.authority is not None
+            and not self.store.authority.is_owned(root)
+        ):
+            return 0
+        with managed_pin(self.store, root, activity=not background):
+            return self._scan_session_owned(session_id)
+
+    def _scan_session_owned(self, session_id: str) -> int:
         deadline = time.monotonic() + MAX_SECONDS
 
         def remaining() -> float:

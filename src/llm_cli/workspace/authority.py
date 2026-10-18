@@ -122,6 +122,27 @@ def _open_directory(path: Path) -> int:
     return fd
 
 
+def _admin_text(directory: int, name: str) -> str:
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > 4096:
+            raise ValueError("Git administration pointer is not bounded regular text")
+        data = os.read(fd, 4097)
+        after = os.fstat(fd)
+        named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if len(data) != before.st_size or any(
+            getattr(before, key) != getattr(observed, key)
+            for observed in (after, named)
+            for key in fields
+        ):
+            raise ValueError("Git administration pointer changed while read")
+        return data.decode().strip()
+    finally:
+        os.close(fd)
+
+
 @dataclass
 class PhysicalCheckout:
     root: Path
@@ -228,14 +249,38 @@ class PhysicalCheckout:
                 ):
                     raise ValueError("physical identity changed")
             if self.admin != self.root / ".git":
-                if Path((self.admin / "gitdir").read_text().strip()).resolve(
-                    strict=True
-                ) != self.root / ".git" or (
-                    self.root / ".git"
-                ).read_text().strip() != "gitdir: " + str(self.admin):
-                    raise ValueError("linked administration changed")
+                pointer = _admin_text(self.descriptors[0], ".git")
+                if not pointer.startswith("gitdir: "):
+                    raise ValueError("linked administration pointer changed")
+                destination = Path(pointer.removeprefix("gitdir: "))
+                if not destination.is_absolute():
+                    destination = self.root / destination
+                back_pointer = Path(_admin_text(self.descriptors[1], "gitdir"))
+                if not back_pointer.is_absolute():
+                    back_pointer = self.admin / back_pointer
+                if (
+                    destination.resolve(strict=True) != self.admin
+                    or back_pointer.resolve(strict=True) != self.root / ".git"
+                ):
+                    raise ValueError("linked administration relationship changed")
             elif not (self.root / ".git").is_dir():
                 raise ValueError("Git administration changed")
+            try:
+                common_pointer = Path(_admin_text(self.descriptors[1], "commondir"))
+            except FileNotFoundError:
+                if self.admin != self.common:
+                    raise ValueError(
+                        "Git common administration pointer is missing"
+                    ) from None
+            else:
+                destination = (
+                    common_pointer
+                    if common_pointer.is_absolute()
+                    else self.admin / common_pointer
+                )
+                if destination.resolve(strict=True) != self.common:
+                    raise ValueError("Git common administration relationship changed")
+
         except (OSError, ValueError) as exc:
             raise LlmCoordError(
                 ErrorCode.CHECKOUT_IDENTITY_CHANGED,
@@ -256,12 +301,16 @@ class _Owned:
     pins: int = 0
     idle_since: float = field(default_factory=time.monotonic)
     mutation_lock: threading.RLock = field(default_factory=threading.RLock)
+    history_gap: bool = False
 
 
 class OwnershipPin:
-    def __init__(self, authority: PhysicalAuthority, owner: _Owned) -> None:
+    def __init__(
+        self, authority: PhysicalAuthority, owner: _Owned, *, activity: bool = True
+    ) -> None:
         self.authority, self.owner = authority, owner
         self.closed = False
+        self.activity = activity
 
     def validate(self) -> None:
         self.authority._validate(self.owner)
@@ -271,7 +320,8 @@ class OwnershipPin:
             if not self.closed:
                 self.closed = True
                 self.owner.pins -= 1
-                self.owner.idle_since = time.monotonic()
+                if self.activity:
+                    self.owner.idle_since = time.monotonic()
                 if self.authority._closing and not self.owner.pins:
                     self.authority._release(self.owner)
 
@@ -365,15 +415,35 @@ class PhysicalAuthority:
     def _validate(self, owner: _Owned) -> None:
         owner.physical.validate()
         instance = self.installation.validate()
+        held = os.fstat(owner.descriptor)
+        named = (self._directory(owner.physical.key) / "ownership.lock").lstat()
         if (
             owner.marker["database_instance_id"] != instance
-            or os.fstat(owner.descriptor).st_ino
-            != (self._directory(owner.physical.key) / "ownership.lock").lstat().st_ino
+            or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+            or named.st_uid != os.geteuid()
+            or named.st_mode & 0o077
+            or named.st_nlink != 1
+            or not stat.S_ISREG(named.st_mode)
         ):
             raise recovery_error("physical ownership or database binding changed")
+
         observed = private_read(self._directory(owner.physical.key) / "marker.json")
         if observed != owner.marker:
             raise recovery_error("authority marker changed while owned")
+
+    def validate_current(self) -> None:
+        active = _ACTIVE.get()
+        if active is None or active[0] is not self:
+            raise recovery_error("managed mutation has no live ownership pin")
+        root = active[1]
+        with self._lock:
+            owner = next(
+                (item for item in self._owned.values() if item.physical.root == root),
+                None,
+            )
+            if owner is None:
+                raise recovery_error("managed mutation lost its kernel ownership")
+            self._validate(owner)
 
     def _write_marker(
         self,
@@ -406,7 +476,9 @@ class PhysicalAuthority:
                 (marker["generation"], owner.physical.key),
             )
 
-    def acquire(self, root: Path, *, recovery: bool = False) -> OwnershipPin:
+    def acquire(
+        self, root: Path, *, recovery: bool = False, activity: bool = True
+    ) -> OwnershipPin:
         with self._lock:
             physical = PhysicalCheckout.inspect(root)
             try:
@@ -427,7 +499,7 @@ class PhysicalAuthority:
                             journal_locator=prior.marker.get("journal_id"),
                         )
                     prior.pins += 1
-                    return OwnershipPin(self, prior)
+                    return OwnershipPin(self, prior, activity=activity)
                 directory = self._directory(physical.key)
                 private_directory(directory)
                 path = directory / "ownership.lock"
@@ -478,9 +550,10 @@ class PhysicalAuthority:
                         ).fetchone()
                         checkout_id = str(checkout[0]) if checkout else None
                         bindings = connection.execute(
-                            "SELECT * FROM authority_checkouts WHERE physical_key=? OR"
-                            " (checkout_id IS NOT NULL AND checkout_id=?)",
-                            (physical.key, checkout_id),
+                            "SELECT a.* FROM authority_checkouts a "
+                            "LEFT JOIN checkouts c ON c.checkout_id=a.checkout_id "
+                            "WHERE a.physical_key=? OR c.canonical_path=?",
+                            (physical.key, str(physical.root)),
                         ).fetchall()
                     if any(
                         row["physical_key"] != physical.key
@@ -552,6 +625,7 @@ class PhysicalAuthority:
                         physical,
                         descriptor,
                         marker or {"generation": 0, "checkout_id": checkout_id},
+                        history_gap=marker is not None,
                     )
                     with self.store.connection() as connection:
                         connection.execute(
@@ -573,7 +647,7 @@ class PhysicalAuthority:
                     private_write(directory / "owner.json", self._metadata(instance))
                     self._owned[physical.key] = owner
                     owner.pins = 1
-                    return OwnershipPin(self, owner)
+                    return OwnershipPin(self, owner, activity=activity)
                 except Exception:
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
                     os.close(descriptor)
@@ -589,7 +663,7 @@ class PhysicalAuthority:
         checkout_id: str | None,
         marker: dict[str, Any],
     ) -> None:
-        if checkout_id is None or marker.get("daemon_boot") == self.boot_id:
+        if checkout_id is None:
             return
         # C4's stable scanner installs observations before any edit capability.
         from llm_cli.workspace.external import ExternalWorkspaceScanner
@@ -619,7 +693,7 @@ class PhysicalAuthority:
 
         before = observations()
         for session in self.store.list_sessions(checkout_id=checkout_id):
-            scanner.scan_session(session.session_id)
+            scanner._scan_session_owned(session.session_id)
         if paths != _source_paths(physical.root) or observations() != before:
             raise recovery_error(
                 "source changed during clean handoff; retry after edits settle"
@@ -636,7 +710,7 @@ class PhysicalAuthority:
                 event_type="checkout.authority_handoff",
                 caused_by_session_id=None,
                 payload={
-                    "paths": list(paths),
+                    "paths": [],
                     "history_gap": True,
                     "previous_profile": marker.get("owner_profile"),
                     "execution_contract": "claim_backed_v1",
@@ -646,9 +720,14 @@ class PhysicalAuthority:
 
     @contextmanager
     def pin(
-        self, root: Path, *, recovery: bool = False, git_store: bool = False
+        self,
+        root: Path,
+        *,
+        recovery: bool = False,
+        git_store: bool = False,
+        activity: bool = True,
     ) -> Iterator[OwnershipPin]:
-        pin = self.acquire(root, recovery=recovery)
+        pin = self.acquire(root, recovery=recovery, activity=activity)
         token = _ACTIVE.set((self, pin.owner.physical.root))
         try:
             if git_store:
@@ -762,20 +841,75 @@ class PhysicalAuthority:
                 ).fetchone()
                 if journal is None:
                     return False
-                proved = journal["state"] == "confirmed"
+                proved = False
                 if journal["kind"] == "batch":
                     row = connection.execute(
-                        "SELECT state FROM workspace_batches WHERE batch_id=?",
+                        "SELECT * FROM workspace_batches WHERE batch_id=?",
                         (journal["reference_id"],),
                     ).fetchone()
-                    proved = row is not None and row[0] in {"published", "diverged"}
+                    if row is not None and row["state"] == "diverged":
+                        proved = True  # Domain journal records no filesystem effect.
+                    elif row is not None and row["state"] == "published":
+                        from llm_cli.workspace.batches import (
+                            _journal_files,
+                            _matches_snapshot,
+                            _observe,
+                            _target,
+                        )
+
+                        proved = all(
+                            _matches_snapshot(
+                                _observe(
+                                    _target(owner.physical.root, item.relative_path)
+                                ),
+                                item.result,
+                                result=True,
+                            )
+                            for item in _journal_files(row["request_json"])
+                        )
                 elif journal["kind"] == "manual":
                     row = connection.execute(
-                        "SELECT operation_state FROM workspace_publications WHERE "
-                        "candidate_id=?",
+                        "SELECT p.operation_state,c.* FROM workspace_publications p "
+                        "JOIN workspace_candidates c ON c.candidate_id=p.candidate_id "
+                        "WHERE p.candidate_id=?",
                         (journal["reference_id"],),
                     ).fetchone()
-                    proved = row is not None and row[0] in {"confirmed", "rolled_back"}
+                    if row is not None and row["operation_state"] in {
+                        "confirmed",
+                        "rolled_back",
+                    }:
+                        from llm_cli.workspace.broker import workspace_target
+                        from llm_cli.workspace.identity import identify_path
+
+                        prefix = (
+                            "result"
+                            if row["operation_state"] == "confirmed"
+                            else "base"
+                        )
+                        observed = identify_path(
+                            workspace_target(owner.physical.root, row["relative_path"])
+                        )
+                        proved = (
+                            str(observed.kind),
+                            observed.mode,
+                            observed.digest,
+                        ) == (
+                            row[prefix + "_kind"],
+                            row[prefix + "_mode"],
+                            row[prefix + "_digest"],
+                        )
+
+                elif journal["kind"] == "legacy_execution":
+                    row = connection.execute(
+                        "SELECT state FROM task_executions WHERE execution_id=?",
+                        (journal["reference_id"],),
+                    ).fetchone()
+                    proved = (
+                        row is not None
+                        and row["state"] in {"failed", "cleaned"}
+                        and journal["state"] == "confirmed"
+                    )
+
             if proved:
                 Mutation(
                     self, owner, str(journal["kind"]), str(journal["reference_id"])
@@ -817,6 +951,12 @@ class PhysicalAuthority:
             for owner in tuple(self._owned.values()):
                 if not owner.pins:
                     self._release(owner)
+
+    def is_owned(self, root: Path) -> bool:
+        with self._lock:
+            return any(
+                owner.physical.root == root.resolve() for owner in self._owned.values()
+            )
 
     def status(self, root: Path) -> dict[str, Any]:
         physical: PhysicalCheckout | None = None
@@ -866,6 +1006,9 @@ class PhysicalAuthority:
                 "process_start": (owner or {}).get("process_start"),
                 "journal_locator": marker.get("journal_id") if marker else None,
                 "cooperative_read_barrier": state == "owned",
+                "history_gap": self._owned[physical.key].history_gap
+                if physical.key in self._owned
+                else False,
             }
         except (LlmCoordError, OSError) as exc:
             code = (
@@ -888,12 +1031,16 @@ class PhysicalAuthority:
 
 @contextmanager
 def managed_pin(
-    store: ControlStore, root: Path, *, recovery: bool = False
+    store: ControlStore,
+    root: Path,
+    *,
+    recovery: bool = False,
+    activity: bool = True,
 ) -> Iterator[None]:
     if store.authority is None:
         yield
     else:
-        with store.authority.pin(root, recovery=recovery):
+        with store.authority.pin(root, recovery=recovery, activity=activity):
             yield
 
 
@@ -921,3 +1068,21 @@ def managed_git_operation[**P, R](function: Callable[P, R]) -> Callable[P, R]:
             return function(*args, **kwargs)
 
     return guarded
+
+
+@contextmanager
+def managed_mutation(
+    store: ControlStore,
+    root: Path,
+    kind: str,
+    reference_id: str,
+    *,
+    recovery: bool = False,
+) -> Iterator[Mutation | None]:
+    if store.authority is None:
+        yield None
+    else:
+        with store.authority.mutation(
+            root, kind, reference_id, recovery=recovery
+        ) as operation:
+            yield operation

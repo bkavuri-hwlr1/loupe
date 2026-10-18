@@ -132,7 +132,11 @@ def _service(tmp_path: Path) -> DaemonService:
         home=tmp_path,
     )
     return DaemonService(
-        paths, Settings(profile_id="test"), asyncio.Event(), boot_id="boot-attach"
+        paths,
+        Settings(profile_id="test"),
+        asyncio.Event(),
+        boot_id="boot-attach",
+        authority_root=paths.data_dir.parents[2] / "physical-authority" / "v1",
     )
 
 
