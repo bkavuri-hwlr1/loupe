@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
@@ -911,13 +911,9 @@ def git_side_effect(kind: str, reference_id: str) -> Iterator[None]:
         mutation.confirm()
 
 
-_P = ParamSpec("_P")
-_R = TypeVar("_R")
-
-
-def managed_git_operation[**P, R](function: Callable[_P, _R]) -> Callable[_P, _R]:
+def managed_git_operation[**P, R](function: Callable[P, R]) -> Callable[P, R]:
     @functools.wraps(function)
-    def guarded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+    def guarded(*args: P.args, **kwargs: P.kwargs) -> R:
         # Never derive a shared locator from arbitrary arguments: validation
         # objects can include source patches and runtime equality evidence.
         reference = "git_" + secrets.token_hex(16)
