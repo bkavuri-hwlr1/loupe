@@ -150,6 +150,20 @@ def build_parser() -> argparse.ArgumentParser:
     lexical.add_argument("--limit", type=int, default=8)
     lexical.add_argument("--explain", action="store_true")
 
+    graph = commands.add_parser(
+        "graph", help="inspect the optional deterministic code graph"
+    )
+    graph_commands = graph.add_subparsers(dest="graph_command", required=True)
+    neighbors = graph_commands.add_parser(
+        "neighbors", help="show imports, tests, definitions and batches"
+    )
+    neighbors.add_argument("node")
+    neighbors.add_argument("--repo", default=".")
+    neighbors.add_argument(
+        "--edge", choices=("imports", "tests", "defines", "changed-by")
+    )
+    neighbors.add_argument("--depth", type=int, choices=range(1, 5), default=1)
+
     config = commands.add_parser("config", help="inspect and edit validated settings")
     config_commands = config.add_subparsers(dest="config_command", required=True)
     config_commands.add_parser("show")
@@ -490,6 +504,49 @@ def _hydration_preview_text(plan: HydrationPlan) -> str:
     return "\n".join(lines)
 
 
+def _graph_neighbors_text(result: dict[str, Any]) -> str:
+    if result.get("state") != "ready":
+        return (
+            "Code graph: "
+            + str(result.get("state", "unavailable"))
+            + (
+                " — " + str(result.get("notice") or result.get("error"))
+                if result.get("notice") or result.get("error")
+                else ""
+            )
+        )
+    nodes = {item["node_id"]: item for item in result.get("nodes", [])}
+    lines = [f"Code graph: {result['node']} (generation {result['generation']})"]
+    for item in result.get("edges", []):
+        source = nodes.get(item["source"], {})
+        target = nodes.get(item["target"], {})
+        left = (
+            source.get("relative_path")
+            if source.get("kind") == "file"
+            else source.get("name", item["source"])
+        )
+        right = (
+            target.get("relative_path")
+            if target.get("kind") == "file"
+            else target.get("name", item["target"])
+        )
+        label = " [stale indexed version]" if item.get("stale") else ""
+        lines.append(f"  {left} --{item['type']}--> {right}{label}")
+        lines.append(
+            f"    {item['path']}:{item['start_line']} {item['parser']} "
+            f"{item['parser_version']} {item['indexed_revision']}"
+        )
+    if not result.get("edges"):
+        lines.append("  No matching graph edges.")
+    for failure in result.get("parse_failures", []):
+        lines.append(
+            f"  Parse skipped: {failure['relative_path']} ({failure['error_code']})"
+        )
+    if result.get("truncated"):
+        lines.append("  Results capped; narrow --edge or --depth.")
+    return "\n".join(lines)
+
+
 def _lexical_search_text(result: dict[str, Any]) -> str:
     if result.get("state") != "ready":
         return "Lexical index: " + str(result.get("state", "unavailable")) + (
@@ -609,6 +666,17 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             },
         )
         return result if arguments.as_json else _lexical_search_text(result)
+    if command == "graph":
+        result = client.call(
+            "graph.neighbors",
+            {
+                "path": str(Path(arguments.repo).expanduser().resolve()),
+                "node": arguments.node,
+                "edge": arguments.edge,
+                "depth": arguments.depth,
+            },
+        )
+        return result if arguments.as_json else _graph_neighbors_text(result)
     if command == "config":
         if arguments.config_command == "show":
             return client.call("config.show")

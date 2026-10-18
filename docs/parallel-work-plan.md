@@ -923,6 +923,18 @@ docs.
 - A file that fails to parse leaves the rest of the graph intact.
 - Coordination output is identical with the graph on and off.
 
+**Implemented (October 18, 2026).** F2 extends the opt-in lexical store with
+transactional graph nodes, import/test/definition edges and links to the latest
+accepted batch. Python uses `ast`; JavaScript/TypeScript use a bounded tokenizer
+without a new dependency. Changed-document updates remove prior edges while
+preserving unaffected rows. Every returned edge cites parser/version, source
+identity/revision and active/indexed generation; syntax failures are recorded per
+file. CLI/RPC neighbors support edge filters and depth 1–4, with current policy
+revalidation, private-intermediate traversal refusal and bounded results. Existing
+F1 scale regressions still pass: a 10,000-file baseline built in 3.82 seconds and
+single-publication medians were 36 ms at 1,000 files and 43 ms at 10,000. See the
+[code graph guide](code-graph.md) for parser limits and upgrade/rebuild behavior.
+
 ### F3. Optional retrieval in the agent, with a live comparison (*live*)
 
 **Scope.**

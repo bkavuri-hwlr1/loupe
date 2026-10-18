@@ -120,6 +120,12 @@ the remaining planned capabilities are listed below.
   immutable source chunks with revision, identity, line and generation citations.
   `[knowledge] index = "off" | "lexical"` defaults off. See the
   [lexical search guide](lexical-search.md) for setup and source boundaries.
+- Deterministic code graph (Wave 5 F2): `loupe graph neighbors NODE [--edge TYPE]
+  [--depth N]` exposes Python definitions, Python/JavaScript/TypeScript imports,
+  test-import relationships and accepted-batch links. Graph rows update with
+  lexical generations, cite exact source identities/parser versions and remain
+  outside coordination authority. Per-file parse failures are nonfatal; current
+  exclusions/private content stop traversal. See the [code graph guide](code-graph.md).
 - `loupe db prune --older-than 30d` defaults to a dry run; `--apply` removes
   old model previews/deltas, tool results, command/check chunks and retained
   check text, slims settled execution checkpoints, then runs SQLite `VACUUM`.
@@ -461,9 +467,11 @@ happen outside the publication barrier. Search labels stale indexed versions,
 reapplies current source exclusions and withholds recognized secret material.
 An unavailable optional index records health without blocking sessions or source
 publication. Indexing does not acknowledge changes, choose write bases or grant
-publication authority. Agent retrieval tools and their live comparison, graph
-extraction, embedding providers, semantic retrieval and `sqlite-vec` remain
-planned.
+publication authority. F2 adds deterministic source graph projections and explicit
+CLI/RPC neighbors with parser/version/identity/generation evidence. Changed
+documents replace their graph facts atomically; unchanged graph rows remain.
+Agent retrieval tools and their live comparison, embedding providers, semantic
+retrieval and `sqlite-vec` remain planned.
 
 F1 validation at source revision `507bd41` passed 73 focused lexical, backup,
 configuration, schema and scanner regressions, repository Ruff, mypy over 116
@@ -895,8 +903,8 @@ Waves 4–7, as packages that separate sessions can run at once.
    per-session command environment (C9) and dependency rebuild adapters (C10).
 3. B6 now records paired synthetic review quality and cost. Keep review disabled
    by default; evaluate natural-work effectiveness before reconsidering it.
-4. Extend F1's implemented opt-in lexical discovery with a code graph (F2),
-   then retrieval in the agent with a live comparison (F3). Add embeddings with
+4. F1 lexical discovery and F2's deterministic code graph are implemented. Next
+   add retrieval in the agent with a live comparison (F3). Add embeddings with
    exact scoring (F4) only if that comparison shows retrieval helps.
 5. E2's live provider checks are on hold.
 

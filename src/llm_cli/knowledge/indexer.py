@@ -15,6 +15,7 @@ import stat
 import threading
 import time
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from llm_cli.agent.source_policy import (
 from llm_cli.errors import LlmCoordError
 from llm_cli.git.environment import run_git
 from llm_cli.knowledge import outbox
+from llm_cli.knowledge.graph import neighbors
 from llm_cli.knowledge.search import current_matches, eligible_path, search
 from llm_cli.knowledge.store import Document, KnowledgeStore
 from llm_cli.paths import reject_symlink_components
@@ -182,9 +184,17 @@ class KnowledgeIndex:
                 documents = self._baseline(root, oid, remaining)
                 # Existing accepted artifacts can describe dirty current source,
                 # but an old artifact must not override a newer committed file.
-                receipts = self._receipts(checkout_id, sequence=sequence)
+                batch_links: dict[str, str] = {}
+                receipts = self._receipts(
+                    checkout_id, sequence=sequence, batch_links=batch_links
+                )
                 self._apply_receipts(
-                    root, documents, receipts, current_only=True, remaining=remaining
+                    root,
+                    documents,
+                    receipts,
+                    current_only=True,
+                    remaining=remaining,
+                    batch_links=batch_links,
                 )
                 self._filter(root, documents, remaining=remaining)
                 signature = self._policy_signature(
@@ -298,6 +308,35 @@ class KnowledgeIndex:
                 result["results"] = []
                 return result
 
+    def graph_neighbors(
+        self, checkout_id: str, node: str, *, edge: str | None = None, depth: int = 1
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            return {"state": "off", "nodes": [], "edges": []}
+        if self.error:
+            return {
+                "state": "unavailable",
+                "error": self.error,
+                "nodes": [],
+                "edges": [],
+            }
+        with self.lock:
+            try:
+                with self.control.connection() as con:
+                    if not outbox.subscribed(con, self.control, checkout_id):
+                        return {"state": "not_built", "nodes": [], "edges": []}
+                return neighbors(self.store, checkout_id, node, edge=edge, depth=depth)
+            except _ERRORS as exc:
+                # A bad optional query cannot disable lexical discovery.
+                return {
+                    "state": "unavailable",
+                    "error": "code graph query unavailable ("
+                    + type(exc).__name__
+                    + ")",
+                    "nodes": [],
+                    "edges": [],
+                }
+
     def process_pending(self, *, limit: int = 8) -> int:
         if not self.enabled or not self.lock.acquire(blocking=False):
             return 0
@@ -363,10 +402,19 @@ class KnowledgeIndex:
                     job_id,
                 )
                 source_id = str(source["source_id"])
-                receipts = self._receipts(checkout_id, outbox_rows=rows)
+                batch_links: dict[str, str] = {}
+                receipts = self._receipts(
+                    checkout_id, outbox_rows=rows, batch_links=batch_links
+                )
                 changed_paths = {receipt[1] for receipt in receipts}
                 documents: dict[str, Document] = {}
-                self._apply_receipts(root, documents, receipts, remaining=remaining)
+                self._apply_receipts(
+                    root,
+                    documents,
+                    receipts,
+                    remaining=remaining,
+                    batch_links=batch_links,
+                )
                 self._filter(root, documents, remaining=remaining)
                 signature = self._policy_signature(
                     source_id, root, list(changed_paths), remaining
@@ -597,6 +645,7 @@ class KnowledgeIndex:
         *,
         sequence: int | None = None,
         outbox_rows: list[sqlite3.Row] | None = None,
+        batch_links: dict[str, str] | None = None,
     ) -> list[tuple[int, str, str | None, str | None, str | None]]:
         # Expand immutable receipts and collapse history inside SQLite. A long-
         # lived checkout can have arbitrarily many accepted intermediate edits;
@@ -645,13 +694,18 @@ class KnowledgeIndex:
                 "SELECT *, row_number() OVER (PARTITION BY path ORDER BY "
                 "sequence DESC,external DESC,receipt_id DESC,ordinal DESC) AS newest "
                 "FROM receipts) "
-                "SELECT sequence,path,artifact,identity,mode FROM ranked "
+                "SELECT "
+                "sequence,path,artifact,identity,mode,external,receipt_id FROM ranked "
                 "WHERE newest=1 ORDER BY sequence,path LIMIT :limit",
                 params,
             ).fetchall()
         if len(rows) > MAX_FILES:
             raise ValueError(
                 "lexical accepted history exceeds its distinct path budget"
+            )
+        if batch_links is not None:
+            batch_links.update(
+                (str(row[1]), str(row[6])) for row in rows if row[5] == 0
             )
         return [(int(row[0]), str(row[1]), row[2], row[3], row[4]) for row in rows]
 
@@ -663,6 +717,7 @@ class KnowledgeIndex:
         *,
         current_only: bool = False,
         remaining: Any = None,
+        batch_links: dict[str, str] | None = None,
     ) -> None:
         consumed = 0
         for sequence, path, artifact, identity, mode in receipts:
@@ -692,7 +747,9 @@ class KnowledgeIndex:
             if document is None:
                 documents.pop(path, None)
             elif not current_only or current_matches(root, document):
-                documents[path] = document
+                documents[path] = replace(
+                    document, batch_id=(batch_links or {}).get(path)
+                )
 
     @staticmethod
     def _filter(
