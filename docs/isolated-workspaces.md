@@ -150,9 +150,12 @@ transitions keep the existing 8 MiB changed-path limit; a larger path is deferre
 with a path-only notice while unrelated changes advance. Closing the
 session removes this staging with its private Git registration.
 
-Unchanged private paths receive the incoming version. Clean
-three-way text merges preserve private edits alongside incoming changes. Binary
-and symlink changes retain exact identities and do not merge.
+Unchanged private paths receive the incoming version, including operator edits
+already incorporated into another session's batch since this session's accepted
+snapshot. Clean three-way text merges preserve private edits alongside incoming
+changes when they share the accepted base. Binary and symlink changes retain
+exact identities and do not merge. A non-absent change between file, symlink,
+and directory kinds remains a conflict requiring explicit resolution.
 
 An overlap preserves the private file and retains the incoming source artifact.
 Unrelated paths can still advance. The conflict survives restart and later
