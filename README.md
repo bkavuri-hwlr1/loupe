@@ -426,8 +426,10 @@ independent of the selected provider.
 > concurrently, including overlapping scopes, and publish bounded multi-file
 > batches into the checkout. [Isolated conversations](docs/isolated-workspaces.md)
 > use private worktrees with bounded runtime hydration and exchange source batches
-> with shared sessions. Retrieval and graph features remain ahead; measured live
-> collaboration results and their limits are in the
+> with shared sessions. [Optional local lexical search](docs/lexical-search.md)
+> is available through explicit CLI commands. Agent retrieval tools, semantic
+> search and graph features remain planned. Measured live collaboration results
+> and their limits are in the
 > [implementation status](docs/implementation-status.md).
 
 The Python distribution remains `llm-coord` for compatibility; the user-facing
@@ -469,7 +471,8 @@ The planned architecture has four deliberately separated responsibilities:
 4. Repository knowledge is stored separately from coordination authority so
    indexing work cannot delay claim renewal or corrupt scheduling state.
 
-Local persistence is split into three SQLite databases:
+Local persistence has three independently migrated SQLite stores. Control is
+required; knowledge and vectors are optional and are not created by default:
 
 | Database | Purpose | Authority |
 | --- | --- | --- |
@@ -477,12 +480,18 @@ Local persistence is split into three SQLite databases:
 | `knowledge.sqlite3` | sources, documents, chunks, FTS, user memory, and graph facts | mixed; user memory authoritative, repository projections rebuildable |
 | `vectors.sqlite3` | embedding metadata and vector projection | disposable and rebuildable |
 
-`loupe db backup` writes verified online copies of all three databases into a
-fresh timestamped directory under the profile's `backups` directory. Use
-`--out DIR` to choose its parent. The directory is owner-only (`0700`), files
-are `0600`, and output lists each path and its `integrity_check` result. Each
-database is a separate snapshot, including committed WAL pages; a failed run
-can leave a private partial directory for diagnosis.
+The table includes the planned memory, graph and vector roles; F1 currently
+implements repository-derived lexical discovery only.
+
+`loupe db backup` writes verified online copies of control and optional stores
+that already exist into a fresh timestamped directory under the profile's
+`backups` directory. Absent optional stores appear under `omitted`; backup does
+not create them. Use `--out DIR` to choose the parent. The directory is
+owner-only (`0700`), files are `0600`, and output lists each path and its
+`integrity_check` result. Each database is a separate snapshot, including
+committed WAL pages; a failed run can leave a private partial directory for
+diagnosis. `db status` and `db check` also report absent optional stores without
+creating them.
 
 `loupe db prune --older-than 30d` previews what pruning would remove for tasks
 settled more than 30 days ago: streamed model output, tool results, command and
@@ -515,6 +524,27 @@ The daemon protocol uses versioned, four-byte length-prefixed JSON messages over
 an owner-only Unix domain socket. The first supported platforms are macOS and
 Linux. Windows transport and worktree behavior are deferred.
 
+## Optional local lexical search
+
+Enable repository discovery in the shared configuration, then restart the
+selected profile's daemon and build an index for a registered checkout:
+
+```sh
+loupe config set knowledge.index lexical
+loupe daemon restart
+loupe repo add .
+loupe index build --repo .
+loupe search lexical SharedBatchPublisher --repo . --explain
+```
+
+The default is `knowledge.index = "off"`. Search is local and uses no provider
+or embedding service. Results cite exact source revisions, line ranges and
+content identities; changed files are labeled stale. It is an explicit discovery
+command, independent of the agent's existing file tools and publication checks.
+Use `index status`, `index rebuild` and `index drop` to inspect, rebuild or
+unsubscribe a checkout. See the [lexical search guide](docs/lexical-search.md)
+for JSON output, source exclusions, immutable-version boundaries and recovery.
+
 ## Current technology decisions
 
 - Python `>=3.12,<3.15`, managed and locked with `uv` once project packaging is
@@ -523,8 +553,8 @@ Linux. Windows transport and worktree behavior are deferred.
 - Direct standard-library `sqlite3` access rather than an ORM.
 - Pydantic 2 only where boundary DTO validation justifies the dependency; core
   domain logic should remain plain Python where practical.
-- SQLite FTS5 as the always-available lexical retrieval arm.
-- Built-in `none` and exact-vector modes; `sqlite-vec` remains opt-in until its
+- Optional local SQLite FTS5/BM25 lexical discovery, disabled by default.
+- Planned `none` and exact-vector modes; `sqlite-vec` remains deferred until its
   packaging and corruption/recovery behavior pass the supported-platform test
   matrix.
 - A small provider-neutral coding-agent harness with a stable provider/session
@@ -554,6 +584,7 @@ The initial safety-oriented defaults are:
 
 - [Detailed implementation plan](docs/llm-cli-implementation-plan.md)
 - [Implemented and deferred boundaries](docs/implementation-status.md)
+- [Optional local lexical search](docs/lexical-search.md)
 - [Runtime and packaging ADR](docs/adr/0001-runtime-and-packaging.md)
 - [Daemon RPC ADR](docs/adr/0002-daemon-rpc.md)
 - [Storage split ADR](docs/adr/0003-storage-split.md)

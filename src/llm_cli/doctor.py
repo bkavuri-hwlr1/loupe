@@ -9,8 +9,10 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
-from llm_cli.paths import AppPaths
+from llm_cli.errors import LlmCoordError
+from llm_cli.paths import AppPaths, validate_owned_sqlite_paths
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +23,9 @@ class Check:
     warning: bool = False
 
 
-def run_doctor(paths: AppPaths) -> list[dict[str, object]]:
+def run_doctor(
+    paths: AppPaths, *, knowledge_status: dict[str, Any] | None = None
+) -> list[dict[str, object]]:
     checks = [
         _python_check(),
         _git_check(),
@@ -33,7 +37,23 @@ def run_doctor(paths: AppPaths) -> list[dict[str, object]]:
     ]
     for database in (paths.control_db, paths.knowledge_db, paths.vectors_db):
         if database.exists():
+            if database == paths.knowledge_db:
+                try:
+                    validate_owned_sqlite_paths(database)
+                except (OSError, LlmCoordError) as exc:
+                    checks.append(Check("knowledge_storage", False, type(exc).__name__))
+                    continue
             checks.extend((_file_mode_check(database), _integrity_check(database)))
+    if knowledge_status is not None:
+        state = str(knowledge_status.get("state", "unavailable"))
+        checks.append(
+            Check(
+                "knowledge_index",
+                state in {"ready", "off"},
+                str(knowledge_status.get("error", state)),
+                warning=True,
+            )
+        )
     return [asdict(check) for check in checks]
 
 

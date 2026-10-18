@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from llm_cli.storage.backup import BackupError, backup_database
+from llm_cli.paths import AppPaths
+from llm_cli.storage.backup import BackupError, backup_database, backup_profile
 
 
 @contextmanager
@@ -193,3 +194,23 @@ def test_failed_backup_preserves_existing_destination_and_cleans_temp(
 
     assert destination.read_bytes() == b"known good previous backup"
     assert not tuple(tmp_path.glob(".llm-coord-backup-*.tmp"))
+
+
+def test_profile_backup_keeps_existing_optional_stores_without_creating_absent_ones(
+    tmp_path: Path,
+) -> None:
+    paths = AppPaths.resolve(environ={}, home=tmp_path)
+    paths.ensure()
+    for path in (paths.control_db, paths.knowledge_db):
+        with _connection(path) as con:
+            con.execute("CREATE TABLE retained(value TEXT)")
+            con.execute("INSERT INTO retained VALUES (?)", (path.name,))
+    result = backup_profile(paths, tmp_path / "snapshots")
+    assert result["omitted"] == ["vectors.sqlite3"]
+    assert not paths.vectors_db.exists()
+    assert len(result["databases"]) == 2
+    for database in result["databases"]:
+        with _connection(Path(database["path"])) as con:
+            assert con.execute("SELECT value FROM retained").fetchone()[0] == (
+                database["database"]
+            )
