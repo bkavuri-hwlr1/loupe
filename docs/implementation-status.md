@@ -456,12 +456,25 @@ planned.
 
 F1 validation at source revision `507bd41` passed 73 focused lexical, backup,
 configuration, schema and scanner regressions, repository Ruff, mypy over 116
-source files, and source-distribution/wheel builds. The full suite is pending.
+source files, and source-distribution/wheel builds.
 An offline acceptance run against Loupe at baseline `fa6632a` built 338 eligible
 documents and 2,560 chunks, returned cited `SharedBatchPublisher` results, and
 preserved chunk IDs after drop/rebuild. The complete build/search/drop/rebuild
 sequence took 7.16 seconds on this machine. This establishes local discovery;
 it is not a measurement of model answer quality or agent retrieval benefit.
+
+F1 review follow-ups batch Git blob reads, replace only changed documents' chunks
+and FTS rows, select the latest accepted receipt per path in SQL, and keep the
+optional worker polling after unexpected errors while reporting health. The
+corrected source passed 2,669 tests with one expected filesystem skip, repository
+Ruff, mypy over 116 source files, and wheel/source builds. A synthetic checkout
+with 10,000 distinct forty-line Python modules built in 1.58 seconds against the
+unchanged thirty-second budget. In a flat-directory fixture, median ordinary
+publication processing was 34.0 ms at 1,000 files and 34.6 ms at 10,000; metadata
+checks for policy changes still depend on watched directories and rule files.
+Rebuild regressions also cover over 20,000 shared or outside-edit publications
+to a few paths, and incremental failures preserve the active generation, FTS
+rows and event cursor together.
 
 A task owned by a durable session settles its reservation as soon as its
 publication is confirmed: the claim is released, the task is recorded as

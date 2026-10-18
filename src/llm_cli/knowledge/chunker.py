@@ -24,25 +24,50 @@ def chunks(source_id: str, path: str, identity: str, text: str) -> tuple[Chunk, 
     start = 0
     while start < len(lines):
         end = min(len(lines), start + 60)
-        piece = ""
+        pieces: list[str] = []
         size = 0
         first_line = start + 1
         last_line = first_line
         for offset, line in enumerate(lines[start:end], start + 1):
-            for char in line:
-                encoded = len(char.encode("utf-8"))
-                if size + encoded > MAX_TEXT_BYTES:
+            encoded = line.encode("utf-8")
+            position = 0
+            while position < len(encoded):
+                available = MAX_TEXT_BYTES - size
+                # Decode whole lines in the usual case. A long line needs only
+                # one iteration per bounded chunk; an incomplete UTF-8 suffix
+                # stays in the next piece rather than splitting a code point.
+                fragment = encoded[position : position + available].decode(
+                    "utf-8", errors="ignore"
+                )
+                used = len(fragment.encode("utf-8"))
+                if used:
+                    if not pieces:
+                        first_line = offset
+                    pieces.append(fragment)
+                    size += used
+                    position += used
+                    last_line = offset
+                if position < len(encoded):
                     _append(
-                        result, source_id, path, identity, first_line, last_line, piece
+                        result,
+                        source_id,
+                        path,
+                        identity,
+                        first_line,
+                        last_line,
+                        "".join(pieces),
                     )
-                    piece, size, first_line = "", 0, offset
-                if not piece:
-                    first_line = offset
-                piece += char
-                size += encoded
-                last_line = offset
-        if piece:
-            _append(result, source_id, path, identity, first_line, last_line, piece)
+                    pieces, size = [], 0
+        if pieces:
+            _append(
+                result,
+                source_id,
+                path,
+                identity,
+                first_line,
+                last_line,
+                "".join(pieces),
+            )
         if end == len(lines):
             break
         start = max(start + 1, end - 10)

@@ -86,6 +86,10 @@ and 30 seconds. Deterministic windows cover sixty lines with ten-line overlap;
 UTF-8-safe pieces are at most 8 KiB and retain exact line citations. Search uses
 FTS5/BM25 with exact-path preference and bounded, diversified results.
 
+The baseline reads selected blobs through one Git batch process. Rebuilds select
+only the latest accepted version per path in SQL, so the accepted-history cap
+counts distinct paths rather than the number of past publications.
+
 ## Health and recovery
 
 `loupe doctor`, `loupe db status` and `loupe index status` report index health.
@@ -94,6 +98,15 @@ publication. Publication/outside-event transactions record IDs in a control
 outbox; the independent worker writes knowledge generations outside the
 publication barrier. Background passes process at most 32 intents per checkout,
 rotate through at most eight subscriptions and have a five-second pass deadline.
+Ordinary passes replace only changed documents' chunks and FTS rows. Unchanged
+chunks retain their IDs and rows; the active generation and event cursor advance
+atomically, and citations name that active generation.
+
+Exclusion-policy changes revalidate path metadata without re-chunking unchanged
+source. A worker restart refreshes this metadata once. Checking for new ignore
+rules still depends on the number of watched directories and policy files;
+ordinary source updates do not reload every indexed document. Unexpected worker
+exceptions appear in index health, and later polling continues normally.
 
 A failed generation transaction preserves the prior verified generation and
 cursor. Durable job failures remain visible after restart; interrupted jobs

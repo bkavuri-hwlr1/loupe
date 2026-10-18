@@ -7,6 +7,7 @@ presented as the contents of an earlier event or silently imported as history.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import sqlite3
@@ -17,7 +18,12 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from llm_cli.agent.source_policy import contains_secret_material, excluded_paths
+from llm_cli.agent.source_policy import (
+    _user_excludes_file,
+    contains_secret_material,
+    excluded_paths,
+    registered_runtime_paths,
+)
 from llm_cli.errors import LlmCoordError
 from llm_cli.git.environment import run_git
 from llm_cli.knowledge import outbox
@@ -48,11 +54,17 @@ class KnowledgeIndex:
         self.error: str | None = None
         self.lock = threading.Lock()
         self._last_checkout = ""
+        self._policy_paths: dict[str, set[Path]] = {}
+        self._policy_signatures: dict[str, tuple[object, ...]] = {}
         outbox.configure(control, enabled=enabled, candidate_dir=candidate_dir)
 
     def _failed(self, exc: Exception) -> dict[str, Any]:
         self.error = "optional lexical index unavailable (" + type(exc).__name__ + ")"
         return {"state": "unavailable", "error": self.error}
+
+    def record_worker_failure(self, exc: Exception) -> None:
+        """Expose optional-worker failures without retaining private error text."""
+        self._failed(exc)
 
     def _job_failed(self, job: str | None, exc: Exception) -> dict[str, Any]:
         result = self._failed(exc)
@@ -175,6 +187,9 @@ class KnowledgeIndex:
                     root, documents, receipts, current_only=True, remaining=remaining
                 )
                 self._filter(root, documents, remaining=remaining)
+                signature = self._policy_signature(
+                    source_id, root, list(documents), remaining
+                )
                 result = self.store.replace(
                     source_id=source_id,
                     checkout_id=checkout_id,
@@ -186,6 +201,7 @@ class KnowledgeIndex:
                     job_id=job_id,
                     remaining=remaining,
                 )
+                self._policy_signatures[source_id] = signature
                 self.error = None
                 if repaired:
                     result["store_recreated"] = True
@@ -346,22 +362,38 @@ class KnowledgeIndex:
                     int(final["event_sequence"]),
                     job_id,
                 )
-                documents = self.store.documents(str(source["source_id"]))
-                root = Path(source["canonical_path"])
+                source_id = str(source["source_id"])
                 receipts = self._receipts(checkout_id, outbox_rows=rows)
+                changed_paths = {receipt[1] for receipt in receipts}
+                documents: dict[str, Document] = {}
                 self._apply_receipts(root, documents, receipts, remaining=remaining)
                 self._filter(root, documents, remaining=remaining)
-                self.store.replace(
-                    source_id=str(source["source_id"]),
+                signature = self._policy_signature(
+                    source_id, root, list(changed_paths), remaining
+                )
+                removals = changed_paths - documents.keys()
+                if signature != self._policy_signatures.get(source_id):
+                    # A rule/runtime-policy change may hide unchanged source.
+                    # Load paths only; never reload or re-chunk their contents.
+                    removals.update(
+                        excluded_paths(
+                            root, self.store.paths(source_id), remaining=remaining
+                        )
+                    )
+                updates: dict[str, Document | None] = dict(documents)
+                updates.update((path, None) for path in removals)
+                self.store.update(
+                    source_id=source_id,
                     checkout_id=checkout_id,
-                    root=root,
-                    base_oid=str(source["base_oid"]),
                     sequence=int(final["event_sequence"]),
                     outbox_id=int(final["outbox_id"]),
-                    documents=documents,
+                    documents=updates,
                     job_id=job_id,
+                    max_files=MAX_FILES,
+                    max_bytes=MAX_BYTES,
                     remaining=remaining,
                 )
+                self._policy_signatures[source_id] = signature
                 job_id = None
                 completed += len(rows)
                 if time.monotonic() >= deadline:
@@ -372,6 +404,101 @@ class KnowledgeIndex:
         finally:
             self.lock.release()
         return completed
+
+    def _policy_signature(
+        self, source: str, root: Path, paths: list[str], remaining: Any
+    ) -> tuple[object, ...]:
+        """Watch exclusion metadata rather than enumerating source on each pass.
+
+        Missing ancestor .gitignore files are included so an operator creating a
+        new rule is observed before the next projection. A worker restart loads
+        path metadata once; subsequent passes add only newly published paths.
+        """
+        candidates = self._policy_paths.get(source)
+        if candidates is None:
+            paths = [*self.store.paths(source), *paths]
+            git_path = run_git(
+                root, ["rev-parse", "--git-path", "info/exclude"], remaining=remaining
+            )
+            assert isinstance(git_path.stdout, str)
+            info = Path(git_path.stdout.strip())
+            git_dirs = run_git(
+                root,
+                ["rev-parse", "--git-common-dir", "--git-dir"],
+                remaining=remaining,
+            )
+            assert isinstance(git_dirs.stdout, str)
+            common, worktree = (Path(item) for item in git_dirs.stdout.splitlines())
+            common = common if common.is_absolute() else root / common
+            worktree = worktree if worktree.is_absolute() else root / worktree
+            candidates = self._policy_paths[source] = {
+                info if info.is_absolute() else root / info,
+                common / "config",
+                worktree / "config.worktree",
+            }
+        for path in paths:
+            if not eligible_path(path):
+                continue
+            parent = Path(path).parent
+            while True:
+                candidates.add(root / parent / ".gitignore")
+                if parent == Path("."):
+                    break
+                parent = parent.parent
+        user = _user_excludes_file(root, remaining)
+        checked = set(candidates)
+        if user:
+            user_path = Path(user)
+            checked.add(user_path if user_path.is_absolute() else root / user_path)
+        local = run_git(
+            root,
+            ["config", "--path", "--null", "--get", "core.excludesFile"],
+            check=False,
+            remaining=remaining,
+        )
+        if local.returncode not in {0, 1}:
+            raise ValueError("could not inspect lexical exclusion policy")
+        assert isinstance(local.stdout, str)
+        local_rules = local.stdout.removesuffix("\0") if local.returncode == 0 else ""
+        if local_rules:
+            local_path = Path(local_rules)
+            checked.add(local_path if local_path.is_absolute() else root / local_path)
+        ignorecase = run_git(
+            root,
+            ["config", "--bool", "--get", "core.ignoreCase"],
+            check=False,
+            remaining=remaining,
+        )
+        if ignorecase.returncode not in {0, 1}:
+            raise ValueError("could not inspect lexical exclusion case policy")
+        assert isinstance(ignorecase.stdout, str)
+        # Included config files may change this effective value without
+        # changing the directly watched common/worktree config metadata.
+        metadata: list[object] = [
+            user,
+            local_rules,
+            ignorecase.stdout.strip(),
+            registered_runtime_paths(root),
+        ]
+        for candidate in sorted(checked):
+            remaining()
+            try:
+                value = candidate.stat()
+            except FileNotFoundError:
+                metadata.append((str(candidate), None))
+            else:
+                metadata.append(
+                    (
+                        str(candidate),
+                        value.st_dev,
+                        value.st_ino,
+                        value.st_mode,
+                        value.st_size,
+                        value.st_mtime_ns,
+                        value.st_ctime_ns,
+                    )
+                )
+        return tuple(metadata)
 
     @staticmethod
     def _document(
@@ -411,31 +538,57 @@ class KnowledgeIndex:
             if (
                 kind == b"blob"
                 and raw_mode in {b"100644", b"100755"}
-                and int(raw_size) <= MAX_FILE
                 and eligible_path(relative)
             ):
-                metadata.append(
-                    (relative, raw_mode.decode(), raw_blob.decode(), int(raw_size))
-                )
+                size = int(raw_size)
+                if size < 0:
+                    raise ValueError("invalid lexical baseline blob size")
+                if size <= MAX_FILE:
+                    metadata.append(
+                        (relative, raw_mode.decode(), raw_blob.decode(), size)
+                    )
         excluded = excluded_paths(
             root, [entry[0] for entry in metadata], remaining=remaining
         )
+        selected = [entry for entry in metadata if entry[0] not in excluded]
+        consumed = sum(entry[3] for entry in selected)
+        if consumed > MAX_BYTES:
+            raise ValueError("lexical baseline exceeds its byte budget")
+        if not selected:
+            return {}
+        # ls-tree supplies immutable object IDs and sizes. Read exactly those
+        # blobs in one sanitized Git invocation, without filters or textconv.
+        # Headers and framing are bounded independently from document bytes.
+        read = run_git(
+            root,
+            ["cat-file", "--batch"],
+            text=False,
+            input_data="".join(blob + "\n" for _, _, blob, _ in selected).encode(),
+            remaining=remaining,
+        )
+        assert isinstance(read.stdout, bytes)
+        if len(read.stdout) > consumed + len(selected) * 128:
+            raise ValueError("lexical baseline exceeds its batch response budget")
+        response = io.BytesIO(read.stdout)
         documents: dict[str, Document] = {}
-        consumed = 0
-        for path, mode, blob, size in metadata:
+        for path, mode, blob, size in selected:
             remaining()
-            if path in excluded:
-                continue
-            consumed += size
-            if consumed > MAX_BYTES:
-                raise ValueError("lexical baseline exceeds its byte budget")
-            read = run_git(
-                root, ["cat-file", "blob", blob], text=False, remaining=remaining
-            )
-            assert isinstance(read.stdout, bytes)
-            document = self._document(path, read.stdout, mode, "git:" + oid)
+            header = response.readline(128)
+            fields = header.split()
+            if not header.endswith(b"\n") or fields != [
+                blob.encode(),
+                b"blob",
+                str(size).encode(),
+            ]:
+                raise ValueError("invalid lexical baseline batch header")
+            body = response.read(size)
+            if len(body) != size or response.read(1) != b"\n":
+                raise ValueError("truncated lexical baseline batch body")
+            document = self._document(path, body, mode, "git:" + oid)
             if document:
                 documents[path] = document
+        if response.read(1):
+            raise ValueError("unexpected lexical baseline batch output")
         return documents
 
     def _receipts(
@@ -445,94 +598,62 @@ class KnowledgeIndex:
         sequence: int | None = None,
         outbox_rows: list[sqlite3.Row] | None = None,
     ) -> list[tuple[int, str, str | None, str | None, str | None]]:
-        result: list[tuple[int, str, str | None, str | None, str | None]] = []
+        # Expand immutable receipts and collapse history inside SQLite. A long-
+        # lived checkout can have arbitrarily many accepted intermediate edits;
+        # only its newest receipt per path consumes the bounded source budget.
+        params: dict[str, Any] = {"checkout": checkout, "limit": MAX_FILES + 1}
+        if outbox_rows is None:
+            batches = "b.checkout_event_sequence<=:sequence"
+            versions = "o.event_sequence<=:sequence"
+            params["sequence"] = sequence
+        else:
+            batches = "b.batch_id IN (SELECT value FROM json_each(:batches))"
+            versions = "v.version_id IN (SELECT value FROM json_each(:versions))"
+            params["batches"] = json.dumps(
+                [row["batch_id"] for row in outbox_rows if row["batch_id"]]
+            )
+            params["versions"] = json.dumps(
+                [row["version_id"] for row in outbox_rows if row["version_id"]]
+            )
         with self.control.connection() as con:
-            if outbox_rows is None:
-                batches = con.execute(
-                    "SELECT b.* FROM workspace_batches b JOIN workspaces w "
-                    "USING(workspace_id) "
-                    "WHERE b.checkout_id=? AND w.mode='shared' AND "
-                    "b.state='published' AND b.checkout_event_sequence<=? "
-                    "ORDER BY b.checkout_event_sequence LIMIT 20001",
-                    (checkout, sequence),
-                ).fetchall()
-                versions = con.execute(
-                    "SELECT o.event_sequence,v.* FROM knowledge_outbox o JOIN "
-                    "knowledge_external_versions v USING(version_id) WHERE "
-                    "o.checkout_id=? AND o.event_sequence<=? "
-                    "ORDER BY o.event_sequence LIMIT 20001",
-                    (checkout, sequence),
-                ).fetchall()
-            else:
-                batch_ids = [
-                    str(row["batch_id"]) for row in outbox_rows if row["batch_id"]
-                ]
-                version_ids = [
-                    str(row["version_id"]) for row in outbox_rows if row["version_id"]
-                ]
-                batches = []
-                versions = []
-                for batch in batch_ids:
-                    batches.extend(
-                        con.execute(
-                            "SELECT * FROM workspace_batches WHERE batch_id=? AND "
-                            "state='published'",
-                            (batch,),
-                        ).fetchall()
-                    )
-                for version in version_ids:
-                    versions.extend(
-                        con.execute(
-                            "SELECT o.event_sequence,v.* FROM "
-                            "knowledge_external_versions v "
-                            "JOIN knowledge_outbox o USING(version_id) WHERE "
-                            "v.version_id=?",
-                            (version,),
-                        ).fetchall()
-                    )
-            if len(batches) + len(versions) > 20_000:
-                raise ValueError(
-                    "lexical accepted history exceeds its bounded build budget"
-                )
-            for batch in batches:
-                value = json.loads(batch["request_json"])
-                for item in value["files"]:
-                    identity = item["result"]
-                    mode = identity["mode"]
-                    result.append(
-                        (
-                            int(batch["checkout_event_sequence"]),
-                            item["relative_path"],
-                            item["content_hash"]
-                            if identity["kind"] == "regular"
-                            else None,
-                            str(identity["digest"])
-                            if identity["kind"] == "regular"
-                            else None,
-                            mode,
-                        )
-                    )
-            for version in versions:
-                identity = (
-                    json.loads(version["identity_json"])
-                    if version["identity_json"] and version["identity_json"] != "opaque"
-                    else None
-                )
-                result.append(
-                    (
-                        int(version["event_sequence"]),
-                        str(version["relative_path"]),
-                        version["content_hash"],
-                        str(identity[2])
-                        if identity and identity[0] == "regular"
-                        else None,
-                        str(identity[1]) if identity else None,
-                    )
-                )
-        # Only the newest accepted version of each path can contribute to this
-        # projection. Historical intermediates do not consume artifact budgets.
-        latest = {item[1]: item for item in sorted(result, key=lambda item: item[0])}
-        return sorted(latest.values(), key=lambda item: (item[0], item[1]))
+            rows = con.execute(
+                "WITH receipts AS ("
+                "SELECT b.checkout_event_sequence AS sequence, "
+                "json_extract(f.value,'$.relative_path') AS path, "
+                "CASE WHEN json_extract(f.value,'$.result.kind')='regular' "
+                "THEN json_extract(f.value,'$.content_hash') END AS artifact, "
+                "CASE WHEN json_extract(f.value,'$.result.kind')='regular' "
+                "THEN json_extract(f.value,'$.result.digest') END AS identity, "
+                "json_extract(f.value,'$.result.mode') AS mode, "
+                "0 AS external, b.batch_id AS receipt_id, f.key AS ordinal "
+                "FROM workspace_batches b JOIN workspaces w USING(workspace_id) "
+                "JOIN json_each(b.request_json,'$.files') f "
+                "WHERE b.checkout_id=:checkout AND w.checkout_id=:checkout "
+                "AND w.mode='shared' AND b.state='published' AND "
+                + batches
+                + " UNION ALL "
+                "SELECT o.event_sequence, v.relative_path, v.content_hash, "
+                "CASE WHEN v.identity_json IS NOT NULL AND v.identity_json<>'opaque' "
+                "THEN CASE WHEN json_extract(v.identity_json,'$[0]')='regular' "
+                "THEN json_extract(v.identity_json,'$[2]') END END, "
+                "CASE WHEN v.identity_json IS NOT NULL AND v.identity_json<>'opaque' "
+                "THEN json_extract(v.identity_json,'$[1]') END, "
+                "1, v.version_id, 0 "
+                "FROM knowledge_outbox o JOIN knowledge_external_versions v "
+                "USING(version_id) WHERE o.checkout_id=:checkout "
+                "AND v.checkout_id=:checkout AND " + versions + "), ranked AS ("
+                "SELECT *, row_number() OVER (PARTITION BY path ORDER BY "
+                "sequence DESC,external DESC,receipt_id DESC,ordinal DESC) AS newest "
+                "FROM receipts) "
+                "SELECT sequence,path,artifact,identity,mode FROM ranked "
+                "WHERE newest=1 ORDER BY sequence,path LIMIT :limit",
+                params,
+            ).fetchall()
+        if len(rows) > MAX_FILES:
+            raise ValueError(
+                "lexical accepted history exceeds its distinct path budget"
+            )
+        return [(int(row[0]), str(row[1]), row[2], row[3], row[4]) for row in rows]
 
     def _apply_receipts(
         self,

@@ -134,7 +134,7 @@ def search(
             "path": path,
             "content_identity": doc.identity,
             "indexed_revision": doc.revision,
-            "generation": row["generation_id"],
+            "generation": source["active_generation"],
             "start_line": row["start_line"],
             "end_line": row["end_line"],
             "text": row["text"],

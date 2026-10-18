@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from llm_cli.knowledge.chunker import VERSION, chunks
+from llm_cli.knowledge.chunker import VERSION, Chunk, chunks
 from llm_cli.paths import validate_owned_sqlite_paths
 from llm_cli.storage.connection import connect_knowledge, immediate_transaction
 from llm_cli.storage.migrations import KNOWLEDGE_MIGRATIONS, apply_migrations
@@ -159,43 +159,18 @@ class KnowledgeStore:
             self._clear(con, source_id)
             for doc, parts in prepared:
                 remaining()
-                document_id = hashlib.sha256(
-                    f"{source_id}\0{doc.path}\0{doc.identity}".encode()
-                ).hexdigest()
-                con.execute(
-                    "INSERT INTO knowledge_documents VALUES (?,?,?,?,?,?,?,?)",
-                    (
-                        document_id,
-                        source_id,
-                        doc.path,
-                        doc.identity,
-                        doc.mode,
-                        doc.revision,
-                        generation,
-                        doc.text,
+                self._insert_document(con, source_id, generation, doc, parts)
+            con.execute(
+                "INSERT INTO store_metadata VALUES (?,?,?) ON CONFLICT(key) DO "
+                "UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+                (
+                    "source_bytes:" + source_id,
+                    str(
+                        sum(len(doc.text.encode("utf-8")) for doc in documents.values())
                     ),
-                )
-                for chunk in parts:
-                    cursor = con.execute(
-                        "INSERT INTO "
-                        "knowledge_chunks(chunk_id,document_id,source_id,relative_path,"
-                        "ordinal,start_line,end_line,text) VALUES (?,?,?,?,?,?,?,?)",
-                        (
-                            chunk.chunk_id,
-                            document_id,
-                            source_id,
-                            doc.path,
-                            chunk.ordinal,
-                            chunk.start_line,
-                            chunk.end_line,
-                            chunk.text,
-                        ),
-                    )
-                    con.execute(
-                        "INSERT INTO knowledge_fts(rowid,relative_path,text) VALUES "
-                        "(?,?,?)",
-                        (cursor.lastrowid, doc.path, chunk.text),
-                    )
+                    now,
+                ),
+            )
             actual = con.execute(
                 "SELECT count(*) FROM knowledge_chunks WHERE source_id=?", (source_id,)
             ).fetchone()[0]
@@ -230,6 +205,215 @@ class KnowledgeStore:
         }
 
     @staticmethod
+    def _insert_document(
+        con: sqlite3.Connection,
+        source_id: str,
+        generation: str,
+        doc: Document,
+        parts: tuple[Chunk, ...],
+    ) -> None:
+        document_id = hashlib.sha256(
+            f"{source_id}\0{doc.path}\0{doc.identity}".encode()
+        ).hexdigest()
+        con.execute(
+            "INSERT INTO knowledge_documents VALUES (?,?,?,?,?,?,?,?)",
+            (
+                document_id,
+                source_id,
+                doc.path,
+                doc.identity,
+                doc.mode,
+                doc.revision,
+                generation,
+                doc.text,
+            ),
+        )
+        for chunk in parts:
+            cursor = con.execute(
+                "INSERT INTO "
+                "knowledge_chunks(chunk_id,document_id,source_id,relative_path,"
+                "ordinal,start_line,end_line,text) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    chunk.chunk_id,
+                    document_id,
+                    source_id,
+                    doc.path,
+                    chunk.ordinal,
+                    chunk.start_line,
+                    chunk.end_line,
+                    chunk.text,
+                ),
+            )
+            con.execute(
+                "INSERT INTO knowledge_fts(rowid,relative_path,text) VALUES (?,?,?)",
+                (cursor.lastrowid, doc.path, chunk.text),
+            )
+
+    def paths(self, source: str) -> list[str]:
+        """Load path metadata only when source policy changes or a worker restarts."""
+        with self.connection() as con:
+            return [
+                str(row[0])
+                for row in con.execute(
+                    "SELECT relative_path FROM knowledge_documents WHERE source_id=?",
+                    (source,),
+                )
+            ]
+
+    @staticmethod
+    def _remove_document(con: sqlite3.Connection, document_id: str) -> int:
+        rows = con.execute(
+            "SELECT rowid,relative_path,text FROM knowledge_chunks WHERE document_id=?",
+            (document_id,),
+        ).fetchall()
+        con.executemany(
+            "INSERT INTO knowledge_fts(knowledge_fts,rowid,relative_path,text) "
+            "VALUES ('delete',?,?,?)",
+            [tuple(row) for row in rows],
+        )
+        con.execute("DELETE FROM knowledge_chunks WHERE document_id=?", (document_id,))
+        con.execute(
+            "DELETE FROM knowledge_documents WHERE document_id=?", (document_id,)
+        )
+        return len(rows)
+
+    def update(
+        self,
+        *,
+        source_id: str,
+        checkout_id: str,
+        sequence: int,
+        outbox_id: int,
+        documents: dict[str, Document | None],
+        job_id: str,
+        max_files: int,
+        max_bytes: int,
+        remaining: Callable[[], float],
+    ) -> dict[str, object]:
+        """Atomically advance a generation by touching only changed documents.
+
+        A generation identifies an immutable projection transition. Unchanged
+        document/chunk rows are shared with the prior generation; active source
+        metadata and the event cursor become visible in the same transaction.
+        """
+        remaining()
+        now = time.time_ns() // 1_000_000
+        with self.connection() as con, immediate_transaction(con):
+            deadline = time.monotonic() + remaining()
+            con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1_000)
+            previous = con.execute(
+                "SELECT g.* FROM knowledge_sources s JOIN knowledge_generations g "
+                "ON g.generation_id=s.active_generation WHERE s.source_id=?",
+                (source_id,),
+            ).fetchone()
+            if previous is None:
+                raise ValueError("lexical update requires an active baseline")
+            manifest = [
+                (path, doc.identity if doc else None, doc.revision if doc else None)
+                for path, doc in sorted(documents.items())
+            ]
+            generation = hashlib.sha256(
+                json.dumps(
+                    [
+                        source_id,
+                        VERSION,
+                        previous["generation_id"],
+                        sequence,
+                        outbox_id,
+                        manifest,
+                    ],
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            document_count = int(previous["document_count"])
+            chunk_count = int(previous["chunk_count"])
+            byte_row = con.execute(
+                "SELECT value FROM store_metadata WHERE key=?",
+                ("source_bytes:" + source_id,),
+            ).fetchone()
+            # Upgrade an index built before incremental bookkeeping once. New
+            # builds write this aggregate as part of their generation swap.
+            byte_count = (
+                int(byte_row[0])
+                if byte_row
+                else int(
+                    con.execute(
+                        "SELECT COALESCE(sum(length(CAST(text AS BLOB))),0) "
+                        "FROM knowledge_documents WHERE source_id=?",
+                        (source_id,),
+                    ).fetchone()[0]
+                )
+            )
+            for path, doc in sorted(documents.items()):
+                remaining()
+                old = con.execute(
+                    "SELECT document_id,content_identity,text FROM knowledge_documents "
+                    "WHERE source_id=? AND relative_path=?",
+                    (source_id, path),
+                ).fetchone()
+                if doc is not None and doc.path != path:
+                    raise ValueError("lexical update path mismatch")
+                if old is not None:
+                    if doc is not None and str(old["content_identity"]) == doc.identity:
+                        # Accepted revisions can change without changing bytes.
+                        # Keep even this document's chunks and FTS rows intact.
+                        con.execute(
+                            "UPDATE knowledge_documents SET indexed_revision=?,"
+                            "generation_id=? WHERE document_id=?",
+                            (doc.revision, generation, old["document_id"]),
+                        )
+                        continue
+                    chunk_count -= self._remove_document(con, str(old["document_id"]))
+                    document_count -= 1
+                    byte_count -= len(str(old["text"]).encode("utf-8"))
+                if doc is not None:
+                    parts = chunks(source_id, doc.path, doc.identity, doc.text)
+                    self._insert_document(con, source_id, generation, doc, parts)
+                    document_count += 1
+                    chunk_count += len(parts)
+                    byte_count += len(doc.text.encode("utf-8"))
+            if byte_count > max_bytes or document_count > max_files:
+                raise ValueError("lexical generation exceeds its bounded source budget")
+            con.execute(
+                "UPDATE knowledge_generations SET state='superseded' "
+                "WHERE generation_id=?",
+                (previous["generation_id"],),
+            )
+            con.execute(
+                "INSERT INTO knowledge_generations VALUES (?,?,'active',?,?,?,?)",
+                (generation, source_id, sequence, document_count, chunk_count, now),
+            )
+            con.execute(
+                "UPDATE knowledge_sources SET active_generation=? WHERE source_id=?",
+                (generation, source_id),
+            )
+            con.execute(
+                "INSERT INTO store_metadata VALUES (?,?,?) ON CONFLICT(key) DO "
+                "UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+                ("source_bytes:" + source_id, str(byte_count), now),
+            )
+            con.execute(
+                "INSERT INTO projection_cursors VALUES (?,?,?,?) ON "
+                "CONFLICT(checkout_id) DO UPDATE SET "
+                "event_sequence=excluded.event_sequence,outbox_id=excluded.outbox_id",
+                (checkout_id, source_id, sequence, outbox_id),
+            )
+            con.execute(
+                "UPDATE projection_jobs SET state='completed',updated_at=? "
+                "WHERE job_id=?",
+                (now, job_id),
+            )
+            remaining()
+        return {
+            "state": "ready",
+            "source_id": source_id,
+            "generation": generation,
+            "indexed_sequence": sequence,
+            "documents": document_count,
+            "chunks": chunk_count,
+        }
+
+    @staticmethod
     def _clear(con: sqlite3.Connection, source: str) -> None:
         for row in con.execute(
             "SELECT rowid,relative_path,text FROM knowledge_chunks WHERE source_id=?",
@@ -252,6 +436,9 @@ class KnowledgeStore:
             if not row:
                 return
             source = str(row[0])
+            con.execute(
+                "DELETE FROM store_metadata WHERE key=?", ("source_bytes:" + source,)
+            )
             self._clear(con, source)
             for table in (
                 "projection_jobs",

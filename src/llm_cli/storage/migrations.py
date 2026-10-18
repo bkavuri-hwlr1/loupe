@@ -1087,6 +1087,13 @@ CREATE TABLE projection_cursors (
 );
 """,
     ),
+    Migration(
+        3,
+        "incremental_lexical_documents",
+        """
+CREATE INDEX knowledge_chunks_document ON knowledge_chunks(document_id);
+""",
+    ),
 )
 
 

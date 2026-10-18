@@ -415,7 +415,12 @@ class DaemonService:
             try:
                 await asyncio.wait_for(self.shutdown.wait(), timeout=1)
             except TimeoutError:
-                await asyncio.to_thread(self.knowledge.process_pending)
+                try:
+                    await asyncio.to_thread(self.knowledge.process_pending)
+                except Exception as exc:
+                    # The optional index must not silently stop serving future
+                    # publications after an unexpected projection failure.
+                    self.knowledge.record_worker_failure(exc)
 
     async def _knowledge_request(self, request: Request) -> dict[str, Any]:
         # Discovery never pins the daemon authority lock while reading Git,
