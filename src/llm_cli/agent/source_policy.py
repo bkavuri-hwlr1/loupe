@@ -62,6 +62,12 @@ def register_runtime_paths(root: Path, paths: tuple[str, ...]) -> None:
         _runtime_roots[root.resolve()] = paths
 
 
+def registered_runtime_paths(root: Path) -> tuple[str, ...]:
+    """Return immutable runtime exclusions for projection policy invalidation."""
+    with _runtime_lock:
+        return _runtime_roots.get(root.resolve(), ())
+
+
 def runtime_path_matches(relative: str, paths: Iterable[str]) -> bool:
     """Keep spelling aliases private on every supported filesystem.
 

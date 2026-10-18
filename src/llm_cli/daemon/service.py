@@ -69,7 +69,8 @@ from llm_cli.execution.sandbox import protected_home_paths
 from llm_cli.execution.shared import SharedTaskExecutionRunner
 from llm_cli.git.inspect import RepositoryInfo, inspect_repository
 from llm_cli.ids import new_id
-from llm_cli.paths import AppPaths
+from llm_cli.knowledge.indexer import KnowledgeIndex
+from llm_cli.paths import AppPaths, validate_owned_sqlite_paths
 from llm_cli.protocol.envelopes import Request, Response
 from llm_cli.protocol.framing import DEFAULT_MAX_FRAME_BYTES
 from llm_cli.providers.anthropic_provider import AnthropicProvider
@@ -77,12 +78,8 @@ from llm_cli.providers.codex_provider import CodexProvider
 from llm_cli.providers.openai_provider import OpenAIProvider
 from llm_cli.providers.registry import ProviderRegistry
 from llm_cli.storage.backup import BackupError, backup_profile
-from llm_cli.storage.connection import connect_knowledge, connect_vectors
 from llm_cli.storage.control import ControlStore
 from llm_cli.storage.migrations import (
-    KNOWLEDGE_MIGRATIONS,
-    VECTOR_MIGRATIONS,
-    apply_migrations,
     current_schema_version,
 )
 from llm_cli.storage.retention import prune_task_output
@@ -189,6 +186,13 @@ class DaemonService:
         self.shutdown = shutdown
         self.boot_id = boot_id
         self.store = ControlStore(paths.control_db)
+        self.knowledge = KnowledgeIndex(
+            self.store,
+            paths.knowledge_db,
+            paths.candidate_dir,
+            enabled=settings.knowledge_index == "lexical",
+        )
+        self._knowledge_task: asyncio.Task[None] | None = None
         self.coordinator = RepositoryCoordinator(
             self.store,
             launch_lease_ms=settings.launch_lease_ms,
@@ -300,10 +304,8 @@ class DaemonService:
             self._session_recovery_done = True
         self._recover_shared_workspace_publications()
         self.isolated_workspaces.recover()
-        with closing(connect_knowledge(self.paths.knowledge_db)) as connection:
-            apply_migrations(connection, KNOWLEDGE_MIGRATIONS)
-        with closing(connect_vectors(self.paths.vectors_db)) as connection:
-            apply_migrations(connection, VECTOR_MIGRATIONS)
+        self.knowledge.initialize()
+        self._start_knowledge_worker()
         # Nothing is served until every execution left behind by an earlier
         # boot has an outcome, so no session can observe a task that looks
         # runnable while a dead worker's reservation still blocks it.
@@ -393,7 +395,58 @@ class DaemonService:
         # be stopped by cancelling it, and pretending otherwise would hide the
         # work that outlives this process from the next boot's recovery.
         self._background_tasks.clear()
+        if self._knowledge_task is not None:
+            self._knowledge_task.cancel()
         self._execution_pool.shutdown(wait=False)
+
+    def _start_knowledge_worker(self) -> None:
+        if not self.knowledge.enabled or self._knowledge_task is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._knowledge_task = loop.create_task(
+            self._knowledge_loop(), name="optional-lexical-indexer"
+        )
+
+    async def _knowledge_loop(self) -> None:
+        while not self.shutdown.is_set():
+            try:
+                await asyncio.wait_for(self.shutdown.wait(), timeout=1)
+            except TimeoutError:
+                try:
+                    await asyncio.to_thread(self.knowledge.process_pending)
+                except Exception as exc:
+                    # The optional index must not silently stop serving future
+                    # publications after an unexpected projection failure.
+                    self.knowledge.record_worker_failure(exc)
+
+    async def _knowledge_request(self, request: Request) -> dict[str, Any]:
+        # Discovery never pins the daemon authority lock while reading Git,
+        # updating FTS or waiting for an optional database.
+        self._start_knowledge_worker()
+        method, params = request.method, request.params
+        if method == "index.status" and "path" not in params:
+            return await asyncio.to_thread(self.knowledge.status)
+        checkout = await self._registered_checkout_for_path(_path(params, "path"))
+        if method == "index.status":
+            return await asyncio.to_thread(self.knowledge.status, checkout.checkout_id)
+        if method in {"index.build", "index.rebuild"}:
+            return await asyncio.to_thread(
+                self.knowledge.build,
+                checkout.checkout_id,
+                rebuild=method == "index.rebuild",
+            )
+        if method == "index.drop":
+            return await asyncio.to_thread(self.knowledge.drop, checkout.checkout_id)
+        return await asyncio.to_thread(
+            self.knowledge.search_lexical,
+            checkout.checkout_id,
+            _string(params, "query"),
+            limit=_bounded_integer(params, "limit", 8, minimum=1, maximum=20),
+            explain=bool(params.get("explain", False)),
+        )
 
     async def reconcile_loop(self) -> None:
         interval = self.settings.reconciliation_interval_ms / 1_000
@@ -466,6 +519,14 @@ class DaemonService:
             if request.method == "session.retry_answer":
                 # Likewise a model request, locked only to read and to save.
                 return await self._session_retry_answer(request.params)
+            if request.method in {
+                "index.status",
+                "index.build",
+                "index.rebuild",
+                "index.drop",
+                "search.lexical",
+            }:
+                return await self._knowledge_request(request)
             async with self._authority_lock:
                 return await self._dispatch(request)
         except LlmCoordError:
@@ -530,7 +591,9 @@ class DaemonService:
             self.initialize()
             return {"initialized": True, **self._ping(), "paths": self._safe_paths()}
         if method == "system.doctor":
-            checks = await asyncio.to_thread(run_doctor, self.paths)
+            checks = await asyncio.to_thread(
+                run_doctor, self.paths, knowledge_status=self.knowledge.status()
+            )
             return {
                 "ok": all(
                     bool(check["ok"]) or bool(check["warning"]) for check in checks
@@ -2475,30 +2538,42 @@ class DaemonService:
 
     def _db_status(self) -> dict[str, Any]:
         statuses: dict[str, Any] = {}
-        databases = (
+        for name, database_path in (
             ("control", self.paths.control_db),
             ("knowledge", self.paths.knowledge_db),
             ("vectors", self.paths.vectors_db),
-        )
-        for name, database_path in databases:
-            if name == "control":
-                connection = self.store.connect()
-            elif name == "knowledge":
-                connection = connect_knowledge(database_path)
-            else:
-                connection = connect_vectors(database_path)
-            with closing(connection):
+        ):
+            if not database_path.exists():
+                statuses[name] = {"path": str(database_path), "state": "not_created"}
+                continue
+            try:
+                if name == "knowledge":
+                    validate_owned_sqlite_paths(database_path)
+                with closing(
+                    sqlite3.connect(
+                        f"{database_path.as_uri()}?mode=ro", uri=True, timeout=0.25
+                    )
+                ) as connection:
+                    connection.row_factory = sqlite3.Row
+                    statuses[name] = {
+                        "path": str(database_path),
+                        "state": "available",
+                        "bytes": database_path.stat().st_size,
+                        "schema_version": current_schema_version(connection),
+                        "journal_mode": str(
+                            connection.execute("PRAGMA journal_mode").fetchone()[0]
+                        ).lower(),
+                        "synchronous": int(
+                            connection.execute("PRAGMA synchronous").fetchone()[0]
+                        ),
+                    }
+            except (sqlite3.Error, OSError, LlmCoordError) as exc:
                 statuses[name] = {
                     "path": str(database_path),
-                    "bytes": database_path.stat().st_size,
-                    "schema_version": current_schema_version(connection),
-                    "journal_mode": str(
-                        connection.execute("PRAGMA journal_mode").fetchone()[0]
-                    ).lower(),
-                    "synchronous": int(
-                        connection.execute("PRAGMA synchronous").fetchone()[0]
-                    ),
+                    "state": "unavailable",
+                    "error": type(exc).__name__,
                 }
+        statuses["knowledge"]["index"] = self.knowledge.status()
         return statuses
 
     def _db_check(self) -> dict[str, Any]:
@@ -2508,13 +2583,20 @@ class DaemonService:
             ("knowledge", self.paths.knowledge_db),
             ("vectors", self.paths.vectors_db),
         ):
-            connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+            if not path.exists() and name != "control":
+                result[name] = {"ok": True, "detail": "not created (optional)"}
+                continue
             try:
-                value = connection.execute("PRAGMA integrity_check").fetchone()
-            finally:
-                connection.close()
-            detail = str(value[0]) if value is not None else "no result"
-            result[name] = {"ok": detail == "ok", "detail": detail}
+                if name == "knowledge":
+                    validate_owned_sqlite_paths(path)
+                with closing(
+                    sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.25)
+                ) as connection:
+                    value = connection.execute("PRAGMA integrity_check").fetchone()
+                detail = str(value[0]) if value is not None else "no result"
+                result[name] = {"ok": detail == "ok", "detail": detail}
+            except (sqlite3.Error, OSError, LlmCoordError) as exc:
+                result[name] = {"ok": False, "detail": type(exc).__name__}
         result["ok"] = all(bool(item["ok"]) for item in result.values())
         return result
 

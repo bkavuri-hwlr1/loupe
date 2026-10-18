@@ -888,6 +888,17 @@ class SharedBatchPublisher:
             },
             now=now,
         )
+        from llm_cli.knowledge.outbox import enqueue_batch
+
+        enqueue_batch(
+            connection,
+            self.store,
+            checkout_id=str(row["checkout_id"]),
+            workspace_id=str(row["workspace_id"]),
+            batch_id=str(row["batch_id"]),
+            sequence=event.sequence,
+            now=now,
+        )
         connection.execute(
             "UPDATE workspace_batches SET state = 'published', workspace_revision = ?, "
             "checkout_event_sequence = ?, updated_at = ? WHERE batch_id = ?",

@@ -124,3 +124,20 @@ and lexical retrieval continue when it is absent.
   schema is released.
 - Add pragma, corruption, checkpoint, backup, restore, and kill-point tests.
 - Add generation/outbox reconciliation before cross-database indexing is enabled.
+
+
+## F1 implementation note (Wave 4)
+
+F1 implements repository-derived lexical sources, documents, chunks, FTS and
+transactional generations in the optional knowledge store. The generation/outbox
+follow-up above is fulfilled for this lexical slice: accepted publication and
+outside-change transactions add IDs to the control outbox, and a separate worker
+projects their immutable artifacts outside the publication barrier. Optional
+store failure does not stop sessions or source publication.
+
+`[knowledge] index = "off"` is the default. Off creates neither optional stores
+nor indexing workers/intents, and preserves existing files. Status and integrity
+checks describe absent optional stores without creating them. Online backup
+includes control and existing optional stores, recording absent ones as omitted.
+The three-store design remains the target; user memory, graph and vector flows
+are not enabled by F1. See [lexical search](../lexical-search.md).
