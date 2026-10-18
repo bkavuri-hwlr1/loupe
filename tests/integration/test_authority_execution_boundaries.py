@@ -1252,3 +1252,203 @@ def test_process_environment_overrides_and_reused_pid_metadata_cannot_split_auth
     finally:
         if owner.poll() is None:
             owner.communicate("\n", timeout=10)
+
+
+@pytest.mark.parametrize("abandoned", [False, True])
+def test_same_profile_pin_waits_for_live_git_mutation_and_revalidates_its_outcome(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+    abandoned: bool,
+) -> None:
+    repository = repository_factory(tmp_path, {"file.txt": "ordinary source\n"})
+    owner, peer = _service(tmp_path, "owner"), _service(tmp_path, "peer")
+    asyncio.run(_open(owner, repository))
+    base = git_run(repository, "rev-parse", "HEAD")
+    entered, release, probe = threading.Event(), threading.Event(), threading.Event()
+    nested_finished, waiter_started = threading.Event(), threading.Event()
+    waiter_finished = threading.Event()
+    mutation_failures: list[BaseException] = []
+    waiter_failures: list[BaseException] = []
+    run_git = worktrees_module.run_git
+
+    def paused_add(root: Path, arguments: list[str], **kwargs: Any) -> Any:
+        if arguments[:2] != ["worktree", "add"]:
+            return run_git(root, arguments, **kwargs)
+        assert _marker(owner, repository)["state"] == "dirty"
+        entered.set()
+        assert probe.wait(10)
+        # A waiting acquisition must not hold the authority's global lock:
+        # the live operation still needs it for nested pins and validation.
+        with owner.physical_authority.pin(repository) as pin:
+            pin.validate()
+        # Nested proof must reuse the live parent event, even though this Git
+        # journal has no terminal domain evidence for finish_recovery to use.
+        assert owner.physical_authority.finish_recovery(repository) is False
+        nested_finished.set()
+        assert release.wait(10)
+        result = run_git(root, arguments, **kwargs)
+        if abandoned:
+            raise Crash()
+        return result
+
+    def mutate() -> None:
+        try:
+            with owner.physical_authority.pin(repository):
+                worktrees_module.create_managed_worktree(
+                    repository,
+                    managed_root=owner.paths.data_dir / "checks",
+                    task_id="live-check-snapshot",
+                    base_oid=base,
+                )
+        except BaseException as exc:
+            mutation_failures.append(exc)
+
+    def acquire() -> None:
+        waiter_started.set()
+        try:
+            with owner.physical_authority.pin(repository) as pin:
+                pin.validate()
+        except BaseException as exc:
+            waiter_failures.append(exc)
+        finally:
+            waiter_finished.set()
+
+    mutation = threading.Thread(target=mutate)
+    waiter = threading.Thread(target=acquire)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(worktrees_module, "run_git", paused_add)
+            mutation.start()
+            assert entered.wait(5)
+            waiter.start()
+            assert waiter_started.wait(5)
+            assert not waiter_finished.wait(0.1)
+            asyncio.run(_refused(peer, repository, dirty=True))
+            probe.set()
+            assert nested_finished.wait(5)
+            assert not waiter_finished.is_set()
+            release.set()
+            mutation.join(10)
+            waiter.join(10)
+            assert not mutation.is_alive() and not waiter.is_alive()
+        if abandoned:
+            assert len(mutation_failures) == 1
+            assert isinstance(mutation_failures[0], Crash)
+            assert len(waiter_failures) == 1
+            failure = waiter_failures[0]
+            assert isinstance(failure, LlmCoordError)
+            assert failure.code is ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED
+            assert _marker(owner, repository)["state"] == "dirty"
+            with (
+                pytest.raises(LlmCoordError, match="exact recovery"),
+                owner.physical_authority.mutation(
+                    repository, "different-journal", "unrelated", recovery=True
+                ),
+            ):
+                pytest.fail("a mismatched recovery journal was admitted")
+            asyncio.run(_refused(peer, repository, dirty=True))
+        else:
+            assert mutation_failures == [] and waiter_failures == []
+            assert _marker(owner, repository)["state"] == "clean"
+            with owner.physical_authority.pin(repository):
+                worktrees_module.remove_managed_worktree(
+                    repository,
+                    managed_root=owner.paths.data_dir / "checks",
+                    registered_path=owner.paths.data_dir / "checks/live-check-snapshot",
+                )
+    finally:
+        probe.set()
+        release.set()
+        if mutation.ident is not None:
+            mutation.join(10)
+        if waiter.ident is not None:
+            waiter.join(10)
+        owner.close()
+        peer.close()
+
+
+
+def test_isolated_open_waits_before_marking_dirty_when_publication_holds_its_lock(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = repository_factory(tmp_path, {"file.txt": "ordinary source\n"})
+    owner = _service(tmp_path, "owner")
+    asyncio.run(_open(owner, repository, "shared-publisher"))
+    publication_lock = owner.workspace_batches.lock
+    lock_requested = threading.Event()
+    completed = threading.Event()
+    failures: list[BaseException] = []
+    responses: list[dict[str, Any]] = []
+    caller = threading.get_ident()
+
+    class ObservedLock:
+        def __enter__(self) -> None:
+            if threading.get_ident() != caller:
+                lock_requested.set()
+            publication_lock.acquire()
+
+        def __exit__(self, *args: Any) -> None:
+            publication_lock.release()
+
+    def open_isolated() -> None:
+        try:
+            responses.append(
+                asyncio.run(
+                    owner.handle(
+                        _request(
+                            "session.open",
+                            path=str(repository),
+                            session_id="isolated-during-publication",
+                            resume_token_hash=hashlib.sha256(b"resume").hexdigest(),
+                            workspace="isolated",
+                        )
+                    )
+                )
+            )
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            completed.set()
+
+    opener = threading.Thread(target=open_isolated)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(owner.isolated_workspaces, "lock", ObservedLock())
+            with publication_lock:
+                opener.start()
+                assert lock_requested.wait(5)
+                assert not completed.is_set()
+                # The opener reached the blocked publication lock. It must not
+                # dirty authority before acquiring it and block this publisher.
+                assert _marker(owner, repository)["state"] == "clean"
+                result = owner.workspace_batches.publish(
+                    "before-isolated-open",
+                    "shared-publisher",
+                    (
+                        BatchFile(
+                            "file.txt",
+                            identify_path(repository / "file.txt"),
+                            b"published while opening\n",
+                            REGULAR_MODE,
+                        ),
+                    ),
+                    ("*",),
+                )
+                assert result.state == "published"
+            opener.join(10)
+            assert not opener.is_alive()
+        assert failures == []
+        assert len(responses) == 1
+        workspace = responses[0]["workspace"]
+        private = Path(workspace["canonical_path"])
+        assert private != repository
+        assert (private / "file.txt").read_text() == "published while opening\n"
+        assert _marker(owner, repository)["state"] == "clean"
+    finally:
+        if opener.ident is not None:
+            opener.join(10)
+        owner.close()

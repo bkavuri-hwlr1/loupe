@@ -302,6 +302,12 @@ class _Owned:
     idle_since: float = field(default_factory=time.monotonic)
     mutation_lock: threading.RLock = field(default_factory=threading.RLock)
     history_gap: bool = False
+    live_mutation: threading.Event | None = None
+
+
+class _LiveMutationPending(Exception):
+    def __init__(self, completed: threading.Event) -> None:
+        self.completed = completed
 
 
 class OwnershipPin:
@@ -413,6 +419,10 @@ class PhysicalAuthority:
         }
 
     def _validate(self, owner: _Owned) -> None:
+        with self._lock:
+            self._validate_owned(owner)
+
+    def _validate_owned(self, owner: _Owned) -> None:
         owner.physical.validate()
         instance = self.installation.validate()
         held = os.fstat(owner.descriptor)
@@ -453,31 +463,43 @@ class PhysicalAuthority:
         journal_id: str | None = None,
         journal_kind: str | None = None,
     ) -> None:
-        marker = {
-            "version": 1,
-            "physical_key": owner.physical.key,
-            "binding": owner.physical.binding,
-            "generation": int(owner.marker.get("generation", 0)) + 1,
-            "state": state,
-            "execution_contract": "claim_backed_v1",
-            "owner_profile": self.profile,
-            "database_instance_id": self.installation.instance_id,
-            "daemon_boot": self.boot_id,
-            "checkout_id": owner.marker.get("checkout_id"),
-            "journal_id": journal_id,
-            "journal_kind": journal_kind,
-        }
-        private_write(self._directory(owner.physical.key) / "marker.json", marker)
-        owner.marker = marker
-        with self.store.connection() as connection:
-            connection.execute(
-                "UPDATE authority_checkouts SET marker_generation=? WHERE "
-                "physical_key=?",
-                (marker["generation"], owner.physical.key),
-            )
+        with self._lock:
+            marker = {
+                "version": 1,
+                "physical_key": owner.physical.key,
+                "binding": owner.physical.binding,
+                "generation": int(owner.marker.get("generation", 0)) + 1,
+                "state": state,
+                "execution_contract": "claim_backed_v1",
+                "owner_profile": self.profile,
+                "database_instance_id": self.installation.instance_id,
+                "daemon_boot": self.boot_id,
+                "checkout_id": owner.marker.get("checkout_id"),
+                "journal_id": journal_id,
+                "journal_kind": journal_kind,
+            }
+            private_write(self._directory(owner.physical.key) / "marker.json", marker)
+            owner.marker = marker
+            with self.store.connection() as connection:
+                connection.execute(
+                    "UPDATE authority_checkouts SET marker_generation=? WHERE "
+                    "physical_key=?",
+                    (marker["generation"], owner.physical.key),
+                )
 
     def acquire(
         self, root: Path, *, recovery: bool = False, activity: bool = True
+    ) -> OwnershipPin:
+        while True:
+            try:
+                return self._acquire(root, recovery=recovery, activity=activity)
+            except _LiveMutationPending as live:
+                # A live operation needs this lock for nested pins/validation.
+                # Reinspect identity, binding and its final marker after it exits.
+                live.completed.wait()
+
+    def _acquire(
+        self, root: Path, *, recovery: bool, activity: bool
     ) -> OwnershipPin:
         with self._lock:
             physical = PhysicalCheckout.inspect(root)
@@ -487,6 +509,11 @@ class PhysicalAuthority:
                 prior = self._owned.get(physical.key)
                 if prior is not None:
                     physical.close()
+                    if (
+                        prior.live_mutation is not None
+                        and _MUTATION.get() != prior.physical.key
+                    ):
+                        raise _LiveMutationPending(prior.live_mutation)
                     self._validate(prior)
                     if (
                         prior.marker["state"] != "clean"
@@ -774,6 +801,26 @@ class PhysicalAuthority:
                 os.close(fd)
 
     @contextmanager
+    def _live_mutation(self, owner: _Owned) -> Iterator[None]:
+        completed = threading.Event()
+        with self._lock:
+            # Register before any dirty marker can become visible. This state
+            # is process-local evidence of a live operation, never crash proof.
+            prior = owner.live_mutation
+            if prior is None:
+                owner.live_mutation = completed
+        if prior is not None:
+            # Only a reentrant holder of mutation_lock can reach this branch.
+            yield
+            return
+        try:
+            yield
+        finally:
+            with self._lock:
+                owner.live_mutation = None
+                completed.set()
+
+    @contextmanager
     def mutation(
         self,
         root: Path,
@@ -788,49 +835,55 @@ class PhysicalAuthority:
             if _MUTATION.get() == owner.physical.key:
                 yield Mutation(self, owner, journal_kind, reference_id)
                 return
-            if owner.marker["state"] == "clean":
-                journal_id = "authority_" + secrets.token_hex(16)
-                # Crash here leaves a durable dirty locator without its journal:
-                # acquisition must retain attention, never infer no effect.
-                self._write_marker(
-                    owner, "dirty", journal_id=journal_id, journal_kind=journal_kind
-                )
-                with self.store.connection() as connection:
-                    connection.execute(
-                        "INSERT INTO authority_journals VALUES (?,?,?,?, 'applying',?)",
-                        (
-                            journal_id,
-                            owner.physical.key,
-                            journal_kind,
-                            reference_id,
-                            self.store._now(None),
-                        ),
+            with self._live_mutation(owner):
+                if owner.marker["state"] == "clean":
+                    journal_id = "authority_" + secrets.token_hex(16)
+                    # Crash here leaves a durable dirty locator without its journal:
+                    # acquisition must retain attention, never infer no effect.
+                    self._write_marker(
+                        owner, "dirty", journal_id=journal_id, journal_kind=journal_kind
                     )
-            else:
-                with self.store.connection() as connection:
-                    journal = connection.execute(
-                        "SELECT * FROM authority_journals WHERE journal_id=?",
-                        (owner.marker["journal_id"],),
-                    ).fetchone()
-                if (
-                    journal is None
-                    or journal["kind"] != journal_kind
-                    or journal["reference_id"] != reference_id
-                ):
-                    raise recovery_error(
-                        "another unfinished operation requires exact recovery",
-                        owner_profile=self.profile,
-                        journal_locator=owner.marker.get("journal_id"),
-                    )
-            operation = Mutation(self, owner, journal_kind, reference_id)
-            token = _MUTATION.set(owner.physical.key)
-            try:
-                yield operation
-            finally:
-                _MUTATION.reset(token)
+                    with self.store.connection() as connection:
+                        connection.execute(
+                            "INSERT INTO authority_journals "
+                            "VALUES (?,?,?,?, 'applying',?)",
+                            (
+                                journal_id,
+                                owner.physical.key,
+                                journal_kind,
+                                reference_id,
+                                self.store._now(None),
+                            ),
+                        )
+                else:
+                    with self.store.connection() as connection:
+                        journal = connection.execute(
+                            "SELECT * FROM authority_journals WHERE journal_id=?",
+                            (owner.marker["journal_id"],),
+                        ).fetchone()
+                    if (
+                        journal is None
+                        or journal["kind"] != journal_kind
+                        or journal["reference_id"] != reference_id
+                    ):
+                        raise recovery_error(
+                            "another unfinished operation requires exact recovery",
+                            owner_profile=self.profile,
+                            journal_locator=owner.marker.get("journal_id"),
+                        )
+                operation = Mutation(self, owner, journal_kind, reference_id)
+                token = _MUTATION.set(owner.physical.key)
+                try:
+                    yield operation
+                finally:
+                    _MUTATION.reset(token)
 
     def finish_recovery(self, root: Path) -> bool:
-        with self.pin(root, recovery=True) as pin, pin.owner.mutation_lock:
+        with (
+            self.pin(root, recovery=True) as pin,
+            pin.owner.mutation_lock,
+            self._live_mutation(pin.owner),
+        ):
             owner = pin.owner
             if owner.marker["state"] == "clean":
                 return True

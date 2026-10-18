@@ -980,7 +980,8 @@ class IsolatedWorkspaceManager:
         if state is None or checkout is None:
             return False
         primary = Path(checkout.canonical_path)
-        with authority.pin(primary, recovery=True) as pin:
+        # Match batch/runtime publication ordering before entering authority.
+        with self.lock, authority.pin(primary, recovery=True) as pin:
             kind, reference = "isolated_cleanup", workspace_id
             if pin.owner.marker["state"] != "clean":
                 with self.store.connection() as con:
@@ -1284,7 +1285,7 @@ class IsolatedWorkspaceManager:
             return self._open_owned(
                 checkout, session_id, approved_secrets=approved_secrets
             )
-        with authority.mutation(
+        with self.lock, authority.mutation(
             Path(checkout.canonical_path), "isolated_create", session_id
         ) as operation:
             try:
