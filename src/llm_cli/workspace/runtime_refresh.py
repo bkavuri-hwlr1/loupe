@@ -335,9 +335,10 @@ class RuntimeRefresher:
                             ),
                         )
                     self.fault("runtime_prepared")
-                    self.recover(workspace_id)
+                    self._recover(workspace_id)
                     if operation is not None:
                         operation.confirm()
+                    self._retire_receipt(workspace_id, operation)
             notices.extend("Runtime refreshed: " + path for path in updates)
             return self._notice_result(workspace_id, noticed, receipts, notices)
         except Exception:
@@ -430,6 +431,19 @@ class RuntimeRefresher:
                 self._recover(workspace_id)
                 if operation is not None:
                     operation.confirm()
+                self._retire_receipt(workspace_id, operation)
+
+    def _retire_receipt(self, workspace_id: str, operation: Any) -> None:
+        # A delegated child cannot acknowledge the parent's physical marker.
+        # Retain exact domain proof until a later nondelegated recovery can.
+        if operation is not None and getattr(operation, "delegated", False):
+            return
+        self.fault("runtime_authority_confirmed")
+        with self.store.connection() as con:
+            con.execute(
+                "DELETE FROM isolated_runtime_journal WHERE workspace_id=?",
+                (workspace_id,),
+            )
 
     def _recover(self, workspace_id: str) -> None:
         """Roll a prepared refresh forward, recognizing only recorded inodes."""
@@ -491,13 +505,27 @@ class RuntimeRefresher:
             stage = root / token
             backup = root / (token + "-before")
             if row["state"] == "installed":
+                with self.store.connection() as con:
+                    accepted = con.execute(
+                        "SELECT generation,private_json FROM isolated_runtime_state "
+                        "WHERE workspace_id=?",
+                        (workspace_id,),
+                    ).fetchone()
+                if accepted is None or int(accepted["generation"]) < int(
+                    row["generation"]
+                ):
+                    raise _error("installed runtime generation proof is unavailable")
+                installed = json.loads(accepted["private_json"])
+                if any(
+                    _signature(private, path) != installed.get(path, {})
+                    for path in json.loads(row["paths_json"])
+                ):
+                    raise _error(
+                        "installed runtime changed before authority acknowledgment"
+                    )
                 self._remove(root, token)
                 self._remove(root, token + "-before")
-                with self.store.connection() as con:
-                    con.execute(
-                        "DELETE FROM isolated_runtime_journal WHERE workspace_id=?",
-                        (workspace_id,),
-                    )
+                self.fault("runtime_cleaned")
                 return
             backup.mkdir(mode=0o700, exist_ok=True)
             before, after = (
@@ -587,11 +615,7 @@ class RuntimeRefresher:
             self.fault("runtime_committed")
             self._remove(root, token)
             self._remove(root, token + "-before")
-            with self.store.connection() as con:
-                con.execute(
-                    "DELETE FROM isolated_runtime_journal WHERE workspace_id=?",
-                    (workspace_id,),
-                )
+            # Installed proof remains until physical authority acknowledges it.
             self.fault("runtime_cleaned")
 
     @staticmethod

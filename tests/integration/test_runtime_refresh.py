@@ -127,6 +127,7 @@ def test_runtime_change_waits_for_running_check_activity(
         "runtime_installed:b.local",
         "runtime_committed",
         "runtime_cleaned",
+        "runtime_authority_confirmed",
     ],
 )
 def test_crash_each_refresh_step_recovers_one_complete_generation(
