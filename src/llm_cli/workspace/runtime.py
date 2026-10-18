@@ -21,6 +21,19 @@ from urllib.parse import unquote, urlsplit
 
 from llm_cli.workspace.hydration import _SECRET_DIRECTORIES, _evidence, _likely_secret
 
+_RUNTIME_WORKSPACES: dict[Path, Path] = {}
+
+
+def register_runtime_workspace(root: Path, workspace: Path) -> None:
+    """Retained generations validate workspace links against their owning source."""
+    _RUNTIME_WORKSPACES[root.resolve()] = workspace
+
+
+def is_retained_runtime(root: Path) -> bool:
+    """Retained generations contain runtime only; source lives in check snapshots."""
+    return root.resolve() in _RUNTIME_WORKSPACES
+
+
 _DEPENDENCIES = frozenset({".venv", "venv", "node_modules"})
 _ADMIN = frozenset({".git", ".loupe", ".llm-coord", ".codex", ".agents"})
 _MAX_FILE = 256 * 1024 * 1024
@@ -282,6 +295,8 @@ def copy_dependency_tree(
     approved_secret_paths: tuple[str, ...] = (),
     pinned_private: bool = False,
     copy_observer: Callable[[str, os.stat_result, os.stat_result], None] | None = None,
+    relocation_root: Path | None = None,
+    workspace_root: Path | None = None,
 ) -> tuple[str, ...]:
     """Copy a dependency root without writable aliases, following no tree links.
 
@@ -310,7 +325,11 @@ def copy_dependency_tree(
         tuple[Future[os.stat_result], int, int, str, str, os.stat_result]
     ] = deque()
     original_prefix = os.fsencode(source)
-    private_prefix = os.fsencode(target)
+    private_prefix = os.fsencode(relocation_root or target)
+    source_workspace = _RUNTIME_WORKSPACES.get(source.resolve(), source)
+    destination_workspace = workspace_root or _RUNTIME_WORKSPACES.get(
+        target.resolve(), target
+    )
 
     def budget(size: int = 0, *, entries: int = 1) -> None:
         nonlocal count, total
@@ -522,10 +541,14 @@ def copy_dependency_tree(
                             not link.startswith("/")
                             and Path(relative).name == "node_modules"
                         ):
-                            workspace_dependency_link(source, path, link)
+                            # Frozen generation links were validated when pinned.
+                            # Their source package belongs to the proposal's final
+                            # check snapshot, not later private session source.
+                            if source.resolve() not in _RUNTIME_WORKSPACES:
+                                workspace_dependency_link(source_workspace, path, link)
                             # Source materialization already privately copied this
                             # target; never point back at primary workspace bytes.
-                            workspace_dependency_link(target, path, link)
+                            workspace_dependency_link(destination_workspace, path, link)
                             os.symlink(link, entry.name, dir_fd=destination)
                         else:
                             executable = _trusted_python(source, path, link)

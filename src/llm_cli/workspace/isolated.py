@@ -617,6 +617,9 @@ class IsolatedWorkspaceManager:
         self.lock = publication_lock
         self.ensure_available = ensure_available
         self.fault: Callable[[str], None] = lambda stage: None
+        from llm_cli.workspace.runtime_refresh import RuntimeRefresher
+
+        self.runtime = RuntimeRefresher(store, managed_root, publication_lock)
 
     def get(self, workspace_id: str) -> IsolatedState | None:
         with self.store.connection() as con:
@@ -693,6 +696,9 @@ class IsolatedWorkspaceManager:
         with _source(managed.git_dir, marker.name) as descriptor:
             if _read(descriptor, 1024).decode() != state.creation_token:
                 raise _error("isolated worktree ownership changed")
+        self.runtime.recover(workspace_id)
+        state = self.get(workspace_id)
+        assert state is not None
         register_runtime_paths(managed.path, state.runtime_paths)
         return state
 
@@ -1160,6 +1166,7 @@ class IsolatedWorkspaceManager:
         # Pruning only touches missing managed registrations, never an existing
         # directory created by a user after rmdir. Foreign stale entries abort.
         prune_managed_worktrees(primary, managed_root=self.managed_root)
+        self.runtime.cleanup(workspace_id)
         with self.store.connection() as con, immediate_transaction(con):
             con.execute(
                 "UPDATE workspaces SET state='removed',state_version=state_version+1,"
@@ -1437,6 +1444,7 @@ class IsolatedWorkspaceManager:
                         "WHERE workspace_id=?",
                         (json.dumps(notices), workspace_id),
                     )
+                self.runtime.initialize(workspace_id, approved_secrets)
                 self._stage(workspace_id, "hydrated")
                 if (
                     source_fingerprint(root, policy_paths) != fingerprint

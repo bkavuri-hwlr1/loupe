@@ -234,3 +234,37 @@ operator inspection.
 The private worktree is a cooperative filesystem boundary. Shell programs with
 arbitrary same-user capabilities are not treated as hostile code. Normal command
 approval and sandbox policies still apply.
+
+### Runtime refresh and retained proposals
+
+Isolated sessions recheck ignored runtime metadata at safe points before model
+turns, commands and checks. A stable primary update replaces an unchanged
+private copy; a private edit on both sides is preserved and produces one
+path-only conflict notice. Changes during a running command, check or hook wait
+until a later safe point. Dependency roots are inspected recursively by stat
+receipts, so changes below an unchanged directory timestamp are detected without
+reading unchanged file contents. New ignored inputs use the ordinary hydration
+budgets and adapters. A change in ignore rules cannot turn a previously pinned
+runtime input into source.
+
+Exact `--approve-secret PATH` consent given when opening a conversation also
+allows that file's later stable updates. Without opening consent, an appearing
+or changed likely-secret file is reported and remains absent. Dependency
+credential files still need their own exact-file consent. Notices contain paths,
+never runtime values or secret digests.
+
+Retaining a proposal freezes a private runtime generation and its check
+configuration. `/apply` checks current shared source plus the held proposal
+against that generation, including after a daemon restart. The live session can
+adopt newer runtime without changing the held proposal's inputs. A changed
+retained generation is refused rather than silently accepted.
+
+Refresh stages private copies outside the shared publication lock. Installation
+journals its before/after stat receipts, then atomically renames individual roots
+under the publication lock. After a crash, recovery completes the recorded
+whole generation before another action can use it; unrecorded staged copies are
+discarded. Unexpected later private edits are preserved and require recovery.
+Runtime contents never enter source batches, the source artifact store or
+knowledge indexes. Frozen runtime copies remain only while their workspace and
+retained proposals need them; closing a conversation removes the owned runtime
+generation directory after those proposals have settled.

@@ -912,3 +912,17 @@ def test_parallel_probe_failure_never_clones_user_dependencies(
     assert all(
         path.read_bytes() == b"user dependency bytes" for path in package.iterdir()
     )
+
+
+@pytest.mark.parametrize("link", ["../../outside", "../.env", "../.git/config"])
+def test_retained_runtime_identity_still_refuses_unsafe_workspace_links(
+    tmp_path: Path, link: str
+) -> None:
+    from llm_cli.workspace.runtime import register_runtime_workspace
+
+    root = tmp_path / "generation"
+    (root / "node_modules").mkdir(parents=True)
+    (root / "node_modules/local").symlink_to(link)
+    register_runtime_workspace(root, tmp_path / "source")
+    with pytest.raises((LlmCoordError, ValueError), match=r"protected|escapes"):
+        runtime_identity(root, ["node_modules"])

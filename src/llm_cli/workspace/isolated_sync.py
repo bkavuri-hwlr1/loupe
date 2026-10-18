@@ -13,7 +13,8 @@ import hashlib
 import json
 import os
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -125,6 +126,7 @@ class SyncResult:
     conflicted: tuple[str, ...] = ()
     sequence: int = 0
     deferred: tuple[str, ...] = ()
+    runtime_notices: tuple[str, ...] = ()
 
     def note(self) -> str:
         notices = []
@@ -149,6 +151,7 @@ class SyncResult:
                 + suffix
                 + "; keeping accepted source and retrying at the next safe point."
             )
+        notices.extend(self.runtime_notices)
         return "\n".join(notices)
 
 
@@ -167,6 +170,7 @@ class IsolatedSynchronizer:
         self.capture = capture
         self.validate = validate
         self.refresh_capture = refresh_capture or capture
+        self.runtime_refresh: Callable[[str], tuple[str, ...]] | None = None
 
     def register(
         self,
@@ -233,10 +237,54 @@ class IsolatedSynchronizer:
     def _runtime(path: str, state: Mapping[str, Any]) -> bool:
         return runtime_path_matches(path, json.loads(state["runtime_paths_json"]))
 
+    @contextmanager
+    def _authority_pin(
+        self, workspace_id: str, *, recovery: bool = False
+    ) -> Iterator[None]:
+        authority = getattr(self.store, "authority", None)
+        if authority is None:
+            yield
+            return
+        with self.store.connection() as con:
+            row = con.execute(
+                "SELECT c.canonical_path FROM workspaces w "
+                "JOIN checkouts c USING(checkout_id) WHERE w.workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+        if row is None:
+            raise WorkspaceBrokerError(
+                "isolated source ownership binding is unavailable"
+            )
+        with authority.pin(Path(row[0]), recovery=recovery):
+            yield
+
     def synchronize(
-        self, workspace_id: str, *, refresh_source: bool = True
+        self,
+        workspace_id: str,
+        *,
+        refresh_source: bool = True,
+        refresh_runtime: bool = False,
+    ) -> SyncResult:
+        with self._authority_pin(workspace_id):
+            return self._synchronize(
+                workspace_id,
+                refresh_source=refresh_source,
+                refresh_runtime=refresh_runtime,
+            )
+
+    def _synchronize(
+        self,
+        workspace_id: str,
+        *,
+        refresh_source: bool = True,
+        refresh_runtime: bool = False,
     ) -> SyncResult:
         """Apply complete ordered incoming batches at a caller-owned safe point."""
+        runtime_notices = (
+            self.runtime_refresh(workspace_id)
+            if self.runtime_refresh and refresh_source and refresh_runtime
+            else ()
+        )
         with self.publisher.lock:
             self.recover(workspace_id)
             state = self._state(workspace_id)
@@ -324,6 +372,7 @@ class IsolatedSynchronizer:
                         tuple(conflicted),
                         sequence,
                         ("checkout snapshot",),
+                        runtime_notices,
                     )
                 report = self._refresh_primary(workspace_id, primary)
                 applied.extend(report.applied)
@@ -333,7 +382,12 @@ class IsolatedSynchronizer:
         else:
             deferred = ()
         return SyncResult(
-            tuple(applied), tuple(merged), tuple(conflicted), sequence, deferred
+            tuple(applied),
+            tuple(merged),
+            tuple(conflicted),
+            sequence,
+            deferred,
+            runtime_notices,
         )
 
     def _refresh_primary(self, workspace_id: str, primary: Manifest) -> SyncResult:
@@ -743,6 +797,10 @@ class IsolatedSynchronizer:
         return SyncResult(tuple(applied), tuple(merged), tuple(conflicts), sequence)
 
     def recover(self, workspace_id: str) -> None:
+        with self._authority_pin(workspace_id, recovery=True):
+            self._recover(workspace_id)
+
+    def _recover(self, workspace_id: str) -> None:
         with self.publisher.lock:
             state = self._state(workspace_id)
             with self.store.connection() as con:

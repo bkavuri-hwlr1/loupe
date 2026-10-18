@@ -63,6 +63,17 @@ the remaining planned capabilities are listed below.
   [measurements](experiments/isolated-runtime-c7-2026-10-17.md) and
   [ADR 0009](adr/0009-isolated-runtime-hydration.md).
 
+- Runtime refresh for isolated sessions (Wave 5 C8): metadata-only safe-point
+  detection adopts stable updates and new ignored inputs under hydration budgets.
+  Opening exact-file secret consent controls later updates; private divergence
+  keeps the local copy and produces one path-only notice. Commands, checks and
+  hooks block installation while running. Held proposals pin private runtime
+  generations and check configuration for apply after restart. Journaled root
+  installation recovers complete generations, discards unrecorded staging and
+  preserves later unexpected writes. Runtime bytes stay outside source history
+  and artifacts. Generation cleanup follows workspace retirement. See
+  [the guide](isolated-workspaces.md#runtime-refresh-and-retained-proposals).
+
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
   retained review proposals, task diffs, apply, undo, and cancellation. Shared
@@ -892,8 +903,8 @@ Waves 4–7, as packages that separate sessions can run at once.
 1. Validate the remaining multi-profile authority and migration guarantees.
    G1 designs these first, then G2 and G3 implement them.
 2. Complete isolated-mode live validation (C6); C7 implements faster checks.
-   Then extend isolated runtime support with runtime refresh (C8), a
-   per-session command environment (C9) and dependency rebuild adapters (C10).
+   C8 now implements runtime refresh; extend runtime support with a per-session
+   command environment (C9) and dependency rebuild adapters (C10).
 3. B6 now records paired synthetic review quality and cost. Keep review disabled
    by default; evaluate natural-work effectiveness before reconsidering it.
 4. Extend F1's implemented opt-in lexical discovery with a code graph (F2),

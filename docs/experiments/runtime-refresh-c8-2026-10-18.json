@@ -1,0 +1,24 @@
+{
+  "operation": "unchanged safe-point runtime refresh",
+  "observations": [
+    {
+      "dependency_files": 10000,
+      "unchanged_refresh_seconds": [
+        0.061758333002217114,
+        0.0665793750085868,
+        0.0619690419989638
+      ],
+      "median_seconds": 0.0619690419989638
+    },
+    {
+      "dependency_files": 50000,
+      "unchanged_refresh_seconds": [
+        0.21293158299522474,
+        0.2221109170350246,
+        0.21246799995424226
+      ],
+      "median_seconds": 0.21293158299522474
+    }
+  ],
+  "method": "three passes per size, stat-only, disposable synthetic repo, no live calls"
+}

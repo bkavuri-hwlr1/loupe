@@ -191,3 +191,22 @@ cache. Changed metadata or bytes invalidates the corresponding evidence. All cop
 workers drain before cleanup or error. The measured Loupe/APFS repeated check
 falls from about 3.03 seconds to 1.43–1.47 seconds, below the 1.5-second target;
 actual-value output screening remains before events and durable check output.
+
+## C8 follow-up decision (Wave 5)
+
+Runtime refresh uses stat receipts at caller-owned safe points. Opening exact-file
+secret consent applies to subsequent stable copies of that same runtime path;
+no resumed session can expand consent. Private divergence retains the local
+version and emits one path-only conflict notice per observed primary change.
+New ignored entries retain normal hydration budgets and adapter boundaries.
+Runtime bytes and content digests never enter the refresh journal or source
+ledger. Prepared private root transitions recover by recorded inode/stat
+receipts, recognizing only the before and after state; ambiguous later writes
+are preserved. Unrecorded staged generations are disposable.
+
+A retained proposal pins an immutable private generation and its check
+configuration. Later live-runtime refresh does not replace those inputs for
+`/apply`. Activity guards reserve command/check/hook snapshots across execution;
+staging and large dependency copies do not hold the shared publication lock.
+Generation directories are owner-only, carry the session ownership token, and
+are removed with the workspace once live work and held proposals release it.

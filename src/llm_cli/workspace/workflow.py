@@ -250,6 +250,21 @@ class TaskWorkflow:
         files: tuple[BatchFile, ...],
     ) -> None:
         self.ensure(task_id)
+        task = self.store.get_task(task_id)
+        session = self.store.get_session(task.session_id or "") if task else None
+        if (
+            files
+            and session
+            and session.workspace_mode == "isolated"
+            and self.isolated_sync
+        ):
+            from llm_cli.workspace.runtime_refresh import RuntimeRefresher
+
+            workspace = self.store.get_workspace(session.workspace_id or "")
+            assert workspace is not None
+            RuntimeRefresher(
+                self.store, Path(workspace.canonical_path).parent, self.publisher.lock
+            ).pin_task(workspace.workspace_id, task_id, attempt)
         self.update(
             task_id,
             attempt,
@@ -271,7 +286,17 @@ class TaskWorkflow:
         # Persist disposition before releasing authority, so startup cannot
         # accidentally resume a completed-but-held proposal.
         status = "cancelled" if cancelled else "awaiting_review"
-        self.update(task_id, attempt, status=status)
+        from llm_cli.workspace.runtime_refresh import RuntimeRefresher
+
+        frozen_config = RuntimeRefresher(
+            self.store, self.publisher.candidate_dir, self.publisher.lock
+        ).task_config(task_id, attempt)
+        self.update(
+            task_id,
+            attempt,
+            status=status,
+            **({"config_json": frozen_config} if frozen_config is not None else {}),
+        )
         self.coordinator.settle_shared_execution(
             execution_id,
             outcome="failed_safe",
@@ -428,7 +453,12 @@ class TaskWorkflow:
         return {"state": "discarded", "task_id": task_id}
 
     def _publication_workspace(
-        self, session: SessionRecord, *, allow_removed: bool = False
+        self,
+        session: SessionRecord,
+        *,
+        allow_removed: bool = False,
+        task_id: str | None = None,
+        attempt: int | None = None,
     ) -> tuple[WorkspaceRecord, Path | None, str | None]:
         """Resolve a retained action to shared source and its private runtime.
 
@@ -477,8 +507,16 @@ class TaskWorkflow:
                 # no private files or runtime remain necessary after close.
                 return source, None, None
             raise ValueError("The isolated proposal's private workspace was removed.")
+        runtime_root = Path(workspace.canonical_path)
+        if task_id is not None and attempt is not None:
+            from llm_cli.workspace.runtime_refresh import RuntimeRefresher
+
+            runtime_root = RuntimeRefresher(
+                self.store, runtime_root.parent, self.publisher.lock
+            ).task_root(workspace.workspace_id, task_id, attempt)
+        # Pin legacy held proposals before the first newly supported refresh.
         self.isolated_sync.synchronize(workspace.workspace_id)
-        return source, Path(workspace.canonical_path), workspace.workspace_id
+        return source, runtime_root, workspace.workspace_id
 
     def apply(
         self, task_id: str, *, undo: bool = False, allow_unverified: bool = False
@@ -504,7 +542,9 @@ class TaskWorkflow:
             session = self.store.get_session(task.session_id or "")
             if session is None:
                 raise ValueError("Apply currently requires a shared-session task.")
-            workspace, runtime_root, _ = self._publication_workspace(session)
+            workspace, runtime_root, _ = self._publication_workspace(
+                session, task_id=task_id, attempt=int(row["attempt"])
+            )
             sensitive_paths: tuple[str, ...] = ()
             if runtime_root is not None:
                 with self.store.connection() as con:
@@ -639,7 +679,10 @@ class TaskWorkflow:
         if session is None:
             raise ValueError("Apply and undo currently require a shared-session task.")
         workspace, runtime_root, isolated_workspace_id = self._publication_workspace(
-            session, allow_removed=undo
+            session,
+            allow_removed=undo,
+            task_id=None if undo else task_id,
+            attempt=None if undo else int(row["attempt"]),
         )
         root = Path(workspace.canonical_path)
         files = prepared if prepared is not None else decode_files(row["proposal_json"])
