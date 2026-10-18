@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,8 @@ from test_shared_batches import batch_env as batch_env
 from llm_cli.cli.app import _graph_neighbors_text, build_parser, dispatch
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.knowledge import store as store_module
+from llm_cli.knowledge.graph import neighbors
+from llm_cli.knowledge.graph_schema import GRAPH_MIGRATIONS
 from llm_cli.knowledge.indexer import KnowledgeIndex
 from llm_cli.knowledge.parsers import PROJECTION_VERSION, PYTHON_VERSION, VERSION
 from llm_cli.storage.backup import backup_database
@@ -132,10 +135,16 @@ def test_changed_import_and_delete_remove_old_edges_without_reparsing_other_file
             "knowledge_graph_aliases",
             "knowledge_graph_edges",
         ):
+            protected = (
+                "SELECT document_id FROM knowledge_documents "
+                "WHERE relative_path='tests/test_batches.py'"
+                if table == "knowledge_graph_files"
+                else "SELECT file_key FROM knowledge_graph_files "
+                "WHERE relative_path='tests/test_batches.py'"
+            )
             con.execute(
                 f"CREATE TRIGGER protect_{table} BEFORE DELETE ON {table} "
-                "WHEN OLD.document_id IN (SELECT document_id FROM knowledge_documents "
-                "WHERE relative_path='tests/test_batches.py') BEGIN "
+                f"WHEN OLD.document_id IN ({protected}) BEGIN "
                 "SELECT RAISE(ABORT,'unchanged graph rewrite'); END"
             )
     calls: list[str] = []
@@ -241,9 +250,10 @@ def test_graph_schema_upgrade_requires_explicit_rebuild_and_backup_is_complete(
             "knowledge_graph_aliases",
             "knowledge_graph_nodes",
             "knowledge_graph_files",
+            "knowledge_graph_sources",
         ):
             con.execute("DROP TABLE " + table)
-        con.execute("DELETE FROM schema_migrations WHERE version=4")
+        con.execute("DELETE FROM schema_migrations WHERE version>=4")
         con.execute("DELETE FROM store_metadata WHERE key LIKE 'graph_version:%'")
         assert apply_migrations(con, KNOWLEDGE_MIGRATIONS) == 3
     index.initialize()
@@ -252,7 +262,7 @@ def test_graph_schema_upgrade_requires_explicit_rebuild_and_backup_is_complete(
     assert index.search_lexical(checkout, "old")["results"]
     assert index.build(checkout, rebuild=True)["state"] == "ready"
     metadata = backup_database(index.store.path, tmp_path / "graph-backup.sqlite3")
-    assert metadata.schema_version == 4
+    assert metadata.schema_version == 5
     with index.store.connection() as con:
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
     index.drop(checkout)
@@ -502,3 +512,281 @@ def test_duplicate_imports_obey_edge_budget_even_with_only_two_nodes(
     assert all(
         edge["target"] == "javascript-package:same-package" for edge in result["edges"]
     )
+
+
+def _logical_graph_rows(con: sqlite3.Connection) -> dict[str, list[tuple[Any, ...]]]:
+    """Expand storage keys into the v4 logical facts, including all evidence."""
+    columns = {
+        "knowledge_graph_nodes": "t.node_id,f.document_id,t.kind,t.name,t.start_line",
+        "knowledge_graph_aliases": "t.alias,t.node_id,f.document_id",
+        "knowledge_graph_edges": (
+            "f.document_id,t.ordinal,t.source_node,t.target_node,t.edge_type,"
+            "t.start_line,t.generation_id"
+        ),
+    }
+    result = {
+        "knowledge_graph_files": [
+            tuple(row)
+            for row in con.execute(
+                "SELECT f.document_id,s.source_id,f.relative_path,f.parser,"
+                "f.parser_version,f.error_code FROM knowledge_graph_files f "
+                "JOIN knowledge_graph_sources s USING(source_key) ORDER BY 1,2,3"
+            )
+        ]
+    }
+    for table, fields in columns.items():
+        result[table] = [
+            tuple(row)
+            for row in con.execute(
+                f"SELECT s.source_id,{fields} FROM {table} t "
+                "JOIN knowledge_graph_files f ON f.file_key=t.document_id "
+                "JOIN knowledge_graph_sources s ON s.source_key=t.source_key "
+                "ORDER BY 1,2,3"
+            )
+        ]
+    return result
+
+
+@pytest.mark.parametrize("pending_changes", [False, True])
+def test_v4_compact_upgrade_preserves_lexical_and_requires_complete_graph_rebuild(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    git_run: Callable[..., str],
+    pending_changes: bool,
+) -> None:
+    env = batch_env
+    _prepare(env, git_run)
+    index, checkout = _index(env, tmp_path)
+    assert index.build(checkout)["state"] == "ready"
+    before = index.graph_neighbors(checkout, "workspace/batches.py", depth=2)
+    with index.store.connection() as con:
+        logical = _logical_graph_rows(con)
+        cursor = [tuple(row) for row in con.execute("SELECT * FROM projection_cursors")]
+        lexical = [
+            tuple(row) for row in con.execute("SELECT * FROM knowledge_documents")
+        ]
+        # Construct a populated, checksummed v4 fixture using its actual schema.
+        for table in (
+            "knowledge_graph_edges",
+            "knowledge_graph_aliases",
+            "knowledge_graph_nodes",
+            "knowledge_graph_files",
+            "knowledge_graph_sources",
+        ):
+            con.execute("DROP TABLE " + table)
+        con.execute("DELETE FROM schema_migrations WHERE version>=4")
+        assert apply_migrations(con, GRAPH_MIGRATIONS[:-1]) == 4
+        for table, rows in logical.items():
+            placeholders = ",".join("?" for _ in rows[0])
+            con.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+        assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+    index.initialize()
+    with index.store.connection() as con:
+        assert (
+            con.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 5
+        )
+        assert [
+            tuple(row) for row in con.execute("SELECT * FROM projection_cursors")
+        ] == cursor
+        assert [
+            tuple(row) for row in con.execute("SELECT * FROM knowledge_documents")
+        ] == lexical
+        assert (
+            con.execute("SELECT count(*) FROM knowledge_graph_files").fetchone()[0] == 0
+        )
+    assert (
+        index.graph_neighbors(checkout, "workspace/batches.py")["state"] == "not_built"
+    )
+    assert index.search_lexical(checkout, "Batch")["results"]
+    if pending_changes:
+        # Both an accepted no-op and a changed file keep the graph hidden until
+        # the full baseline is rebuilt, rather than publishing a partial graph.
+        for batch, body in (
+            ("upgrade-noop", FILES["src/pkg/consumer.py"].encode()),
+            ("upgrade-change", b"import os\n"),
+        ):
+            _publish(env, "src/pkg/consumer.py", body, batch)
+            assert index.process_pending() == 1
+            assert (
+                index.graph_neighbors(checkout, "src/pkg/consumer.py")["state"]
+                == "not_built"
+            )
+            assert index.search_lexical(checkout, "Batch")["results"]
+    assert index.build(checkout, rebuild=True)["state"] == "ready"
+    if not pending_changes:
+        assert (
+            index.graph_neighbors(checkout, "workspace/batches.py", depth=2) == before
+        )
+        with index.store.connection() as con:
+            assert _logical_graph_rows(con) == logical
+    else:
+        assert (
+            index.graph_neighbors(checkout, "src/pkg/consumer.py", edge="changed-by")[
+                "edges"
+            ][0]["target"]
+            == "batch:upgrade-change"
+        )
+    with index.store.connection() as con:
+        assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_compact_graph_sources_with_identical_paths_are_isolated_and_cascade(
+    batch_env: BatchEnvironment, tmp_path: Path, git_run: Callable[..., str]
+) -> None:
+    env = batch_env
+    _prepare(env, git_run)
+    index, checkout = _index(env, tmp_path)
+    first = index.build(checkout)
+    source = str(first["source_id"])
+    documents = index.store.documents(source)
+    index.store.start_job(
+        "second-source", "second-checkout", env.repository, "base", 0, "second"
+    )
+    second = index.store.replace(
+        source_id="second-source",
+        checkout_id="second-checkout",
+        root=env.repository,
+        base_oid="base",
+        sequence=0,
+        outbox_id=0,
+        documents=documents,
+        job_id="second",
+    )
+    with index.store.connection() as con:
+        original = {
+            table: [
+                row
+                for row in rows
+                if (row[1] if table == "knowledge_graph_files" else row[0])
+                == "second-source"
+            ]
+            for table, rows in _logical_graph_rows(con).items()
+        }
+        assert (
+            con.execute("SELECT count(*) FROM knowledge_graph_sources").fetchone()[0]
+            == 2
+        )
+    _publish(env, "src/pkg/consumer.py", b"import os\n", "source-one-change")
+    assert index.process_pending() == 1
+    assert index.build(checkout, rebuild=True)["state"] == "ready"
+    index.drop(checkout)
+    result = neighbors(index.store, "second-checkout", "workspace/batches.py")
+    assert result["state"] == "ready" and result["edges"]
+    assert result["generation"] == second["generation"]
+    assert any(edge["path"] == "src/pkg/consumer.py" for edge in result["edges"])
+    with index.store.connection() as con:
+        assert _logical_graph_rows(con) == original
+        assert (
+            con.execute("SELECT count(*) FROM knowledge_graph_sources").fetchone()[0]
+            == 1
+        )
+        assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+    index.store.drop("second-checkout")
+    with index.store.connection() as con:
+        for table in (*original, "knowledge_graph_sources"):
+            assert con.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("failure", ["deadline", "foreign-key", "unique"])
+def test_compact_rebuild_failure_preserves_readers_keys_generation_and_cursor(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    env = batch_env
+    _prepare(env, git_run)
+    index, checkout = _index(env, tmp_path)
+    built = index.build(checkout)
+    source = str(built["source_id"])
+    documents = index.store.documents(source)
+    with index.store.connection() as con:
+        graph = _logical_graph_rows(con)
+        cursor = [tuple(row) for row in con.execute("SELECT * FROM projection_cursors")]
+        keys = [
+            tuple(row) for row in con.execute("SELECT * FROM knowledge_graph_sources")
+        ]
+        indexes = [
+            tuple(row)
+            for row in con.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='index' ORDER BY name"
+            )
+        ]
+    original = index.store._insert_graph
+
+    class Clock:
+        now = 0.0
+
+        def remaining(self) -> float:
+            if self.now >= 30:
+                raise ValueError("test build deadline exceeded")
+            return 30 - self.now
+
+    clock = Clock()
+    observed = False
+
+    def interrupt(con: sqlite3.Connection, *args: Any) -> None:
+        nonlocal observed
+        original(con, *args)
+        with index.store.connection() as reader:
+            assert _logical_graph_rows(reader) == graph
+            assert (
+                reader.execute(
+                    "SELECT active_generation FROM knowledge_sources WHERE source_id=?",
+                    (source,),
+                ).fetchone()[0]
+                == built["generation"]
+            )
+        observed = True
+        if failure == "deadline":
+            clock.now = 31
+        elif failure == "foreign-key":
+            con.execute(
+                "INSERT INTO knowledge_graph_edges "
+                "VALUES (1,-1,0,'a','b','imports',1,'test')"
+            )
+        else:
+            con.execute(
+                "INSERT INTO knowledge_graph_nodes "
+                "SELECT * FROM knowledge_graph_nodes LIMIT 1"
+            )
+
+    monkeypatch.setattr(index.store, "_insert_graph", interrupt)
+    index.store.start_job(source, checkout, env.repository, "base", 1, "failed-rebuild")
+    with pytest.raises(ValueError if failure == "deadline" else sqlite3.IntegrityError):
+        index.store.replace(
+            source_id=source,
+            checkout_id=checkout,
+            root=env.repository,
+            base_oid="base",
+            sequence=1,
+            outbox_id=1,
+            documents=documents,
+            job_id="failed-rebuild",
+            remaining=clock.remaining,
+        )
+    assert observed
+    with index.store.connection() as con:
+        assert _logical_graph_rows(con) == graph
+        assert [
+            tuple(row) for row in con.execute("SELECT * FROM projection_cursors")
+        ] == cursor
+        assert [
+            tuple(row) for row in con.execute("SELECT * FROM knowledge_graph_sources")
+        ] == keys
+        assert [
+            tuple(row)
+            for row in con.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='index' ORDER BY name"
+            )
+        ] == indexes
+        assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert (
+            con.execute(
+                "SELECT active_generation FROM knowledge_sources WHERE source_id=?",
+                (source,),
+            ).fetchone()[0]
+            == built["generation"]
+        )
+    assert index.search_lexical(checkout, "Batch")["results"]

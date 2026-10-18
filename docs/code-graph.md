@@ -19,7 +19,10 @@ loupe --json graph neighbors llm_cli.workspace.batches --edge imports
 
 `index build` and `index rebuild` construct both lexical and graph projections.
 An older lexical index remains searchable after upgrading; run `index rebuild`
-once to add the graph. `index drop` removes both projections for that checkout.
+once to add the graph. The compact-key graph storage upgrade also preserves
+lexical results and requires this complete graph rebuild; pending publications
+do not make a partial graph visible. `index drop` removes both projections for
+that checkout.
 With indexing off, graph queries return `off` without creating an optional store.
 
 The command follows incoming and outgoing edges. The default depth is one;
@@ -99,3 +102,8 @@ projection does not advance its cursor and retries without blocking publication.
 `index status`, `doctor`, `db check` and `db backup` retain the existing optional
 store health and recovery behavior. A verified database backup includes graph
 facts and the independently checksummed knowledge schema version.
+
+Graph storage uses integer keys for internal source and document references.
+Public node IDs, aliases and edge evidence retain their deterministic source
+identities. This avoids repeating long content/source hashes in every graph row
+and index; it does not change the 30-second build or five-second update budgets.

@@ -235,6 +235,20 @@ class KnowledgeStore:
         )
 
     @staticmethod
+    def _graph_source_key(con: sqlite3.Connection, source: str) -> int:
+        row = con.execute(
+            "SELECT source_key FROM knowledge_graph_sources WHERE source_id=?",
+            (source,),
+        ).fetchone()
+        if row is not None:
+            return int(row[0])
+        cursor = con.execute(
+            "INSERT INTO knowledge_graph_sources(source_id) VALUES (?)", (source,)
+        )
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+    @staticmethod
     def _insert_graph(
         con: sqlite3.Connection, source: str, generation: str, doc: Document
     ) -> None:
@@ -242,27 +256,31 @@ class KnowledgeStore:
         document = hashlib.sha256(
             f"{source}\0{doc.path}\0{doc.identity}".encode()
         ).hexdigest()
-        con.execute(
-            "INSERT INTO knowledge_graph_files VALUES (?,?,?,?,?,?)",
+        source_key = KnowledgeStore._graph_source_key(con, source)
+        cursor = con.execute(
+            "INSERT INTO knowledge_graph_files"
+            "(document_id,source_key,relative_path,parser,parser_version,error_code) "
+            "VALUES (?,?,?,?,?,?)",
             (
                 document,
-                source,
+                source_key,
                 doc.path,
                 parsed.parser,
                 GRAPH_VERSION if parsed.parser == "python-ast" else TOKENIZER_VERSION,
                 parsed.error,
             ),
         )
+        file_key = cursor.lastrowid
         con.executemany(
             "INSERT INTO knowledge_graph_nodes VALUES (?,?,?,?,?,?)",
             [
-                (source, node.key, document, node.kind, node.name, node.line)
+                (source_key, node.key, file_key, node.kind, node.name, node.line)
                 for node in parsed.nodes
             ],
         )
         con.executemany(
             "INSERT INTO knowledge_graph_aliases VALUES (?,?,?,?)",
-            [(source, alias, node, document) for alias, node in parsed.aliases],
+            [(source_key, alias, node, file_key) for alias, node in parsed.aliases],
         )
         edges = list(parsed.edges)
         if doc.batch_id:
@@ -273,8 +291,8 @@ class KnowledgeStore:
             "INSERT INTO knowledge_graph_edges VALUES (?,?,?,?,?,?,?,?)",
             [
                 (
-                    source,
-                    document,
+                    source_key,
+                    file_key,
                     ordinal,
                     edge.source,
                     edge.target,
@@ -291,21 +309,24 @@ class KnowledgeStore:
         con: sqlite3.Connection, document: str, generation: str, doc: Document
     ) -> None:
         # An accepted no-op changes receipt evidence, not its parsed imports.
+        row = con.execute(
+            "SELECT file_key,source_key FROM knowledge_graph_files WHERE document_id=?",
+            (document,),
+        ).fetchone()
+        if row is None:
+            # An upgraded lexical-only projection awaits its complete rebuild.
+            return
         con.execute(
             "DELETE FROM knowledge_graph_edges WHERE document_id=? AND "
             "edge_type='changed-by'",
-            (document,),
+            (row[0],),
         )
         if doc.batch_id:
-            row = con.execute(
-                "SELECT source_id FROM knowledge_documents WHERE document_id=?",
-                (document,),
-            ).fetchone()
             con.execute(
                 "INSERT INTO knowledge_graph_edges VALUES (?,?,?,?,?,'changed-by',1,?)",
                 (
+                    row[1],
                     row[0],
-                    document,
                     -1,
                     "file:" + doc.path,
                     "batch:" + doc.batch_id,
