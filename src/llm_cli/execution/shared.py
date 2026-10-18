@@ -490,6 +490,7 @@ class SharedTaskExecutionRunner:
                     return (
                         replace(
                             update,
+                            facts_unchanged=False,
                             text="\n".join(
                                 part for part in (update.text, note) if part
                             ),
