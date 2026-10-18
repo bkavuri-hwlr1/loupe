@@ -482,6 +482,15 @@ under coverage, within the original 30-second budget; the
 [F2 plan](parallel-work-plan.md#f2-deterministic-code-graph) distinguishes this
 workload from the earlier simpler baseline.
 
+The compact graph format at `aa6a5c1` keeps public IDs and evidence unchanged
+while replacing repeated source/document references internally. Its 172 affected
+regressions passed under coverage, along with Ruff, mypy and package builds.
+The unchanged dense fixture built all 400,000 function nodes in 8.301 seconds;
+single-publication updates measured 43.2 ms at 1,000 files and 37.6 ms at 10,000.
+Migration 5 preserves lexical data and requires a complete graph rebuild per
+source before graph queries resume. Full platform results are tracked in
+[PR #64](https://github.com/bkavuri-hwlr1/loupe/pull/64).
+
 F1 validation at source revision `507bd41` passed 73 focused lexical, backup,
 configuration, schema and scanner regressions, repository Ruff, mypy over 116
 source files, and source-distribution/wheel builds.

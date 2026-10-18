@@ -941,6 +941,12 @@ fixture measured 12.683 to 10.324 seconds overall and 4.517 to 2.298 seconds in
 parsing; these local timings do not establish general throughput gains. See the
 [code graph guide](code-graph.md) for parser limits and upgrade/rebuild behavior.
 
+At `aa6a5c1`, compact internal source/document references reduced the same dense
+build to 8.301 seconds under coverage, retaining all 400,000 function nodes.
+Publication updates measured 43.2 ms at 1,000 files and 37.6 ms at 10,000.
+The graph-only format migration preserves lexical search while each graph awaits
+its complete rebuild; public graph IDs and evidence are unchanged.
+
 ### F3. Optional retrieval in the agent, with a live comparison (*live*)
 
 **Scope.**
