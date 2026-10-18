@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from llm_cli.agent.finalization import (
     checkpoint_finalization,
@@ -46,6 +47,9 @@ from llm_cli.coordination.scopes import normalize_scopes, scope_sets_overlap
 from llm_cli.storage.connection import connect_control, immediate_transaction
 from llm_cli.storage.migrations import apply_migrations
 from llm_cli.workspace.identity import FileIdentity, ObjectKind
+
+if TYPE_CHECKING:
+    from llm_cli.workspace.authority import PhysicalAuthority
 
 _REPO_KEY = re.compile(r"^[a-f0-9]{64}$")
 _ANSWER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
@@ -162,6 +166,7 @@ class ControlStore:
         clock: object = time.time,
     ) -> None:
         self.path = Path(path).expanduser()
+        self.authority: PhysicalAuthority | None = None
         self.timeout_seconds = timeout_seconds
         if not callable(clock):
             raise TypeError("clock must be callable")
