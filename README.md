@@ -801,8 +801,10 @@ tasks do not allocate a publication revision. Optimistic scheduling changes
 when private work can begin; publication still runs through the daemon's short
 barrier and rechecks every candidate base. A stale batch fails with its complete
 proposal preserved for inspection; asking again in the conversation redoes it
-against the current files. These shared guarantees currently
-apply within one daemon profile.
+against the current files. Revisions and event histories remain local to each
+profile. [Cross-profile checkout ownership](docs/cross-profile-authority.md)
+prevents cooperating profiles from publishing concurrently; clean handoffs
+re-observe current source and report a history gap.
 
 `llm-coord task watch TASK_ID --after SEQUENCE` follows any task from any
 session. The stream is a replay of the durable event table rather than a live

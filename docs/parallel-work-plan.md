@@ -984,22 +984,26 @@ migrations in `src/llm_cli/storage/migrations.py`, `src/llm_cli/config/`, the
 
 ## Lane G — authority across profiles
 
-Each profile has its own state directory and control database. Two profiles
-on the same checkout are therefore separate coordination domains:
+**Original problem before G2.** Each profile has its own state directory and
+control database. Two profiles on the same checkout were separate coordination
+domains:
 
-- Each daemon believes it is the only publisher, so neither publication
-  barrier sees the other's publications.
-- One profile's unfinished publication journal is invisible to the other.
+- Each daemon believed it was the only publisher, so neither publication
+  barrier saw the other's publications.
+- One profile's unfinished publication journal was invisible to the other.
 
-The workspace plan's answer is large: an OS lock in a persistent per-user
+The workspace plan's full answer includes an OS lock in a persistent per-user
 root, handoff markers with regime generations, handoff equality keys,
 offline-drift adoption, and a legacy-to-workspace regime cutover (§14.22,
-§24.2, Phase 11). None of it is in the code yet.
+§24.2, Phase 11). G2 now implements bounded physical ownership, dirty/clean
+markers and conservative original-owner recovery under accepted
+[ADR 0010](adr/0010-cross-profile-publication-authority.md). Handoff equality,
+offline-drift adoption and the claim-free cutover remain deferred.
 
-The legacy claim scheduler also still runs beside workspace publication.
+The legacy claim scheduler still runs beside workspace publication.
 Sessionless `loupe run` tasks, `loupe claim` and exclusive claims use it
-(`coordination/coordinator.py`). G1 decides how much of the plan is needed
-before anything is built.
+(`coordination/coordinator.py`). The accepted G1 decision retains that contract
+in G2; G3's explicit claim-free migration remains separate.
 
 ### G1. Multi-profile authority: design and ADR
 

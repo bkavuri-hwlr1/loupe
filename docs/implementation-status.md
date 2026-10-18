@@ -547,10 +547,11 @@ renames, binary replacements, and contained relative symlink edits use the batch
 journal. Binary and symlink changes never merge after a base change; escaping,
 protected, ignored, and chained symlink targets are refused. Named checks use
 disposable snapshots. The daemon barrier
-coordinates cooperating reads and publications within one profile. It does not
-make a multi-file filesystem replacement atomic for external editors or test
-processes, and the complete multi-profile guarantees in the plan are not yet
-implemented. `validate_changes` checks scope and exact bases; it does not run
+coordinates cooperating reads and publications within one profile; G2's physical
+checkout ownership extends the cooperative boundary across updated profiles under
+one OS account. Multi-file replacements remain nonatomic for external editors or
+test processes, and the plan's global history/equality guarantees remain deferred.
+`validate_changes` checks scope and exact bases; it does not run
 tests or prove that disjoint changes work together.
 
 Scripted-provider end-to-end tests exercise real Git repositories, successive
@@ -892,6 +893,9 @@ conservative original-owner recovery. Task workers retain pins until their actua
 thread finishes; clean ownership releases after 30 seconds idle independently of
 the legacy reconciliation timer. Background scans do not keep conversations
 owning a checkout. Held proposals keep their bases/private runtime across release.
+Same-profile acquisitions wait for a live checkout mutation outside the global
+authority lock, then revalidate identity, database binding and the final marker;
+abandoned dirty operations still require exact recovery.
 
 Batch/manual publication, direct shared/legacy runner entries, isolated
 creation/cleanup, final Git side effects and per-checkout startup recovery are
@@ -899,7 +903,9 @@ fenced. Explicit `workspace observe` gives peers source reads labeled outside th
 owner's barrier with no edit capability. Workspace status/doctor expose ownership,
 foreign recovery and changed identity. Handoffs re-observe stable source, advance
 the workspace epoch and deliver a bounded history-gap notice to model/terminal;
-they do not reconstruct another profile's history.
+they do not reconstruct another profile's history. Early authority journals bind
+sessionless claims/executions to their exact physical checkout across same-remote
+repository re-registration; missing or ambiguous anchors retain attention.
 
 The real daemon regression covers competition, actual 30-second idle handoff,
 stale retained bases and SIGKILL/original-owner recovery. A fault matrix covers
@@ -907,7 +913,13 @@ dirty, journal, file, DB-confirm and clean-marker gaps; physical tests cover
 aliases/clones/linked worktrees, a real-process common-store lock, unsafe roots,
 unknown/network filesystem semantics, database replacement, missing/corrupt
 markers, PID reuse, running shutdown workers and private-value absence.
-Full-suite validation is recorded after the current verification run completes.
+Local validation checkpoint (October 18, 2026): frozen `27665a2` completed with
+2,826 passing tests, three outdated-fixture failures and one expected filesystem
+skip. Test-only `73da9bd` preserves product source and corrects those fixtures;
+all three changed files plus missing-anchor and linked-checkout guards passed
+69 tests. Ruff, mypy over 118 source files and wheel/source builds passed. A full
+run of the corrected test head and cross-platform CI had not completed at this
+checkpoint.
 
 [Cross-profile guide](cross-profile-authority.md) documents read-only commands,
 stable errors and recovery. G3's claim-free cutover, foreign journal import,

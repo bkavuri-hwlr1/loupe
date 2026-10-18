@@ -34,6 +34,11 @@ participating in the cooperative barrier hold pins too. An actual running or
 queued worker retains its pin through cancellation of its asyncio waiter and
 shutdown bookkeeping. Active legacy reservations also prevent idle release.
 
+Another operation in the same profile waits for a live mutation on that checkout
+without holding the authority manager's global lock. Acquisition then revalidates
+physical identity, database binding and the final marker. A dirty marker left by
+an operation that has stopped still requires exact recovery.
+
 When pins and active reservations drain, a clean owner releases after 30 seconds
 idle. Background advisory scans do not reset that clock. An open conversation or
 settled held proposal does not own a checkout forever. Releasing ownership keeps
@@ -66,9 +71,12 @@ loupe --profile OWNER --json workspace status .
 
 Startup uses the same gate before any recovery side effect. Batch and manual
 publication recovery require exact before/after path proofs; legacy publication
-uses its exact execution/ref intent. A third path state, missing journal, unknown
-Git effect or mismatched binding retains attention. An affected checkout does not
-prevent inspection or work on an independent checkout.
+uses its exact execution/ref intent. Sessionless claims and executions retain
+early authority journals bound to their physical checkout, so registering another
+clone with the same remote cannot retarget retry or recovery. A third path state,
+missing or ambiguous anchor, missing journal, unknown Git effect or mismatched
+binding retains attention. An affected checkout does not prevent inspection or
+work on an independent checkout.
 
 Dirty is written and fsynced before an applicable journal or checkout side
 effect. Clean is written only after durable events and verified final results.
