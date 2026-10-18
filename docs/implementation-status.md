@@ -724,6 +724,34 @@ reconciliation and required checks pass. The setting defaults to `off`.
 `agent.review_effort` defaults to `low`; `"task"` uses the task's effort,
 and any requested level is capped at that effort.
 
+### Wave 4 B6: paired review corpus (October 17, 2026)
+
+Suite version 4 measures eight planted defect kinds and four correct controls,
+three repetitions per review arm, alternating the first arm. The final 72-cell
+comparison combines 66 original live cells and six replacement control cells;
+six saved resource proposals were re-scored offline after fixing the oracle.
+All raw outcomes and costs remain recorded, with exact proposal/hidden-test witnesses.
+`codex/gpt-6-sol` used task effort `xhigh`, review effort `low`, and no exploration.
+Hidden bug tests passed for **0/24 with review off** and
+**24/24 with review on**; review-driven repairs broke
+**0/12 clean controls**. Finding counts alone do not establish
+semantic precision or effectiveness on natural work.
+
+Review on used 1,313,126 observed tokens versus 534,644 off
+(2.46×), with median task wall time 43.25 s versus
+17.00 s. Direct reviewer tokens were
+70,277 of the on arm; extra repair and check work
+accounts for the rest of the overhead. The final matrix and excluded earlier
+attempts together consumed **2,317,163/3,000,000** tokens. A complete
+medium-effort comparison did not fit the remaining measured-cost budget.
+
+**Recommendation: keep review off by default.** This seeded corpus supports an
+explicit opt-in at a measurable cost; changing the default remains the user's
+decision. The [experiment](experiments/review-corpus-b6-2026-10-17.md) records
+per-case outcomes, cache usage, provenance, excluded attempts and limitations.
+
+### Original review gate and Wave 2 acceptance
+
 The runner supplies the exact pending diff and complete original/candidate
 text, plus check results tied to the candidate/source/configuration digests.
 The reviewer returns explicit no-findings or changed-file/line findings.
@@ -753,8 +781,8 @@ documentation commits leave product source unchanged; their targeted follow-up
 checks pass. Independent review of the cancellation/deadline follow-up also
 found no defects and reran both added regressions successfully.
 
-The live benchmark suite is version 3 (separate from the session experiment's
-version). `independent-review-planted-bug` deliberately seeds an off-by-one
+The original Wave 2 live benchmark used suite version 3 (separate from the
+session experiment's version). `independent-review-planted-bug` deliberately seeds an off-by-one
 pagination proposal that passes its incomplete smoke checks, calls the review
 gate, then repairs findings. Scoring requires exactly one observed completed
 review with at least one finding. A hidden acceptance test fails on the
@@ -780,8 +808,9 @@ The observed duration was 44 seconds while full test suites ran on the same
 machine, so it is not a comparative performance result. An initial run was
 excluded because a multiline piped prompt submitted three tasks; the prompt
 is now one physical line and its scoring/prompt tests pass (31 tests). This
-controlled example demonstrates the finding/repair gate. Broader bug-detection
-quality and cost savings remain unmeasured. Review remains off by default.
+controlled example demonstrates the finding/repair gate. The dated Wave 4 B6 corpus
+broadens this synthetic measurement; natural-work effectiveness and cost
+savings remain unmeasured. Review remains off by default.
 
 ## Wave 4 G1: proposed cross-profile authority decision (October 17, 2026)
 
@@ -814,8 +843,8 @@ Waves 4–7, as packages that separate sessions can run at once.
 2. Complete isolated-mode live validation (C6); C7 implements faster checks.
    Then extend isolated runtime support with runtime refresh (C8), a
    per-session command environment (C9) and dependency rebuild adapters (C10).
-3. Broaden independent-review quality and cost measurements beyond the completed
-   planted-bug acceptance run (B6). Keep review disabled by default until then.
+3. B6 now records paired synthetic review quality and cost. Keep review disabled
+   by default; evaluate natural-work effectiveness before reconsidering it.
 4. Extend F1's implemented opt-in lexical discovery with a code graph (F2),
    then retrieval in the agent with a live comparison (F3). Add embeddings with
    exact scoring (F4) only if that comparison shows retrieval helps.

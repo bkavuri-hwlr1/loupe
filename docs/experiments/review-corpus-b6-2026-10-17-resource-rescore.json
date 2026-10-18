@@ -1,0 +1,340 @@
+{
+  "schema_version": 1,
+  "kind": "offline resource-oracle correction",
+  "raw_matrix_sha256": "4c63a7b4f7f1fbb0450d0b463dcc45ce1813ab267156b31705df61443f5a5c7e",
+  "raw_matrix_runner_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+  "oracle_commit": "cce2565eb4e4d74e8bacb05ad14eef31c6e77cf8",
+  "oracle_path": "scripts/benchmark_acceptance/review-resource/test_acceptance.py",
+  "oracle_sha256": "57ed88da2e8c5f3420d4e208449e6820ef4066f58aa8c8f492c1936a5bbb647e",
+  "new_model_requests": 0,
+  "new_provider_tokens": 0,
+  "raw_matrix_unchanged": true,
+  "rescorings": [
+    {
+      "task_id": "chat_01a148b18a07933193ad170b34ba922d",
+      "id": "review-resource",
+      "review_arm": "off",
+      "repetition": 1,
+      "candidate_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89",
+      "candidate_content_utf8": "\"\"\"A small application component with a prescribed review proposal.\"\"\"\n\n\ndef read_label(path):\n    handle = path.open()\n    try:\n        return handle.read().strip()\n    finally:\n        pass\n",
+      "raw_hidden_acceptance": {
+        "ran": true,
+        "passed": false,
+        "returncode": 1,
+        "reason": null
+      },
+      "corrected_hidden_acceptance": {
+        "ran": true,
+        "passed": false,
+        "returncode": 1,
+        "reason": null
+      },
+      "source_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "oracle_commit": "cce2565eb4e4d74e8bacb05ad14eef31c6e77cf8",
+      "oracle_sha256": "57ed88da2e8c5f3420d4e208449e6820ef4066f58aa8c8f492c1936a5bbb647e",
+      "fixture_source_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+      "event_witness_provenance": {
+        "store": "dedicated original matrix control.sqlite3 (read-only SQLite snapshot)",
+        "task_id": "chat_01a148b18a07933193ad170b34ba922d",
+        "execution_id": "exec_15fcfadea0994689ae1872946478e594",
+        "event_count": 61,
+        "first_sequence": 965,
+        "last_sequence": 1025,
+        "canonical_events_sha256": "284853e6a6420e78417c5256934f3bd3e82322813a3c853b1857b23f9667fa73",
+        "canonicalization": "UTF-8 JSON of ordered [sequence,event_type,exact payload_json,created_at] arrays; compact separators; ensure_ascii=false",
+        "successful_source_mutations": [
+          {
+            "call_id": "call_4a66269aa3564399b3d21d28c8fa52e7",
+            "tool": "apply_patch",
+            "call_sequence": 991,
+            "result_sequence": 993,
+            "before_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+            "after_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89"
+          }
+        ],
+        "published_batch_id": "exec_15fcfadea0994689ae1872946478e594",
+        "published_request_json_sha256": "cefc4896c47ad9662888f358c9a1e82d9c8bc030345257e53574a36acd927af0",
+        "immutable_candidate_artifact_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89",
+        "replay_matches_published_candidate": true
+      },
+      "raw_oracle_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "raw_oracle_sha256": "d0e59266a7630d7dd2618848141b79a453b2297503a8a0e83afa7caa8ba127d8"
+    },
+    {
+      "task_id": "chat_01a148b26038c6c665b070a9e7e4f289",
+      "id": "review-resource",
+      "review_arm": "on",
+      "repetition": 1,
+      "candidate_sha256": "7296a60e299278432204484f9a415686a6533614732d6eb179344cb3ffc55d62",
+      "candidate_content_utf8": "\"\"\"A small application component with a prescribed review proposal.\"\"\"\n\n\ndef read_label(path):\n    with path.open() as handle:\n        return handle.read().strip()\n",
+      "raw_hidden_acceptance": {
+        "ran": true,
+        "passed": false,
+        "returncode": 1,
+        "reason": null
+      },
+      "corrected_hidden_acceptance": {
+        "ran": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": null
+      },
+      "source_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "oracle_commit": "cce2565eb4e4d74e8bacb05ad14eef31c6e77cf8",
+      "oracle_sha256": "57ed88da2e8c5f3420d4e208449e6820ef4066f58aa8c8f492c1936a5bbb647e",
+      "fixture_source_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+      "event_witness_provenance": {
+        "store": "dedicated original matrix control.sqlite3 (read-only SQLite snapshot)",
+        "task_id": "chat_01a148b26038c6c665b070a9e7e4f289",
+        "execution_id": "exec_c8dd28340d324a0da9c3cc9de4850dfa",
+        "event_count": 119,
+        "first_sequence": 1026,
+        "last_sequence": 1144,
+        "canonical_events_sha256": "2f515d4850241bd619eda894d52b1bfbaf74f9884bc807d8bfd9f3ab79cc2472",
+        "canonicalization": "UTF-8 JSON of ordered [sequence,event_type,exact payload_json,created_at] arrays; compact separators; ensure_ascii=false",
+        "successful_source_mutations": [
+          {
+            "call_id": "call_91e45d4c3c8b41f6872f124b317a9cbd",
+            "tool": "apply_patch",
+            "call_sequence": 1045,
+            "result_sequence": 1047,
+            "before_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+            "after_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89"
+          },
+          {
+            "call_id": "call_32c8a06bfbbb4eb1a2b33647863bb2f8",
+            "tool": "apply_patch",
+            "call_sequence": 1106,
+            "result_sequence": 1108,
+            "before_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89",
+            "after_sha256": "7296a60e299278432204484f9a415686a6533614732d6eb179344cb3ffc55d62"
+          }
+        ],
+        "published_batch_id": "exec_c8dd28340d324a0da9c3cc9de4850dfa",
+        "published_request_json_sha256": "21979281a07d15bdfd1ca9163faed430ab76ebec0e71dd31d05cf5c40bda323a",
+        "immutable_candidate_artifact_sha256": "7296a60e299278432204484f9a415686a6533614732d6eb179344cb3ffc55d62",
+        "replay_matches_published_candidate": true
+      },
+      "raw_oracle_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "raw_oracle_sha256": "d0e59266a7630d7dd2618848141b79a453b2297503a8a0e83afa7caa8ba127d8"
+    },
+    {
+      "task_id": "chat_01a148bdb4275509dd18532d66f53d86",
+      "id": "review-resource",
+      "review_arm": "on",
+      "repetition": 2,
+      "candidate_sha256": "7296a60e299278432204484f9a415686a6533614732d6eb179344cb3ffc55d62",
+      "candidate_content_utf8": "\"\"\"A small application component with a prescribed review proposal.\"\"\"\n\n\ndef read_label(path):\n    with path.open() as handle:\n        return handle.read().strip()\n",
+      "raw_hidden_acceptance": {
+        "ran": true,
+        "passed": false,
+        "returncode": 1,
+        "reason": null
+      },
+      "corrected_hidden_acceptance": {
+        "ran": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": null
+      },
+      "source_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "oracle_commit": "cce2565eb4e4d74e8bacb05ad14eef31c6e77cf8",
+      "oracle_sha256": "57ed88da2e8c5f3420d4e208449e6820ef4066f58aa8c8f492c1936a5bbb647e",
+      "fixture_source_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+      "event_witness_provenance": {
+        "store": "dedicated original matrix control.sqlite3 (read-only SQLite snapshot)",
+        "task_id": "chat_01a148bdb4275509dd18532d66f53d86",
+        "execution_id": "exec_7632ba920d09432087a37666fab1c32e",
+        "event_count": 101,
+        "first_sequence": 3023,
+        "last_sequence": 3123,
+        "canonical_events_sha256": "fb0a2bd5f48e1b9493b1b0d2088b72f792ddd474480f6fd281b2fea7d5cc4106",
+        "canonicalization": "UTF-8 JSON of ordered [sequence,event_type,exact payload_json,created_at] arrays; compact separators; ensure_ascii=false",
+        "successful_source_mutations": [
+          {
+            "call_id": "call_cf62be2d21504c2eab53dd6feca50861",
+            "tool": "apply_patch",
+            "call_sequence": 3043,
+            "result_sequence": 3045,
+            "before_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+            "after_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89"
+          },
+          {
+            "call_id": "call_76c397683c44479ca89f6a8a7b280c50",
+            "tool": "apply_patch",
+            "call_sequence": 3089,
+            "result_sequence": 3091,
+            "before_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89",
+            "after_sha256": "7296a60e299278432204484f9a415686a6533614732d6eb179344cb3ffc55d62"
+          }
+        ],
+        "published_batch_id": "exec_7632ba920d09432087a37666fab1c32e",
+        "published_request_json_sha256": "b16b7e47312e2b230ebf042da0d25059bd23aa985464fc7cb1c63370670cb3d5",
+        "immutable_candidate_artifact_sha256": "7296a60e299278432204484f9a415686a6533614732d6eb179344cb3ffc55d62",
+        "replay_matches_published_candidate": true
+      },
+      "raw_oracle_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "raw_oracle_sha256": "d0e59266a7630d7dd2618848141b79a453b2297503a8a0e83afa7caa8ba127d8"
+    },
+    {
+      "task_id": "chat_01a148be4564ae7c4157837c2551ecdf",
+      "id": "review-resource",
+      "review_arm": "off",
+      "repetition": 2,
+      "candidate_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89",
+      "candidate_content_utf8": "\"\"\"A small application component with a prescribed review proposal.\"\"\"\n\n\ndef read_label(path):\n    handle = path.open()\n    try:\n        return handle.read().strip()\n    finally:\n        pass\n",
+      "raw_hidden_acceptance": {
+        "ran": true,
+        "passed": false,
+        "returncode": 1,
+        "reason": null
+      },
+      "corrected_hidden_acceptance": {
+        "ran": true,
+        "passed": false,
+        "returncode": 1,
+        "reason": null
+      },
+      "source_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "oracle_commit": "cce2565eb4e4d74e8bacb05ad14eef31c6e77cf8",
+      "oracle_sha256": "57ed88da2e8c5f3420d4e208449e6820ef4066f58aa8c8f492c1936a5bbb647e",
+      "fixture_source_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+      "event_witness_provenance": {
+        "store": "dedicated original matrix control.sqlite3 (read-only SQLite snapshot)",
+        "task_id": "chat_01a148be4564ae7c4157837c2551ecdf",
+        "execution_id": "exec_3516c996c115444dbdd6a12286a5fab5",
+        "event_count": 57,
+        "first_sequence": 3124,
+        "last_sequence": 3180,
+        "canonical_events_sha256": "12ea4c423e94ea760ae72c7a9202e7a382a1a3ca1e06da5882a8a5a24f8ffba8",
+        "canonicalization": "UTF-8 JSON of ordered [sequence,event_type,exact payload_json,created_at] arrays; compact separators; ensure_ascii=false",
+        "successful_source_mutations": [
+          {
+            "call_id": "call_25b70baa95184110871735b7f02253fa",
+            "tool": "apply_patch",
+            "call_sequence": 3147,
+            "result_sequence": 3149,
+            "before_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+            "after_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89"
+          }
+        ],
+        "published_batch_id": "exec_3516c996c115444dbdd6a12286a5fab5",
+        "published_request_json_sha256": "07ee4f562d128ed1d378b999aa4ead40e951950f31a7d59b5de0d55631d85018",
+        "immutable_candidate_artifact_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89",
+        "replay_matches_published_candidate": true
+      },
+      "raw_oracle_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "raw_oracle_sha256": "d0e59266a7630d7dd2618848141b79a453b2297503a8a0e83afa7caa8ba127d8"
+    },
+    {
+      "task_id": "chat_01a148c9366da179585abc2ce9cec8fd",
+      "id": "review-resource",
+      "review_arm": "off",
+      "repetition": 3,
+      "candidate_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89",
+      "candidate_content_utf8": "\"\"\"A small application component with a prescribed review proposal.\"\"\"\n\n\ndef read_label(path):\n    handle = path.open()\n    try:\n        return handle.read().strip()\n    finally:\n        pass\n",
+      "raw_hidden_acceptance": {
+        "ran": true,
+        "passed": false,
+        "returncode": 1,
+        "reason": null
+      },
+      "corrected_hidden_acceptance": {
+        "ran": true,
+        "passed": false,
+        "returncode": 1,
+        "reason": null
+      },
+      "source_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "oracle_commit": "cce2565eb4e4d74e8bacb05ad14eef31c6e77cf8",
+      "oracle_sha256": "57ed88da2e8c5f3420d4e208449e6820ef4066f58aa8c8f492c1936a5bbb647e",
+      "fixture_source_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+      "event_witness_provenance": {
+        "store": "dedicated original matrix control.sqlite3 (read-only SQLite snapshot)",
+        "task_id": "chat_01a148c9366da179585abc2ce9cec8fd",
+        "execution_id": "exec_2c5b5ff314f34d18bf5af8b78d3ae6a1",
+        "event_count": 55,
+        "first_sequence": 5056,
+        "last_sequence": 5110,
+        "canonical_events_sha256": "00ce7e870649390ae7a06abb8f44d52ab8d5ee1490834a37b42fda1608edd3bc",
+        "canonicalization": "UTF-8 JSON of ordered [sequence,event_type,exact payload_json,created_at] arrays; compact separators; ensure_ascii=false",
+        "successful_source_mutations": [
+          {
+            "call_id": "call_7ae40599624349ceb4050b9059d18d04",
+            "tool": "apply_patch",
+            "call_sequence": 5075,
+            "result_sequence": 5077,
+            "before_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+            "after_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89"
+          }
+        ],
+        "published_batch_id": "exec_2c5b5ff314f34d18bf5af8b78d3ae6a1",
+        "published_request_json_sha256": "262d839bf2631fdd0296cdee1b8068f6a8653e093c4e0d9133cfac34b282876f",
+        "immutable_candidate_artifact_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89",
+        "replay_matches_published_candidate": true
+      },
+      "raw_oracle_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "raw_oracle_sha256": "d0e59266a7630d7dd2618848141b79a453b2297503a8a0e83afa7caa8ba127d8"
+    },
+    {
+      "task_id": "chat_01a148c978ff55ee1041e2aa349545aa",
+      "id": "review-resource",
+      "review_arm": "on",
+      "repetition": 3,
+      "candidate_sha256": "7296a60e299278432204484f9a415686a6533614732d6eb179344cb3ffc55d62",
+      "candidate_content_utf8": "\"\"\"A small application component with a prescribed review proposal.\"\"\"\n\n\ndef read_label(path):\n    with path.open() as handle:\n        return handle.read().strip()\n",
+      "raw_hidden_acceptance": {
+        "ran": true,
+        "passed": false,
+        "returncode": 1,
+        "reason": null
+      },
+      "corrected_hidden_acceptance": {
+        "ran": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": null
+      },
+      "source_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "oracle_commit": "cce2565eb4e4d74e8bacb05ad14eef31c6e77cf8",
+      "oracle_sha256": "57ed88da2e8c5f3420d4e208449e6820ef4066f58aa8c8f492c1936a5bbb647e",
+      "fixture_source_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+      "event_witness_provenance": {
+        "store": "dedicated original matrix control.sqlite3 (read-only SQLite snapshot)",
+        "task_id": "chat_01a148c978ff55ee1041e2aa349545aa",
+        "execution_id": "exec_bb675b083a534de281cbe372f9cccd84",
+        "event_count": 155,
+        "first_sequence": 5111,
+        "last_sequence": 5265,
+        "canonical_events_sha256": "a20249d96179402f062d072a51032cd5a0cd018a5070abae2349043a6ff28400",
+        "canonicalization": "UTF-8 JSON of ordered [sequence,event_type,exact payload_json,created_at] arrays; compact separators; ensure_ascii=false",
+        "successful_source_mutations": [
+          {
+            "call_id": "call_93944a9c31fe4667819f2901f6eca188",
+            "tool": "apply_patch",
+            "call_sequence": 5131,
+            "result_sequence": 5133,
+            "before_sha256": "3a5d3c6d4016af77948fd5ca32ac151171272055cfb45c13b15f0af568b792a3",
+            "after_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89"
+          },
+          {
+            "call_id": "call_711a1de267da4f8f81636c4ac2c626a0",
+            "tool": "apply_patch",
+            "call_sequence": 5192,
+            "result_sequence": 5194,
+            "before_sha256": "ed627b5e9e8db9c84dbd82a8fbef7a96bade3da76a39692841ffcc41559a0b89",
+            "after_sha256": "7296a60e299278432204484f9a415686a6533614732d6eb179344cb3ffc55d62"
+          }
+        ],
+        "published_batch_id": "exec_bb675b083a534de281cbe372f9cccd84",
+        "published_request_json_sha256": "7e8696bcec689731e0e1beda6c752cd5685e26087bf85a4a2aca3e27bcdf31cd",
+        "immutable_candidate_artifact_sha256": "7296a60e299278432204484f9a415686a6533614732d6eb179344cb3ffc55d62",
+        "replay_matches_published_candidate": true
+      },
+      "raw_oracle_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+      "raw_oracle_sha256": "d0e59266a7630d7dd2618848141b79a453b2297503a8a0e83afa7caa8ba127d8"
+    }
+  ],
+  "raw_oracle_commit": "232221a037a6a25481d82f2762d49518a4c3c648",
+  "raw_oracle_sha256": "d0e59266a7630d7dd2618848141b79a453b2297503a8a0e83afa7caa8ba127d8"
+}

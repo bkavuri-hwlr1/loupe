@@ -404,3 +404,22 @@ def test_a_question_without_an_answer_cancels_the_task(tmp_path: Path) -> None:
     )
 
     assert settled == ("cancelled", None, True)
+
+
+def test_deadline_cancels_detached_work_before_returning(tmp_path: Path) -> None:
+    database = tmp_path / "control.sqlite3"
+    connection = _store(database)
+    cancelled: list[bool] = []
+    try:
+        result = benchmark._settle(
+            database,
+            "t",
+            time.time() - 1,
+            answers=(),
+            reply=lambda answer: pytest.fail("no question is pending"),
+            cancel=lambda: cancelled.append(True),
+        )
+        assert result == ("running", None, False)
+        assert cancelled == [True]
+    finally:
+        connection.close()
