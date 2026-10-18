@@ -1006,6 +1006,67 @@ CREATE TABLE knowledge_outbox (
 CREATE INDEX knowledge_outbox_checkout ON knowledge_outbox(checkout_id,outbox_id);
 """,
     ),
+    Migration(
+        24,
+        "physical_checkout_authority",
+        """
+CREATE TABLE authority_installation (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    database_instance_id TEXT NOT NULL UNIQUE
+);
+CREATE TABLE authority_checkouts (
+    physical_key TEXT PRIMARY KEY,
+    checkout_id TEXT,
+    binding_json TEXT NOT NULL,
+    marker_generation INTEGER NOT NULL CHECK(marker_generation>=0)
+);
+CREATE TABLE authority_journals (
+    journal_id TEXT PRIMARY KEY,
+    physical_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    reference_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('applying','confirmed','attention')),
+    created_at INTEGER NOT NULL
+);
+""",
+    ),
+    Migration(
+        25,
+        "isolated_runtime_generations",
+        """
+CREATE TABLE isolated_runtime_state (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(workspace_id),
+    generation INTEGER NOT NULL CHECK(generation>=0),
+    primary_json TEXT NOT NULL,
+    private_json TEXT NOT NULL,
+    approved_json TEXT NOT NULL,
+    noticed_json TEXT NOT NULL
+);
+CREATE TABLE isolated_runtime_generations (
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    generation INTEGER NOT NULL CHECK(generation>=0),
+    paths_json TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,generation)
+);
+CREATE TABLE isolated_runtime_holds (
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    attempt INTEGER NOT NULL,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    generation INTEGER NOT NULL,
+    PRIMARY KEY(task_id,attempt)
+);
+CREATE TABLE isolated_runtime_journal (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(workspace_id),
+    generation INTEGER NOT NULL,
+    paths_json TEXT NOT NULL,
+    before_json TEXT NOT NULL,
+    after_json TEXT NOT NULL,
+    primary_json TEXT NOT NULL,
+    stage_token TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('prepared','installed'))
+);
+""",
+    ),
 )
 
 
