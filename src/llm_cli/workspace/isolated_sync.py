@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,7 +144,9 @@ class SyncResult:
             paths = ", ".join(path[:200] for path in self.deferred[:10])
             suffix = " and other paths" if len(self.deferred) > 10 else ""
             notices.append(
-                "Source synchronization deferred for " + paths + suffix
+                "Source synchronization deferred for "
+                + paths
+                + suffix
                 + "; keeping accepted source and retrying at the next safe point."
             )
         return "\n".join(notices)
@@ -193,6 +196,7 @@ class IsolatedSynchronizer:
         with self.store.connection() as con:
             row = con.execute(
                 "SELECT s.*,w.canonical_path,w.checkout_id,w.source_workspace_id,"
+                "w.git_dir AS private_git_dir,"
                 "c.git_common_dir,c.canonical_path AS source_path "
                 "FROM isolated_sync_state s "
                 "JOIN workspaces w USING(workspace_id) "
@@ -315,7 +319,10 @@ class IsolatedSynchronizer:
                     or int(latest or 0) != upper_bound
                 ):
                     return SyncResult(
-                        tuple(applied), tuple(merged), tuple(conflicted), sequence,
+                        tuple(applied),
+                        tuple(merged),
+                        tuple(conflicted),
+                        sequence,
                         ("checkout snapshot",),
                     )
                 report = self._refresh_primary(workspace_id, primary)
@@ -335,17 +342,16 @@ class IsolatedSynchronizer:
         baseline: Manifest = json.loads(state["manifest_json"])
         deferred = set(getattr(primary, "deferred", ()))
         files = []
+        screened: list[str] = []
         for path in sorted(baseline.keys() | primary.keys()):
             if self._runtime(path, state):
                 continue
             before, after = baseline.get(path), primary.get(path)
-            if path in deferred or (before or {}).get("screened") or (after or {}).get(
-                "screened"
-            ):
-                # Private fixture bytes may exist locally for commands, but they
-                # cannot be read through the source artifact or proposal channel.
+            if path in deferred:
+                continue
+            if (before or {}).get("screened") or (after or {}).get("screened"):
                 if _identity(before) != _identity(after):
-                    deferred.add(path)
+                    screened.append(path)
                 continue
             if _identity(before).kind is ObjectKind.DIRECTORY_MARKER:
                 target = candidate_target(Path(state["source_path"]), path)
@@ -353,7 +359,12 @@ class IsolatedSynchronizer:
                     continue
             if _identity(before) == _identity(after):
                 continue
-            theirs, original = self._body(after), self._body(before)
+            theirs = self._body(after)
+            original = (
+                self._body(before)
+                if _identity(before).kind in {ObjectKind.REGULAR, ObjectKind.SYMLINK}
+                else None
+            )
             files.append(
                 BatchFile(
                     path,
@@ -365,10 +376,6 @@ class IsolatedSynchronizer:
                     bool((after or {}).get("binary") or (before or {}).get("binary"))
                     or _binary(theirs),
                 )
-            )
-        if not files:
-            return SyncResult(
-                sequence=int(state["source_sequence"]), deferred=tuple(sorted(deferred))
             )
         # Source scans contain leaves; explicit parent operations make a newly
         # added source subtree replayable in a different physical worktree.
@@ -387,12 +394,201 @@ class IsolatedSynchronizer:
         # Bodies already live in the capture cache's immutable artifact store.
         for file in directories:
             store_candidate_content(self.publisher.candidate_dir, file.content or b"")
-        request = _request("isolated-source-refresh", files, ("*",), False)
-        report = self._prepare(workspace_id, int(state["source_sequence"]), request)
+        # Retire opaque leaves before their ordinary directory operations, so
+        # an unchanged private fixture does not create a false container conflict.
+        opaque = self._prepare_screened(workspace_id, primary, screened)
         self.recover(workspace_id)
+        waiting = deferred | set(opaque.deferred)
+        files = [
+            file
+            for file in files
+            if not (
+                file.content is None
+                and file.base.kind is ObjectKind.DIRECTORY_MARKER
+                and any(path.startswith(file.relative_path + "/") for path in waiting)
+            )
+        ]
+        report = SyncResult(sequence=int(state["source_sequence"]))
+        if files:
+            request = _request("isolated-source-refresh", files, ("*",), False)
+            report = self._prepare(workspace_id, int(state["source_sequence"]), request)
+            self.recover(workspace_id)
         return SyncResult(
-            report.applied, report.merged, report.conflicted, report.sequence,
-            tuple(sorted(deferred)),
+            (*report.applied, *opaque.applied),
+            report.merged,
+            (*report.conflicted, *opaque.conflicted),
+            report.sequence,
+            tuple(sorted(deferred | set(opaque.deferred))),
+        )
+
+    @staticmethod
+    def _opaque_git_dir(state: Mapping[str, Any]) -> Path:
+        # The manager validates a real private worktree's pinned Git directory.
+        # Standalone synchronizers may use a complete private test repository.
+        directory = Path(
+            state["private_git_dir"] or Path(state["canonical_path"]) / ".git"
+        )
+        if directory.resolve(strict=True) != directory or not directory.is_dir():
+            raise WorkspaceBrokerError("private screened staging directory changed")
+        return directory
+
+    def _stage_screened(self, state: Mapping[str, Any], body: bytes) -> str:
+        from llm_cli.workspace.isolated import _parent, _write_body
+
+        token = uuid.uuid4().hex
+        directory = self._opaque_git_dir(state)
+        with _parent(directory, "loupe-screened-incoming") as (parent, name):
+            try:
+                os.mkdir(name, 0o700, dir_fd=parent)
+                os.fsync(parent)
+            except FileExistsError:
+                pass
+        with _parent(directory, "loupe-screened-incoming/" + token) as (parent, name):
+            os.fchmod(parent, 0o700)
+            _write_body(parent, name, body, 0o600)
+        return token
+
+    def _screened_body(
+        self, state: Mapping[str, Any], step: Mapping[str, Any]
+    ) -> bytes:
+        from llm_cli.workspace.isolated import _read, _source
+
+        token = step["private_content_token"]
+        if (
+            not isinstance(token, str)
+            or len(token) != 32
+            or any(character not in "0123456789abcdef" for character in token)
+        ):
+            raise WorkspaceBrokerError("private screened staging token is invalid")
+        with _source(
+            self._opaque_git_dir(state), "loupe-screened-incoming/" + token
+        ) as descriptor:
+            body = _read(descriptor, MAX_SHARED_TEXT_BYTES)
+        expected = _identity(step["incoming"])
+        if result_identity(BatchFile("body", ABSENT, body, expected.mode)) != expected:
+            raise WorkspaceBrokerError("private screened incoming identity changed")
+        return body
+
+    def _prepare_screened(
+        self, workspace_id: str, primary: Manifest, paths: Sequence[str]
+    ) -> SyncResult:
+        """Journal opaque fixture copies by identity, never ordinary artifacts."""
+        if not paths:
+            return SyncResult()
+        state = self._state(workspace_id)
+        root = Path(state["canonical_path"])
+        manifest: Manifest = json.loads(state["manifest_json"])
+        unresolved = self._conflicts(workspace_id)
+        steps: list[dict[str, Any]] = []
+        applied: list[str] = []
+        conflicted: list[str] = []
+        deferred: list[str] = []
+        parents: set[str] = set()
+        for path in paths:
+            incoming = primary.get(path)
+            expected = _identity(incoming)
+            try:
+                # The scan happened outside the lock; a later save must defer
+                # this path rather than copying bytes from another identity.
+                actual, body = read_candidate_path(
+                    candidate_target(Path(state["source_path"]), path),
+                    max_bytes=MAX_SHARED_TEXT_BYTES,
+                )
+                if actual != expected:
+                    deferred.append(path)
+                    continue
+                current, _ = read_candidate_path(
+                    candidate_target(root, path), max_bytes=MAX_SHARED_TEXT_BYTES
+                )
+                token = self._stage_screened(state, body) if body is not None else None
+            except (OSError, ValueError, WorkspaceBrokerError):
+                deferred.append(path)
+                continue
+            accepted = _identity(manifest.get(path))
+            after = current
+            disposition = "already_current"
+            if current != expected:
+                previous = unresolved.get(path)
+                unresolved_here = (
+                    previous is not None
+                    and current == _identity_from_json(previous["after"])
+                    and current != _identity(previous["incoming"])
+                )
+                if current == accepted and not unresolved_here:
+                    after = expected
+                    disposition = "applied"
+                    applied.append(path)
+                else:
+                    disposition = "divergence_preserved"
+                    if path not in unresolved:
+                        conflicted.append(path)
+            # Retain an opaque absent identity too: a preserved local file
+            # still needs source-tool exclusion and private cleanup on close.
+            result = {
+                **(incoming or _entry(ABSENT, None)),
+                "screened": True,
+                "content_hash": None,
+            }
+            manifest[path] = result
+            if not after.absent:
+                for parent in reversed(Path(path).parents):
+                    relative = parent.as_posix()
+                    if relative == "." or relative in parents:
+                        continue
+                    identity, _ = read_candidate_path(candidate_target(root, relative))
+                    if identity.absent:
+                        directory = result_identity(
+                            BatchFile(relative, ABSENT, b"", DIRECTORY_MODE)
+                        )
+                        steps.append(
+                            {
+                                "path": relative,
+                                "before": _identity_json(ABSENT),
+                                "after": _identity_json(directory),
+                                "content_hash": None,
+                                "local_content_hash": None,
+                                "disposition": "applied",
+                                "incoming": _entry(directory, None),
+                            }
+                        )
+                        manifest[relative] = _entry(
+                            directory,
+                            store_candidate_content(self.publisher.candidate_dir, b""),
+                        )
+                        parents.add(relative)
+            steps.append(
+                {
+                    "path": path,
+                    "before": _identity_json(current),
+                    "after": _identity_json(after),
+                    "content_hash": None,
+                    "local_content_hash": None,
+                    "disposition": disposition,
+                    "incoming": result,
+                    "screened": True,
+                    "private_content_token": token,
+                }
+            )
+        if steps:
+            with self.store.connection() as con, immediate_transaction(con):
+                con.execute(
+                    "INSERT INTO isolated_sync_journal(workspace_id,sequence,"
+                    "generation,manifest_json,steps_json,state) "
+                    "VALUES(?,?,?,?,?,'prepared')",
+                    (
+                        workspace_id,
+                        state["source_sequence"],
+                        state["generation"],
+                        _encode(manifest),
+                        _encode(steps),
+                    ),
+                )
+        return SyncResult(
+            tuple(applied),
+            (),
+            tuple(conflicted),
+            int(state["source_sequence"]),
+            tuple(deferred),
         )
 
     def _conflicts(self, workspace_id: str) -> dict[str, dict[str, Any]]:
@@ -438,7 +634,8 @@ class IsolatedSynchronizer:
             result = _entry(incoming.result, incoming.content_hash, incoming.binary)
             theirs = self._body(result)
             current, ours = read_candidate_path(
-                candidate_target(root, path), max_bytes=MAX_SHARED_TEXT_BYTES
+                candidate_target(root, path),
+                max_bytes=MAX_SHARED_TEXT_BYTES,
             )
             if ours is not None:
                 ensure_safe_content(ours)
@@ -569,7 +766,8 @@ class IsolatedSynchronizer:
                             "isolated journal overlaps runtime data"
                         )
                     current, _ = read_candidate_path(
-                        candidate_target(root, path), max_bytes=MAX_SHARED_TEXT_BYTES
+                        candidate_target(root, path),
+                        max_bytes=MAX_SHARED_TEXT_BYTES,
                     )
                     if current not in (
                         _identity_from_json(step["before"]),
@@ -578,6 +776,8 @@ class IsolatedSynchronizer:
                         raise WorkspaceBrokerError(
                             "isolated recovery found an unrecognized local state"
                         )
+                    if step.get("private_content_token") is not None:
+                        self._screened_body(state, step)
                     if step["content_hash"] is not None:
                         self._body(
                             {**step["after"], "content_hash": step["content_hash"]}
@@ -601,7 +801,8 @@ class IsolatedSynchronizer:
                         _identity_from_json(step["after"]),
                     )
                     current, _ = read_candidate_path(
-                        target, max_bytes=MAX_SHARED_TEXT_BYTES
+                        target,
+                        max_bytes=MAX_SHARED_TEXT_BYTES,
                     )
                     if current == after:
                         continue
@@ -628,13 +829,21 @@ class IsolatedSynchronizer:
                         _directory_transition(root, step["path"], before, create=True)
                         _sync_parent(target)
                     elif after.kind is ObjectKind.REGULAR:
-                        body = self._body(
-                            {**step["after"], "content_hash": step["content_hash"]}
+                        body = (
+                            self._screened_body(state, step)
+                            if step.get("screened")
+                            else self._body(
+                                {**step["after"], "content_hash": step["content_hash"]}
+                            )
                         )
                         assert body is not None
                         atomic_replace_regular_file(
                             checkout_root=root,
-                            git_common_dir=Path(state["git_common_dir"]),
+                            git_common_dir=(
+                                self._opaque_git_dir(state)
+                                if step.get("screened")
+                                else Path(state["git_common_dir"])
+                            ),
                             relative_path=step["path"],
                             content=body,
                             mode=after.mode,
@@ -643,13 +852,21 @@ class IsolatedSynchronizer:
                             expected_base=before,
                         )
                     elif after.kind is ObjectKind.SYMLINK:
-                        body = self._body(
-                            {**step["after"], "content_hash": step["content_hash"]}
+                        body = (
+                            self._screened_body(state, step)
+                            if step.get("screened")
+                            else self._body(
+                                {**step["after"], "content_hash": step["content_hash"]}
+                            )
                         )
                         assert body is not None
                         atomic_replace_symlink(
                             checkout_root=root,
-                            git_common_dir=Path(state["git_common_dir"]),
+                            git_common_dir=(
+                                self._opaque_git_dir(state)
+                                if step.get("screened")
+                                else Path(state["git_common_dir"])
+                            ),
                             relative_path=step["path"],
                             content=body,
                             publication_id=staging_id,
@@ -663,7 +880,11 @@ class IsolatedSynchronizer:
                     for step in steps:
                         current, _ = read_candidate_path(
                             candidate_target(root, step["path"]),
-                            max_bytes=MAX_SHARED_TEXT_BYTES,
+                            max_bytes=(
+                                256 * 1024 * 1024
+                                if step.get("screened")
+                                else MAX_SHARED_TEXT_BYTES
+                            ),
                         )
                         if current != _identity_from_json(step["after"]):
                             raise WorkspaceBrokerError(
@@ -689,6 +910,21 @@ class IsolatedSynchronizer:
                         "WHERE workspace_id=? AND generation=?",
                         (workspace_id, journal["generation"]),
                     )
+
+                for step in steps:
+                    token = step.get("private_content_token")
+                    if (
+                        token is not None
+                        and step["disposition"] != "divergence_preserved"
+                    ):
+                        from llm_cli.workspace.isolated import _parent
+
+                        with _parent(
+                            self._opaque_git_dir(state),
+                            "loupe-screened-incoming/" + token,
+                        ) as (parent, name):
+                            os.unlink(name, dir_fd=parent)
+                            os.fsync(parent)
 
     def publication_files(
         self, workspace_id: str, overlay: Sequence[BatchFile]

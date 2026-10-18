@@ -583,6 +583,13 @@ tests.
   instead, it says why.
 - Every existing isolated privacy and recovery test still passes.
 
+**Implementation (2026-10-17).** C7 is implemented with fresh private writable
+copies, bounded verified COW, optional-secret omission, and privately journaled
+screened fixture synchronization. Repeated actual-venv checks measured
+1.428/1.452/1.471 s versus 3.032/3.033/3.037 s; see
+[the experiment](experiments/isolated-runtime-c7-2026-10-17.md). Opaque incoming
+changes retain the existing 8 MiB changed-path bound and defer an oversized path.
+
 ### C8. Runtime refresh for isolated sessions
 
 **Why.** Runtime files are copied once, when the session opens. If the user

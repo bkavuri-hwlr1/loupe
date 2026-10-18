@@ -11,9 +11,12 @@ import stat
 import tempfile
 import time
 import tomllib
+from collections import deque
 from collections.abc import Callable, Iterator
-from contextlib import suppress
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext, suppress
 from pathlib import Path, PurePosixPath
+from threading import Lock
 from urllib.parse import unquote, urlsplit
 
 from llm_cli.workspace.hydration import _SECRET_DIRECTORIES, _evidence, _likely_secret
@@ -118,6 +121,22 @@ def dependency_credential(path: str, *, directory: bool) -> bool:
         part.casefold() in _SECRET_DIRECTORIES
         for part in PurePosixPath(path).parts[:-1]
     )
+
+
+def _relocatable_venv_path(relative: str) -> bool:
+    """Limit relocation reads to launchers and environment metadata."""
+    parts = relative.split("/")
+    for index, part in enumerate(parts):
+        if part in {".venv", "venv"}:
+            tail = parts[index + 1 :]
+            return bool(tail) and (
+                (len(tail) == 1 and tail[0] == "pyvenv.cfg")
+                or tail[-1].endswith((".pth", ".egg-link"))
+                or tail[-1].startswith("__editable__")
+                or tail[-1] == "direct_url.json"
+                or (len(tail) == 2 and tail[0] == "bin")
+            )
+    return False
 
 
 def relocated_venv_text(relative: str, body: bytes) -> bool:
@@ -262,6 +281,7 @@ def copy_dependency_tree(
     *,
     approved_secret_paths: tuple[str, ...] = (),
     pinned_private: bool = False,
+    copy_observer: Callable[[str, os.stat_result, os.stat_result], None] | None = None,
 ) -> tuple[str, ...]:
     """Copy a dependency root without writable aliases, following no tree links.
 
@@ -285,6 +305,10 @@ def copy_dependency_tree(
     deadline = time.monotonic() + 60
     notices: list[str] = []
     clone_capability: bool | None = None
+    clone_lock = Lock()
+    pending: deque[
+        tuple[Future[os.stat_result], int, int, str, str, os.stat_result]
+    ] = deque()
     original_prefix = os.fsencode(source)
     private_prefix = os.fsencode(target)
 
@@ -300,33 +324,38 @@ def copy_dependency_tree(
     def clone(descriptor: int, parent: int, name: str) -> bool:
         nonlocal clone_capability
         if clone_capability is None:
-            # Probe only disposable bytes once for this device pair. A broken
-            # clone implementation must never reach the user's dependencies.
-            with tempfile.TemporaryDirectory(
-                prefix=".loupe-cow-", dir=target
-            ) as directory:
-                probe = Path(directory)
-                (probe / "source").write_bytes(b"private clone probe")
-                source_fd = os.open(probe / "source", os.O_RDONLY | os.O_NOFOLLOW)
-                destination_fd = os.open(
-                    probe, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                )
-                try:
-                    clone_capability = _clone(source_fd, destination_fd, "target")
-                    if clone_capability:
-                        (probe / "target").write_bytes(b"destination changed")
-                        if _read(source_fd, 1024) != b"private clone probe":
-                            raise _error(
-                                "filesystem clone did not isolate dependency writes"
-                            )
-                finally:
-                    os.close(source_fd)
-                    os.close(destination_fd)
+            with clone_lock:
+                if clone_capability is not None:
+                    return bool(clone_capability) and _clone(descriptor, parent, name)
+                # Probe only disposable bytes once for this device pair. A broken
+                # clone implementation must never reach the user's dependencies.
+                with tempfile.TemporaryDirectory(
+                    prefix=".loupe-cow-", dir=target
+                ) as directory:
+                    probe = Path(directory)
+                    (probe / "source").write_bytes(b"private clone probe")
+                    source_fd = os.open(probe / "source", os.O_RDONLY | os.O_NOFOLLOW)
+                    destination_fd = os.open(
+                        probe, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    )
+                    try:
+                        probed = _clone(source_fd, destination_fd, "target")
+                        if probed:
+                            (probe / "target").write_bytes(b"destination changed")
+                            if _read(source_fd, 1024) != b"private clone probe":
+                                raise _error(
+                                    "filesystem clone did not isolate dependency writes"
+                                )
+                        clone_capability = probed
+                    finally:
+                        os.close(source_fd)
+                        os.close(destination_fd)
         return bool(clone_capability) and _clone(descriptor, parent, name)
 
-    def regular(descriptor: int, parent: int, name: str, path: str, mode: int) -> None:
+    def regular(
+        descriptor: int, parent: int, name: str, path: str, mode: int
+    ) -> os.stat_result:
         before = os.fstat(descriptor)
-        budget(before.st_size, entries=0)
         if before.st_size > _MAX_FILE:
             raise _error("dependency file exceeds its byte budget: " + path)
         available = os.fstatvfs(parent)
@@ -335,7 +364,7 @@ def copy_dependency_tree(
         # Only small text launchers/configuration need relocation. Binary wheels
         # and executables retain their exact bytes and private COW blocks.
         body = None
-        if Path(relative).name in {".venv", "venv"} and before.st_size <= 1024 * 1024:
+        if before.st_size <= 1024 * 1024 and _relocatable_venv_path(path):
             candidate = _read(descriptor, _MAX_FILE)
             if relocated_venv_text(path, candidate) and original_prefix in candidate:
                 body = candidate.replace(original_prefix, private_prefix)
@@ -343,114 +372,190 @@ def copy_dependency_tree(
             _write_body(parent, name, body, mode & 0o700)
         elif not clone(descriptor, parent, name):
             _write_body(parent, name, _read(descriptor, _MAX_FILE), mode & 0o700)
-        else:
+        installed = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISREG(installed.st_mode):
+            raise _error("private dependency copy is not a regular file: " + path)
+        if stat.S_IMODE(installed.st_mode) != mode & 0o700:
             os.chmod(name, mode & 0o700, dir_fd=parent, follow_symlinks=False)
+            installed = os.stat(name, dir_fd=parent, follow_symlinks=False)
         if _evidence(before) != _evidence(os.fstat(descriptor)):
             raise _error("dependency changed during hydration: " + path)
+        return installed
+
+    def finish() -> None:
+        future, descriptor, parent, name, path, before = pending.popleft()
+        try:
+            installed = future.result()
+            budget(entries=0)
+            if _evidence(before) != _evidence(
+                os.stat(name, dir_fd=parent, follow_symlinks=False)
+            ):
+                raise _error("dependency path changed during hydration: " + path)
+            if copy_observer is not None:
+                copy_observer(path, before, installed)
+        finally:
+            os.close(descriptor)
+
+    def drain() -> None:
+        failure: BaseException | None = None
+        while pending:
+            try:
+                finish()
+            except BaseException as error:
+                failure = failure or error
+        if failure is not None:
+            raise failure
 
     def walk(descriptor: int, destination: int, prefix: str, device: int) -> None:
         budget()
         before = _evidence(os.fstat(descriptor))
-        with os.scandir(descriptor) as entries:
-            for entry in entries:
-                budget()
-                path = prefix + "/" + entry.name
-                observed = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
-                if entry.name.casefold() in _ADMIN:
-                    raise _error("dependency tree contains administration: " + path)
-                if (
-                    dependency_credential(
-                        path, directory=stat.S_ISDIR(observed.st_mode)
+        try:
+            with os.scandir(descriptor) as entries:
+                for entry in entries:
+                    budget()
+                    path = prefix + "/" + entry.name
+                    observed = os.stat(
+                        entry.name, dir_fd=descriptor, follow_symlinks=False
                     )
-                    and path not in approved_secret_paths
-                    and not pinned_private
-                    and not (
-                        stat.S_ISDIR(observed.st_mode)
-                        and any(
-                            approved.startswith(path + "/")
-                            for approved in approved_secret_paths
+                    if entry.name.casefold() in _ADMIN:
+                        raise _error("dependency tree contains administration: " + path)
+                    if (
+                        not pinned_private
+                        and dependency_credential(
+                            path, directory=stat.S_ISDIR(observed.st_mode)
                         )
-                    )
-                ):
-                    if len(notices) < 10:
-                        notices.append(
-                            "Credential runtime omitted without exact-file consent: "
-                            + path
+                        and path not in approved_secret_paths
+                        and not (
+                            stat.S_ISDIR(observed.st_mode)
+                            and any(
+                                approved.startswith(path + "/")
+                                for approved in approved_secret_paths
+                            )
                         )
-                    continue
-                if observed.st_dev != device:
-                    raise _error("dependency tree crosses a filesystem mount: " + path)
-                if stat.S_ISDIR(observed.st_mode):
-                    child = os.open(
-                        entry.name,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=descriptor,
-                    )
-                    os.mkdir(entry.name, 0o700, dir_fd=destination)
-                    copied = os.open(
-                        entry.name,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=destination,
-                    )
-                    try:
-                        if _evidence(os.fstat(child)) != _evidence(observed):
-                            raise _error(
-                                "dependency directory changed during hydration: " + path
+                    ):
+                        if len(notices) < 10:
+                            notices.append(
+                                "Credential runtime omitted "
+                                "without exact-file consent: " + path
                             )
-                        walk(child, copied, path, device)
-                    finally:
-                        os.close(child)
-                        os.close(copied)
-                elif stat.S_ISREG(observed.st_mode):
-                    child = os.open(
-                        entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor
-                    )
-                    try:
-                        if _evidence(os.fstat(child)) != _evidence(observed):
-                            raise _error(
-                                "dependency file changed during hydration: " + path
-                            )
-                        regular(
-                            child,
-                            destination,
+                        continue
+                    if observed.st_dev != device:
+                        raise _error(
+                            "dependency tree crosses a filesystem mount: " + path
+                        )
+                    if stat.S_ISDIR(observed.st_mode):
+                        child = os.open(
                             entry.name,
-                            path,
-                            stat.S_IMODE(observed.st_mode),
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=descriptor,
                         )
-                    finally:
-                        os.close(child)
-                elif stat.S_ISLNK(observed.st_mode):
-                    link = os.readlink(entry.name, dir_fd=descriptor)
-                    resolved = posixpath.normpath(
-                        posixpath.join(posixpath.dirname(path), link)
-                    )
-                    if not link.startswith("/") and (
-                        resolved == relative or resolved.startswith(relative + "/")
-                    ):
-                        os.symlink(link, entry.name, dir_fd=destination)
-                    elif (
-                        not link.startswith("/")
-                        and Path(relative).name == "node_modules"
-                    ):
-                        workspace_dependency_link(source, path, link)
-                        # Source materialization already privately copied this
-                        # target; never point back at primary workspace bytes.
-                        workspace_dependency_link(target, path, link)
-                        os.symlink(link, entry.name, dir_fd=destination)
+                        os.mkdir(entry.name, 0o700, dir_fd=destination)
+                        copied = os.open(
+                            entry.name,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=destination,
+                        )
+                        try:
+                            if _evidence(os.fstat(child)) != _evidence(observed):
+                                raise _error(
+                                    "dependency directory changed during hydration: "
+                                    + path
+                                )
+                            walk(child, copied, path, device)
+                        finally:
+                            os.close(child)
+                            os.close(copied)
+                    elif stat.S_ISREG(observed.st_mode):
+                        child = os.open(
+                            entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor
+                        )
+                        handed_off = False
+                        try:
+                            if _evidence(os.fstat(child)) != _evidence(observed):
+                                raise _error(
+                                    "dependency file changed during hydration: " + path
+                                )
+                            budget(observed.st_size, entries=0)
+                            if executor is not None:
+                                future = executor.submit(
+                                    regular,
+                                    child,
+                                    destination,
+                                    entry.name,
+                                    path,
+                                    stat.S_IMODE(observed.st_mode),
+                                )
+                                pending.append(
+                                    (
+                                        future,
+                                        child,
+                                        descriptor,
+                                        entry.name,
+                                        path,
+                                        observed,
+                                    )
+                                )
+                                handed_off = True
+                                if len(pending) >= 8:
+                                    finish()
+                                continue
+                            installed = regular(
+                                child,
+                                destination,
+                                entry.name,
+                                path,
+                                stat.S_IMODE(observed.st_mode),
+                            )
+                        finally:
+                            if not handed_off:
+                                os.close(child)
+                    elif stat.S_ISLNK(observed.st_mode):
+                        link = os.readlink(entry.name, dir_fd=descriptor)
+                        resolved = posixpath.normpath(
+                            posixpath.join(posixpath.dirname(path), link)
+                        )
+                        if not link.startswith("/") and (
+                            resolved == relative or resolved.startswith(relative + "/")
+                        ):
+                            os.symlink(link, entry.name, dir_fd=destination)
+                        elif (
+                            not link.startswith("/")
+                            and Path(relative).name == "node_modules"
+                        ):
+                            workspace_dependency_link(source, path, link)
+                            # Source materialization already privately copied this
+                            # target; never point back at primary workspace bytes.
+                            workspace_dependency_link(target, path, link)
+                            os.symlink(link, entry.name, dir_fd=destination)
+                        else:
+                            executable = _trusted_python(source, path, link)
+                            os.symlink(str(executable), entry.name, dir_fd=destination)
                     else:
-                        executable = _trusted_python(source, path, link)
-                        os.symlink(str(executable), entry.name, dir_fd=destination)
-                else:
-                    raise _error("dependency tree contains a special file: " + path)
-                if _evidence(observed) != _evidence(
-                    os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
-                ):
-                    raise _error("dependency path changed during hydration: " + path)
+                        raise _error("dependency tree contains a special file: " + path)
+                    if _evidence(observed) != _evidence(
+                        os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+                    ):
+                        raise _error(
+                            "dependency path changed during hydration: " + path
+                        )
+                    if copy_observer is not None and stat.S_ISREG(observed.st_mode):
+                        copy_observer(
+                            path,
+                            observed,
+                            installed,
+                        )
+        finally:
+            drain()
         if before != _evidence(os.fstat(descriptor)):
             raise _error("dependency directory changed during hydration: " + prefix)
         os.fsync(destination)
 
     with (
+        (
+            ThreadPoolExecutor(max_workers=4, thread_name_prefix="private-runtime")
+            if pinned_private
+            else nullcontext(None)
+        ) as executor,
         _parent(source, relative) as (parent, name),
         _parent(target, relative, create=True) as (destination, copied_name),
     ):

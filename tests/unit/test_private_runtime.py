@@ -755,3 +755,160 @@ def test_cached_runtime_identity_still_sees_same_size_edits(tmp_path: Path) -> N
     assert runtime_identity(tmp_path, ["runtime"]) == first
     (tmp_path / "runtime/data").write_text("other")
     assert runtime_identity(tmp_path, ["runtime"]) != first
+
+
+def test_verified_copy_reuses_digest_and_invalidates_same_size_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.execution.checks import _remember_runtime_copy
+    from llm_cli.workspace import isolated
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    (source / ".venv/lib/pkg").mkdir(parents=True)
+    target.mkdir()
+    original = source / ".venv/lib/pkg/data.py"
+    original.write_text("VALUE = 'first'\n")
+    expected = runtime_identity(source, [".venv"])
+    isolated.copy_pinned_runtime_file(
+        source,
+        target,
+        ".venv",
+        copy_observer=lambda path, before, after: _remember_runtime_copy(
+            source, target, path, before, after
+        ),
+    )
+    reads: list[int] = []
+    original_read = isolated._read
+
+    def record(descriptor: int, limit: int) -> bytes:
+        reads.append(descriptor)
+        return original_read(descriptor, limit)
+
+    monkeypatch.setattr(isolated, "_read", record)
+    assert runtime_identity(target, [".venv"]) == expected
+    assert not reads
+    copied = target / ".venv/lib/pkg/data.py"
+    before = copied.stat()
+    copied.write_text("VALUE = 'other'\n")
+    os.utime(copied, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert runtime_identity(target, [".venv"]) != expected
+    assert len(reads) == 1
+    assert runtime_identity(source, [".venv"]) == expected
+    assert original.read_text() == "VALUE = 'first'\n"
+
+
+def test_verified_copy_evidence_does_not_hide_source_race(tmp_path: Path) -> None:
+    from llm_cli.execution.checks import _remember_runtime_copy
+    from llm_cli.workspace.isolated import copy_pinned_runtime_file
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    (source / "node_modules/pkg").mkdir(parents=True)
+    target.mkdir()
+    original = source / "node_modules/pkg/index.js"
+    original.write_text("first")
+    expected = runtime_identity(source, ["node_modules"])
+
+    def changed(path: str, before: os.stat_result, after: os.stat_result) -> None:
+        _remember_runtime_copy(source, target, path, before, after)
+        original.write_text("other")
+
+    copy_pinned_runtime_file(source, target, "node_modules", copy_observer=changed)
+    assert runtime_identity(source, ["node_modules"]) != expected
+    assert runtime_identity(target, ["node_modules"]) == expected
+    assert (target / "node_modules/pkg/index.js").read_text() == "first"
+
+
+@pytest.mark.parametrize("clone_capable", [True, False], ids=["clone", "byte-copy"])
+def test_private_parallel_copy_is_bounded_and_drains_after_worker_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone_capable: bool
+) -> None:
+    from llm_cli.workspace import isolated
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    package = source / "node_modules/pkg"
+    package.mkdir(parents=True)
+    target.mkdir()
+    for index in range(12):
+        (package / str(index)).write_bytes(b"original " + str(index).encode())
+    original_write = isolated._write_body
+    lock = threading.Lock()
+    active = peak = completed = 0
+    failures = False
+    clone_calls: list[str] = []
+
+    def observed_copy(parent: int, name: str, body: bytes, permissions: int) -> None:
+        nonlocal active, peak, completed
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.02)
+            if failures and name == "3":
+                raise RuntimeError("copy worker failed")
+            original_write(parent, name, body, permissions)
+        finally:
+            with lock:
+                active -= 1
+                completed += 1
+
+    def private_clone(descriptor: int, parent: int, name: str) -> bool:
+        with lock:
+            clone_calls.append(name)
+        if not clone_capable:
+            return False
+        # Emulate the clone API using real private writes so both backend paths
+        # run on every filesystem, without hardlinks or native COW support.
+        body = isolated._read(descriptor, 1024)
+        if name == "target":
+            original_write(parent, name, body, 0o600)
+        else:
+            observed_copy(parent, name, body, 0o600)
+        return True
+
+    monkeypatch.setattr(isolated, "_clone", private_clone)
+    monkeypatch.setattr(isolated, "_write_body", observed_copy)
+    copy_dependency_tree(source, target, "node_modules", pinned_private=True)
+    assert 1 < peak <= 4
+    assert active == 0 and completed == 12
+    assert clone_calls.count("target") == 1
+    assert len(clone_calls) == (13 if clone_capable else 1)
+    for original in package.iterdir():
+        copied = target / "node_modules/pkg" / original.name
+        assert copied.read_bytes() == original.read_bytes()
+        assert not copied.stat().st_mode & 0o077
+        copied.write_bytes(b"private changes")
+        assert original.read_bytes().startswith(b"original ")
+    shutil.rmtree(target / "node_modules")
+    failures = True
+    with pytest.raises(RuntimeError, match="worker failed"):
+        copy_dependency_tree(source, target, "node_modules", pinned_private=True)
+    assert active == 0
+    finished = completed
+    time.sleep(0.05)
+    assert completed == finished
+    assert all(path.read_bytes().startswith(b"original ") for path in package.iterdir())
+
+
+def test_parallel_probe_failure_never_clones_user_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import isolated
+
+    source, target = tmp_path / "source", tmp_path / "target"
+    package = source / "node_modules/pkg"
+    package.mkdir(parents=True)
+    target.mkdir()
+    for index in range(8):
+        (package / str(index)).write_bytes(b"user dependency bytes")
+
+    def broken(descriptor: int, parent: int, name: str) -> bool:
+        assert isolated._read(descriptor, 1024) == b"private clone probe"
+        os.link("source", name, src_dir_fd=parent, dst_dir_fd=parent)
+        return True
+
+    monkeypatch.setattr(isolated, "_clone", broken)
+    with pytest.raises(LlmCoordError, match="isolate dependency"):
+        copy_dependency_tree(source, target, "node_modules", pinned_private=True)
+    assert all(
+        path.read_bytes() == b"user dependency bytes" for path in package.iterdir()
+    )

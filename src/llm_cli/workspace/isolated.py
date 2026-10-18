@@ -19,6 +19,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -436,16 +437,24 @@ def source_fingerprint(root: Path, policy_paths: tuple[str, ...] = ()) -> str:
     return digest.hexdigest()
 
 
+@cache
+def _darwin_clone() -> Any:
+    libc = ctypes.CDLL(None, use_errno=True)
+    clone = getattr(libc, "fclonefileat", None)
+    if clone is not None:
+        clone.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        clone.restype = ctypes.c_int
+    return clone
+
+
 def _clone(source_fd: int, destination_parent: int, name: str) -> bool:
     """Try a descriptor-based clone; no hardlinks or shared directory links."""
     if sys.platform == "darwin":
-        libc = ctypes.CDLL(None, use_errno=True)
-        clone = getattr(libc, "fclonefileat", None)
-        if clone is None:
-            return False
-        clone.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        clone.restype = ctypes.c_int
-        return bool(clone(source_fd, destination_parent, os.fsencode(name), 0) == 0)
+        clone = _darwin_clone()
+        return (
+            clone is not None
+            and clone(source_fd, destination_parent, os.fsencode(name), 0) == 0
+        )
     if sys.platform.startswith("linux"):
         import fcntl
 
@@ -553,14 +562,22 @@ def copy_runtime_file(source: Path, target: Path, entry: HydrationEntry) -> None
                 raise _error("runtime path changed while hydration copied it")
 
 
-def copy_pinned_runtime_file(source: Path, target: Path, relative: str) -> None:
+def copy_pinned_runtime_file(
+    source: Path,
+    target: Path,
+    relative: str,
+    *,
+    copy_observer: Callable[[str, os.stat_result, os.stat_result], None] | None = None,
+) -> None:
     """Copy a pinned runtime input privately, independent of later ignore edits."""
     from llm_cli.workspace.runtime import copy_dependency_tree
 
     with _parent(source, relative) as (parent, name):
         status = os.stat(name, dir_fd=parent, follow_symlinks=False)
     if stat.S_ISDIR(status.st_mode):
-        copy_dependency_tree(source, target, relative, pinned_private=True)
+        copy_dependency_tree(
+            source, target, relative, pinned_private=True, copy_observer=copy_observer
+        )
         return
     with _source(source, relative) as descriptor:
         before = os.fstat(descriptor)
@@ -1252,22 +1269,19 @@ class IsolatedWorkspaceManager:
                     "--approve-secret must name an existing ignored secret regular "
                     "file exactly"
                 )
-            missing = [
-                entry.path for entry in plan.entries if entry.action == "needs_consent"
-            ]
-            if missing:
-                raise _error(
-                    "isolated runtime requires exact-file consent via "
-                    "--approve-secret PATH:" + ", ".join(missing[:10])
-                )
             copies = [
                 entry
                 for entry in plan.entries
                 if entry.action in {"private_copy", "clone_or_copy", "private_tree"}
             ]
             notices = tuple(
-                f"Runtime omitted: {entry.path} ({entry.reason}). "
-                "No setup command was run."
+                (
+                    f"Optional secret runtime omitted: {entry.path}. "
+                    f"Reopen with --approve-secret {entry.path} to copy this file."
+                    if entry.action == "needs_consent"
+                    else f"Runtime omitted: {entry.path} ({entry.reason}). "
+                    "No setup command was run."
+                )
                 for entry in plan.entries
                 if entry.path not in source
                 and entry.action
