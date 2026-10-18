@@ -989,57 +989,118 @@ before anything is built.
 
 **Done when.** The user accepts the ADR, and G2 and G3 are rewritten from it.
 
+**Review candidate (2026-10-17).** ADR 0010 is written and remains Proposed.
+The checked-in two-daemon strict expected-failure reproduction confirms the
+same-base overwrite window. G2 and G3 below contain the bounded implementation
+split; user acceptance of the ADR remains outstanding. No product authority
+behavior changes in G1.
+
 ### G2. One publisher per physical checkout
 
-*Provisional; G1 sets the final scope.*
+**Depends on acceptance of G1's proposed
+[ADR 0010](adr/0010-cross-profile-publication-authority.md).** This package
+protects the current claim-backed execution contract; it does not perform G3's
+claim-free cutover.
 
 **Scope.**
 
-- The physical lock key and the persistent per-user authority root.
-- The owning daemon holds the lock, and publication and isolated-session
-  creation require it.
-- Other profiles get read-only observation and the stable error.
-- A dirty marker around journals, and refusal to publish over another
-  profile's unfinished recovery.
-- `doctor` and `workspace status` show the owner.
+- Verified physical checkout/admin keys and a separate common-Git-store key;
+  persistent account-home authority root selected through `getpwuid`, independent
+  of profile, XDG and runtime overrides. Unsafe/unverified storage fails closed.
+- Held kernel locks, PID plus process-start diagnostics, immutable local DB-instance
+  identity/binding and versioned, checksummed, fsynced dirty/clean markers.
+- Acquire/pin ownership for all managed mutation and consistent-read capabilities,
+  startup/explicit recovery, isolated creation, manual/batch/held publication and
+  legacy ref/worktree operations. Release only clean, unpinned ownership after
+  30 seconds idle; worker threads and unresolved journals prevent early release.
+- Other profiles receive labeled read-only observation and
+  `CHECKOUT_OWNED_BY_OTHER_PROFILE`; dirty foreign/mismatched database ownership
+  receives `CHECKOUT_FOREIGN_RECOVERY_REQUIRED`. Status/doctor report the state.
+- Mark dirty before a journal becomes applicable or any path changes, and clean
+  only after durable DB/events and final-path verification. Foreign profiles
+  never clear/replay an owner's journal. Missing/unknown markers and missing
+  recovery proof require attention.
+- A clean handoff re-observes stable current source and reports an epoch/history
+  gap without changing retained candidate bases. No global protected equality
+  key, exact cross-profile history, restore-generation layout or old-binary
+  downgrade fence is claimed; ADR 0010 defines those deferred boundaries.
 
-**Files.** `src/llm_cli/workspace/authority.py` (new), `src/llm_cli/workspace/batches.py`,
-`src/llm_cli/workspace/broker.py`, `src/llm_cli/workspace/isolated.py`,
-`src/llm_cli/daemon/service.py`, `src/llm_cli/paths.py`, `src/llm_cli/doctor.py`,
-tests, docs.
+**Files.** New `src/llm_cli/workspace/authority.py` and installation-identity helper;
+`storage/migrations.py`, `storage/control.py`, `paths.py`, `errors.py`,
+`daemon/service.py`, `workspace/batches.py`, `workspace/workflow.py`,
+`workspace/isolated.py`, legacy manual publication wiring in `daemon/service.py`,
+`execution/runner.py`, `execution/recovery.py`, `git/worktrees.py`,
+`git/integrate.py`, `doctor.py`, owner/status rendering and tests/docs.
+Coordinate all storage and daemon wiring under one integration owner.
 
 **Done when.**
-- With two daemons under two profiles on one checkout, only one publishes and
-  the other gets the stable error.
-- Killing the owner partway through a journal leaves a dirty marker, and the
-  other profile refuses to publish until the owner recovers.
-- A symlinked path to the checkout resolves to the same lock.
-- An identity that cannot be proved fails closed for publication.
-- G1's reproduction test passes.
+
+- G1's real two-profile reproduction is a passing owner/refusal regression,
+  with no expected-failure annotation; independent clones remain independent.
+- Aliases contend on one key, distinct linked worktrees have distinct checkout
+  keys and share their Git-store operation lock; path/identity changes fail closed.
+- Process tests cover idle reacquisition, PID reuse, environment overrides and
+  shutdown with a worker still running. No live worker loses its ownership pin.
+- Crash injection at dirty/journal/file/DB/clean-marker boundaries prevents a
+  foreign profile from publishing or recovering; original-owner exact recovery
+  succeeds or retains explicit attention when proof is unavailable.
+- Changed physical DB objects or missing bindings, dirty-journal mismatches,
+  missing/corrupt/unknown markers, unsafe roots and unknown filesystem semantics
+  cannot silently initialize authority. In-place manual restore preserving inode
+  and ID is explicitly unsupported, not claimed to be fenced. One blocked checkout
+  does not disable status/read-only access or unrelated checkouts.
+- Clean handoff notices expose no runtime/source bytes, do not invent history,
+  and stale retained proposals still pass ordinary merge/check/base validation.
 
 ### G3. Legacy claim cutover
 
-*Provisional; G1 sets the final scope.* Phase 11 of the workspace plan.
+**Depends on G2 and acceptance of ADR 0010.** This package implements the selected
+Phase 11 cutover; an authority-regime flag alone is insufficient because today's
+shared and isolated runners still require claims.
 
 **Scope.**
 
-- A per-checkout regime (`legacy`, `transition`, `workspace`) carried by
-  G2's marker.
-- Queued and active legacy claims are drained with an explicit disposition
-  for each.
-- Legacy execution refuses under the `workspace` regime.
-- Internal task refs stay inspectable and exportable.
-- `loupe claim` mutation is deprecated for one release.
+- Add a read-only conversion plan covering all physical checkout mappings across
+  repo keys, targets and adapters, preserving registration provenance. Ambiguous
+  overwritten clone paths block automatic conversion.
+- Add durable claim-free workspace executions and advisory intents using additive
+  tables/contracts. Preserve old claim-bound executions, task refs, checkpoints,
+  histories, held proposals and inspect/export access.
+- Upgrade G2's versioned compatibility marker to monotonic
+  `legacy → transition → workspace` regimes. Require explicit cutover after a
+  complete preview; ordinary upgrade retains the legacy contract.
+- Gate both new claim requests and waiter activation for every relevant mapping
+  during transition. Queued claims remain legacy by default or receive explicit
+  cancellation; active/expired work drains/recovers or is explicitly cancelled
+  with evidence retained. Ambiguous publishing/integration blocks cutover.
+- Journal marker/DB transitions with an idempotent intent and exact checkpoint;
+  resume after crashes without decrementing the global generation. Validate the
+  compatible regime at every final execution/publication/recovery boundary.
+- In workspace mode, sessionless coding uses durable one-shot workspace sessions;
+  fixture/ref work stays explicit legacy/export work. Deprecate `loupe claim`
+  mutation for one compatibility release; retain read/status/history commands.
 
-**Files.** `src/llm_cli/coordination/coordinator.py`, `src/llm_cli/storage/migrations.py`,
-`src/llm_cli/daemon/service.py`, `src/llm_cli/cli/app.py`,
-`src/llm_cli/workspace/authority.py`, tests, docs.
+**Files.** New workspace migration/planning module and claim-free execution
+module(s); `coordination/coordinator.py`, `coordination/models.py`,
+`storage/migrations.py`, `storage/control.py`, `daemon/service.py`,
+`execution/shared.py`, `execution/runner.py`, `execution/recovery.py`,
+`workspace/authority.py`, `workspace/workflow.py`, `cli/app.py`, protocol
+capabilities/errors, tests and docs. One owner coordinates storage/daemon/runner
+changes; physical locking remains G2's implementation.
 
 **Done when.**
-- Upgrade fixtures cover queued, active, expired, publishing and integrating
-  legacy rows, and none is silently discarded.
-- The two authorities are never active on one checkout at once.
-- Pre-cutover work stays inspectable.
+
+- Upgrade and process tests cover queued, active, expired, publishing,
+  integrating, confirmed and held work across several mappings/targets; every
+  row/ref has a visible disposition, and ambiguous evidence blocks conversion.
+- New workspace tasks create no legacy editing claim; explicit legacy tasks
+  retain their prior contract. Transition blocks both request and activation,
+  and the two incompatible authorities never operate on one checkout together.
+- Crash/retry at every intent/marker/DB boundary resumes one transition with
+  monotonic generations; older G2 marker readers fail closed on the new format.
+- Pre-cutover diffs, histories, refs and supported apply/undo remain inspectable
+  or explicitly exportable. Compatibility clients receive stable capability
+  errors, and feature rollback never deletes the new ledger or revives old claims.
 
 ## Later
 

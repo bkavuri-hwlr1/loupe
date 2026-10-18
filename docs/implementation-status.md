@@ -745,6 +745,27 @@ is now one physical line and its scoring/prompt tests pass (31 tests). This
 controlled example demonstrates the finding/repair gate. Broader bug-detection
 quality and cost savings remain unmeasured. Review remains off by default.
 
+## Wave 4 G1: proposed cross-profile authority decision (October 17, 2026)
+
+[ADR 0010](adr/0010-cross-profile-publication-authority.md) is **Proposed**, pending
+user review. A checked-in integration reproduction runs two real profile daemons
+and ordinary shared publication RPCs. With both renames paused after their final
+base checks, both independent journals prepare and then confirm different
+same-base results; the second replaces the first. Its strict expected failure
+accepts only the specific final violation after all preconditions and durable
+witnesses pass; startup, RPC and unrelated failures remain test failures.
+`--runxfail` independently confirms that exact known violation.
+
+The ADR selects profile-independent physical ownership and conservative dirty
+journal recovery for G2, with read-only peer status, stable errors, database
+instance binding and clean idle release. G3 separately adds claim-free workspace
+execution and explicit, recoverable legacy migration. G2/G3 scope, file ownership
+and acceptance criteria have been rewritten in the parallel plan. Global
+protected handoff equality, complete offline-drift history, generation-based
+restore/downgrade fencing and foreign-journal import remain explicit deferrals.
+No authority product behavior changed in G1. Focused reproduction: one strict
+expected failure; Ruff passes. Acceptance of the proposed ADR remains outstanding.
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
