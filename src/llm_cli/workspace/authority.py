@@ -929,13 +929,32 @@ class PhysicalAuthority:
                 with self.store.connection() as connection:
                     busy = connection.execute(
                         "SELECT 1 FROM claims c JOIN tasks t ON t.task_id=c.task_id "
-                        "JOIN repositories r ON r.repo_key=t.repo_key "
                         "LEFT JOIN sessions s ON s.session_id=t.session_id "
                         "LEFT JOIN checkouts k ON k.checkout_id=s.checkout_id WHERE "
-                        "CASE WHEN t.session_id IS NULL THEN r.main_worktree_path "
-                        "ELSE k.canonical_path END=? AND c.state IN "
-                        "('active_work','publishing','active_integration') LIMIT 1",
-                        (str(owner.physical.root),),
+                        "c.state IN ('active_work','publishing','active_integration') "
+                        "AND ((t.session_id IS NOT NULL AND k.canonical_path=?) OR "
+                        "(t.session_id IS NULL AND (EXISTS("
+                        "SELECT 1 FROM authority_journals j WHERE "
+                        "j.kind='legacy_claim' "
+                        "AND j.reference_id=c.claim_id AND j.physical_key=?) OR "
+                        "EXISTS(SELECT 1 FROM authority_journals j JOIN "
+                        "task_executions e ON e.execution_id=j.reference_id WHERE "
+                        "j.kind='legacy_execution' AND e.claim_id=c.claim_id AND "
+                        "j.physical_key=?) OR "
+                        "(NOT EXISTS(SELECT 1 FROM authority_journals j WHERE "
+                        "(j.kind='legacy_claim' AND j.reference_id=c.claim_id) OR "
+                        "(j.kind='legacy_execution' AND j.reference_id IN "
+                        "(SELECT execution_id FROM task_executions e WHERE "
+                        "e.claim_id=c.claim_id))) AND "
+                        "EXISTS(SELECT 1 FROM authority_checkouts a JOIN checkouts b "
+                        "ON b.checkout_id=a.checkout_id WHERE a.physical_key=? AND "
+                        "b.repository_id=t.repository_id))))) LIMIT 1",
+                        (
+                            str(owner.physical.root),
+                            owner.physical.key,
+                            owner.physical.key,
+                            owner.physical.key,
+                        ),
                     ).fetchone()
                 if busy is None:
                     self._release(owner)

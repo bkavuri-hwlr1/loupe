@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from llm_cli.agent.driver import DriverCapabilities
@@ -128,7 +128,7 @@ class ExecutionReconciler:
                 continue
             handled.add((execution.task_id, execution.task_attempt))
             try:
-                repository = self._repository(execution.task_id)
+                repository = self._repository(execution.task_id, execution.execution_id)
                 with managed_pin(
                     self.store, Path(repository.main_worktree_path), recovery=True
                 ):
@@ -142,7 +142,7 @@ class ExecutionReconciler:
                             execution.execution_id,
                             recovery=True,
                         ) as operation:
-                            outcome = self._recover_execution(execution)
+                            outcome = self._recover_execution(execution, repository)
                             if not outcome.blocking and operation is not None:
                                 operation.confirm()
                             outcomes.append(outcome)
@@ -166,11 +166,20 @@ class ExecutionReconciler:
                 continue
             handled.add(key)
             try:
-                repository = self._repository(intent.task_id)
-                with managed_pin(
-                    self.store, Path(repository.main_worktree_path), recovery=True
-                ):
-                    outcomes.append(self._resolve_intent(paired, intent))
+                repository = self._repository(
+                    intent.task_id, paired.execution_id if paired else None
+                )
+                with managed_mutation(
+                    self.store,
+                    Path(repository.main_worktree_path),
+                    "legacy_execution",
+                    paired.execution_id if paired else intent.intent_id,
+                    recovery=True,
+                ) as operation:
+                    outcome = self._resolve_intent(paired, intent, repository)
+                    if not outcome.blocking and operation is not None:
+                        operation.confirm()
+                    outcomes.append(outcome)
             except LlmCoordError as exc:
                 outcomes.append(
                     RecoveryOutcome(
@@ -184,7 +193,9 @@ class ExecutionReconciler:
                 )
         return RecoveryReport(boot_id=self.boot_id, outcomes=tuple(outcomes))
 
-    def _repository(self, task_id: str) -> RepositoryRecord:
+    def _repository(
+        self, task_id: str, execution_id: str | None = None
+    ) -> RepositoryRecord:
         task = self.store.get_task(task_id)
         repository = self.store.get_repository_by_key(task.repo_key) if task else None
         if repository is None:
@@ -192,14 +203,31 @@ class ExecutionReconciler:
                 ErrorCode.REPOSITORY_NOT_FOUND, "recovery repository is missing"
             )
         if task is not None and task.session_id:
-            from dataclasses import replace
-
             session = self.store.get_session(task.session_id)
             checkout = self.store.get_checkout(session.checkout_id) if session else None
-            if checkout is not None:
-                repository = replace(
-                    repository, main_worktree_path=checkout.canonical_path
+            if checkout is None or checkout.repository_id != repository.repository_id:
+                raise LlmCoordError(
+                    ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
+                    "the recovery session's exact checkout is unavailable",
                 )
+            return replace(repository, main_worktree_path=checkout.canonical_path)
+        if self.store.authority is not None:
+            # A remote-derived repository row can move to another clone. Only
+            # immutable local authority evidence may select a sessionless target.
+            with self.store.connection() as con:
+                rows = con.execute(
+                    "SELECT DISTINCT c.canonical_path FROM authority_journals j "
+                    "JOIN authority_checkouts a USING(physical_key) "
+                    "JOIN checkouts c ON c.checkout_id=a.checkout_id "
+                    "WHERE j.kind='legacy_execution' AND j.reference_id=?",
+                    (execution_id,),
+                ).fetchall()
+            if len(rows) != 1:
+                raise LlmCoordError(
+                    ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
+                    "the sessionless recovery checkout cannot be proved uniquely",
+                )
+            return replace(repository, main_worktree_path=str(rows[0][0]))
         return repository
 
     def _can_resume(self, execution: ExecutionRecord) -> bool:
@@ -260,19 +288,23 @@ class ExecutionReconciler:
             and execution.state in _IN_FLIGHT_EXECUTION_STATES
         )
 
-    def _recover_execution(self, execution: ExecutionRecord) -> RecoveryOutcome:
+    def _recover_execution(
+        self, execution: ExecutionRecord, repository: RepositoryRecord
+    ) -> RecoveryOutcome:
         intent = self.store.latest_publication_intent(
             execution.task_id, execution.task_attempt
         )
         if intent is None:
-            return self._recover_unpublished(execution)
+            return self._recover_unpublished(execution, repository)
         if intent.operation_state in _OPEN_INTENT_STATES:
-            return self._resolve_intent(execution, intent)
+            return self._resolve_intent(execution, intent, repository)
         if intent.operation_state == "confirmed":
-            return self._settle_confirmed(execution, intent)
-        return self._settle_recorded_outcome(execution, intent)
+            return self._settle_confirmed(execution, intent, repository)
+        return self._settle_recorded_outcome(execution, intent, repository)
 
-    def _recover_unpublished(self, execution: ExecutionRecord) -> RecoveryOutcome:
+    def _recover_unpublished(
+        self, execution: ExecutionRecord, repository: RepositoryRecord
+    ) -> RecoveryOutcome:
         """Close an attempt that died before any shared Git side effect.
 
         Publication is the only writer of shared references and it never runs
@@ -294,10 +326,15 @@ class ExecutionReconciler:
                     "reservation but no publication intent explains it"
                 ),
             )
-        repository = self._repository_for(claim)
         removed, cleanup_detail = self._remove_worktree(repository, execution)
         self._update_execution(
-            execution, state="failed", failure_code=DAEMON_INTERRUPTED
+            execution,
+            state=(
+                "cleanup_failed"
+                if self.store.authority is not None and not removed
+                else "failed"
+            ),
+            failure_code=DAEMON_INTERRUPTED,
         )
         released = self._release_claim(claim)
         detail = "no publication was attempted; the reservation was released"
@@ -306,7 +343,11 @@ class ExecutionReconciler:
         return RecoveryOutcome(
             task_id=execution.task_id,
             task_attempt=execution.task_attempt,
-            resolution="released",
+            resolution=(
+                "operator_attention"
+                if self.store.authority is not None and not removed
+                else "released"
+            ),
             detail=_join(detail, cleanup_detail),
             execution_id=execution.execution_id,
             worktree_removed=removed,
@@ -316,19 +357,10 @@ class ExecutionReconciler:
         self,
         execution: ExecutionRecord | None,
         intent: PublicationIntentRecord,
+        repository: RepositoryRecord,
     ) -> RecoveryOutcome:
         """Decide an unresolved intent by reading the reference it targeted."""
 
-        repository = self.store.get_repository_by_key(intent.repo_key)
-        if repository is None:
-            return self._flag_intent_for_operator(
-                execution,
-                intent,
-                detail=(
-                    "the repository this publication targeted is no longer registered"
-                ),
-                failure_code=REPOSITORY_UNREADABLE,
-            )
         repo_path = Path(repository.main_worktree_path)
         try:
             actual = read_task_ref(repo_path, intent.task_id)
@@ -350,6 +382,7 @@ class ExecutionReconciler:
             return self._settle_confirmed(
                 execution,
                 fresh,
+                repository,
                 detail=(
                     "the reference swap had already succeeded before the daemon stopped"
                 ),
@@ -366,12 +399,22 @@ class ExecutionReconciler:
                 failure_code=DAEMON_INTERRUPTED,
             )
             self._update_execution(
-                execution, state="failed", failure_code=DAEMON_INTERRUPTED
+                execution,
+                state=(
+                    "cleanup_failed"
+                    if self.store.authority is not None and not removed
+                    else "failed"
+                ),
+                failure_code=DAEMON_INTERRUPTED,
             )
             return RecoveryOutcome(
                 task_id=intent.task_id,
                 task_attempt=intent.task_attempt,
-                resolution="failed_safe",
+                resolution=(
+                    "operator_attention"
+                    if self.store.authority is not None and not removed
+                    else "failed_safe"
+                ),
                 detail=_join(
                     "the reference never moved, so the reservation was released",
                     cleanup_detail,
@@ -400,12 +443,24 @@ class ExecutionReconciler:
         self,
         execution: ExecutionRecord | None,
         intent: PublicationIntentRecord,
+        repository: RepositoryRecord,
         *,
         detail: str = "the publication was already confirmed",
     ) -> RecoveryOutcome:
         """Bring local state in line with a publication that did succeed."""
 
-        repository = self.store.get_repository_by_key(intent.repo_key)
+        if self.store.authority is not None:
+            actual = read_task_ref(Path(repository.main_worktree_path), intent.task_id)
+            if intent.result_commit_id is None or actual != intent.result_commit_id:
+                self._update_execution(execution, state="cleanup_failed")
+                return RecoveryOutcome(
+                    task_id=intent.task_id,
+                    task_attempt=intent.task_attempt,
+                    resolution="operator_attention",
+                    detail="the confirmed result no longer matches its exact task ref",
+                    execution_id=execution.execution_id if execution else None,
+                    intent_id=intent.intent_id,
+                )
         removed, cleanup_detail = self._remove_worktree(repository, execution)
         if execution is not None:
             self._update_execution(
@@ -416,7 +471,11 @@ class ExecutionReconciler:
         return RecoveryOutcome(
             task_id=intent.task_id,
             task_attempt=intent.task_attempt,
-            resolution="confirmed",
+            resolution=(
+                "operator_attention"
+                if self.store.authority is not None and not removed
+                else "confirmed"
+            ),
             detail=_join(detail, cleanup_detail),
             execution_id=execution.execution_id if execution else None,
             intent_id=intent.intent_id,
@@ -424,19 +483,45 @@ class ExecutionReconciler:
         )
 
     def _settle_recorded_outcome(
-        self, execution: ExecutionRecord, intent: PublicationIntentRecord
+        self,
+        execution: ExecutionRecord,
+        intent: PublicationIntentRecord,
+        repository: RepositoryRecord,
     ) -> RecoveryOutcome:
         """Tidy local state behind an outcome coordination already recorded."""
 
-        repository = self.store.get_repository_by_key(intent.repo_key)
+        if (
+            self.store.authority is not None
+            and read_task_ref(Path(repository.main_worktree_path), intent.task_id)
+            != intent.expected_old_ref
+        ):
+            self._update_execution(execution, state="cleanup_failed")
+            return RecoveryOutcome(
+                execution.task_id,
+                execution.task_attempt,
+                "operator_attention",
+                "the safely failed publication's exact task ref changed",
+                execution.execution_id,
+                intent.intent_id,
+            )
         removed, cleanup_detail = self._remove_worktree(repository, execution)
         self._update_execution(
-            execution, state="failed", failure_code=DAEMON_INTERRUPTED
+            execution,
+            state=(
+                "cleanup_failed"
+                if self.store.authority is not None and not removed
+                else "failed"
+            ),
+            failure_code=DAEMON_INTERRUPTED,
         )
         return RecoveryOutcome(
             task_id=execution.task_id,
             task_attempt=execution.task_attempt,
-            resolution="settled",
+            resolution=(
+                "operator_attention"
+                if self.store.authority is not None and not removed
+                else "settled"
+            ),
             detail=_join(
                 "the publication was already recorded as safely failed",
                 cleanup_detail,
@@ -528,11 +613,6 @@ class ExecutionReconciler:
             )
             return result.released
         return False
-
-    def _repository_for(self, claim: ClaimRecord | None) -> RepositoryRecord | None:
-        if claim is None:
-            return None
-        return self.store.get_repository_by_key(claim.repo_key)
 
     def _remove_worktree(
         self,

@@ -245,6 +245,13 @@ class TaskExecutionRunner:
         confirmed_intent: PublicationIntentRecord | None = None
         publication: TaskRefPublication | None = None
         try:
+            # Bind even pre-publication recovery to this exact physical root.
+            # Repository registrations may later move to a sibling clone.
+            with managed_mutation(
+                self.store, repo_path, "legacy_execution", execution.execution_id
+            ) as operation:
+                if operation is not None:
+                    operation.confirm()
             # Convert the short launch lease to a worker lease before any
             # filesystem preparation. Future long-running drivers renew on a
             # timer in addition to these boundary renewals.

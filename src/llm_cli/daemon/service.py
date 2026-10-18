@@ -662,7 +662,17 @@ class DaemonService:
         root: Path | None = None
         if "path" in params:
             # Git discovers the selected worktree, never another remote clone.
-            checkout = await self._registered_checkout_for_path(_path(params, "path"))
+            requested = _path(params, "path")
+            if method == "task.run" and params.get("session_id") is None:
+                legacy = await self._registered_repository_for_path(requested)
+                prior = self.store.get_task(str(params.get("task_id", "")))
+                if prior is not None:
+                    legacy = self._execution_repository(legacy, prior)
+                checkout = await self._registered_checkout_for_path(
+                    Path(legacy.main_worktree_path), repository=legacy
+                )
+            else:
+                checkout = await self._registered_checkout_for_path(requested)
             root = Path(checkout.canonical_path)
         elif "session_id" in params:
             session = self._authenticated_session(params)
@@ -1456,7 +1466,25 @@ class DaemonService:
         """Use a session's exact checkout instead of a legacy mutable path."""
 
         if task.session_id is None:
-            return repository
+            if task.current_claim_id is None:
+                return repository
+            with self.store.connection() as con:
+                targets = con.execute(
+                    "SELECT DISTINCT c.canonical_path FROM authority_journals j "
+                    "JOIN authority_checkouts a USING(physical_key) "
+                    "JOIN checkouts c ON c.checkout_id=a.checkout_id "
+                    "WHERE (j.kind='legacy_claim' AND j.reference_id=?) OR "
+                    "(j.kind='legacy_execution' AND j.reference_id IN "
+                    "(SELECT execution_id FROM task_executions WHERE task_id=? "
+                    "AND task_attempt=?))",
+                    (task.current_claim_id, task.task_id, task.attempt),
+                ).fetchall()
+            if len(targets) != 1:
+                raise LlmCoordError(
+                    ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
+                    "the legacy claim's physical checkout cannot be proved uniquely",
+                )
+            return replace(repository, main_worktree_path=str(targets[0][0]))
         session = self.store.get_session(task.session_id)
         if session is None:
             raise ValueError("task references a missing session")
@@ -1522,6 +1550,8 @@ class DaemonService:
             if existing_task is not None
             else None
         )
+        if session is None and existing_task is not None:
+            execution_repository = self._execution_repository(repository, existing_task)
         if session_id is not None:
             with self.store.connection() as connection:
                 active = connection.execute(
@@ -1681,6 +1711,13 @@ class DaemonService:
             scheduling_mode=scheduling_mode,
             optimistic_driver=optimistic_driver,
         )
+        if session is None:
+            with self.physical_authority.mutation(
+                Path(execution_repository.main_worktree_path),
+                "legacy_claim",
+                claim.claim_id,
+            ) as operation:
+                operation.confirm()
         # ask_user is offered only when the operator opted into interaction. A
         # background run must never be able to park on a question nobody is
         # there to answer, and attaching alone races the driver's start.

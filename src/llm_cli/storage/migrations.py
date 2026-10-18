@@ -1067,6 +1067,14 @@ CREATE TABLE isolated_runtime_journal (
 );
 """,
     ),
+    Migration(
+        26,
+        "authority_journal_target_lookup",
+        """
+CREATE INDEX authority_journals_target
+    ON authority_journals(kind,reference_id,physical_key);
+""",
+    ),
 )
 
 

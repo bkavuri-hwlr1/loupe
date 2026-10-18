@@ -2673,7 +2673,9 @@ class ControlStore:
                 WHERE state IN (
                     'preparing', 'worktree_ready', 'running', 'validated',
                     'publishing', 'cleanup_failed'
-                ) AND (boot_id IS NULL OR boot_id <> ?)
+                ) AND (
+                    boot_id IS NULL OR boot_id <> ? OR state='cleanup_failed'
+                )
                 ORDER BY created_at, execution_id
                 """,
                 (boot_id,),
