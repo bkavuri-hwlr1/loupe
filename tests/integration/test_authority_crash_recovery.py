@@ -266,3 +266,184 @@ def test_dirty_marker_with_missing_or_wrong_database_journal_stays_attention(
             restarted.close()
 
     asyncio.run(scenario())
+
+
+def test_post_replace_third_state_retains_dirty_authority(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        repository = repository_factory(tmp_path, {"file.txt": "original base\n"})
+        owner = _service(tmp_path, "owner", "owner-boot")
+        credentials = await _stage(owner, repository)
+        original = service_module.atomic_replace_regular_file
+
+        def replaced_then_changed(**kwargs: Any) -> None:
+            original(**kwargs)
+            (repository / "file.txt").write_text("unrecognized later edit\n")
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    service_module, "atomic_replace_regular_file", replaced_then_changed
+                )
+                result = await owner.handle(
+                    _request(
+                        "workspace.publish_candidate",
+                        **credentials,
+                        candidate_id="fault-candidate",
+                    )
+                )
+            assert result["outcome"] == "diverged"
+            assert (
+                owner.physical_authority.status(repository)["state"]
+                == "recovery_required"
+            )
+        finally:
+            owner.close()
+
+        peer = _service(tmp_path, "peer", "peer-boot")
+        try:
+            await peer.handle(_request("repo.add", path=str(repository)))
+            with pytest.raises(LlmCoordError) as refused:
+                await peer.handle(
+                    _request(
+                        "session.open",
+                        path=str(repository),
+                        session_id="peer-session",
+                        resume_token_hash=hashlib.sha256(b"peer-resume").hexdigest(),
+                    )
+                )
+            assert refused.value.code is ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED
+            assert (repository / "file.txt").read_text() == "unrecognized later edit\n"
+        finally:
+            peer.close()
+        restarted = _service(tmp_path, "owner", "restarted-owner")
+        try:
+            assert not restarted.physical_authority.finish_recovery(repository)
+            assert (
+                restarted.physical_authority.status(repository)["state"]
+                == "recovery_required"
+            )
+            assert (repository / "file.txt").read_text() == "unrecognized later edit\n"
+        finally:
+            restarted.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("relative", "body"),
+    [
+        (".env", "DISPLAY_NAME=signature-free-private-canary\n"),
+        ("cache.local", "signature-free-ignored-canary\n"),
+        ("credentials.json", '{"display": "signature-free-private-canary"}\n'),
+        ("source.py", "# " + "AKIA" + "X" * 16 + "\n"),
+    ],
+)
+def test_peer_session_read_only_reads_enforce_source_privacy(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    relative: str,
+    body: str,
+) -> None:
+    async def scenario() -> None:
+        repository = repository_factory(tmp_path, {"file.txt": "original base\n"})
+        owner = _service(tmp_path, "owner", "owner-boot")
+        credentials = await _stage(owner, repository)
+        owner.physical_authority.release_idle(force=True)
+        peer = _service(tmp_path, "peer", "peer-boot")
+        try:
+            await peer.handle(_request("repo.add", path=str(repository)))
+            await peer.handle(
+                _request(
+                    "session.open",
+                    path=str(repository),
+                    session_id="peer-session",
+                    resume_token_hash=hashlib.sha256(b"peer-resume").hexdigest(),
+                )
+            )
+            (repository / ".gitignore").write_text(".env\ncache.local\n")
+            (repository / relative).write_text(body)
+            with owner.store.connection() as con:
+                before = con.execute(
+                    "SELECT count(*) FROM workspace_read_observations"
+                ).fetchone()[0]
+            for method, params in (
+                ("workspace.observe", {"path": str(repository)}),
+                ("workspace.read_file", {**credentials, "read_only": True}),
+            ):
+                with pytest.raises(LlmCoordError) as refused:
+                    await owner.handle(
+                        _request(method, relative_path=relative, **params)
+                    )
+                assert refused.value.code is ErrorCode.REPOSITORY_UNSAFE
+            ordinary = await owner.handle(
+                _request(
+                    "workspace.read_file",
+                    **credentials,
+                    relative_path="file.txt",
+                    read_only=True,
+                )
+            )
+            assert ordinary["content"] == "original base\n"
+            assert ordinary["cooperative_read_barrier"] is False
+            assert ordinary["edit_capability"] is False
+            with owner.store.connection() as con:
+                assert (
+                    con.execute(
+                        "SELECT count(*) FROM workspace_read_observations"
+                    ).fetchone()[0]
+                    == before
+                )
+        finally:
+            owner.close()
+            peer.close()
+
+    asyncio.run(scenario())
+
+
+def test_sessions_bind_and_publish_to_distinct_linked_worktrees(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+) -> None:
+    async def scenario() -> None:
+        repository = repository_factory(tmp_path, {"file.txt": "original base\n"})
+        linked = tmp_path / "linked"
+        git_run(repository, "worktree", "add", "-b", "user-linked", str(linked))
+        first = _service(tmp_path, "owner", "primary-boot")
+        second = _service(tmp_path, "peer", "linked-boot")
+        try:
+            await _stage(first, repository)
+            added = await second.handle(_request("repo.add", path=str(linked)))
+            assert added["checkout"]["canonical_path"] == str(linked.resolve())
+            credentials = await _stage(second, linked)
+            assert first.physical_authority.is_owned(repository)
+            assert not first.physical_authority.is_owned(linked)
+            assert second.physical_authority.is_owned(linked)
+            assert not second.physical_authority.is_owned(repository)
+            primary_id = PhysicalCheckout.inspect(repository)
+            linked_id = PhysicalCheckout.inspect(linked)
+            try:
+                assert primary_id.key != linked_id.key
+                assert primary_id.store_key == linked_id.store_key
+            finally:
+                primary_id.close()
+                linked_id.close()
+            result = await second.handle(
+                _request(
+                    "workspace.publish_candidate",
+                    **credentials,
+                    candidate_id="fault-candidate",
+                )
+            )
+            assert result["outcome"] == "published"
+            assert (linked / "file.txt").read_text() == "published result\n"
+            assert (repository / "file.txt").read_text() == "original base\n"
+        finally:
+            first.close()
+            second.close()
+
+    asyncio.run(scenario())

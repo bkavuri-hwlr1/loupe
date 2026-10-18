@@ -929,8 +929,11 @@ class PhysicalAuthority:
                 with self.store.connection() as connection:
                     busy = connection.execute(
                         "SELECT 1 FROM claims c JOIN tasks t ON t.task_id=c.task_id "
-                        "JOIN repositories r ON r.repo_key=t.repo_key WHERE "
-                        "r.main_worktree_path=? AND c.state IN "
+                        "JOIN repositories r ON r.repo_key=t.repo_key "
+                        "LEFT JOIN sessions s ON s.session_id=t.session_id "
+                        "LEFT JOIN checkouts k ON k.checkout_id=s.checkout_id WHERE "
+                        "CASE WHEN t.session_id IS NULL THEN r.main_worktree_path "
+                        "ELSE k.canonical_path END=? AND c.state IN "
                         "('active_work','publishing','active_integration') LIMIT 1",
                         (str(owner.physical.root),),
                     ).fetchone()

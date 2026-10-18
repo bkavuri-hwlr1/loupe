@@ -1062,7 +1062,7 @@ class DaemonService:
         )
         checkout = self.store.ensure_checkout(
             repository=record,
-            canonical_path=str(info.main_worktree.resolve()),
+            canonical_path=str(info.worktree.resolve()),
             git_common_dir=str(info.common_git_dir.resolve()),
         )
         return {
@@ -1178,8 +1178,25 @@ class DaemonService:
         session = self._authenticated_session(params, require_active=True)
         relative_path = normalize_changed_path(_string(params, "relative_path"))
         workspace = _session_workspace(self.store, session)
+        read_only = params.get("read_only", False)
+        if not isinstance(read_only, bool):
+            raise ValueError("read_only must be a boolean")
+        if read_only:
+            from llm_cli.agent.source_policy import excluded_paths
+
+            if relative_path in excluded_paths(
+                Path(workspace.canonical_path), [relative_path]
+            ):
+                raise LlmCoordError(
+                    ErrorCode.REPOSITORY_UNSAFE,
+                    "read-only observation is restricted to ordinary source paths",
+                )
         target = workspace_target(Path(workspace.canonical_path), relative_path)
         identity, raw = read_identified_path(target, max_bytes=MAX_SHARED_TEXT_BYTES)
+        if read_only and raw is not None:
+            from llm_cli.agent.source_policy import ensure_safe_content
+
+            ensure_safe_content(raw)
         content: str | None = None
         if raw is not None:
             try:
@@ -1188,9 +1205,6 @@ class DaemonService:
                 raise ValueError(
                     "shared broker reads only UTF-8 text in this release"
                 ) from exc
-        read_only = params.get("read_only", False)
-        if not isinstance(read_only, bool):
-            raise ValueError("read_only must be a boolean")
         if not read_only:
             self.store.record_workspace_read(
                 session_id=session.session_id,
@@ -1376,7 +1390,8 @@ class DaemonService:
                 divergence, event = self.store.record_workspace_divergence(
                     candidate_id=candidate_id, current=observed
                 )
-                operation.confirm()
+                # A post-effect third state is not proof of a settled result.
+                # Preserve the owning recovery gate and the user's later edit.
                 return _diverged_workspace_response(candidate, divergence, event)
             raise LlmCoordError(
                 ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
@@ -1431,7 +1446,7 @@ class DaemonService:
         record = repository or await self._registered_repository_for_path(path)
         return self.store.ensure_checkout(
             repository=record,
-            canonical_path=str(info.main_worktree.resolve()),
+            canonical_path=str(info.worktree.resolve()),
             git_common_dir=str(info.common_git_dir.resolve()),
         )
 
