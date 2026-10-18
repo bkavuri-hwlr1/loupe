@@ -73,6 +73,10 @@ the remaining planned capabilities are listed below.
   preserves later unexpected writes. Runtime bytes stay outside source history
   and artifacts. Generation cleanup follows workspace retirement. See
   [the guide](isolated-workspaces.md#runtime-refresh-and-retained-proposals).
+  Unchanged stat-only refresh medians were 62 ms for 10,000 dependency files and
+  213 ms for 50,000 (three passes per size, disposable synthetic repository);
+  these exclude changed-tree copying. See the
+  [measurement record](experiments/runtime-refresh-c8-2026-10-18.json).
 
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
@@ -893,7 +897,7 @@ protected handoff equality, complete offline-drift history, generation-based
 restore/downgrade fencing and foreign-journal import remain explicit deferrals.
 No authority product behavior changed in G1. Focused reproduction: one strict
 expected failure; Ruff passes. The acceptance gate is satisfied; G2 implementation
-is now authorized, with completion recorded separately below.
+is now authorized and tracked separately from this C8 runtime-refresh change.
 
 ## Next executable slice
 

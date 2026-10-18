@@ -202,7 +202,9 @@ New ignored entries retain normal hydration budgets and adapter boundaries.
 Runtime bytes and content digests never enter the refresh journal or source
 ledger. Prepared private root transitions recover by recorded inode/stat
 receipts, recognizing only the before and after state; ambiguous later writes
-are preserved. Unrecorded staged generations are disposable.
+are preserved. Unrecorded staged generations are disposable. When publication
+authority is attached, installed receipts remain through staging cleanup until
+that authority acknowledges them; later private changes block acknowledgment.
 
 A retained proposal pins an immutable private generation and its check
 configuration. Later live-runtime refresh does not replace those inputs for

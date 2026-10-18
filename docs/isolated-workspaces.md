@@ -116,8 +116,8 @@ creation, private runtime copying, source checks, output screening, and cleanup,
 with no provider request. Other filesystems retain private-copy fallbacks.
 
 Commands retain Loupe's existing minimized child environment. The general
-per-terminal environment forwarding, automatic virtualenv rebuilding, runtime refresh,
-and long-running process interfaces in the workspace design are future work.
+per-terminal environment forwarding, automatic virtualenv rebuilding, and
+long-running process interfaces in the workspace design are future work.
 An isolated session does not grant additional access to provider credentials.
 
 Configured MCP servers follow the same approval and plan-mode rules as shared
@@ -169,9 +169,9 @@ Auto mode publishes the checked, scoped source delta through the same batch
 journal used by shared sessions. The primary checkout's HEAD, index, and refs
 remain unchanged. Normal mode freezes a proposal for `/diff` and `/apply`.
 Applying a held proposal merges it onto the current primary source and reruns
-required checks with the owning isolated session's private runtime. Later private
-edits are preserved rather than added to that held proposal. `/undo` reverses the
-published batch with exact-base validation and synchronizes the private source.
+required checks with its retained private runtime generation and frozen check
+configuration. Later private edits are preserved rather than added to that held
+proposal. `/undo` reverses the published batch with exact-base validation and synchronizes the private source.
 These operations remain available after daemon restart. A published task's
 exact-base undo also remains available after its closed private workspace has
 been retired; it uses retained publication data against the shared checkout.
@@ -247,6 +247,28 @@ reading unchanged file contents. New ignored inputs use the ordinary hydration
 budgets and adapters. A change in ignore rules cannot turn a previously pinned
 runtime input into source.
 
+For example, with `local.data` already ignored, open
+`loupe chat --workspace isolated`, then edit `local.data` in the primary checkout.
+The next prompt or check adopts that stable update if the private copy is
+unchanged. Editing both copies keeps the private version and reports
+`Runtime conflict; preserved private copy: local.data` once for that primary
+change, including across restart.
+
+Discovery retains the hydration inventory defaults: 20,000 entries, 4 MiB of
+metadata, depth 64, and 10 seconds. Each runtime root's recursive stat scan is
+separately bounded to 200,000 entries, depth 64, and 60 seconds. New regular-file
+copies retain the 256 MiB per-file and 2 GiB aggregate apparent/allocation budgets;
+dependency copies retain the adapter limits described above. See
+[ADR 0009](adr/0009-isolated-runtime-hydration.md) for the full copy policy.
+
+An incomplete inventory, unstable input, or copy failure emits a refresh deferral
+and retries at a later safe point. Any prepared installation must recover before
+another command or check can snapshot runtime. Unchanged stat-only refresh
+medians were 62 ms at 10,000 dependency files and 213 ms at 50,000, from three
+passes per size in a disposable synthetic repository. These measure detection,
+not changed-tree copying; see the
+[measurement record](experiments/runtime-refresh-c8-2026-10-18.json).
+
 Exact `--approve-secret PATH` consent given when opening a conversation also
 allows that file's later stable updates. Without opening consent, an appearing
 or changed likely-secret file is reported and remains absent. Dependency
@@ -264,6 +286,9 @@ journals its before/after stat receipts, then atomically renames individual root
 under the publication lock. After a crash, recovery completes the recorded
 whole generation before another action can use it; unrecorded staged copies are
 discarded. Unexpected later private edits are preserved and require recovery.
+When publication authority is attached, an installed receipt survives staging
+cleanup until that authority acknowledges it; a later private write blocks that
+acknowledgment and retains the recovery evidence.
 Runtime contents never enter source batches, the source artifact store or
 knowledge indexes. Frozen runtime copies remain only while their workspace and
 retained proposals need them; closing a conversation removes the owned runtime
