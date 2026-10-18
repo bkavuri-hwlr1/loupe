@@ -42,6 +42,9 @@ references. Batch IDs use `batch:BATCH_ID`.
 The graph recognizes ordinary Python package layouts and a leading `src/`.
 Python imports, relative imports, classes, synchronous/asynchronous functions
 and nested definitions are extracted with the standard-library `ast` parser.
+After parsing the complete file, graph traversal visits statement containers,
+including exception handlers and match cases, while skipping expression and
+annotation trees and retaining nested scopes.
 Static JavaScript/TypeScript `import`, `import(...)`, `require(...)` and
 re-export specifiers use a small tokenizer that skips comments, strings,
 templates and regex literals in expression-start positions. Relative imports

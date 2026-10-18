@@ -930,9 +930,15 @@ without a new dependency. Changed-document updates remove prior edges while
 preserving unaffected rows. Every returned edge cites parser/version, source
 identity/revision and active/indexed generation; syntax failures are recorded per
 file. CLI/RPC neighbors support edge filters and depth 1–4, with current policy
-revalidation, private-intermediate traversal refusal and bounded results. Existing
-F1 scale regressions still pass: a 10,000-file baseline built in 3.82 seconds and
-single-publication medians were 36 ms at 1,000 files and 43 ms at 10,000. See the
+revalidation, private-intermediate traversal refusal and bounded results.
+Graph traversal skips expression trees while preserving statement and scope facts.
+The earlier, simpler 10,000-file fixture built in 3.82 seconds; it differs from
+the final dense fixture with 40 functions per module (400,000 function nodes).
+At `0ab3fcd`, that dense 10,000-file build took 11.655 seconds under coverage,
+within the unchanged 30-second budget. Single-publication medians were 40.5 ms
+at 1,000 files and 46.2 ms at 10,000. A single before/after profile of the dense
+fixture measured 12.683 to 10.324 seconds overall and 4.517 to 2.298 seconds in
+parsing; these local timings do not establish general throughput gains. See the
 [code graph guide](code-graph.md) for parser limits and upgrade/rebuild behavior.
 
 ### F3. Optional retrieval in the agent, with a live comparison (*live*)

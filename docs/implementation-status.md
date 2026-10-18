@@ -473,6 +473,15 @@ documents replace their graph facts atomically; unchanged graph rows remain.
 Agent retrieval tools and their live comparison, embedding providers, semantic
 retrieval and `sqlite-vec` remain planned.
 
+F2 validation at `0ab3fcd` passed 2,824 tests, with one case-sensitive-filesystem
+skip and the existing G1 cross-profile expected failure. Ruff, mypy over 119 source
+files and source-distribution/wheel builds passed. Python statement-container
+traversal retained identical graph facts across all 365 tracked Python files.
+The dense 10,000-file fixture produced 400,000 function nodes in 11.655 seconds
+under coverage, within the original 30-second budget; the
+[F2 plan](parallel-work-plan.md#f2-deterministic-code-graph) distinguishes this
+workload from the earlier simpler baseline.
+
 F1 validation at source revision `507bd41` passed 73 focused lexical, backup,
 configuration, schema and scanner regressions, repository Ruff, mypy over 116
 source files, and source-distribution/wheel builds.
