@@ -173,7 +173,15 @@ def inspect_tree(
                 name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
             )
             try:
-                if _evidence(os.fstat(descriptor)) != _evidence(before):
+                opened = os.fstat(descriptor)
+                # Installers legitimately add entries between stat() and open().
+                # Pin the same directory during live budget observations; full
+                # metadata stability is required only for the finished receipt.
+                if (opened.st_dev, opened.st_ino, stat.S_IFMT(opened.st_mode)) != (
+                    before.st_dev,
+                    before.st_ino,
+                    stat.S_IFMT(before.st_mode),
+                ) or (validate and _evidence(opened) != _evidence(before)):
                     raise _error("dependency rebuild directory changed")
                 names: list[str] = []
                 with os.scandir(descriptor) as children:
