@@ -348,19 +348,17 @@ class _Cluster:
             "signals": sorted(p.name for p in self.signals.iterdir())
         }
         evidence["processes"] = {
-            self.process_names[process.pid]: {
+            self.process_names.get(process.pid, f"pid-{process.pid}"): {
                 "pid": process.pid,
                 "exit": process.poll(),
             }
             for process in self.processes
         }
         evidence["logs"] = {}
-        for name in self.process_names.values():
-            path = self.root / f"{name}.log"
-            if path.exists():
-                with path.open("rb") as log:
-                    log.seek(max(0, path.stat().st_size - 8_192))
-                    evidence["logs"][name] = log.read().decode(errors="replace")
+        for path in sorted(self.root.glob("*.log")):
+            with path.open("rb") as log:
+                log.seek(max(0, path.stat().st_size - 8_192))
+                evidence["logs"][path.name] = log.read().decode(errors="replace")
         try:
             with closing(sqlite3.connect(
                 self.paths.control_db.as_uri() + "?mode=ro", timeout=0.1, uri=True
@@ -400,7 +398,8 @@ class _Cluster:
             if not pending:
                 break
             exited = self.daemon.poll() is not None or any(
-                self.submissions[label].poll() is not None for label in pending
+                self.submissions[label].poll() is not None
+                for label in pending if label in self.submissions
             )
             if exited or time.monotonic() >= deadline:
                 raise AssertionError(
@@ -437,7 +436,11 @@ class _Cluster:
         )
 
     def close(self) -> None:
-        for label in self.submissions:
+        labels = set(self.submissions) | {
+            marker.name.removesuffix(".ready.json")
+            for marker in self.signals.glob("*.ready.json")
+        }
+        for label in labels:
             self.release(label)
         for process in reversed(self.processes):
             if process.poll() is None:
