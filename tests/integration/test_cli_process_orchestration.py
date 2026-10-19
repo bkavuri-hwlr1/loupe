@@ -274,6 +274,9 @@ class _Cluster:
             raise
 
     def _spawn(self, name: str, args: list[str]) -> subprocess.Popen[str]:
+        from authority_helpers import isolated_cli_arguments
+
+        args = isolated_cli_arguments(args)
         log = self.stack.enter_context((self.root / f"{name}.log").open("w"))
         process = subprocess.Popen(
             [sys.executable, *args],

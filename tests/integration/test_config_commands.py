@@ -13,6 +13,7 @@ from llm_cli.paths import AppPaths
 from llm_cli.protocol.client import DaemonClient
 
 
+@pytest.mark.usefixtures("isolated_daemon_autostart")
 def test_live_config_show_set_and_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

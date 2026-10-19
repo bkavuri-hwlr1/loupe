@@ -272,8 +272,9 @@ def test_two_profiles_cannot_confirm_overlapping_same_base_publications(
             }
             command = [
                 sys.executable,
-                "-m",
-                "llm_cli",
+                "-I",
+                str(Path(__file__).with_name("authority_helpers.py").resolve()),
+                "--test-cli",
                 "--profile",
                 second.name,
                 "--json",
