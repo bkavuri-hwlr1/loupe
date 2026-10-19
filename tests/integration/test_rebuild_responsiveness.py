@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -9,20 +10,24 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from authority_helpers import __file__ as authority_bootstrap
 
+from llm_cli.daemon.service import DaemonService
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.execution.sandbox import available_sandbox
 from llm_cli.paths import AppPaths
 from llm_cli.protocol.client import DaemonClient
+from llm_cli.protocol.envelopes import Request
 
 pytestmark = pytest.mark.skipif(
     available_sandbox() is None, reason="real command sandbox required"
@@ -278,3 +283,215 @@ def test_real_rpc_and_publication_progress_while_private_installer_waits(
         assert not (
             Path(opened_isolated["workspace"]["git_dir"]) / "loupe-rebuild-home"
         ).exists()
+
+
+def test_pending_open_keeps_checkout_binding_until_daemon_registration(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[[Path], DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        first_repository = repository_factory(
+            tmp_path / "first", {"a.txt": "first checkout source\n"}
+        )
+        second_repository = repository_factory(
+            tmp_path / "second", {"b.txt": "second checkout source\n"}
+        )
+        service = service_factory(tmp_path)
+        service.providers.register(
+            "scripted", lambda model: SimpleNamespace(name="scripted", model="fake")
+        )
+        service.initialize()
+        manager_open = service.isolated_workspaces.open
+        ready = threading.Event()
+        release = threading.Event()
+        attempts = 0
+        attempt_lock = threading.Lock()
+
+        def delayed_return(*args: Any, **kwargs: Any) -> Any:
+            nonlocal attempts
+            with attempt_lock:
+                attempts += 1
+                first = attempts == 1
+            result = manager_open(*args, **kwargs)
+            if first:
+                # Model a scheduling pause after the manager's own opening
+                # guard ends, before the daemon records the durable session.
+                ready.set()
+                assert release.wait(30), "original opening was never released"
+            return result
+
+        def request(method: str, params: dict[str, Any]) -> Request:
+            return Request.create(
+                request_id=method, method=method, params=params, profile_id="test"
+            )
+
+        def opening(repository: Path, token: str) -> Request:
+            return request(
+                "session.open",
+                {
+                    "path": str(repository),
+                    "session_id": "pending-registration",
+                    "resume_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                    "workspace": "isolated",
+                    "provider": "scripted",
+                    "model": "fake",
+                },
+            )
+
+        original: asyncio.Task[Any] | None = None
+        try:
+            for repository in (first_repository, second_repository):
+                await service.handle(request("repo.add", {"path": str(repository)}))
+            monkeypatch.setattr(service.isolated_workspaces, "open", delayed_return)
+            original = asyncio.create_task(
+                service.handle(opening(first_repository, "original-opening-token"))
+            )
+            try:
+                assert await asyncio.to_thread(ready.wait, 10), (
+                    "original manager never reached ready"
+                )
+                with service.store.connection() as connection:
+                    assert (
+                        connection.execute("SELECT count(*) FROM sessions").fetchone()[
+                            0
+                        ]
+                        == 0
+                    )
+                with pytest.raises(
+                    LlmCoordError, match="setup is already running"
+                ) as refusal:
+                    await asyncio.wait_for(
+                        service.handle(
+                            opening(second_repository, "conflicting-opening-token")
+                        ),
+                        timeout=5,
+                    )
+                assert refusal.value.code is ErrorCode.REPOSITORY_UNSAFE
+                assert not original.done()
+                with service.store.connection() as connection:
+                    assert (
+                        connection.execute("SELECT count(*) FROM sessions").fetchone()[
+                            0
+                        ]
+                        == 0
+                    )
+                    assert (
+                        connection.execute(
+                            "SELECT count(*) FROM isolated_workspaces"
+                        ).fetchone()[0]
+                        == 1
+                    )
+            finally:
+                release.set()
+                # Always let the real manager/registration finish before
+                # closing authority, including on the deliberately failing code.
+                outcomes = await asyncio.wait_for(
+                    asyncio.gather(original, return_exceptions=True), timeout=30
+                )
+            assert not isinstance(outcomes[0], BaseException), outcomes[0]
+            assert outcomes[0]["session"]["session_id"] == "pending-registration"
+            with service.store.connection() as connection:
+                row = connection.execute(
+                    "SELECT s.checkout_id,w.checkout_id AS workspace_checkout,"
+                    "s.resume_token_hash,w.canonical_path,"
+                    "c.canonical_path AS primary_path "
+                    "FROM sessions s JOIN workspaces w USING(workspace_id) "
+                    "JOIN checkouts c ON c.checkout_id=s.checkout_id "
+                    "WHERE s.session_id=?",
+                    ("pending-registration",),
+                ).fetchone()
+                assert row is not None
+                assert row["checkout_id"] == row["workspace_checkout"]
+                assert row["primary_path"] == str(first_repository)
+                assert (
+                    row["resume_token_hash"]
+                    == hashlib.sha256(b"original-opening-token").hexdigest()
+                )
+                assert (
+                    connection.execute("SELECT count(*) FROM sessions").fetchone()[0]
+                    == 1
+                )
+            assert (Path(row["canonical_path"]) / "a.txt").read_text() == (
+                "first checkout source\n"
+            )
+            assert not (Path(row["canonical_path"]) / "b.txt").exists()
+        finally:
+            release.set()
+            if original is not None and not original.done():
+                await asyncio.gather(original, return_exceptions=True)
+            service.close()
+
+    asyncio.run(scenario())
+
+
+def test_manager_rejects_reused_session_from_another_checkout_before_mutation(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[[Path], DaemonService],
+) -> None:
+    async def scenario() -> None:
+        repositories = (
+            repository_factory(tmp_path / "first", {"a.txt": "first checkout\n"}),
+            repository_factory(tmp_path / "second", {"b.txt": "second checkout\n"}),
+        )
+        service = service_factory(tmp_path)
+        service.initialize()
+        try:
+            checkouts = []
+            for repository in repositories:
+                added = await service.handle(
+                    Request.create(
+                        request_id="add-" + repository.parent.name,
+                        method="repo.add",
+                        params={"path": str(repository)},
+                        profile_id="test",
+                    )
+                )
+                checkout = service.store.get_checkout(added["checkout"]["checkout_id"])
+                assert checkout is not None
+                checkouts.append(checkout)
+            manager = service.isolated_workspaces
+            workspace, _ = await asyncio.to_thread(
+                manager.open, checkouts[0], "manager-checkout-binding"
+            )
+            with service.store.connection() as connection:
+                before = [
+                    tuple(row)
+                    for row in connection.execute(
+                        "SELECT * FROM authority_journals ORDER BY rowid"
+                    )
+                ]
+            with pytest.raises(LlmCoordError, match="checkout") as refusal:
+                await asyncio.to_thread(
+                    manager.open, checkouts[1], "manager-checkout-binding"
+                )
+            assert refusal.value.code is ErrorCode.REPOSITORY_UNSAFE
+            assert manager.validate(workspace.workspace_id).stage == "ready"
+            with service.store.connection() as connection:
+                assert before == [
+                    tuple(row)
+                    for row in connection.execute(
+                        "SELECT * FROM authority_journals ORDER BY rowid"
+                    )
+                ]
+                assert (
+                    connection.execute(
+                        "SELECT count(*) FROM authority_journals "
+                        "WHERE state!='confirmed'"
+                    ).fetchone()[0]
+                    == 0
+                )
+                assert (
+                    connection.execute(
+                        "SELECT count(*) FROM isolated_workspaces"
+                    ).fetchone()[0]
+                    == 1
+                )
+            with service.physical_authority.pin(repositories[1]):
+                service.physical_authority.validate_current()
+        finally:
+            service.close()
+
+    asyncio.run(scenario())

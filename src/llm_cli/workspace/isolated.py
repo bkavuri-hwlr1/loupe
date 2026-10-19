@@ -1465,6 +1465,16 @@ class IsolatedWorkspaceManager:
 
         primary = Path(checkout.canonical_path)
         with self._opening(session_id), managed_pin(self.store, primary):
+            # Reusing a session ID must never select another checkout's private
+            # workspace, even before a daemon session row has been registered.
+            with self.lock, self.store.connection() as con:
+                prior = con.execute(
+                    "SELECT w.checkout_id FROM isolated_workspaces i "
+                    "JOIN workspaces w ON w.workspace_id=i.workspace_id "
+                    "WHERE i.session_id=?", (session_id,),
+                ).fetchone()
+                if prior is not None and prior[0] != checkout.checkout_id:
+                    raise _error("isolated session belongs to another checkout")
             with self.lock, managed_mutation(
                 self.store, primary, "isolated_create", session_id
             ) as operation:

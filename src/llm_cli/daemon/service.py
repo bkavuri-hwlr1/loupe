@@ -288,6 +288,7 @@ class DaemonService:
         self._external_scanner = ExternalWorkspaceScanner(self.store)
         self._next_external_scan_at = 0.0
         self._authority_lock = asyncio.Lock()
+        self._pending_session_opens: set[str] = set()
         self._background_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
         # Executions whose answer is being written again right now.
         self._answer_rewrites: set[str] = set()
@@ -587,7 +588,20 @@ class DaemonService:
                 # Private dependency installation may take minutes. Setup and
                 # activation lock independently; the installer never pins the
                 # dispatch barrier used by every other terminal.
-                return await self._session_open(request.params)
+                session_id = _string(request.params, "session_id")
+                async with self._authority_lock:
+                    if session_id in self._pending_session_opens:
+                        raise LlmCoordError(
+                            ErrorCode.REPOSITORY_UNSAFE,
+                            "session setup is already running",
+                        )
+                    self._pending_session_opens.add(session_id)
+                try:
+                    return await self._session_open(request.params)
+                finally:
+                    # Only the event loop touches this reservation. Keep it
+                    # through registration, including the worker-return gap.
+                    self._pending_session_opens.discard(session_id)
             if request.method == "session.compact":
                 # The summary is a model request. Hold the authority lock only
                 # to read and to save, never while the provider responds.
