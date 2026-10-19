@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import functools
 import hashlib
 import json
 from pathlib import Path
@@ -37,6 +38,7 @@ from llm_cli.workspace.identity import (
 from llm_cli.workspace.merge import has_conflict_markers, merge_text
 
 if TYPE_CHECKING:
+    from llm_cli.execution.environment import EnvironmentProvider, EnvironmentSupplier
     from llm_cli.workspace.isolated_sync import IsolatedSynchronizer
 
 
@@ -90,6 +92,7 @@ class TaskWorkflow:
     ) -> None:
         self.store, self.coordinator, self.publisher = store, coordinator, publisher
         self.isolated_sync: IsolatedSynchronizer | None = None
+        self.command_environment: EnvironmentProvider | None = None
 
     def reconcile(self) -> None:
         """Repair disposition after journal settlement without replaying actions."""
@@ -519,7 +522,12 @@ class TaskWorkflow:
         return source, runtime_root, workspace.workspace_id
 
     def apply(
-        self, task_id: str, *, undo: bool = False, allow_unverified: bool = False
+        self,
+        task_id: str,
+        *,
+        undo: bool = False,
+        allow_unverified: bool = False,
+        environment: EnvironmentSupplier | None = None,
     ) -> dict[str, Any]:
         with self.publisher.lock:
             self.reconcile()
@@ -573,6 +581,12 @@ class TaskWorkflow:
                 files,
                 runtime_root=runtime_root,
                 sensitive_paths=sensitive_paths,
+                environment=environment
+                or (
+                    functools.partial(self.command_environment, session.session_id)
+                    if self.command_environment is not None
+                    else None
+                ),
             )
             if failure is not None:
                 raise ValueError(failure)

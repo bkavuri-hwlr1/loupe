@@ -58,6 +58,8 @@ class Settings:
     # Sandboxed run_command policy: "ask" needs the user's approval in an
     # interactive session, "allow" runs without asking, "off" never offers it.
     agent_commands: str = "ask"
+    # Forward only the opening/resuming terminal, ephemerally and opt-in.
+    agent_command_environment: str = "minimal"
     # Offer the explore tool, whose read-only helpers spend extra model tokens.
     agent_explore: bool = True
     # The most reasoning effort explore helpers use; None means the task's own.

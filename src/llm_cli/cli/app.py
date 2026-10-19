@@ -33,7 +33,7 @@ from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.ids import new_id
 from llm_cli.paths import AppPaths
-from llm_cli.protocol.client import DaemonClient
+from llm_cli.protocol.client import DaemonClient, session_environment_params
 
 if TYPE_CHECKING:
     from llm_cli.workspace.hydration import HydrationEntry, HydrationPlan
@@ -869,7 +869,10 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 {
                     "task_id": arguments.task_id,
                     **(
-                        {"allow_unverified": arguments.allow_unverified}
+                        {
+                            "allow_unverified": arguments.allow_unverified,
+                            **session_environment_params(client.paths),
+                        }
                         if arguments.task_command == "apply"
                         else {}
                     ),
@@ -1065,7 +1068,10 @@ def _dispatch_session(arguments: argparse.Namespace, client: DaemonClient) -> An
         "resume_secret": secret,
     }
     if action == "resume":
-        return client.call("session.resume", authenticated)
+        return client.call(
+            "session.resume",
+            {**authenticated, **session_environment_params(client.paths)},
+        )
     if action == "close":
         result = client.call(
             "session.close", {**authenticated, "reason": arguments.reason}

@@ -50,6 +50,7 @@ _AGENT_KEYS = {
     "provider",
     "model",
     "commands",
+    "command_environment",
     "explore",
     "explore_effort",
     "review",
@@ -127,6 +128,17 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         raise LlmCoordError(
             ErrorCode.CONFIG_INVALID, "agent.commands must be ask, allow, or off"
         )
+    command_environment = agent.get(
+        "command_environment", settings.agent_command_environment
+    )
+    if not isinstance(command_environment, str) or command_environment not in {
+        "minimal",
+        "session",
+    }:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            'agent.command_environment must be "minimal" or "session"',
+        )
     explore = agent.get("explore", settings.agent_explore)
     if not isinstance(explore, bool):
         raise LlmCoordError(
@@ -190,6 +202,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "agent_provider": provider,
         "agent_model": model,
         "agent_commands": commands,
+        "agent_command_environment": command_environment,
         "agent_explore": explore,
         "agent_explore_effort": explore_effort,
         "agent_review": review,

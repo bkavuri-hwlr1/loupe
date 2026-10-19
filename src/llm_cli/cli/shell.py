@@ -20,7 +20,7 @@ from llm_cli.cli.usage import usage_lines
 from llm_cli.config.loader import load_settings
 from llm_cli.coordination.scopes import normalize_scopes
 from llm_cli.errors import ErrorCode, LlmCoordError
-from llm_cli.protocol.client import DaemonClient
+from llm_cli.protocol.client import DaemonClient, session_environment_params
 from llm_cli.providers.accounts import (
     SUPPORTED_PROVIDERS,
     account_status,
@@ -594,7 +594,14 @@ class ChatShell:
             try:
                 result = session._patient(
                     self.client, session.APPLY_TIMEOUT_SECONDS
-                ).call("task.apply", {"task_id": task_id, "allow_unverified": allow})
+                ).call(
+                    "task.apply",
+                    {
+                        "task_id": task_id,
+                        "allow_unverified": allow,
+                        **session_environment_params(self.client.paths),
+                    },
+                )
             except KeyboardInterrupt as exc:
                 self.composer.interrupts.handle(exc)
                 self.ui.notice(

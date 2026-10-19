@@ -26,7 +26,7 @@ from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.ids import new_id
 from llm_cli.paths import AppPaths, reject_symlink_components
-from llm_cli.protocol.client import DaemonClient
+from llm_cli.protocol.client import DaemonClient, session_environment_params
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +120,11 @@ def open_or_resume_session(
         secret = session_resume_secret(client.paths, resume_session_id)
         resumed = client.call(
             "session.resume",
-            {"session_id": resume_session_id, "resume_secret": secret},
+            {
+                "session_id": resume_session_id,
+                "resume_secret": secret,
+                **session_environment_params(client.paths),
+            },
         )
         session = _object(resumed, "session")
         cursor = _object(resumed, "cursor")
@@ -155,6 +159,7 @@ def open_or_resume_session(
                 "model": model,
                 "workspace": workspace_mode,
                 "mode": selected_mode,
+                **session_environment_params(client.paths),
                 **(
                     {"approved_runtime_files": list(approved_runtime_files)}
                     if approved_runtime_files

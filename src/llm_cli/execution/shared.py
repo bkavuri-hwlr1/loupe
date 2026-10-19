@@ -57,6 +57,7 @@ from llm_cli.execution.commands import (
     CommandSettings,
     HookRun,
 )
+from llm_cli.execution.environment import EnvironmentProvider
 from llm_cli.execution.recovery import RecoveryOutcome
 from llm_cli.execution.runner import TaskExecutionRunner
 from llm_cli.execution.sandbox import available_sandbox
@@ -120,6 +121,7 @@ class SharedTaskExecutionRunner:
         # Set by the daemon. Without it, or without a working OS sandbox,
         # tasks are never offered model-chosen commands.
         self.commands: CommandSettings | None = None
+        self.command_environment: EnvironmentProvider | None = None
         # Configured MCP servers; only declared read-only servers run in plan mode.
         self.mcp_servers: tuple[McpServerConfig, ...] = ()
         # User hooks, run in a sandbox around each task's tool calls.
@@ -453,6 +455,10 @@ class SharedTaskExecutionRunner:
                 on_result=broker.record_check,
                 runtime_root=runtime_root,
                 sensitive_paths=sensitive_paths,
+                environment=(
+                    functools.partial(self.command_environment, session.session_id)
+                    if self.command_environment is not None else None
+                ),
             )
             def check_gate() -> ToolOutcome | None:
                 with runtime_activity():
@@ -511,6 +517,10 @@ class SharedTaskExecutionRunner:
                     deadline_at=deadline_at,
                     runtime_files=runtime_files,
                     sensitive_paths=sensitive_paths,
+                    environment=(
+                        functools.partial(self.command_environment, session.session_id)
+                        if self.command_environment is not None else None
+                    ),
                 )
 
                 command_runners.append(commands)
@@ -549,6 +559,11 @@ class SharedTaskExecutionRunner:
                         deadline_at=deadline_at,
                         runtime_files=runtime_files,
                         sensitive_paths=sensitive_paths,
+                        environment=(
+                            functools.partial(
+                                self.command_environment, session.session_id
+                            ) if self.command_environment is not None else None
+                        ),
                     )
                     command_runners.append(hook_commands)
 

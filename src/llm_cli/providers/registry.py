@@ -16,13 +16,30 @@ class ProviderRegistry:
 
     def __init__(self) -> None:
         self._factories: dict[str, ProviderFactory] = {}
+        self._credential_names: set[str] = set()
 
-    def register(self, name: str, factory: ProviderFactory) -> None:
+    def register(
+        self,
+        name: str,
+        factory: ProviderFactory,
+        *,
+        credential_environment_names: tuple[str, ...] = (),
+    ) -> None:
         if not name or len(name) > 64:
             raise ValueError("provider registry name is invalid")
         if name in self._factories:
             raise ValueError(f"provider {name!r} is already registered")
+        if any(
+            not item or "=" in item or "\0" in item
+            for item in credential_environment_names
+        ):
+            raise ValueError("provider credential variable name is invalid")
+        self._credential_names.update(credential_environment_names)
         self._factories[name] = factory
+
+    @property
+    def credential_environment_names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._credential_names))
 
     def replace(self, name: str, factory: ProviderFactory) -> None:
         """Replace a known adapter, primarily for embedding and tests."""
