@@ -213,6 +213,8 @@ def _both(text: str) -> str:
 
 
 def _daemon_entry() -> None:
+    from authority_helpers import install_test_authority
+    install_test_authority()
     """Install the test model at the provider seam, then run the normal daemon."""
     from llm_cli.daemon import main
 
@@ -272,6 +274,9 @@ class _Cluster:
             raise
 
     def _spawn(self, name: str, args: list[str]) -> subprocess.Popen[str]:
+        from authority_helpers import isolated_cli_arguments
+
+        args = isolated_cli_arguments(args)
         log = self.stack.enter_context((self.root / f"{name}.log").open("w"))
         process = subprocess.Popen(
             [sys.executable, *args],

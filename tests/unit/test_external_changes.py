@@ -314,7 +314,8 @@ def test_daemon_scan_survives_unexpected_scan_errors(
     (root / "a").write_text("old")
     _read(store, root, "a")
 
-    def broken(self: Any, session_id: str) -> int:
+    def broken(self: Any, session_id: str, *, background: bool = False) -> int:
+        assert background is True
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(external.ExternalWorkspaceScanner, "scan_session", broken)

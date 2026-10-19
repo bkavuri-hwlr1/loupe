@@ -68,7 +68,6 @@ def _assert_diverged_batch(
     assert retained == expected
 
 
-
 def _resolve_conflicts(
     resolved: dict[str, str], starting: dict[str, str]
 ) -> list[Callable[[Sequence[ToolCallResult]], ModelTurn] | ModelTurn]:
@@ -473,6 +472,7 @@ def test_restart_resumes_both_overlapping_claims_and_keeps_original_bases(
             dead.settings,
             asyncio.Event(),
             boot_id="boot-resumed-optimistic",
+            authority_root=dead.physical_authority.root,
         )
         _register(live, *resumed)
         backgrounds: list[asyncio.Task[None]] = []

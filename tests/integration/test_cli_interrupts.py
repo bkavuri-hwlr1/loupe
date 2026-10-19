@@ -18,9 +18,9 @@ from test_cli_process_orchestration import cluster as cluster
 def _terminal_entry() -> None:
     os.setsid()
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-    from llm_cli.cli.app import main
+    from authority_helpers import run_test_cli
 
-    main()
+    run_test_cli()
 
 
 @pytest.mark.parametrize(

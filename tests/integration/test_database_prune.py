@@ -47,14 +47,21 @@ def test_pruned_database_remains_inspectable_and_recovery_works(
                     payload={"answer": "full answer", "summary": "saved summary"},
                     now=1,
                 )
-            interrupted = service.store.create_task(
-                repository_id=registered["repository_id"],
-                task_id="interrupted",
-                title="recover",
+            accepted = await service.handle(
+                request_factory(
+                    "task.run",
+                    {
+                        "path": str(repository),
+                        "task_id": "interrupted",
+                        "title": "recover",
+                        "scopes": ["README.md"],
+                        "claim_only": True,
+                    },
+                )
             )
-            claim = service.coordinator.request_claim(
-                interrupted.task_id, ["README.md"]
-            )
+            interrupted = service.store.get_task("interrupted")
+            claim = service.store.get_claim(accepted["claim"]["claim_id"])
+            assert interrupted is not None and claim is not None
             execution = service.store.create_execution(
                 task_id=interrupted.task_id,
                 attempt=1,
@@ -64,6 +71,12 @@ def test_pruned_database_remains_inspectable_and_recovery_works(
                 base_oid=git_run(repository, "rev-parse", "HEAD"),
                 boot_id="dead",
             )
+            # The real runner records this exact checkout before worktree IO.
+            # This fixture interrupts that same prepared execution boundary.
+            with service.physical_authority.mutation(
+                repository, "legacy_execution", execution.execution_id
+            ) as operation:
+                operation.confirm()
             service.store.record_task_event(
                 task_id=interrupted.task_id,
                 claim_id=claim.claim_id,

@@ -53,6 +53,8 @@ class _HangingModel:
 
 
 def _daemon_entry() -> None:
+    from authority_helpers import install_test_authority
+    install_test_authority()
     """Install the hanging model and a short drain, then run the real daemon."""
     from llm_cli.config.models import Settings
     from llm_cli.daemon import main
@@ -118,8 +120,10 @@ def test_restart_during_a_hung_model_request_replaces_the_daemon(
     processes: list[subprocess.Popen[str]] = []
 
     def spawn(*arguments: str) -> subprocess.Popen[str]:
+        from authority_helpers import isolated_cli_arguments
+
         process = subprocess.Popen(
-            [sys.executable, *arguments],
+            [sys.executable, *isolated_cli_arguments(list(arguments))],
             env=environment,
             cwd=repository,
             stdin=subprocess.PIPE,
@@ -156,8 +160,9 @@ def test_restart_during_a_hung_model_request_replaces_the_daemon(
         restart = subprocess.run(
             [
                 sys.executable,
-                "-m",
-                "llm_cli",
+                "-I",
+                str(Path(__file__).with_name("authority_helpers.py").resolve()),
+                "--test-cli",
                 "--profile",
                 "test",
                 "--json",

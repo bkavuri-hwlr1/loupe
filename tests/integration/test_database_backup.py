@@ -17,6 +17,7 @@ from llm_cli.paths import AppPaths
 from llm_cli.protocol.client import DaemonClient
 
 
+@pytest.mark.usefixtures("isolated_daemon_autostart")
 def test_live_daemon_backup_keeps_latest_task_and_private_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -43,6 +44,8 @@ def test_live_daemon_backup_keeps_latest_task_and_private_files(
                     "claim_only": True,
                 },
             )["task"]
+            authority = tmp_path / "physical-authority" / "v1"
+            assert any((authority / "checkouts").iterdir())
             arguments = build_parser().parse_args(
                 [
                     "db",

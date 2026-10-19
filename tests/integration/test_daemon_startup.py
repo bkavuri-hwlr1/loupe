@@ -17,6 +17,7 @@ from llm_cli.protocol.client import DaemonClient
 
 @pytest.mark.parametrize("injection", ["working_directory", "pythonpath"])
 @pytest.mark.parametrize("relative_paths", [False, True], ids=["absolute", "relative"])
+@pytest.mark.usefixtures("isolated_daemon_autostart")
 def test_autostart_ignores_untrusted_python_import_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

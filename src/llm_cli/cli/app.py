@@ -306,6 +306,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-allocated-bytes", type=int, default=2 * 1024 * 1024 * 1024
     )
     hydrate.add_argument("--max-seconds", type=float, default=10.0)
+    workspace_observe = workspace_commands.add_parser(
+        "observe", help="read source outside the owner's barrier without an edit base"
+    )
+    workspace_observe.add_argument("path")
+    workspace_observe.add_argument("--repo", default=".")
     workspace_read = workspace_commands.add_parser(
         "read", help="read one shared file and return its exact base identity"
     )
@@ -764,6 +769,14 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             return client.call(
                 "workspace.status",
                 {"path": str(Path(arguments.path).absolute())},
+            )
+        if arguments.workspace_command == "observe":
+            return client.call(
+                "workspace.observe",
+                {
+                    "path": str(Path(arguments.repo).absolute()),
+                    "relative_path": arguments.path,
+                },
             )
         secret = session_resume_secret(client.paths, arguments.session_id)
         authenticated = {

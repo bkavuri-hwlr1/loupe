@@ -5,15 +5,37 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from authority_guard import AuthorityRootGuard
 
 from llm_cli.config.models import Settings
 from llm_cli.daemon.service import DaemonService
 from llm_cli.paths import AppPaths
+from llm_cli.workspace.authority import account_authority_root
+
+
+@pytest.fixture(scope="session", autouse=True)
+def unchanged_account_authority_root() -> Iterator[None]:
+    # Capture the real account lookup before per-test monkeypatches. This is a
+    # detector only: missing injections must fail, never be silently redirected.
+    guard = AuthorityRootGuard.capture(account_authority_root())
+    yield
+    guard.assert_unchanged()
+
+
+@pytest.fixture
+def isolated_daemon_autostart(monkeypatch: pytest.MonkeyPatch) -> None:
+    from authority_helpers import isolated_autostart_popen
+
+    from llm_cli.protocol import client
+
+    monkeypatch.setattr(
+        client.subprocess, "Popen", isolated_autostart_popen(client.subprocess.Popen)
+    )
 
 
 @pytest.fixture
@@ -76,6 +98,7 @@ def service_factory() -> Callable[[Path], DaemonService]:
             Settings(profile_id="test"),
             asyncio.Event(),
             boot_id="boot-shared-workspace",
+            authority_root=tmp_path / "physical-authority" / "v1",
         )
 
     return create

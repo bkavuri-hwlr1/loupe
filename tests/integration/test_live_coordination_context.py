@@ -335,7 +335,11 @@ def test_restart_preserves_consumed_cursor_and_retries_undecorated_pending_resul
 
         resumed_client = ResponsesClient([inspect_resume])
         live = DaemonService(
-            dead.paths, dead.settings, asyncio.Event(), boot_id="boot-context-restart"
+            dead.paths,
+            dead.settings,
+            asyncio.Event(),
+            boot_id="boot-context-restart",
+            authority_root=dead.physical_authority.root,
         )
         _install_client(live, resumed_client)
         live.initialize()

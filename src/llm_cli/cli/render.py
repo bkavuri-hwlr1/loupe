@@ -643,6 +643,11 @@ def checkout_event_text(event: dict[str, Any], *, own_session_id: str) -> str | 
         return None
     payload = event.get("payload")
     payload = payload if isinstance(payload, dict) else {}
+    if kind == "checkout.authority_handoff":
+        return (
+            "  Checkout ownership changed; earlier history is incomplete. "
+            "Re-read current source."
+        )
     if kind in {"workspace.batch_published", "workspace.change_published"}:
         paths = (
             payload.get("paths")

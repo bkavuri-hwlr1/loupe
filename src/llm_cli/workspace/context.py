@@ -176,6 +176,7 @@ class SharedCoordinationContext:
             expected = start + 1
             changes: list[dict[str, object]] = []
             other_events = 0
+            ownership_history_gap = False
             unrelated_external = 0
             changes_bytes = 0
             case_insensitive = bool(binding["path_case_insensitive"])
@@ -186,7 +187,10 @@ class SharedCoordinationContext:
                     )
                 expected += 1
                 event_type = str(row["event_type"])
-                if event_type in _CHANGE_TYPES:
+                if event_type == "checkout.authority_handoff":
+                    ownership_history_gap = True
+                    other_events += 1
+                elif event_type in _CHANGE_TYPES:
                     if row["payload_json"] is None:
                         raise _too_large("a coordination event exceeds its size budget")
                     # Validate even another session's event before asserting
@@ -270,6 +274,12 @@ class SharedCoordinationContext:
                 "other_events": other_events,
                 "guidance": _GUIDANCE,
             }
+            if ownership_history_gap:
+                packet["ownership_history_gap"] = (
+                    "Checkout ownership changed; intermediate ownership history is "
+                    "unavailable. Re-read current source; retained proposals keep "
+                    "their original bases and still require normal validation."
+                )
             if bootstrap is not None:
                 packet["bootstrap"] = bootstrap
             if self._scan_notice is not None:

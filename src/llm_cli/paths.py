@@ -154,7 +154,7 @@ def _existing_components(path: Path) -> tuple[Path, ...]:
 
 def reject_symlink_components(path: Path) -> None:
     for component in _existing_components(path):
-        if component.exists() and component.is_symlink():
+        if component.is_symlink():
             raise LlmCoordError(
                 ErrorCode.CONFIG_INVALID,
                 f"security-sensitive path contains a symlink: {component}",
@@ -207,6 +207,8 @@ def make_private_file(path: Path) -> None:
 
 
 __all__ = [
-    "AppPaths", "make_private_file", "reject_symlink_components",
+    "AppPaths",
+    "make_private_file",
+    "reject_symlink_components",
     "validate_owned_sqlite_paths",
 ]

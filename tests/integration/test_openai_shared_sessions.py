@@ -334,7 +334,11 @@ def test_openai_restart_restores_native_calls_and_private_candidate_without_repl
 
         resumed_client = ResponsesClient([_finish("finish-resumed")])
         live = DaemonService(
-            dead.paths, dead.settings, asyncio.Event(), boot_id="boot-openai-restarted"
+            dead.paths,
+            dead.settings,
+            asyncio.Event(),
+            boot_id="boot-openai-restarted",
+            authority_root=dead.physical_authority.root,
         )
         _install_client(live, resumed_client)
         live.initialize()

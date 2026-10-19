@@ -663,17 +663,32 @@ def test_retry_opens_a_new_attempt_for_a_task_outside_conversations(
         root = repository_factory(tmp_path, {"a.py": "value = 1\n"})
         service = service_factory(tmp_path)
         service.initialize()
-        await service.handle(_request("repo.add", {"path": str(root)}))
-        registered = service.store.list_repositories()[0]
-        task = service.store.create_task(
-            repository_id=registered.repository_id, task_id="solo", title="solo"
-        )
-        claim = service.coordinator.request_claim(task.task_id, ["a.py"])
-        service.coordinator.release_claim(claim.claim_id, reason="finished")
+        try:
+            await service.handle(_request("repo.add", {"path": str(root)}))
+            accepted = await service.handle(
+                _request(
+                    "task.run",
+                    {
+                        "path": str(root),
+                        "task_id": "solo",
+                        "title": "solo",
+                        "scopes": ["a.py"],
+                        "claim_only": True,
+                    },
+                )
+            )
+            await service.handle(
+                _request(
+                    "claim.release",
+                    {"claim_id": accepted["claim"]["claim_id"], "reason": "finished"},
+                )
+            )
 
-        retried = await service.handle(_request("task.retry", {"task_id": "solo"}))
+            retried = await service.handle(_request("task.retry", {"task_id": "solo"}))
 
-        assert retried["attempt"] == 2 and retried["state"] == "queued"
+            assert retried["attempt"] == 2 and retried["state"] == "queued"
+        finally:
+            service.close()
 
     asyncio.run(scenario())
 

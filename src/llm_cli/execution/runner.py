@@ -50,6 +50,7 @@ from llm_cli.git.worktrees import (
 )
 from llm_cli.storage.control import ControlStore
 from llm_cli.web.access import WebAccess
+from llm_cli.workspace.authority import managed_mutation, managed_pin
 
 _MAX_FIXTURE_WRITES = 50
 _MAX_FIXTURE_CONTENT_BYTES = 1_048_576
@@ -154,6 +155,32 @@ class TaskExecutionRunner:
         coordination_context: str | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> ExecutionResult:
+        with managed_pin(self.store, Path(repository.main_worktree_path)):
+            return self._execute_owned(
+                repository=repository,
+                task=task,
+                claim=claim,
+                driver=driver,
+                instructions=instructions,
+                asker=asker,
+                conversation_state=conversation_state,
+                coordination_context=coordination_context,
+                cancelled=cancelled,
+            )
+
+    def _execute_owned(
+        self,
+        *,
+        repository: RepositoryRecord,
+        task: TaskRecord,
+        claim: ClaimRecord,
+        driver: AgentDriver,
+        instructions: str = "",
+        asker: Callable[[str], str] | None = None,
+        conversation_state: Mapping[str, object] | None = None,
+        coordination_context: str | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ExecutionResult:
         """Execute, validate, branch-publish, and confirm one active claim.
 
         Failure before ``begin_publication`` releases the active claim and
@@ -218,6 +245,13 @@ class TaskExecutionRunner:
         confirmed_intent: PublicationIntentRecord | None = None
         publication: TaskRefPublication | None = None
         try:
+            # Bind even pre-publication recovery to this exact physical root.
+            # Repository registrations may later move to a sibling clone.
+            with managed_mutation(
+                self.store, repo_path, "legacy_execution", execution.execution_id
+            ) as operation:
+                if operation is not None:
+                    operation.confirm()
             # Convert the short launch lease to a worker lease before any
             # filesystem preparation. Future long-running drivers renew on a
             # timer in addition to these boundary renewals.
@@ -353,37 +387,43 @@ class TaskExecutionRunner:
                 # A later attempt of this task advances its ref; demanding absence
                 # would make every attempt after the first fail to publish.
                 expected_old_oid = read_task_ref(repo_path, task.task_id)
-                intent = self.coordinator.begin_publication(
-                    task_id=task.task_id,
-                    claim_id=claim.claim_id,
-                    fencing_token=claim.fencing_token,
-                    attempt=task.attempt,
-                    changed_paths=validation.changed_paths,
-                    patch_hash=validation.patch_sha256,
-                    result_tree_id=validation.result_tree,
-                    result_commit_id=result_commit_id,
-                    expected_old_ref=expected_old_oid,
-                )
-                publication_started = True
-                execution = self.store.update_execution(
-                    execution.execution_id, state="publishing"
-                )
-                publication = publish_task_ref(
-                    repo_path,
-                    task_id=task.task_id,
-                    new_commit_oid=result_commit_id,
-                    expected_old_oid=expected_old_oid,
-                )
-                confirmed_intent = self.coordinator.confirm_publication(
-                    intent.intent_id,
-                    result_commit_id=publication.commit_oid,
-                    task_ref=publication.ref,
-                )
-                execution = self.store.update_execution(
-                    execution.execution_id,
-                    state="published",
-                    result_commit_id=publication.commit_oid,
-                )
+                with managed_mutation(
+                    self.store, repo_path, "legacy_execution", execution.execution_id
+                ) as operation:
+                    intent = self.coordinator.begin_publication(
+                        task_id=task.task_id,
+                        claim_id=claim.claim_id,
+                        fencing_token=claim.fencing_token,
+                        attempt=task.attempt,
+                        changed_paths=validation.changed_paths,
+                        patch_hash=validation.patch_sha256,
+                        result_tree_id=validation.result_tree,
+                        result_commit_id=result_commit_id,
+                        expected_old_ref=expected_old_oid,
+                    )
+                    publication_started = True
+                    execution = self.store.update_execution(
+                        execution.execution_id, state="publishing"
+                    )
+                    publication = publish_task_ref(
+                        repo_path,
+                        task_id=task.task_id,
+                        new_commit_oid=result_commit_id,
+                        expected_old_oid=expected_old_oid,
+                    )
+                    confirmed_intent = self.coordinator.confirm_publication(
+                        intent.intent_id,
+                        result_commit_id=publication.commit_oid,
+                        task_ref=publication.ref,
+                    )
+                    execution = self.store.update_execution(
+                        execution.execution_id,
+                        state="published",
+                        result_commit_id=publication.commit_oid,
+                    )
+                    if operation is not None:
+                        operation.confirm()
+
         except Exception as exc:
             failure_code = _failure_code(exc)
             self._record_failure(

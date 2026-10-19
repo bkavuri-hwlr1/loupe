@@ -214,7 +214,11 @@ def test_missing_provider_retires_checkpoint_without_starving_a_healthy_launch(
             dead.close()
 
         live = DaemonService(
-            dead.paths, dead.settings, asyncio.Event(), boot_id="boot-without-provider"
+            dead.paths,
+            dead.settings,
+            asyncio.Event(),
+            boot_id="boot-without-provider",
+            authority_root=dead.physical_authority.root,
         )
         _register(live, healthy)
         if unavailable != "missing":

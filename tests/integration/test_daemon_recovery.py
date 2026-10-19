@@ -83,7 +83,11 @@ def _paths(tmp_path: Path) -> AppPaths:
 
 def _service(tmp_path: Path, boot_id: str) -> DaemonService:
     return DaemonService(
-        _paths(tmp_path), Settings(profile_id="test"), asyncio.Event(), boot_id=boot_id
+        _paths(tmp_path),
+        Settings(profile_id="test"),
+        asyncio.Event(),
+        boot_id=boot_id,
+        authority_root=tmp_path / "physical-authority" / "v1",
     )
 
 
