@@ -968,6 +968,36 @@ global equality/history and complete restore/downgrade fencing remain deferred.
 In-place manual restore preserving the database inode/ID is unsupported. E2 stays
 deferred; this work adds no billed live provider run, release or version change.
 
+## Wave 6 C9: per-session command environment
+
+The default remains `minimal`. Opt-in `agent.command_environment = "session"`
+forwards project variables only from the opening or resuming client into an
+in-memory session registry. Commands, hooks and configured checks apply provider
+and Loupe credential-name filters and retain private sandbox home/temp/cache
+locations. Names-only inspection reports the plan and exact path rewrites.
+Secret-named original, overridden and rewritten values, including each nonempty
+logical line of multiline values, are screened before output, diagnostics,
+metadata and hook results reach durable records or the conversation.
+
+A daemon restart leaves commands waiting for the originating client while
+read/status inspection and unrelated sessions continue. Reconnect cannot race a
+check into restoring proof from the previous environment. Cancel and close
+settle waiting launches and clear memory. Held apply uses frozen runtime paths;
+when the origin is closed or its environment is absent, owner-only apply can
+supply a temporary terminal map for fresh checks, without reopening the session.
+See [command environments](command-environments.md).
+
+Corrected source/test freeze `af6667e` passed local validation on macOS with
+Python 3.12.13: the covered core passed 3,032 tests with one expected filesystem
+skip and the scale test deselected, in 1,223.05 seconds. The separate uncov scale
+test passed in 10.45 seconds; 10,000 files with 400,000 functions built in
+6.906 seconds under the unchanged 30-second cap. Ruff, mypy over 123 source
+files, and offline source and wheel builds passed. Deterministic scripted regressions cover shared and
+isolated storage privacy, LF/CRLF multiline values, 4096-byte read boundaries,
+long lines and capped partial output, exact hydrated paths, reconnect races,
+restarted scheduling, cancellation, close and retained apply. No billed provider
+run, release, or version change was added.
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
@@ -976,8 +1006,8 @@ Waves 4–7, as packages that separate sessions can run at once.
 1. Complete reviewed G2 validation, then implement G3's explicit claim-free legacy
    migration under the accepted authority contract.
 2. Complete isolated-mode live validation (C6); C7 implements faster checks.
-   C8 now implements runtime refresh; extend runtime support with a per-session
-   command environment (C9) and dependency rebuild adapters (C10).
+   C8 implements runtime refresh and C9 adds opt-in per-session command
+   environments. Dependency rebuild adapters (C10) extend runtime support next.
 3. B6 now records paired synthetic review quality and cost. Keep review disabled
    by default; evaluate natural-work effectiveness before reconsidering it.
 4. F1 lexical discovery and F2's deterministic code graph are implemented. Next

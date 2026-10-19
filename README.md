@@ -256,6 +256,13 @@ allow it once or for the rest of the task. Set `commands = "allow"` under
 commands. Without a working sandbox the tool is not offered. See
 [SECURITY.md](SECURITY.md) for the full boundary and its limits.
 
+Commands and checks use a minimal environment by default. Opt into the opening
+terminal's project variables with `agent.command_environment = "session"`.
+Loupe filters provider credentials, retains private sandbox directories, and
+screens secret-named values before recording output. See
+[command environments](docs/command-environments.md) for names-only inspection,
+reconnect behavior, and isolated path rewrites.
+
 ### Task plans
 
 For work with several steps, the agent keeps a short checklist with the

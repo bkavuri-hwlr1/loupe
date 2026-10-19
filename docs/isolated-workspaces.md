@@ -115,10 +115,17 @@ including interpreter links) ran repeated `.venv/bin/python -c pass` checks in
 creation, private runtime copying, source checks, output screening, and cleanup,
 with no provider request. Other filesystems retain private-copy fallbacks.
 
-Commands retain Loupe's existing minimized child environment. The general
-per-terminal environment forwarding, automatic virtualenv rebuilding, and
-long-running process interfaces in the workspace design are future work.
-An isolated session does not grant additional access to provider credentials.
+Commands use Loupe's minimal child environment by default. Opt into the
+opening or resuming terminal's project variables with
+`agent.command_environment = "session"`. Values pointing into the primary
+checkout require an exact hydrated private equivalent; missing or escaping
+paths refuse the launch with variable-name-only diagnostics. Held apply uses
+its retained runtime generation. See
+[command environments](command-environments.md) for filtering, names-only
+inspection, output screening, and reconnect behavior.
+Automatic virtualenv rebuilding and long-running process interfaces remain
+future work. An isolated session does not grant additional access to provider
+credentials.
 
 Configured MCP servers follow the same approval and plan-mode rules as shared
 sessions. They remain external authority, outside the worktree's scope and

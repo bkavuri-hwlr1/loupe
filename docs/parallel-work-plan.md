@@ -708,6 +708,16 @@ it starts as an opt-in setting.
 - No variable value appears in the database or logs (search for a canary).
 - `minimal` behaves exactly as today.
 
+**Implemented.** C9 adds opt-in, memory-only per-session command environments,
+role filtering, immutable secret screening (including multiline values), and
+names-only inspection. Restarted launches wait for their originating client
+without blocking unrelated sessions; cancel/close can settle them. Reconnect
+invalidates environment-sensitive check evidence atomically. Exact hydrated
+path rewrites support logical checkout aliases and retained runtime generations.
+Closed-session held apply can receive a temporary applying-terminal map for fresh
+checks without reopening the session. See
+[command environments](command-environments.md) for configuration and recovery.
+
 ### C10. Dependency rebuild adapters
 
 **Why.** Copying dependency trees has limits: 200,000 entries, 5 GiB and
