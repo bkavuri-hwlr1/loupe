@@ -81,6 +81,9 @@ def run_session(
     ).run()
 
 
+# Session setup may queue behind other terminals' checkout registration and
+# authority work. Keep that bounded wait separate from ordinary UI RPCs.
+SESSION_SETUP_TIMEOUT_SECONDS = 120.0
 # A summary waits for a model response, which can take minutes.
 _COMPACT_TIMEOUT_SECONDS = 600.0
 # Applying first runs any missing or stale required checks, each bounded by its
@@ -116,9 +119,10 @@ def open_or_resume_session(
     approved_runtime_files = validate_runtime_consent(
         approved_runtime_files, workspace_mode, resume_session_id
     )
+    setup_client = _session_setup_client(client)
     if resume_session_id is not None:
         secret = session_resume_secret(client.paths, resume_session_id)
-        resumed = client.call(
+        resumed = setup_client.call(
             "session.resume",
             {
                 "session_id": resume_session_id,
@@ -149,7 +153,7 @@ def open_or_resume_session(
     secret = secrets.token_urlsafe(32)
     _write_secret(client.paths, session_id, secret)
     try:
-        opened = client.call(
+        opened = setup_client.call(
             "session.open",
             {
                 "session_id": session_id,
@@ -219,7 +223,7 @@ def open_or_resume_session(
     if not isinstance(notices, list) or any(not isinstance(n, str) for n in notices):
         raise LlmCoordError(ErrorCode.PROTOCOL_MISMATCH, "invalid workspace notices")
     bootstrap_sequence = _integer(opened, "bootstrap_sequence")
-    acknowledged = client.call(
+    acknowledged = setup_client.call(
         "session.ack",
         {
             "session_id": session_id,
@@ -288,6 +292,12 @@ def _patient(
         client.paths,
         timeout_seconds=max(client.timeout_seconds, timeout_seconds),
     )
+
+
+def _session_setup_client(client: DaemonClient) -> DaemonClient:
+    """Wait for serialized setup without changing the caller's other RPCs."""
+
+    return _patient(client, SESSION_SETUP_TIMEOUT_SECONDS)
 
 
 def compact_session(
