@@ -87,7 +87,7 @@ def test_v2_upgrade_recovers_missing_byte_aggregate_from_unchanged_documents(
     store.initialize()
     with store.connection() as con:
         assert (
-            con.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 3
+            con.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 5
         )
         assert con.execute(
             "SELECT 1 FROM sqlite_master WHERE name='knowledge_chunks_document'"

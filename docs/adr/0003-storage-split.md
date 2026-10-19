@@ -139,5 +139,6 @@ store failure does not stop sessions or source publication.
 nor indexing workers/intents, and preserves existing files. Status and integrity
 checks describe absent optional stores without creating them. Online backup
 includes control and existing optional stores, recording absent ones as omitted.
-The three-store design remains the target; user memory, graph and vector flows
-are not enabled by F1. See [lexical search](../lexical-search.md).
+F2 adds deterministic graph facts to the same transactional knowledge
+generations. User memory and vector flows remain planned. See
+[lexical search](../lexical-search.md) and the [code graph](../code-graph.md).

@@ -375,11 +375,14 @@ def _remember_runtime_copy(
     )
 
 
-def runtime_identity(root: Path, paths: list[str]) -> str:
+def runtime_identity(
+    root: Path, paths: list[str], *, workspace_root: Path | None = None
+) -> str:
     """Bind stable private inputs with descriptor-based, cached observations."""
     from llm_cli.workspace.isolated import _parent, _read
     from llm_cli.workspace.runtime import (
         _trusted_python,
+        is_retained_runtime,
         relocated_venv_text,
         workspace_dependency_link,
     )
@@ -407,7 +410,17 @@ def runtime_identity(root: Path, paths: list[str]) -> str:
                 if destination != runtime_root and not destination.startswith(
                     runtime_root + "/"
                 ):
-                    workspace_dependency_link(root, relative, link)
+                    if workspace_root is not None or not is_retained_runtime(root):
+                        workspace_dependency_link(
+                            workspace_root or root, relative, link
+                        )
+                    else:
+                        # Frozen generations deliberately omit ordinary source.
+                        # Evidence binds the exact link; prepare validates its
+                        # target against the fully merged source snapshot.
+                        from llm_cli.workspace.broker import validate_symlink_target
+
+                        validate_symlink_target(root, relative, os.fsencode(link))
             manifest.append((relative, digest(link)))
             return
         if stat.S_ISDIR(status.st_mode):
@@ -932,7 +945,9 @@ class CheckRunner:
             )
             if (
                 runtime_identity(
-                    self.runtime_root, self.config.get("runtime_paths", [])
+                    self.runtime_root,
+                    self.config.get("runtime_paths", []),
+                    workspace_root=snapshot,
                 )
                 != runtime
                 or runtime_identity(snapshot, self.config.get("runtime_paths", []))

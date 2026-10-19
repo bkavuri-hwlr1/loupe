@@ -44,6 +44,7 @@ primary checkout's index; its private intermediate files are never search inputs
 | `loupe index rebuild [--repo PATH]` | Reenable the subscription and rebuild from an exact current Git HEAD. |
 | `loupe index drop [--repo PATH]` | Disable that checkout's subscription, then remove its derived source. |
 | `loupe search lexical QUERY [--repo PATH] [--limit N] [--explain]` | Search one checkout. The limit defaults to eight and accepts one through twenty. |
+| `loupe graph neighbors NODE [--repo PATH] [--edge TYPE] [--depth N]` | Inspect imports, tests, Python definitions and accepted-batch links. |
 
 Quote a multi-word query. `--explain` shows the lexical retrieval reason;
 JSON output also includes its rank. Human output includes the file and actual
@@ -128,7 +129,9 @@ are preserved. `db status` and `db check` report absent optional stores without
 creating them. `db backup` includes control and optional stores that already
 exist, listing absent ones under `omitted`.
 
-Agent retrieval tools and their live answer-quality comparison, code graphs,
-embeddings and exact-vector scoring remain planned. See the
+The [code graph](code-graph.md) shares opt-in source versions and atomic lexical
+generations. An existing lexical index needs one explicit `index rebuild` after
+upgrading to construct graph facts. Agent retrieval tools and their live
+answer-quality comparison, embeddings and exact-vector scoring remain planned. See the
 [implementation status](implementation-status.md) and
 [retrieval ADR](adr/0005-vector-index.md) for that boundary.

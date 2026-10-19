@@ -8,8 +8,8 @@ import hashlib
 import itertools
 import json
 import time
-from collections.abc import Callable, Mapping
-from contextlib import suppress
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import replace
 from pathlib import Path
 
@@ -55,6 +55,7 @@ from llm_cli.execution.commands import (
     DEPENDENCY_PATHS,
     CommandRunner,
     CommandSettings,
+    HookRun,
 )
 from llm_cli.execution.recovery import RecoveryOutcome
 from llm_cli.execution.runner import TaskExecutionRunner
@@ -108,6 +109,11 @@ class SharedTaskExecutionRunner:
                 cache=capture_cache,
                 defer_changed=True,
             ),
+        )
+        self.isolated_sync.runtime_refresh = lambda workspace_id: (
+            self.isolated.runtime.refresh(workspace_id)
+            if self.isolated is not None
+            else ()
         )
         self.workflow.isolated_sync = self.isolated_sync
         self.is_shutting_down: Callable[[], bool] = lambda: False
@@ -255,7 +261,8 @@ class SharedTaskExecutionRunner:
             isolated_state = self.isolated.validate(workspace.workspace_id)
             self._prepare_isolated(workspace.workspace_id)
             self.ensure_available(workspace.workspace_id)
-            self.isolated_sync.synchronize(workspace.workspace_id)
+            self.isolated_sync.synchronize(workspace.workspace_id, refresh_runtime=True)
+            isolated_state = self.isolated.validate(workspace.workspace_id)
         existing = self.store.get_execution(task.task_id, task.attempt)
         if existing is not None and (
             existing.workspace_id != workspace.workspace_id
@@ -282,6 +289,10 @@ class SharedTaskExecutionRunner:
         )
         row = self.workflow.ensure(task.task_id)
         runtime_files = isolated_state.runtime_files if isolated_state else ()
+        configured_runtime_paths = tuple(
+            json.loads(row["config_json"]).get("runtime_paths", [])
+        )
+        command_runners: list[CommandRunner] = []
         sensitive_paths = (
             tuple(
                 path
@@ -356,6 +367,41 @@ class SharedTaskExecutionRunner:
                     else files
                 )
 
+            def reload_runtime_paths() -> None:
+                nonlocal runtime_files
+                if not isolated:
+                    return
+                assert self.isolated is not None
+                state = self.isolated.get(workspace.workspace_id)
+                if state is None:
+                    raise ClaimConflict("isolated runtime workspace is unavailable")
+                runtime_files = state.runtime_files
+                runtime_paths = sorted(
+                    set(configured_runtime_paths) | set(runtime_files)
+                )
+                if checker.config.get("runtime_paths", []) != runtime_paths:
+                    checker.config["runtime_paths"] = runtime_paths
+                    row["config_json"] = json.dumps(checker.config, sort_keys=True)
+                    self.workflow.update(
+                        task.task_id, task.attempt, config_json=row["config_json"]
+                    )
+                for runner in command_runners:
+                    runner.runtime_files = runtime_files
+                    runner.dependency_paths = (*DEPENDENCY_PATHS, *runtime_paths)
+
+            @contextmanager
+            def runtime_activity() -> Iterator[None]:
+                activity = (
+                    self.isolated.runtime.activity(workspace.workspace_id)
+                    if isolated and self.isolated is not None
+                    else nullcontext()
+                )
+                with activity:
+                    # A helper may have installed a generation after this tool's
+                    # safe point. Read its paths only after refresh is excluded.
+                    reload_runtime_paths()
+                    yield
+
             def safe_point(
                 *, reconcile: bool = True, refresh_source: bool = True
             ) -> str:
@@ -363,8 +409,11 @@ class SharedTaskExecutionRunner:
                     return ""
                 self.ensure_available(workspace.workspace_id)
                 report = self.isolated_sync.synchronize(
-                    workspace.workspace_id, refresh_source=refresh_source
+                    workspace.workspace_id,
+                    refresh_source=refresh_source,
+                    refresh_runtime=refresh_source,
                 )
+                reload_runtime_paths()
                 note = report.note()
                 if note:
                     broker.emit("workspace.isolated_synchronized", {"notice": note})
@@ -405,6 +454,10 @@ class SharedTaskExecutionRunner:
                 runtime_root=runtime_root,
                 sensitive_paths=sensitive_paths,
             )
+            def check_gate() -> ToolOutcome | None:
+                with runtime_activity():
+                    return checker.gate()
+
             checked = bool(checker.config.get("checks"))
             if row["agent_mode"] != "plan":
                 # Before checks and finishing, pending edits are moved onto
@@ -412,17 +465,19 @@ class SharedTaskExecutionRunner:
                 # actually be published.
                 def finish_gate() -> ToolOutcome | None:
                     safe_point()
-                    return broker.finish_gate_with(
-                        checker.gate if checked else None,
-                        checker.current if checked else lambda: True,
-                    )
+                    with runtime_activity():
+                        return broker.finish_gate_with(
+                            check_gate if checked else None,
+                            checker.current if checked else lambda: True,
+                        )
 
                 broker.finish_gate = finish_gate
             if checked and row["agent_mode"] != "plan":
 
                 def run_check(name: str) -> ToolOutcome:
                     safe_point()
-                    return broker.catching_up(checker.run)(name)
+                    with runtime_activity():
+                        return broker.catching_up(checker.run)(name)
 
                 broker.check_runner = run_check
                 instructions += "\nConfigured checks: " + ", ".join(
@@ -458,9 +513,12 @@ class SharedTaskExecutionRunner:
                     sensitive_paths=sensitive_paths,
                 )
 
+                command_runners.append(commands)
+
                 def run_command(argv: list[str], cwd: str, timeout: int) -> ToolOutcome:
                     safe_point()
-                    return broker.catching_up(commands.run)(argv, cwd, timeout)
+                    with runtime_activity():
+                        return broker.catching_up(commands.run)(argv, cwd, timeout)
 
                 broker.command_runner = run_command
                 broker.command_approval = self.commands.approval
@@ -472,30 +530,45 @@ class SharedTaskExecutionRunner:
                         {"reason": "no working operating-system sandbox"},
                     )
                 else:
-                    broker.hooks = HookRunner(
-                        self.hooks,
-                        CommandRunner(
-                            root=broker.worktree,
-                            snapshot_root=self.commands.snapshot_root,
-                            candidates=broker.candidates,
-                            cancelled=lambda: (
-                                self.workflow.stopped(task.task_id, task.attempt)
-                                or self.is_shutting_down()
-                            ),
-                            emit=broker.emit,
-                            lock=self.publisher.lock,
-                            sandbox=hook_sandbox,
-                            protected=self.commands.protected,
-                            dependency_paths=(
-                                *DEPENDENCY_PATHS,
-                                *checker.config.get("runtime_paths", []),
-                            ),
-                            deadline_at=deadline_at,
-                            runtime_files=runtime_files,
-                            sensitive_paths=sensitive_paths,
-                        ).run_hook,
-                        broker.emit,
+                    hook_commands = CommandRunner(
+                        root=broker.worktree,
+                        snapshot_root=self.commands.snapshot_root,
+                        candidates=broker.candidates,
+                        cancelled=lambda: (
+                            self.workflow.stopped(task.task_id, task.attempt)
+                            or self.is_shutting_down()
+                        ),
+                        emit=broker.emit,
+                        lock=self.publisher.lock,
+                        sandbox=hook_sandbox,
+                        protected=self.commands.protected,
+                        dependency_paths=(
+                            *DEPENDENCY_PATHS,
+                            *checker.config.get("runtime_paths", []),
+                        ),
+                        deadline_at=deadline_at,
+                        runtime_files=runtime_files,
+                        sensitive_paths=sensitive_paths,
                     )
+                    command_runners.append(hook_commands)
+
+                    def run_hook(
+                        argv: list[str],
+                        timeout: int,
+                        *,
+                        hook_input: object = None,
+                        read_back: Sequence[str] = (),
+                    ) -> HookRun:
+                        safe_point()
+                        with runtime_activity():
+                            return hook_commands.run_hook(
+                                argv,
+                                timeout,
+                                hook_input=hook_input,
+                                read_back=read_back,
+                            )
+
+                    broker.hooks = HookRunner(self.hooks, run_hook, broker.emit)
             mcp = (
                 McpToolset(
                     self.mcp_servers,
@@ -678,7 +751,7 @@ class SharedTaskExecutionRunner:
             for rounds in itertools.count():
                 if rounds:
                     gave_up = not self._catch_up(
-                        task, claim, broker, checker.gate if checked else None
+                        task, claim, broker, check_gate if checked else None
                     )
                     if not gave_up or not isolated:
                         files = candidate_files()

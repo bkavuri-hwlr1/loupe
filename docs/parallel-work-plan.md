@@ -923,6 +923,30 @@ docs.
 - A file that fails to parse leaves the rest of the graph intact.
 - Coordination output is identical with the graph on and off.
 
+**Implemented (October 18, 2026).** F2 extends the opt-in lexical store with
+transactional graph nodes, import/test/definition edges and links to the latest
+accepted batch. Python uses `ast`; JavaScript/TypeScript use a bounded tokenizer
+without a new dependency. Changed-document updates remove prior edges while
+preserving unaffected rows. Every returned edge cites parser/version, source
+identity/revision and active/indexed generation; syntax failures are recorded per
+file. CLI/RPC neighbors support edge filters and depth 1–4, with current policy
+revalidation, private-intermediate traversal refusal and bounded results.
+Graph traversal skips expression trees while preserving statement and scope facts.
+The earlier, simpler 10,000-file fixture built in 3.82 seconds; it differs from
+the final dense fixture with 40 functions per module (400,000 function nodes).
+At `0ab3fcd`, that dense 10,000-file build took 11.655 seconds under coverage,
+within the unchanged 30-second budget. Single-publication medians were 40.5 ms
+at 1,000 files and 46.2 ms at 10,000. A single before/after profile of the dense
+fixture measured 12.683 to 10.324 seconds overall and 4.517 to 2.298 seconds in
+parsing; these local timings do not establish general throughput gains. See the
+[code graph guide](code-graph.md) for parser limits and upgrade/rebuild behavior.
+
+At `aa6a5c1`, compact internal source/document references reduced the same dense
+build to 8.301 seconds under coverage, retaining all 400,000 function nodes.
+Publication updates measured 43.2 ms at 1,000 files and 37.6 ms at 10,000.
+The graph-only format migration preserves lexical search while each graph awaits
+its complete rebuild; public graph IDs and evidence are unchanged.
+
 ### F3. Optional retrieval in the agent, with a live comparison (*live*)
 
 **Scope.**

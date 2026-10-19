@@ -163,9 +163,11 @@ loupe task apply TASK_ID --allow-unverified
 ```
 
 For isolated conversations, apply checks the frozen proposal on current shared
-source using runtime files from the owning private worktree. Private changes made
-after the proposal was held stay private. Successful apply and undo receive their
-published batch into that worktree; a private synchronization issue is recorded
+source using its retained private runtime generation and frozen check
+configuration, including after restart. Later live-runtime refresh does not
+change those inputs. Private source changes made after the proposal was held stay
+private. Successful apply and undo receive their published batch into that
+worktree; a private synchronization issue is recorded
 without reversing an already confirmed publication. See
 [isolated workspaces](isolated-workspaces.md).
 

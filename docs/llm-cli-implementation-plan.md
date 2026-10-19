@@ -317,8 +317,9 @@ Indexer → `knowledge.sqlite3`/FTS5 path and explicit lexical CLI/RPC discovery
 Accepted shared-publication and outside-change event IDs enter a control outbox;
 an independent worker builds transactional knowledge generations outside the
 publication barrier. `[knowledge] index = "off"` is the default and leaves
-optional stores absent. The hybrid/vector, graph-expansion and agent retrieval
-tool paths remain planned. See [lexical search](lexical-search.md) and the
+optional stores absent. Wave 5 F2 adds deterministic graph facts and bounded
+CLI/RPC neighbors. Hybrid/vector and agent retrieval tool paths remain planned.
+See [lexical search](lexical-search.md), the [code graph](code-graph.md) and the
 [current implementation boundaries](implementation-status.md).
 
 The control and knowledge planes share identifiers but not authority. Retrieval
