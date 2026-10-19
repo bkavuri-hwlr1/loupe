@@ -58,3 +58,13 @@ subscription tokens. Do not retry paid cells merely to improve the score.
 `--compare OLD NEW` prints comparison tables and retrieval arm summaries.
 A default-setting change and F4 embeddings require the recorded comparison's
 recommendation; neither follows merely from implementing this tool.
+
+## Initial pilot status
+
+The [retained pilot](experiments/optional-retrieval-f3-2026-10-18-pilot.md)
+completed one off-arm baseline using Codex `gpt-6-astra` at `xhigh`, consuming
+1,164,063 observed prompt/output tokens including helpers and cached input.
+Admission control stopped before the second cell under the 3,000,000-token
+cohort ceiling. The full comparison awaits the user's budget/model choice.
+This single baseline cannot establish retrieval benefit; indexing stays off
+by default and F4 remains gated.

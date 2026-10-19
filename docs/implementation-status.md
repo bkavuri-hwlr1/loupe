@@ -485,8 +485,8 @@ publication. Indexing does not acknowledge changes, choose write bases or grant
 publication authority. F2 adds deterministic source graph projections and explicit
 CLI/RPC neighbors with parser/version/identity/generation evidence. Changed
 documents replace their graph facts atomically; unchanged graph rows remain.
-Agent retrieval tools and their live comparison, embedding providers, semantic
-retrieval and `sqlite-vec` remain planned.
+F3 adds optional agent/helper retrieval; its live comparison remains pending.
+Embedding providers, semantic retrieval and `sqlite-vec` remain planned.
 
 F2 validation at `0ab3fcd` passed 2,824 tests, with one case-sensitive-filesystem
 skip and the existing G1 cross-profile expected failure. Ruff, mypy over 119 source
@@ -982,9 +982,20 @@ Scripted tests cover visibility, helper inheritance, budgets, exact UTF-8 contex
 bounds, stale/private roots, broken/missing stores and read/write/cursor negative
 controls. The live comparison adds three discovery tasks to `trace-shared-edit`
 and `repo-summary`, with three alternating off/on repetitions and aggregate
-metrics. Its measurement and F4/default recommendation are pending; no answer
-quality or token/time improvement is claimed yet. See the
-[optional retrieval guide](optional-retrieval.md).
+metrics. One retained off-arm pilot used 1,164,063 observed tokens before
+admission control stopped ahead of cell two. Further billed cells await a user
+budget/model choice. The comparison and F4/default recommendation remain
+pending; no answer-quality or token/time improvement is claimed. See the
+[optional retrieval guide](optional-retrieval.md) and
+[pilot audit](experiments/optional-retrieval-f3-2026-10-18-pilot.md).
+
+Offline validation on the frozen F3 source/test candidate passed 3,022 covered
+correctness tests, with one case-sensitive-filesystem skip. The separate strict
+scale test retained 10,000 files and 400,000 function nodes, building in 7.207 s
+against the unchanged 30 s cap. Incremental medians were 0.04407 s at 1,000 files
+and 0.04868 s at 10,000. Ruff, mypy over 123 source files, source distribution
+and wheel builds passed. This establishes implementation correctness under the
+scripted contracts; the live usefulness comparison is still incomplete.
 
 ## Next executable slice
 

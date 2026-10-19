@@ -984,8 +984,11 @@ Mandatory coordination context precedes optional result blocks; tight context
 budgets preserve the mandatory facts. Scripted visibility, privacy, stale/broken
 index and cursor/write-authority negative controls cover these boundaries.
 The five-task off/on corpus is pinned to merged main `6e5d65d`; three alternating
-repetitions yield 30 live cells. Measurement and the F4/default recommendation
-remain pending until the recorded run completes. See [optional retrieval](optional-retrieval.md).
+repetitions yield 30 live cells. A retained off-arm pilot used 1,164,063
+observed tokens before admission control stopped the run ahead of cell two.
+Further calls await the user's budget/model choice; the comparison and
+F4/default recommendation remain pending. See [optional retrieval](optional-retrieval.md)
+and the [pilot record](experiments/optional-retrieval-f3-2026-10-18-pilot.md).
 
 ### F4. Embeddings with exact scoring
 
