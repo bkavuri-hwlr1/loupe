@@ -197,3 +197,32 @@ def test_check_overrides_share_role_filters_and_sandbox_overrides(
     }
     assert "initial-private-value" in redactions
     assert "opaque-db-private-value" in redactions
+
+
+def test_held_runtime_paths_rewrite_against_frozen_generation(tmp_path: Path) -> None:
+    primary, private, frozen, snapshot = (
+        tmp_path / name for name in ("primary", "private", "frozen", "snapshot")
+    )
+    for root in (primary, private, frozen, snapshot):
+        root.mkdir()
+    # Current private runtime changed after hold; only the retained generation
+    # and final check snapshot contain the original exact runtime equivalent.
+    for root in (frozen, snapshot):
+        (root / "runtime").mkdir()
+        (root / "runtime" / "config").write_text("frozen")
+    environment = CommandEnvironment(
+        {
+            "PROJECT_SECRET_PATH": str(primary / "runtime" / "config"),
+            "PWD": str(primary),
+        },
+        source_root=primary,
+        hydrated_root=private,
+    )
+    values, redactions = environment.capture(
+        snapshot,
+        runtime_root=frozen,
+        runtime_paths=("runtime",),
+    )
+    assert values["PROJECT_SECRET_PATH"] == str(snapshot / "runtime" / "config")
+    assert values["PWD"] == str(snapshot)
+    assert values["PROJECT_SECRET_PATH"] in redactions

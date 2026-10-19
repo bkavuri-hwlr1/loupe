@@ -705,3 +705,101 @@ def test_invalidated_environment_cannot_emit_private_command_metadata(
     assert result.is_error and "awaiting_session_environment" in result.content
     assert canary not in repr(events) + result.content
     assert not any("argv" in event for event in events)
+
+
+def test_closed_held_apply_uses_frozen_runtime_for_environment_path_rewrite(
+    tmp_path: Path,
+    repository_factory: Any,
+    service_factory: Any,
+) -> None:
+    async def scenario() -> None:
+        repository = repository_factory(
+            tmp_path, {"a.txt": "base\n", ".gitignore": "runtime.txt\n"}
+        )
+        runtime = repository / "runtime.txt"
+        runtime.write_text("retained-runtime")
+        provider = ScriptedProvider(
+            "c9-frozen-path",
+            [
+                _tools(
+                    _call("read_file", path="a.txt"),
+                    _call("write_file", path="a.txt", content="applied\n"),
+                ),
+                _finish(),
+            ],
+        )
+        dead = _session_service(service_factory(tmp_path))
+        _register(dead, provider)
+        dead.initialize()
+        await dead.handle(_request("repo.add", {"path": str(repository)}))
+        await dead.handle(
+            _request(
+                "checks.configure",
+                {
+                    "path": str(repository),
+                    "config": {
+                        "runtime_paths": ["runtime.txt"],
+                        "checks": {
+                            "runtime": {
+                                "argv": [
+                                    sys.executable,
+                                    "-c",
+                                    "import os,pathlib; "
+                                    "assert pathlib.Path(os.environ['PROJECT_RUNTIME'])"
+                                    ".read_text()=='retained-runtime'; "
+                                    "print('held-runtime-verified')",
+                                ],
+                            }
+                        },
+                    },
+                },
+            )
+        )
+        environment = {"PROJECT_RUNTIME": str(runtime), "PWD": str(repository)}
+        credentials = await _open(
+            dead,
+            repository,
+            provider.model,
+            environment,
+            workspace="isolated",
+            mode="normal",
+        )
+        work = await _start(
+            dead, repository, credentials, "c9-frozen-path-task", ("*",)
+        )
+        await asyncio.wait_for(work, 20)
+        assert dead.workflow.get("c9-frozen-path-task")["status"] == "awaiting_review"
+        session = dead.store.get_session(provider.model)
+        workspace = dead.store.get_workspace(session.workspace_id)
+        runtime.unlink()
+        dead.isolated_workspaces.runtime.refresh(workspace.workspace_id)
+        assert not (Path(workspace.canonical_path) / "runtime.txt").exists()
+        await dead.handle(_request("session.close", credentials))
+        dead.close()
+        live = _session_service(dead, boot="c9-frozen-after-restart")
+        _register(live, ScriptedProvider(provider.model, []))
+        live.initialize()
+        try:
+            await live.handle(
+                _request(
+                    "task.apply",
+                    {
+                        "task_id": "c9-frozen-path-task",
+                        "command_environment": environment,
+                    },
+                )
+            )
+            assert (repository / "a.txt").read_text() == "applied\n"
+            with live.store.connection() as con:
+                rows = con.execute(
+                    "SELECT state,output FROM check_runs "
+                    "WHERE task_id='c9-frozen-path-task'"
+                ).fetchall()
+            assert len(rows) == 2 and any(
+                row["state"] == "passed" and "held-runtime-verified" in row["output"]
+                for row in rows
+            )
+        finally:
+            live.close()
+
+    asyncio.run(scenario())

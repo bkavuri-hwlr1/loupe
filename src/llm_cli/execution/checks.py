@@ -808,7 +808,10 @@ class CheckRunner:
                     if name in SANDBOX_VARIABLES
                 }
                 session_values, session_secrets = environment.capture(
-                    snapshot, overrides=spec["env"]
+                    snapshot,
+                    overrides=spec["env"],
+                    runtime_root=self.runtime_root,
+                    runtime_paths=tuple(self.config.get("runtime_paths", [])),
                 )
                 env.update(session_values)
                 env.update(overrides)

@@ -122,13 +122,23 @@ class CommandEnvironment:
             )
 
     def capture(
-        self, snapshot: Path, *, overrides: dict[str, str] | None = None
+        self,
+        snapshot: Path,
+        *,
+        overrides: dict[str, str] | None = None,
+        runtime_root: Path | None = None,
+        runtime_paths: tuple[str, ...] = (),
     ) -> tuple[dict[str, str], tuple[str, ...]]:
         # Freeze the child map and its redaction material under the same lock.
         # An authenticated reconnect may invalidate us immediately afterward,
         # but can never clear the launched child's output protection.
         with self._lock:
-            values = self.prepare(snapshot, overrides=overrides)
+            values = self.prepare(
+                snapshot,
+                overrides=overrides,
+                runtime_root=runtime_root,
+                runtime_paths=runtime_paths,
+            )
             protected = set(self.sensitive_values)
             if overrides:
                 protected.update(
@@ -161,7 +171,12 @@ class CommandEnvironment:
             raise unavailable()
 
     def prepare(
-        self, snapshot: Path, *, overrides: dict[str, str] | None = None
+        self,
+        snapshot: Path,
+        *,
+        overrides: dict[str, str] | None = None,
+        runtime_root: Path | None = None,
+        runtime_paths: tuple[str, ...] = (),
     ) -> dict[str, str]:
         self.require()
         result = dict(self.values)
@@ -176,6 +191,7 @@ class CommandEnvironment:
         source = self.source_root.resolve()
         hydrated = self.hydrated_root.resolve()
         target = snapshot.resolve()
+        runtime = runtime_root.resolve() if runtime_root is not None else hydrated
         for name, value in result.items():
             if name in SANDBOX_VARIABLES:
                 continue
@@ -189,20 +205,29 @@ class CommandEnvironment:
                     rewritten.append(component)
                     continue
                 relative = path.relative_to(source)
-                private = hydrated / relative
+                frozen_runtime = any(
+                    relative == Path(item) or relative.is_relative_to(Path(item))
+                    for item in runtime_paths
+                )
+                equivalent_root = runtime if frozen_runtime else hydrated
+                private = equivalent_root / relative
                 destination = target / relative
-                known = relative == Path(".") or any(
-                    relative.as_posix() == item
-                    or relative.as_posix().startswith(item + "/")
-                    or item.startswith(relative.as_posix().rstrip("/") + "/")
-                    for item in self.hydrated_paths
+                known = (
+                    relative == Path(".")
+                    or frozen_runtime
+                    or any(
+                        relative.as_posix() == item
+                        or relative.as_posix().startswith(item + "/")
+                        or item.startswith(relative.as_posix().rstrip("/") + "/")
+                        for item in self.hydrated_paths
+                    )
                 )
                 try:
                     safe = (
                         known
                         and private.exists()
                         and destination.exists()
-                        and private.resolve(strict=True).is_relative_to(hydrated)
+                        and private.resolve(strict=True).is_relative_to(equivalent_root)
                         and destination.resolve(strict=True).is_relative_to(target)
                     )
                 except (OSError, RuntimeError, ValueError):
