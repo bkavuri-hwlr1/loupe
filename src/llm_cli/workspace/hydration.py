@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from llm_cli.config.models import RebuildConfig
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import sanitized_git_environment
 
@@ -313,8 +314,15 @@ class _Observed:
 
 
 class _Inventory:
-    def __init__(self, root: Path, budgets: HydrationBudgets, deadline: float) -> None:
+    def __init__(
+        self,
+        root: Path,
+        budgets: HydrationBudgets,
+        deadline: float,
+        rebuild: frozenset[str] = frozenset(),
+    ) -> None:
         self.root = root
+        self.rebuild = rebuild
         self.budgets = budgets
         self.deadline = deadline
         self.entries: list[_Observed] = []
@@ -379,6 +387,13 @@ class _Inventory:
                         entry.descendants_inventoried = (
                             False if stat.S_ISDIR(status.st_mode) else None
                         )
+                    elif relative in self.rebuild:
+                        entry.refusal = "rebuild"
+                        entry.reason = (
+                            "explicit private installer; primary dependency "
+                            "tree is not copied"
+                        )
+                        entry.descendants_inventoried = False
                     elif stat.S_ISLNK(status.st_mode):
                         entry.refusal = "refuse_symlink"
                         target = os.readlink(name, dir_fd=descriptor)
@@ -512,6 +527,15 @@ def _safe_stat(root: int, relative: str) -> dict[str, int] | None:
         os.close(descriptor)
 
 
+def _root_is_symlink(root: Path, relative: str) -> bool:
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        observation = _safe_stat(descriptor, relative)
+        return observation is not None and stat.S_ISLNK(observation["mode"])
+    finally:
+        os.close(descriptor)
+
+
 def _consent_paths(paths: Sequence[str]) -> frozenset[str]:
     for path in paths:
         parts = PurePosixPath(path).parts
@@ -571,6 +595,7 @@ def _entry(
         *_COPY_ACTIONS,
         "create_directory",
         "exclude_administration",
+        "rebuild",
     }
     return HydrationEntry(
         path=observed.path,
@@ -597,6 +622,8 @@ def plan_hydration(
     *,
     budgets: HydrationBudgets | None = None,
     approved_secret_paths: Sequence[str] = (),
+    rebuild: Sequence[RebuildConfig] = (),
+    frozen_rebuild_roots: Sequence[str] = (),
 ) -> HydrationPlan:
     """Preview current ignored entries; no bytes, consent, or state are written.
 
@@ -636,7 +663,34 @@ def plan_hydration(
                 "hydration preview needs a non-bare Git checkout",
             )
         root = Path(os.fsdecode(output.removesuffix(b"\n"))).resolve(strict=True)
-        inventory = _Inventory(root, limits, deadline)
+        configured_roots = frozenset(spec.root for spec in rebuild)
+        rebuild_roots = configured_roots | frozenset(frozen_rebuild_roots)
+        if configured_roots:
+            ignored_roots = _ignored_paths(
+                root,
+                [
+                    path if _root_is_symlink(root, path) else path + "/"
+                    for path in sorted(configured_roots)
+                ],
+                deadline=deadline,
+                limit=limits.max_metadata_bytes,
+            )
+            code, tracked = _bounded_git(
+                root,
+                ["ls-files", "-z", "--", *sorted(configured_roots)],
+                deadline=deadline,
+                limit=limits.max_metadata_bytes,
+            )
+            if (
+                code
+                or tracked
+                or configured_roots != {path.rstrip("/") for path in ignored_roots}
+            ):
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID,
+                    "rebuild roots must be ignored and contain no tracked source",
+                )
+        inventory = _Inventory(root, limits, deadline, rebuild_roots)
         descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             root_evidence = _evidence(os.fstat(descriptor))
@@ -691,6 +745,32 @@ def plan_hydration(
                         planned_bytes += entry.apparent_bytes
                         estimated_bytes += entry.estimated_copy_bytes
                 entries.append(entry)
+            for relative in sorted(rebuild_roots - {entry.path for entry in entries}):
+                if _safe_stat(descriptor, relative) is not None:
+                    raise LlmCoordError(
+                        ErrorCode.REPOSITORY_UNSAFE,
+                        "rebuild root has an unsafe or excluded ancestor: " + relative,
+                    )
+                # Missing dependency roots are deliberately rebuildable, including
+                # external Poetry environments that have no checkout-local copy.
+                entries.append(
+                    HydrationEntry(
+                        path=relative,
+                        kind="missing",
+                        classification="ignored_runtime",
+                        sensitivity="unclassified",
+                        action="rebuild",
+                        reason="explicit private installer; no primary dependency copy",
+                        apparent_bytes=0,
+                        allocated_bytes=0,
+                        estimated_copy_bytes=0,
+                        source_device=root_evidence["device"],
+                        requires_decision=False,
+                        descendants_inventoried=False,
+                        ignore_provenance="git_check_ignore_current_rules",
+                    )
+                )
+            entries.sort(key=lambda entry: entry.path)
         finally:
             os.close(descriptor)
     except _BudgetExceeded as exc:

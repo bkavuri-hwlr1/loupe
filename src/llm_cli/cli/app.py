@@ -472,6 +472,7 @@ def _hydration_preview_text(plan: HydrationPlan) -> str:
     lines.append("Actions (all counts; up to 2 sample paths each, 8 total):")
     labels = {
         "private_tree": "Private dependency trees",
+        "rebuild": "Approved private rebuilds",
         "clone_or_copy": "Copy candidates",
         "private_copy": "Approved private copies",
         "create_directory": "Directory containers",
@@ -749,6 +750,7 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
         if arguments.workspace_command == "hydrate":
             from llm_cli.workspace.hydration import HydrationBudgets, plan_hydration
 
+            profile_paths = getattr(client, "paths", None)
             plan = plan_hydration(
                 Path(arguments.path),
                 budgets=HydrationBudgets(
@@ -761,6 +763,13 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                     max_seconds=arguments.max_seconds,
                 ),
                 approved_secret_paths=arguments.approve_secret,
+                rebuild=(
+                    load_settings(
+                        profile_paths.config_file, profile_id=profile_paths.profile_id
+                    ).isolated_rebuild
+                    if profile_paths is not None
+                    else ()
+                ),
             )
             return (
                 plan.to_dict() if arguments.as_json else _hydration_preview_text(plan)

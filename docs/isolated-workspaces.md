@@ -76,6 +76,75 @@ paths are never rewritten. Runtime bytes do not enter ordinary model file tools,
 source artifacts, source manifests, or proposals. Closing a conversation does
 not copy runtime changes back to the primary checkout.
 
+## Explicit dependency rebuilds
+
+When a dependency tree is too large to copy, contains an escaping store link,
+or lives outside the checkout, configure a private rebuild in the profile's
+`config.toml`. Quote `.venv`: an unquoted dotted TOML key is a different table.
+
+```toml
+[isolated.rebuild]
+".venv" = {argv = ["uv", "sync", "--frozen"], network = true, timeout_seconds = 120}
+"node_modules" = ["npm", "ci", "--offline"]
+```
+
+The setting approves exactly these installer commands for new isolated
+conversations using that profile. There is no default installer and no inferred
+command from package manifests. A shorthand argv denies network access and has
+a 60-second timeout. A table accepts `argv`, boolean `network` (default `false`),
+and `timeout_seconds` from 1 through 300. `network = true` permits outbound IP
+connections only during that installer, including local endpoints; it does not
+enable networking for ordinary model commands or checks. Configure at most 16
+nonoverlapping roots, each ending in `.venv`, `venv` or `node_modules`, with
+1–64 argv items and at most 8 KiB of combined argument text. Roots must be
+checkout-relative, ignored by Git, and contain no tracked source. Nested roots,
+such as `web/node_modules`, work when the installer argv targets that directory.
+Configuration can also be saved with a quoted key:
+
+```sh
+loupe config set 'isolated.rebuild.".venv"' '["uv", "sync", "--frozen"]'
+loupe daemon restart
+loupe workspace hydrate . --plan
+```
+
+The preview shows `rebuild` without traversing or copying the primary root,
+including a missing root or an escaping primary symlink. Opening first pins and
+validates ordinary source and copied runtime, then runs the explicit argv with
+the private worktree as its current directory. The command sandbox permits
+writes only under that dependency root and a disposable private home/cache.
+Source, the primary checkout, provider credentials and Loupe state remain
+protected. Installers that need other writable build outputs must be configured
+for an appropriate dependency-root layout. Opening consent still controls any
+copied credential files, including `.env` and `.npmrc`.
+
+Installed trees have a 200,000-entry, 5 GiB apparent/allocation, depth-64 and
+256 MiB per-file limit. Bounded metadata observations during execution stop an
+installer when an observed limit is exceeded; final no-follow validation checks
+all entries and links. This is not a filesystem quota, so a process can briefly
+exceed a limit between observations. Escaping links, special files, mounts and
+administration are refused; supported base-Python and copied-source package
+links retain their existing validation rules. Installer output uses the normal
+signature and actual-private-value screener, with a 64 KiB capture cap and at
+most 2 KiB of screened diagnostics in a failure notice. Successful opening names
+each privately rebuilt root. A failed installer leaves no partial root and the
+conversation still opens with a notice; checks requiring that dependency may
+then fail.
+
+Rebuilds are durable creation steps. Recovery removes incomplete roots and the
+journal-owned installer home before retrying the frozen command and network
+policy. The journal stores configuration and compact metadata receipts, never
+installer output or runtime bodies. A completed root changed before recovery
+is preserved for attention. Later primary source edits arrive through ordinary
+incoming synchronization. Primary dependency changes do not replace an
+explicitly rebuilt root, and refresh never starts an installer. Held proposals
+retain private generations as usual; closing disposes rebuilt dependencies once
+no task or held proposal needs them.
+
+Creation keeps its existing publication barrier while installing, so an explicit
+rebuild can delay other publication for that checkout. Per-installer timeouts
+bound the delay. Isolated opening/resume waits for the active daemon's configured
+installer budget plus a bounded creation margin; other RPC timeouts are unchanged.
+
 ## Tasks and checks
 
 Model reads and edits operate on the isolated source and its private proposal.
@@ -116,8 +185,9 @@ creation, private runtime copying, source checks, output screening, and cleanup,
 with no provider request. Other filesystems retain private-copy fallbacks.
 
 Commands retain Loupe's existing minimized child environment. The general
-per-terminal environment forwarding, automatic virtualenv rebuilding, and
-long-running process interfaces in the workspace design are future work.
+per-terminal environment forwarding and long-running process interfaces in the
+workspace design are future work. Dependency rebuilding requires the explicit
+profile setting above.
 An isolated session does not grant additional access to provider credentials.
 
 Configured MCP servers follow the same approval and plan-mode rules as shared

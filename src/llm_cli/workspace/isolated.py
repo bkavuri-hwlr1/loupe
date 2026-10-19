@@ -33,6 +33,7 @@ from llm_cli.agent.source_policy import (
     runtime_path,
     runtime_path_matches,
 )
+from llm_cli.config.models import RebuildConfig
 from llm_cli.coordination.models import CheckoutRecord, WorkspaceRecord
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import ErrorCode, LlmCoordError
@@ -610,12 +611,17 @@ class IsolatedWorkspaceManager:
         candidate_dir: Path,
         publication_lock: RLock,
         ensure_available: Callable[[str], None],
+        *,
+        rebuild: tuple[RebuildConfig, ...] = (),
+        rebuild_protected: tuple[Path, ...] = (),
     ) -> None:
         self.store = store
         self.managed_root = managed_root
         self.candidate_dir = candidate_dir
         self.lock = publication_lock
         self.ensure_available = ensure_available
+        self.rebuild = rebuild
+        self.rebuild_protected = rebuild_protected
         self.fault: Callable[[str], None] = lambda stage: None
         from llm_cli.workspace.runtime_refresh import RuntimeRefresher
 
@@ -1269,6 +1275,11 @@ class IsolatedWorkspaceManager:
                     ):
                         if row["stage"] == "ready":
                             self.validate(workspace_id)
+                        elif row["stage"] in {
+                            "materialized",
+                            "hydrated",
+                        } and self._recover_rebuild(workspace_id):
+                            pass
                         elif not self._clean_incomplete(workspace_id):
                             self._quarantine(workspace_id)
                 except (LlmCoordError, OSError, ValueError) as exc:
@@ -1279,6 +1290,94 @@ class IsolatedWorkspaceManager:
                     }:
                         continue
                     self._quarantine(workspace_id)
+
+    def _complete_rebuild(
+        self, workspace_id: str, git_dir: Path, primary: Path
+    ) -> None:
+        from llm_cli.workspace.rebuild import discard_interrupted, run_pending
+
+        state = self.get(workspace_id)
+        workspace = self.store.get_workspace(workspace_id)
+        assert state is not None and workspace is not None
+        private = Path(workspace.canonical_path)
+        register_runtime_paths(private, state.runtime_paths)
+        discard_interrupted(private, git_dir, state.creation_token)
+        if capture_source(private, self.candidate_dir) != state.source_manifest:
+            raise _error("isolated source changed before dependency rebuild recovery")
+        successful, notices = run_pending(
+            private,
+            primary,
+            git_dir,
+            state.creation_token,
+            runtime_files=state.runtime_files,
+            source_paths=tuple(
+                path
+                for path, entry in state.source_manifest.items()
+                if entry.get("screened")
+            ),
+            fault=self.fault,
+            protected=self.rebuild_protected,
+        )
+        if capture_source(private, self.candidate_dir) != state.source_manifest:
+            raise _error("dependency installer changed isolated source")
+        with self.store.connection() as con, immediate_transaction(con):
+            con.execute(
+                "UPDATE isolated_workspaces SET runtime_files_json=?,notices_json=? "
+                "WHERE workspace_id=?",
+                (
+                    json.dumps(sorted(set(state.runtime_files) | set(successful))),
+                    json.dumps(tuple(dict.fromkeys((*state.notices, *notices)))),
+                    workspace_id,
+                ),
+            )
+        # Opening consent and original copied-runtime receipts were committed
+        # before the rebuild journal. Never recreate or widen them on replay.
+        self.runtime.finish_creation(workspace_id, successful)
+        self._stage(workspace_id, "hydrated")
+        self.fault("rebuilt")
+
+    def _recover_rebuild(self, workspace_id: str) -> bool:
+        from llm_cli.workspace.rebuild import read_journal
+
+        state = self.get(workspace_id)
+        workspace = self.store.get_workspace(workspace_id)
+        assert state is not None and workspace is not None
+        checkout = self.store.get_checkout(workspace.checkout_id)
+        assert checkout is not None
+        primary = Path(checkout.canonical_path)
+        managed = resume_managed_worktree(
+            primary,
+            managed_root=self.managed_root,
+            registered_path=Path(workspace.canonical_path),
+            task_id=workspace_id,
+            base_oid=state.base_oid,
+        )
+        with _source(managed.git_dir, "loupe-isolated-owner") as descriptor:
+            if _read(descriptor, 1024).decode() != state.creation_token:
+                raise _error("dependency rebuild ownership changed")
+        journal = read_journal(managed.git_dir, state.creation_token)
+        if journal is None:
+            return False
+        from llm_cli.workspace.authority import managed_mutation
+
+        with managed_mutation(
+            self.store, primary, "isolated_create", state.session_id, recovery=True
+        ) as operation:
+            self._complete_rebuild(workspace_id, managed.git_dir, primary)
+            with self.store.connection() as con, immediate_transaction(con):
+                con.execute(
+                    "UPDATE isolated_workspaces SET stage='ready' WHERE workspace_id=?",
+                    (workspace_id,),
+                )
+                con.execute(
+                    "UPDATE workspaces SET state='active',"
+                    "state_version=state_version+1 "
+                    "WHERE workspace_id=?",
+                    (workspace_id,),
+                )
+            if operation is not None:
+                operation.confirm()
+        return True
 
     def open(
         self,
@@ -1351,7 +1450,9 @@ class IsolatedWorkspaceManager:
                 )
             assert isinstance(head.stdout, str)
             base_oid = head.stdout.strip()
-            plan = plan_hydration(root, approved_secret_paths=approved_secrets)
+            plan = plan_hydration(
+                root, approved_secret_paths=approved_secrets, rebuild=self.rebuild
+            )
             policy_paths = tuple(
                 entry.path
                 for entry in plan.entries
@@ -1402,6 +1503,7 @@ class IsolatedWorkspaceManager:
                     "clone_or_copy",
                     "private_tree",
                     "create_directory",
+                    "rebuild",
                     "exclude_administration",
                 }
             )
@@ -1552,8 +1654,6 @@ class IsolatedWorkspaceManager:
                         "WHERE workspace_id=?",
                         (json.dumps(notices), workspace_id),
                     )
-                self.runtime.initialize(workspace_id, approved_secrets)
-                self._stage(workspace_id, "hydrated")
                 if (
                     source_fingerprint(root, policy_paths) != fingerprint
                     or capture_source(root, self.candidate_dir) != source
@@ -1562,7 +1662,9 @@ class IsolatedWorkspaceManager:
                         "source or ignore/attribute/config policy changed during "
                         "isolated creation"
                     )
-                fresh = plan_hydration(root, approved_secret_paths=approved_secrets)
+                fresh = plan_hydration(
+                    root, approved_secret_paths=approved_secrets, rebuild=self.rebuild
+                )
                 if not fresh.complete or [
                     entry
                     for entry in fresh.entries
@@ -1580,6 +1682,22 @@ class IsolatedWorkspaceManager:
                     != base_oid
                 ):
                     raise _error("HEAD changed during isolated creation")
+                if self.rebuild:
+                    from llm_cli.workspace.rebuild import prepare
+
+                    self.runtime.initialize(
+                        workspace_id, approved_secrets,
+                        rebuilt_roots=tuple(spec.root for spec in self.rebuild),
+                    )
+                    prepare(managed.git_dir, token, self.rebuild)
+                    self.fault("rebuild_prepared")
+                    self._complete_rebuild(workspace_id, managed.git_dir, root)
+                    rebuilt_state = self.get(workspace_id)
+                    assert rebuilt_state is not None
+                    notices = rebuilt_state.notices
+                else:
+                    self.runtime.initialize(workspace_id, approved_secrets)
+                self._stage(workspace_id, "hydrated")
                 register_runtime_paths(managed.path, runtime)
                 with self.store.connection() as con, immediate_transaction(con):
                     con.execute(

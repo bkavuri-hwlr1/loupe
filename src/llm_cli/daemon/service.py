@@ -231,6 +231,13 @@ class DaemonService:
             paths.candidate_dir,
             self.workspace_batches.lock,
             self.shared_runner.ensure_available,
+            rebuild=settings.isolated_rebuild,
+            rebuild_protected=(
+                paths.config_dir,
+                paths.data_dir,
+                paths.state_dir,
+                paths.runtime_dir,
+            ),
         )
         self.shared_runner.isolated = self.isolated_workspaces
         self.workflow = self.shared_runner.workflow
