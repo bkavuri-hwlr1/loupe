@@ -1,8 +1,10 @@
 # Optional agent retrieval
 
-Set `[knowledge] index = "lexical"`, register the checkout, and run
-`loupe index build --repo PATH`. The main agent and exploration helpers then
-receive `search_project(query, limit=6)`. Indexing remains off by default.
+Set `[knowledge] index = "lexical"` in the shared configuration, restart the
+selected daemon with `loupe daemon restart`, register the checkout, and run
+`loupe index build --repo PATH`. Already-running daemons keep their loaded
+policy until restarted. The main agent and exploration helpers then receive
+`search_project(query, limit=6)`. Indexing remains off by default.
 The existing `search_text` and file tools remain available for exact discovery.
 
 The tool returns an `optional_retrieval` block containing up to six lexical
