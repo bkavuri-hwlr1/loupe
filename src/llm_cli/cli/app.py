@@ -22,6 +22,7 @@ from llm_cli.cli.session import (
     APPLY_TIMEOUT_SECONDS,
     _follow,
     _patient,
+    _session_setup_client,
     open_or_resume_session,
     remove_session_secret,
     run_session,
@@ -1065,7 +1066,7 @@ def _dispatch_session(arguments: argparse.Namespace, client: DaemonClient) -> An
         "resume_secret": secret,
     }
     if action == "resume":
-        return client.call("session.resume", authenticated)
+        return _session_setup_client(client).call("session.resume", authenticated)
     if action == "close":
         result = client.call(
             "session.close", {**authenticated, "reason": arguments.reason}
