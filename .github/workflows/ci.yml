@@ -34,7 +34,10 @@ jobs:
           # bubblewrap needs. Tests skip the real sandbox if it cannot start.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: uv sync --locked --all-groups --all-extras
-      - run: uv run pytest --cov=llm_cli
+      - name: Test correctness with coverage
+        run: uv run pytest --cov=llm_cli -m 'not index_scale'
+      - name: Verify production index scale without coverage overhead
+        run: uv run pytest -m index_scale -s
       - run: uv run ruff check .
       - run: uv run mypy
       - run: uv build --no-sources

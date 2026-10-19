@@ -36,7 +36,8 @@ def _finish_after_release(
     def finish(results: Sequence[ToolCallResult]) -> ModelTurn:
         assert results and all(not result.is_error for result in results)
         staged.set()
-        assert release.wait(timeout=10), "the test did not release the staged agent"
+        # Keep a margin beyond the longest coordinated readiness deadline.
+        assert release.wait(timeout=60), "the test did not release the staged agent"
         return _finish()
 
     return finish
