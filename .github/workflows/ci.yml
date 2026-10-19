@@ -39,6 +39,33 @@ jobs:
       - run: uv run mypy
       - run: uv build --no-sources
 
+  authority-intel:
+    # Release packaging also targets Intel. Keep the statfs ABI and actual
+    # authority operations covered on that architecture, not only arm64.
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked --all-groups --all-extras
+      - name: Verify native Intel Python
+        run: uv run python -c 'import platform; assert platform.machine() == "x86_64"'
+      - name: Test physical checkout authority on Intel
+        run: >-
+          uv run pytest
+          tests/unit/test_authority_filesystem.py
+          tests/unit/test_authority_gitfiles.py
+          tests/unit/test_physical_authority.py
+          tests/integration/test_cross_profile_authority.py
+          tests/integration/test_authority_crash_recovery.py
+          tests/integration/test_authority_execution_boundaries.py
+
   formula:
     # The tap's publish workflow runs `brew style` before installing, so an
     # offense there costs a release attempt. Catch it on the pull request.

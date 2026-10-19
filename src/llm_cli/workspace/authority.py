@@ -12,6 +12,7 @@ import fcntl
 import functools
 import hashlib
 import os
+import platform
 import pwd
 import secrets
 import stat
@@ -89,7 +90,17 @@ def _filesystem(path: Path) -> str:
     if sys.platform == "darwin":
         buffer = ctypes.create_string_buffer(4096)
         library = ctypes.CDLL(None, use_errno=True)
-        if library.statfs(os.fsencode(path), buffer) != 0:
+        # Darwin's x86_64 dlsym("statfs") exposes the legacy ABI, whose
+        # f_fstypename starts at 104. Match the modern SDK layout (offset 72)
+        # explicitly there; arm64 exposes that layout through plain statfs.
+        symbol = "statfs$INODE64" if platform.machine() == "x86_64" else "statfs"
+        try:
+            statfs = getattr(library, symbol)
+        except AttributeError as exc:
+            raise recovery_error("authority filesystem cannot be verified") from exc
+        statfs.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
+        statfs.restype = ctypes.c_int
+        if statfs(os.fsencode(path), buffer) != 0:
             raise recovery_error("authority filesystem cannot be verified")
         return buffer.raw[72:88].split(b"\0", 1)[0].decode("ascii")
     if sys.platform.startswith("linux"):
@@ -182,17 +193,15 @@ class PhysicalCheckout:
                 raise ValueError("Git administration is a symlink")
             descriptors.extend((_open_directory(admin), _open_directory(common)))
             for directory in (root, admin, common):
-                if _filesystem(directory) not in SUPPORTED_FILESYSTEMS:
+                filesystem = _filesystem(directory)
+                if filesystem not in SUPPORTED_FILESYSTEMS:
                     raise recovery_error(
                         "checkout and Git administration require a supported local "
-                        "filesystem"
+                        f"filesystem; detected {filesystem!r}",
+                        filesystem=filesystem,
                     )
-            if admin != root / ".git" and (
-                not (root / ".git").is_file()
-                or Path((admin / "gitdir").read_text().strip()).resolve(strict=True)
-                != root / ".git"
-            ):
-                raise ValueError("linked worktree relationship differs")
+            if admin != root / ".git" and not (root / ".git").is_file():
+                raise ValueError("Git administration pointer is not a regular file")
             if object_format not in {"sha1", "sha256"}:
                 raise ValueError("unknown Git object format")
             binding: dict[str, Any] = {
@@ -255,14 +264,14 @@ class PhysicalCheckout:
                 destination = Path(pointer.removeprefix("gitdir: "))
                 if not destination.is_absolute():
                     destination = self.root / destination
-                back_pointer = Path(_admin_text(self.descriptors[1], "gitdir"))
-                if not back_pointer.is_absolute():
-                    back_pointer = self.admin / back_pointer
-                if (
-                    destination.resolve(strict=True) != self.admin
-                    or back_pointer.resolve(strict=True) != self.root / ".git"
-                ):
-                    raise ValueError("linked administration relationship changed")
+                if destination.resolve(strict=True) != self.admin:
+                    raise ValueError("Git administration pointer changed")
+                if self.admin != self.common:
+                    back_pointer = Path(_admin_text(self.descriptors[1], "gitdir"))
+                    if not back_pointer.is_absolute():
+                        back_pointer = self.admin / back_pointer
+                    if back_pointer.resolve(strict=True) != self.root / ".git":
+                        raise ValueError("linked administration relationship changed")
             elif not (self.root / ".git").is_dir():
                 raise ValueError("Git administration changed")
             try:
@@ -273,6 +282,8 @@ class PhysicalCheckout:
                         "Git common administration pointer is missing"
                     ) from None
             else:
+                if self.admin == self.common and self.admin != self.root / ".git":
+                    raise ValueError("standalone administration has a common pointer")
                 destination = (
                     common_pointer
                     if common_pointer.is_absolute()
@@ -391,9 +402,12 @@ class PhysicalAuthority:
 
     def _prepare_root(self) -> None:
         private_directory(self.root)
-        if _filesystem(self.root) not in SUPPORTED_FILESYSTEMS:
+        filesystem = _filesystem(self.root)
+        if filesystem not in SUPPORTED_FILESYSTEMS:
             raise recovery_error(
-                "authority requires a verified supported local filesystem"
+                "authority requires a verified supported local filesystem; "
+                f"detected {filesystem!r}",
+                filesystem=filesystem,
             )
         for ancestor in (
             *(

@@ -53,6 +53,10 @@ keep their original bases and still require normal merge/check/base validation.
 Symlink aliases to the same physical root/admin objects contend on one key.
 Independent clones have different keys. Linked user worktrees have separate
 checkout keys and a shared short Git-store lock for shared administration.
+Submodule checkouts and clones created with `git clone --separate-git-dir` are
+also supported: their `.git` file must point to a self-contained administration
+directory with no `commondir` pointer. Linked worktrees still require their
+matching back-pointer and common-directory relationship.
 
 ## Stable refusals and recovery
 
@@ -97,6 +101,20 @@ The authority root is the account directory returned by
 that lock domain. Files/directories must be owned and private, have no symlink
 components and use verified supported local filesystem semantics. Checkout/admin
 storage must also have supported local identity/locking semantics.
+
+The current supported filesystem names are `apfs`, `hfs`, `ext2`, `ext3`, `ext4`,
+`xfs`, `btrfs`, `zfs`, `tmpfs` and `overlay`. The authority root, checkout, Git
+administration directory and common Git store must each pass this check.
+Refusals name the detected filesystem, for example `detected 'virtiofs'`.
+
+Other names fail closed under ADR 0010 until their identity, locking and durable
+replacement semantics have been verified. This includes `9p` and `drvfs` (such
+as WSL `/mnt/c`), `virtiofs` (used by some devcontainers), `exfat`, `ecryptfs` and
+FUSE filesystems, even if managed operations worked there before G2. Keep the
+checkout and account authority root on supported local storage; the authority
+root cannot be redirected with environment variables. Status, doctor and
+read-only observation remain available to diagnose a refusal. Adding support
+for another filesystem requires an explicit change to this contract.
 
 The lock inode is held with `flock`; PID metadata, including process start time,
 is diagnostic. Loupe never unlinks a lock inode to clear a stale record.
