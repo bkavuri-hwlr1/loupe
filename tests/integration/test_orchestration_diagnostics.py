@@ -14,7 +14,10 @@ from test_cli_process_orchestration import _Cluster
 from test_optimistic_isolated_sessions import _wait_prepared
 
 
-def test_cli_barrier_reports_exited_child_and_persisted_failure(tmp_path: Path) -> None:
+@pytest.mark.parametrize("registered", [False, True])
+def test_cli_barrier_reports_exited_child_and_persisted_failure(
+    tmp_path: Path, registered: bool
+) -> None:
     cluster = object.__new__(_Cluster)
     cluster.root = tmp_path
     cluster.signals = tmp_path / "signals"
@@ -30,16 +33,16 @@ def test_cli_barrier_reports_exited_child_and_persisted_failure(tmp_path: Path) 
         )
     cluster.paths = SimpleNamespace(control_db=database)
     process = SimpleNamespace(pid=17, poll=lambda: 7)
-    cluster.daemon = process
+    cluster.daemon = SimpleNamespace(poll=lambda: None)
     cluster.processes = [process]
-    cluster.process_names = {17: "worker"}
-    cluster.submissions = {"unready": process}
+    cluster.process_names = {17: "worker"} if registered else {}
+    cluster.submissions = {"unready": process} if registered else {}
     (tmp_path / "worker.log").write_text(
         "old log head\n" + "x" * 9_000 + "provider refused"
     )
     before = database.read_bytes()
     with pytest.raises(AssertionError) as failed:
-        cluster.ready_all(("unready",))
+        cluster.ready_all(("unready",), timeout=0)
     message = str(failed.value)
     assert all(
         item in message
@@ -68,8 +71,11 @@ def test_cli_cleanup_releases_submissions_without_ready_markers(tmp_path: Path) 
         SimpleNamespace(poll=lambda: 0, wait=lambda **kwargs: 0, stdin=None)
     ]
     cluster.stack = ExitStack()
+    # Controlling-terminal tests bypass submit() and announce their own label.
+    (tmp_path / "direct-terminal.ready.json").write_text("{}")
     cluster.close()
     assert (tmp_path / "not-yet-ready.release").is_file()
+    assert (tmp_path / "direct-terminal.release").is_file()
 
 
 def test_preparation_barrier_reports_original_background_error() -> None:
