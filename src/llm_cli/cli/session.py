@@ -81,6 +81,9 @@ def run_session(
     ).run()
 
 
+# Session setup may queue behind other terminals' checkout registration and
+# authority work. Keep that bounded wait separate from ordinary UI RPCs.
+SESSION_SETUP_TIMEOUT_SECONDS = 120.0
 # A summary waits for a model response, which can take minutes.
 _COMPACT_TIMEOUT_SECONDS = 600.0
 # Applying first runs any missing or stale required checks, each bounded by its
@@ -103,11 +106,12 @@ _DETERMINISTIC_OPEN_REFUSALS = frozenset(
 def _runtime_open_client(
     client: DaemonClient, workspace_mode: str | None, *, resume: bool = False
 ) -> DaemonClient:
-    """Only opening/resuming private runtimes gets the installer time budget."""
+    """Bound session setup, adding installer time only for private runtimes."""
+    setup = _session_setup_client(client)
     if not isinstance(client, DaemonClient) or (
         workspace_mode != "isolated" and not resume
     ):
-        return client
+        return setup
     from llm_cli.config.loader import load_settings
 
     rebuild = load_settings(
@@ -115,7 +119,10 @@ def _runtime_open_client(
     ).isolated_rebuild
     # Consult the daemon's effective policy: saved config can be pending a
     # restart and must not shorten a still-active installer's response window.
-    probe = _patient(client, 120 + sum(spec.timeout_seconds for spec in rebuild))
+    probe = _patient(
+        setup,
+        SESSION_SETUP_TIMEOUT_SECONDS + sum(spec.timeout_seconds for spec in rebuild),
+    )
     effective = probe.call("config.show")
     entries = effective.get("settings", []) if isinstance(effective, dict) else []
     active = next(
@@ -135,10 +142,10 @@ def _runtime_open_client(
             and 1 <= entry["timeout_seconds"] <= 300
         )
         if not active:
-            return client
+            return setup
         # At most 16 installers, each capped at 300 seconds by the strict loader.
-        return _patient(client, 120 + min(seconds, 16 * 300))
-    return probe if rebuild else client
+        return _patient(setup, SESSION_SETUP_TIMEOUT_SECONDS + min(seconds, 16 * 300))
+    return probe if rebuild else setup
 
 
 def open_or_resume_session(
@@ -157,6 +164,7 @@ def open_or_resume_session(
     approved_runtime_files = validate_runtime_consent(
         approved_runtime_files, workspace_mode, resume_session_id
     )
+    setup_client = _session_setup_client(client)
     if resume_session_id is not None:
         secret = session_resume_secret(client.paths, resume_session_id)
         resumed = _runtime_open_client(client, workspace_mode, resume=True).call(
@@ -255,7 +263,7 @@ def open_or_resume_session(
     if not isinstance(notices, list) or any(not isinstance(n, str) for n in notices):
         raise LlmCoordError(ErrorCode.PROTOCOL_MISMATCH, "invalid workspace notices")
     bootstrap_sequence = _integer(opened, "bootstrap_sequence")
-    acknowledged = client.call(
+    acknowledged = setup_client.call(
         "session.ack",
         {
             "session_id": session_id,
@@ -324,6 +332,12 @@ def _patient(
         client.paths,
         timeout_seconds=max(client.timeout_seconds, timeout_seconds),
     )
+
+
+def _session_setup_client(client: DaemonClient) -> DaemonClient:
+    """Wait for serialized setup without changing the caller's other RPCs."""
+
+    return _patient(client, SESSION_SETUP_TIMEOUT_SECONDS)
 
 
 def compact_session(
