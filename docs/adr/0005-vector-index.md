@@ -136,7 +136,8 @@ immutable source revisions, content identities, line ranges and generation, with
 stale labeling and current source/privacy filtering. Retrieval remains
 nonauthoritative and optional-index failure does not block source publication.
 
-This implements the lexical foundation of the decision. Agent retrieval tools,
-the code graph, embeddings, exact-vector scoring and `sqlite-vec` qualification
-remain planned. F1's offline build/search checks do not establish model
-answer-quality improvement. See [lexical search](../lexical-search.md).
+This implements the lexical foundation of the decision. F2 adds deterministic
+code graph discovery through CLI/RPC neighbors. Agent retrieval tools, embeddings,
+exact-vector scoring and `sqlite-vec` qualification remain planned. Offline
+build/search/graph checks do not establish model answer-quality improvement. See
+[lexical search](../lexical-search.md) and the [code graph](../code-graph.md).

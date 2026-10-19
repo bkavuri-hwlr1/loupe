@@ -440,6 +440,16 @@ class DaemonService:
             )
         if method == "index.drop":
             return await asyncio.to_thread(self.knowledge.drop, checkout.checkout_id)
+        if method == "graph.neighbors":
+            return await asyncio.to_thread(
+                self.knowledge.graph_neighbors,
+                checkout.checkout_id,
+                _string(params, "node"),
+                edge=(
+                    None if params.get("edge") is None else _string(params, "edge")
+                ),
+                depth=_bounded_integer(params, "depth", 1, minimum=1, maximum=4),
+            )
         return await asyncio.to_thread(
             self.knowledge.search_lexical,
             checkout.checkout_id,
@@ -525,6 +535,7 @@ class DaemonService:
                 "index.rebuild",
                 "index.drop",
                 "search.lexical",
+                "graph.neighbors",
             }:
                 return await self._knowledge_request(request)
             async with self._authority_lock:

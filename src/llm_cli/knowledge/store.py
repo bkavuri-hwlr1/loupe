@@ -13,9 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from llm_cli.knowledge.chunker import VERSION, Chunk, chunks
+from llm_cli.knowledge.graph_schema import GRAPH_MIGRATIONS
+from llm_cli.knowledge.parsers import PROJECTION_VERSION as GRAPH_VERSION
+from llm_cli.knowledge.parsers import VERSION as TOKENIZER_VERSION
+from llm_cli.knowledge.parsers import Edge, parse
 from llm_cli.paths import validate_owned_sqlite_paths
 from llm_cli.storage.connection import connect_knowledge, immediate_transaction
-from llm_cli.storage.migrations import KNOWLEDGE_MIGRATIONS, apply_migrations
+from llm_cli.storage.migrations import apply_migrations
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +29,7 @@ class Document:
     mode: str
     revision: str
     text: str
+    batch_id: str | None = None
 
 
 class KnowledgeStore:
@@ -43,7 +48,7 @@ class KnowledgeStore:
 
     def initialize(self) -> None:
         with self.connection() as con:
-            apply_migrations(con, KNOWLEDGE_MIGRATIONS)
+            apply_migrations(con, GRAPH_MIGRATIONS)
             con.execute(
                 "UPDATE projection_jobs SET state='pending' WHERE state='running'"
             )
@@ -123,7 +128,9 @@ class KnowledgeStore:
             for path, doc in sorted(documents.items())
         ]
         generation = hashlib.sha256(
-            json.dumps([source_id, VERSION, manifest], separators=(",", ":")).encode()
+            json.dumps(
+                [source_id, VERSION, GRAPH_VERSION, manifest], separators=(",", ":")
+            ).encode()
         ).hexdigest()
         prepared = [
             (doc, chunks(source_id, doc.path, doc.identity, doc.text))
@@ -157,9 +164,12 @@ class KnowledgeStore:
                 (generation, source_id, sequence, len(documents), total, now),
             )
             self._clear(con, source_id)
+            graph_available = self._graph_available(con)
             for doc, parts in prepared:
                 remaining()
                 self._insert_document(con, source_id, generation, doc, parts)
+                if graph_available:
+                    self._insert_graph(con, source_id, generation, doc)
             con.execute(
                 "INSERT INTO store_metadata VALUES (?,?,?) ON CONFLICT(key) DO "
                 "UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
@@ -171,6 +181,8 @@ class KnowledgeStore:
                     now,
                 ),
             )
+            if graph_available:
+                self._graph_version(con, source_id, now)
             actual = con.execute(
                 "SELECT count(*) FROM knowledge_chunks WHERE source_id=?", (source_id,)
             ).fetchone()[0]
@@ -203,6 +215,124 @@ class KnowledgeStore:
             "documents": len(documents),
             "chunks": total,
         }
+
+    @staticmethod
+    def _graph_available(con: sqlite3.Connection) -> bool:
+        # Direct store callers can still prepare a pre-graph migration fixture.
+        return (
+            con.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='knowledge_graph_files'"
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
+    def _graph_version(con: sqlite3.Connection, source: str, now: int) -> None:
+        con.execute(
+            "INSERT INTO store_metadata VALUES (?,?,?) ON CONFLICT(key) DO "
+            "UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+            ("graph_version:" + source, GRAPH_VERSION, now),
+        )
+
+    @staticmethod
+    def _graph_source_key(con: sqlite3.Connection, source: str) -> int:
+        row = con.execute(
+            "SELECT source_key FROM knowledge_graph_sources WHERE source_id=?",
+            (source,),
+        ).fetchone()
+        if row is not None:
+            return int(row[0])
+        cursor = con.execute(
+            "INSERT INTO knowledge_graph_sources(source_id) VALUES (?)", (source,)
+        )
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+    @staticmethod
+    def _insert_graph(
+        con: sqlite3.Connection, source: str, generation: str, doc: Document
+    ) -> None:
+        parsed = parse(doc.path, doc.text)
+        document = hashlib.sha256(
+            f"{source}\0{doc.path}\0{doc.identity}".encode()
+        ).hexdigest()
+        source_key = KnowledgeStore._graph_source_key(con, source)
+        cursor = con.execute(
+            "INSERT INTO knowledge_graph_files"
+            "(document_id,source_key,relative_path,parser,parser_version,error_code) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                document,
+                source_key,
+                doc.path,
+                parsed.parser,
+                GRAPH_VERSION if parsed.parser == "python-ast" else TOKENIZER_VERSION,
+                parsed.error,
+            ),
+        )
+        file_key = cursor.lastrowid
+        con.executemany(
+            "INSERT INTO knowledge_graph_nodes VALUES (?,?,?,?,?,?)",
+            [
+                (source_key, node.key, file_key, node.kind, node.name, node.line)
+                for node in parsed.nodes
+            ],
+        )
+        con.executemany(
+            "INSERT INTO knowledge_graph_aliases VALUES (?,?,?,?)",
+            [(source_key, alias, node, file_key) for alias, node in parsed.aliases],
+        )
+        edges = list(parsed.edges)
+        if doc.batch_id:
+            edges.append(
+                Edge("file:" + doc.path, "batch:" + doc.batch_id, "changed-by", 1)
+            )
+        con.executemany(
+            "INSERT INTO knowledge_graph_edges VALUES (?,?,?,?,?,?,?,?)",
+            [
+                (
+                    source_key,
+                    file_key,
+                    ordinal,
+                    edge.source,
+                    edge.target,
+                    edge.kind,
+                    edge.line,
+                    generation,
+                )
+                for ordinal, edge in enumerate(edges)
+            ],
+        )
+
+    @staticmethod
+    def _refresh_batch(
+        con: sqlite3.Connection, document: str, generation: str, doc: Document
+    ) -> None:
+        # An accepted no-op changes receipt evidence, not its parsed imports.
+        row = con.execute(
+            "SELECT file_key,source_key FROM knowledge_graph_files WHERE document_id=?",
+            (document,),
+        ).fetchone()
+        if row is None:
+            # An upgraded lexical-only projection awaits its complete rebuild.
+            return
+        con.execute(
+            "DELETE FROM knowledge_graph_edges WHERE document_id=? AND "
+            "edge_type='changed-by'",
+            (row[0],),
+        )
+        if doc.batch_id:
+            con.execute(
+                "INSERT INTO knowledge_graph_edges VALUES (?,?,?,?,?,'changed-by',1,?)",
+                (
+                    row[1],
+                    row[0],
+                    -1,
+                    "file:" + doc.path,
+                    "batch:" + doc.batch_id,
+                    generation,
+                ),
+            )
 
     @staticmethod
     def _insert_document(
@@ -317,6 +447,7 @@ class KnowledgeStore:
                     [
                         source_id,
                         VERSION,
+                        GRAPH_VERSION,
                         previous["generation_id"],
                         sequence,
                         outbox_id,
@@ -344,6 +475,7 @@ class KnowledgeStore:
                     ).fetchone()[0]
                 )
             )
+            graph_available = self._graph_available(con)
             for path, doc in sorted(documents.items()):
                 remaining()
                 old = con.execute(
@@ -362,6 +494,10 @@ class KnowledgeStore:
                             "generation_id=? WHERE document_id=?",
                             (doc.revision, generation, old["document_id"]),
                         )
+                        if graph_available:
+                            self._refresh_batch(
+                                con, str(old["document_id"]), generation, doc
+                            )
                         continue
                     chunk_count -= self._remove_document(con, str(old["document_id"]))
                     document_count -= 1
@@ -369,6 +505,8 @@ class KnowledgeStore:
                 if doc is not None:
                     parts = chunks(source_id, doc.path, doc.identity, doc.text)
                     self._insert_document(con, source_id, generation, doc, parts)
+                    if graph_available:
+                        self._insert_graph(con, source_id, generation, doc)
                     document_count += 1
                     chunk_count += len(parts)
                     byte_count += len(doc.text.encode("utf-8"))
@@ -438,6 +576,9 @@ class KnowledgeStore:
             source = str(row[0])
             con.execute(
                 "DELETE FROM store_metadata WHERE key=?", ("source_bytes:" + source,)
+            )
+            con.execute(
+                "DELETE FROM store_metadata WHERE key=?", ("graph_version:" + source,)
             )
             self._clear(con, source)
             for table in (

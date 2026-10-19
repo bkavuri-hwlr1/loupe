@@ -427,8 +427,9 @@ independent of the selected provider.
 > batches into the checkout. [Isolated conversations](docs/isolated-workspaces.md)
 > use private worktrees with bounded runtime hydration and exchange source batches
 > with shared sessions. [Optional local lexical search](docs/lexical-search.md)
-> is available through explicit CLI commands. Agent retrieval tools, semantic
-> search and graph features remain planned. Measured live collaboration results
+> and the [deterministic code graph](docs/code-graph.md) are available through
+> explicit CLI commands. Agent retrieval tools and semantic search remain
+> planned. Measured live collaboration results
 > and their limits are in the
 > [implementation status](docs/implementation-status.md).
 
@@ -480,8 +481,8 @@ required; knowledge and vectors are optional and are not created by default:
 | `knowledge.sqlite3` | sources, documents, chunks, FTS, user memory, and graph facts | mixed; user memory authoritative, repository projections rebuildable |
 | `vectors.sqlite3` | embedding metadata and vector projection | disposable and rebuildable |
 
-The table includes the planned memory, graph and vector roles; F1 currently
-implements repository-derived lexical discovery only.
+Repository-derived lexical discovery and deterministic graph facts are
+implemented. The table also includes the planned memory and vector roles.
 
 `loupe db backup` writes verified online copies of control and optional stores
 that already exist into a fresh timestamped directory under the profile's
@@ -535,6 +536,7 @@ loupe daemon restart
 loupe repo add .
 loupe index build --repo .
 loupe search lexical SharedBatchPublisher --repo . --explain
+loupe graph neighbors workspace/batches.py --repo . --edge tests
 ```
 
 The default is `knowledge.index = "off"`. Search is local and uses no provider
@@ -544,6 +546,8 @@ command, independent of the agent's existing file tools and publication checks.
 Use `index status`, `index rebuild` and `index drop` to inspect, rebuild or
 unsubscribe a checkout. See the [lexical search guide](docs/lexical-search.md)
 for JSON output, source exclusions, immutable-version boundaries and recovery.
+The [code graph guide](docs/code-graph.md) covers imports, tests, Python
+definitions and accepted-batch links, including evidence and parser limits.
 
 ## Current technology decisions
 
@@ -577,8 +581,9 @@ The initial safety-oriented defaults are:
   for 90 days;
 - indexing task memory is opt-in;
 - shell execution uses a restrictive approval policy;
-- model planning, vectors, graphs, plugins, and automatic integration are not
-  on the first safety-critical vertical slice.
+- model planning, vectors, plugins, and automatic integration remain outside
+  the first safety-critical vertical slice. Optional lexical and graph discovery
+  are implemented independently of coordination authority.
 
 ## Repository documentation
 
