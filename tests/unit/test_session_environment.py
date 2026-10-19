@@ -226,3 +226,23 @@ def test_held_runtime_paths_rewrite_against_frozen_generation(tmp_path: Path) ->
     assert values["PROJECT_SECRET_PATH"] == str(snapshot / "runtime" / "config")
     assert values["PWD"] == str(snapshot)
     assert values["PROJECT_SECRET_PATH"] in redactions
+
+
+def test_primary_checkout_aliases_rewrite_to_exact_private_paths(
+    tmp_path: Path,
+) -> None:
+    primary, private, snapshot = (
+        tmp_path / name for name in ("primary", "private", "snapshot")
+    )
+    for root in (primary, private, snapshot):
+        (root / "dep" / "bin").mkdir(parents=True)
+    alias = tmp_path / "logical-checkout"
+    alias.symlink_to(primary, target_is_directory=True)
+    environment = CommandEnvironment(
+        {"PWD": str(alias), "PATH": str(alias / "dep" / "bin")},
+        source_root=primary,
+        hydrated_root=private,
+        hydrated_paths=("dep",),
+    )
+    values, _ = environment.capture(snapshot)
+    assert values == {"PWD": str(snapshot), "PATH": str(snapshot / "dep" / "bin")}

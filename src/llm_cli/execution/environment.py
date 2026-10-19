@@ -201,6 +201,15 @@ class CommandEnvironment:
             rewritten = []
             for component_index, component in enumerate(components):
                 path = Path(component)
+                if path.is_absolute() and not path.is_relative_to(source):
+                    # Shells can retain a logical checkout alias in PWD/PATH.
+                    # Resolve only the path component, never arbitrary text.
+                    try:
+                        canonical = path.resolve()
+                    except (OSError, RuntimeError, ValueError):
+                        canonical = path
+                    if canonical.is_relative_to(source):
+                        path = canonical
                 if not path.is_absolute() or not path.is_relative_to(source):
                     rewritten.append(component)
                     continue
