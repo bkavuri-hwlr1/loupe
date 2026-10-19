@@ -1089,3 +1089,19 @@ def test_unseen_file_base_deletion_preserves_accepted_directory_private_children
         WorkspaceBrokerError, match="conflict remains unresolved: folder"
     ):
         restarted.publication_files(env.workspace_id, ())
+
+
+def test_receipt_only_locked_safe_point_does_not_refresh_runtime(
+    env: Environment,
+) -> None:
+    refreshed: list[str] = []
+    env.sync.runtime_refresh = lambda workspace: refreshed.append(workspace) or ()
+    with env.publisher.lock:
+        env.sync.synchronize(
+            env.workspace_id, refresh_source=False, refresh_runtime=True
+        )
+    assert refreshed == []
+    env.sync.synchronize(env.workspace_id)
+    assert refreshed == []
+    env.sync.synchronize(env.workspace_id, refresh_runtime=True)
+    assert refreshed == [env.workspace_id]

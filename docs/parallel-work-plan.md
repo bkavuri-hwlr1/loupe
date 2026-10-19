@@ -1059,15 +1059,15 @@ before anything is built.
 
 **Done when.** The user accepts the ADR, and G2 and G3 are rewritten from it.
 
-**Review candidate (2026-10-17).** ADR 0010 is written and remains Proposed.
+**Accepted (2026-10-18).** The user explicitly accepted ADR 0010 and the Wave 5 plan.
 The checked-in two-daemon strict expected-failure reproduction confirms the
 same-base overwrite window. G2 and G3 below contain the bounded implementation
-split; user acceptance of the ADR remains outstanding. No product authority
+split; the acceptance gate is satisfied. No product authority
 behavior changes in G1.
 
 ### G2. One publisher per physical checkout
 
-**Depends on acceptance of G1's proposed
+**Acceptance satisfied (2026-10-18) for G1's
 [ADR 0010](adr/0010-cross-profile-publication-authority.md).** This package
 protects the current claim-backed execution contract; it does not perform G3's
 claim-free cutover.

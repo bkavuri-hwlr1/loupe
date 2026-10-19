@@ -34,9 +34,15 @@ newer interpreter. Do not use newer-only APIs without a compatible local
 implementation. In particular, a sortable request ID abstraction must not rely
 solely on standard-library APIs introduced after Python 3.12.
 
-Packaging and automated test commands are not yet established. When they land,
-this guide will list the exact locked commands. Until then, do not represent an
-ad hoc local command as the supported project workflow.
+Install the locked development environment, then run the same checks as CI:
+
+```sh
+uv sync --locked --all-groups --all-extras
+uv run pytest --cov=llm_cli
+uv run ruff check .
+uv run mypy
+uv build --no-sources
+```
 
 ## Design invariants
 
