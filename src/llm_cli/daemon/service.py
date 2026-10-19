@@ -583,6 +583,11 @@ class DaemonService:
                         maximum=3_600_000,
                     ),
                 )
+            if request.method == "session.open":
+                # Private dependency installation may take minutes. Setup and
+                # activation lock independently; the installer never pins the
+                # dispatch barrier used by every other terminal.
+                return await self._session_open(request.params)
             if request.method == "session.compact":
                 # The summary is a model request. Hold the authority lock only
                 # to read and to save, never while the provider responds.
@@ -1102,35 +1107,40 @@ class DaemonService:
     async def _session_open(self, params: dict[str, Any]) -> dict[str, Any]:
         """Bind a durable conversation to one exact checkout and provider."""
 
-        agent_mode = resolve_agent_mode(
-            params.get("mode"), params.get("publish"), default="auto"
-        )
-        session_id = _string(params, "session_id")
-        resume_token_hash = _string(params, "resume_token_hash")
-        if len(resume_token_hash) != 64 or any(
-            character not in "0123456789abcdef" for character in resume_token_hash
-        ):
-            raise ValueError("resume_token_hash must be a lowercase SHA-256 digest")
-        repository = await self._registered_repository_for_path(_path(params, "path"))
-        checkout = await self._registered_checkout_for_path(
-            _path(params, "path"), repository
-        )
-        provider = _optional_string(params, "provider") or self.settings.agent_provider
-        model = _optional_string(params, "model")
-        effort = _optional_string(params, "effort")
-        if model is None and provider == self.settings.agent_provider:
-            model = self.settings.agent_model
-        adapter = self.providers.create(provider, model, effort=effort)
-        workspace_mode = _workspace_mode(params, self.settings.workspace_mode)
-        approved = params.get("approved_runtime_files", [])
-        if (
-            not isinstance(approved, list)
-            or len(approved) > 1000
-            or any(not isinstance(path, str) for path in approved)
-        ):
-            raise ValueError("approved_runtime_files must be exact relative paths")
-        if approved and workspace_mode != "isolated":
-            raise ValueError("runtime consent requires isolated mode")
+        async with self._authority_lock:
+            agent_mode = resolve_agent_mode(
+                params.get("mode"), params.get("publish"), default="auto"
+            )
+            session_id = _string(params, "session_id")
+            resume_token_hash = _string(params, "resume_token_hash")
+            if len(resume_token_hash) != 64 or any(
+                character not in "0123456789abcdef" for character in resume_token_hash
+            ):
+                raise ValueError("resume_token_hash must be a lowercase SHA-256 digest")
+            repository = await self._registered_repository_for_path(
+                _path(params, "path")
+            )
+            checkout = await self._registered_checkout_for_path(
+                _path(params, "path"), repository
+            )
+            provider = (
+                _optional_string(params, "provider") or self.settings.agent_provider
+            )
+            model = _optional_string(params, "model")
+            effort = _optional_string(params, "effort")
+            if model is None and provider == self.settings.agent_provider:
+                model = self.settings.agent_model
+            adapter = self.providers.create(provider, model, effort=effort)
+            workspace_mode = _workspace_mode(params, self.settings.workspace_mode)
+            approved = params.get("approved_runtime_files", [])
+            if (
+                not isinstance(approved, list)
+                or len(approved) > 1000
+                or any(not isinstance(path, str) for path in approved)
+            ):
+                raise ValueError("approved_runtime_files must be exact relative paths")
+            if approved and workspace_mode != "isolated":
+                raise ValueError("runtime consent requires isolated mode")
         notices: tuple[str, ...] = ()
         if workspace_mode == "isolated":
             workspace, notices = await asyncio.to_thread(
@@ -1140,36 +1150,41 @@ class DaemonService:
                 approved_secrets=tuple(sorted(set(approved))),
             )
         else:
-            workspace = await asyncio.to_thread(
-                self.store.ensure_shared_workspace, checkout
-            )
-        if self.physical_authority.status(Path(checkout.canonical_path)).get(
-            "history_gap"
-        ):
-            notices += (
-                "Checkout ownership changed; earlier ownership history is incomplete. "
-                "Re-read current source before applying retained proposals.",
-            )
-        session, event, bootstrap_sequence = self.store.open_session(
-            session_id=session_id,
-            checkout_id=checkout.checkout_id,
-            resume_token_hash=resume_token_hash,
-            provider=adapter.name,
-            model=adapter.model,
-            effort=effort,
-            workspace_id=workspace.workspace_id,
-            workspace_mode=workspace_mode,
-            agent_mode=agent_mode,
-        )
-        return {
-            "session": asdict(session),
-            "checkout": asdict(checkout),
-            "workspace": asdict(workspace),
-            "bootstrap_event": asdict(event),
-            "bootstrap_sequence": bootstrap_sequence,
-            "workspace_notices": list(notices),
-            "approved_runtime_files": sorted(set(approved)),
-        }
+            async with self._authority_lock:
+                with self.physical_authority.pin(Path(checkout.canonical_path)):
+                    workspace = await asyncio.to_thread(
+                        self.store.ensure_shared_workspace, checkout
+                    )
+        async with self._authority_lock:
+            with self.physical_authority.pin(Path(checkout.canonical_path)):
+                if self.physical_authority.status(Path(checkout.canonical_path)).get(
+                    "history_gap"
+                ):
+                    notices += (
+                        "Checkout ownership changed; earlier ownership history "
+                        "is incomplete. "
+                        "Re-read current source before applying retained proposals.",
+                    )
+                session, event, bootstrap_sequence = self.store.open_session(
+                    session_id=session_id,
+                    checkout_id=checkout.checkout_id,
+                    resume_token_hash=resume_token_hash,
+                    provider=adapter.name,
+                    model=adapter.model,
+                    effort=effort,
+                    workspace_id=workspace.workspace_id,
+                    workspace_mode=workspace_mode,
+                    agent_mode=agent_mode,
+                )
+                return {
+                    "session": asdict(session),
+                    "checkout": asdict(checkout),
+                    "workspace": asdict(workspace),
+                    "bootstrap_event": asdict(event),
+                    "bootstrap_sequence": bootstrap_sequence,
+                    "workspace_notices": list(notices),
+                    "approved_runtime_files": sorted(set(approved)),
+                }
 
     async def _workspace_status(self, params: dict[str, Any]) -> dict[str, Any]:
         """Report the workspace for a checkout, including what it cannot promise.

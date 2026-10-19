@@ -160,6 +160,7 @@ raise SystemExit(7)
     "stage",
     [
         "rebuild_prepared",
+        "rebuilding",
         "rebuild_removed:.venv",
         "rebuild_running:.venv",
         "rebuild_installed:.venv",
@@ -277,9 +278,16 @@ def test_rebuild_plan_does_not_charge_primary_descendants(
 
 
 @pytest.mark.parametrize(
-    "stage", ["rebuild_running:.venv", "rebuild_installed:.venv", "hydrated"]
+    "stage",
+    [
+        "rebuild_prepared",
+        "rebuilding",
+        "rebuild_running:.venv",
+        "rebuild_installed:.venv",
+        "hydrated",
+    ],
 )
-def test_rebuild_recovers_real_physical_authority_dirty_marker(
+def test_rebuild_recovers_real_physical_authority_creation_phases(
     batch_env: BatchEnvironment, tmp_path: Path, stage: str
 ) -> None:
     from llm_cli.workspace.authority import PhysicalAuthority
@@ -307,12 +315,24 @@ def test_rebuild_recovers_real_physical_authority_dirty_marker(
     with pytest.raises(Crash):
         isolate.open(checkout(env), "authority-crash-rebuild")
     with env.store.connection() as con:
-        assert (
-            con.execute(
-                "SELECT state FROM authority_journals WHERE kind='isolated_create'"
-            ).fetchone()[0]
-            == "applying"
-        )
+        journal_states = [
+            row[0]
+            for row in con.execute(
+                "SELECT state FROM authority_journals "
+                "WHERE kind='isolated_create' ORDER BY rowid"
+            )
+        ]
+        assert journal_states
+        if stage in {"rebuild_prepared", "hydrated"}:
+            # Crashes inside preparation/finalization retain the current dirty
+            # mutation; every earlier completed phase remains confirmed.
+            assert journal_states[-1] == "applying"
+            assert all(state == "confirmed" for state in journal_states[:-1])
+            if stage == "hydrated":
+                assert len(journal_states) > 1
+        else:
+            # The installer starts only after every short mutation is clean.
+            assert set(journal_states) == {"confirmed"}
         workspace_id = con.execute(
             "SELECT workspace_id FROM isolated_workspaces"
         ).fetchone()[0]
@@ -332,15 +352,175 @@ def test_rebuild_recovers_real_physical_authority_dirty_marker(
         with successor.pin(env.repository):
             successor.validate_current()
         with env.store.connection() as con:
-            assert (
-                con.execute(
+            journal_states = [
+                row[0]
+                for row in con.execute(
                     "SELECT state FROM authority_journals WHERE kind='isolated_create'"
-                ).fetchone()[0]
-                == "confirmed"
-            )
+                )
+            ]
+            assert journal_states and set(journal_states) == {"confirmed"}
     finally:
         successor.close()
         env.store.authority = None
+
+
+def test_changed_private_source_quarantines_without_blocking_checkout_authority(
+    batch_env: BatchEnvironment, tmp_path: Path
+) -> None:
+    from llm_cli.errors import LlmCoordError
+    from llm_cli.workspace.authority import PhysicalAuthority
+
+    env = batch_env
+    isolate = prepare(env, tmp_path)
+    authority = PhysicalAuthority(
+        env.store,
+        "rebuild-source-change",
+        "source-change-boot",
+        tmp_path / "daemon.sock",
+        root=tmp_path / "authority" / "v1",
+    )
+    env.store.authority = authority
+
+    def change_private(stage: str) -> None:
+        if stage == "rebuild_running:.venv":
+            with env.store.connection() as con:
+                row = con.execute(
+                    "SELECT canonical_path FROM workspaces WHERE mode='isolated'"
+                ).fetchone()
+            (Path(row[0]) / "a.txt").write_text("late private source edit\n")
+
+    isolate.fault = change_private
+    try:
+        with pytest.raises(
+            LlmCoordError, match="dependency installer changed isolated source"
+        ):
+            isolate.open(checkout(env), "source-changed-during-rebuild")
+        with env.store.connection() as con:
+            row = con.execute(
+                "SELECT workspace_id,canonical_path,git_dir,state FROM workspaces "
+                "WHERE mode='isolated'"
+            ).fetchone()
+            states = {
+                journal[0]
+                for journal in con.execute("SELECT state FROM authority_journals")
+            }
+        assert row["state"] == "quarantined"
+        state = isolate.get(row["workspace_id"])
+        assert state is not None and state.stage == "attention"
+        assert (Path(row["canonical_path"]) / "a.txt").read_text() == (
+            "late private source edit\n"
+        )
+        assert (env.repository / "a.txt").read_text() == "old a\n"
+        assert not (Path(row["git_dir"]) / INSTALLER_HOME).exists()
+        assert states == {"confirmed"}
+        with authority.pin(env.repository):
+            authority.validate_current()
+        with authority.mutation(
+            env.repository, "probe", "after-source-change"
+        ) as operation:
+            operation.confirm()
+    finally:
+        authority.close()
+        env.store.authority = None
+
+
+def test_schema_26_upgrade_preserves_frozen_workspace_and_runtime_receipts(
+    batch_env: BatchEnvironment, tmp_path: Path
+) -> None:
+    import sqlite3
+    from dataclasses import replace
+
+    from llm_cli.storage.control import ControlStore
+    from llm_cli.storage.migrations import CONTROL_MIGRATIONS, apply_migrations
+
+    env = batch_env
+    isolate = prepare(env, tmp_path)
+    (env.repository / ".env").write_text("MARKER=frozen-upgrade-consent")
+    workspace, _ = isolate.open(
+        checkout(env), "upgrade-rebuild", approved_secrets=(".env",)
+    )
+    tables = (
+        "repositories",
+        "repository_heads",
+        "checkouts",
+        "checkout_heads",
+        "workspaces",
+        "isolated_workspaces",
+        "isolated_runtime_state",
+        "isolated_runtime_generations",
+    )
+    with env.store.connection() as con:
+        frozen = {
+            table: [
+                tuple(row)
+                for row in con.execute(
+                    "SELECT * FROM "
+                    + table
+                    + (
+                        " ORDER BY source_workspace_id IS NOT NULL"
+                        if table == "workspaces"
+                        else ""
+                    )
+                )
+            ]
+            for table in tables
+        }
+    legacy = ControlStore(tmp_path / "schema-26.sqlite3")
+    with legacy.connection() as con:
+        assert apply_migrations(con, CONTROL_MIGRATIONS[:26]) == 26
+        for table, rows in frozen.items():
+            assert rows
+            placeholders = ",".join("?" for _ in rows[0])
+            con.executemany(
+                "INSERT INTO " + table + " VALUES (" + placeholders + ")", rows
+            )
+        columns = [
+            tuple(row) for row in con.execute("PRAGMA table_info(isolated_workspaces)")
+        ]
+        bindings = [
+            tuple(row)
+            for row in con.execute("PRAGMA foreign_key_list(isolated_workspaces)")
+        ]
+        checksums = [
+            tuple(row)
+            for row in con.execute(
+                "SELECT version,name,checksum FROM schema_migrations ORDER BY version"
+            )
+        ]
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            con.execute("UPDATE isolated_workspaces SET stage='rebuilding'")
+        assert apply_migrations(con) == 27
+        for table, rows in frozen.items():
+            assert sorted(
+                tuple(row) for row in con.execute("SELECT * FROM " + table)
+            ) == sorted(rows)
+        assert columns == [
+            tuple(row) for row in con.execute("PRAGMA table_info(isolated_workspaces)")
+        ]
+        assert bindings == [
+            tuple(row)
+            for row in con.execute("PRAGMA foreign_key_list(isolated_workspaces)")
+        ]
+        assert checksums == [
+            tuple(row)
+            for row in con.execute(
+                "SELECT version,name,checksum FROM schema_migrations "
+                "WHERE version<=26 ORDER BY version"
+            )
+        ]
+        con.execute("UPDATE isolated_workspaces SET stage='rebuilding'")
+        assert (
+            con.execute("SELECT stage FROM isolated_workspaces").fetchone()[0]
+            == "rebuilding"
+        )
+        con.execute("UPDATE isolated_workspaces SET stage='ready'")
+        assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert apply_migrations(con) == 27
+    upgraded = manager(replace(env, store=legacy), tmp_path)
+    state = upgraded.validate(workspace.workspace_id)
+    original = isolate.validate(workspace.workspace_id)
+    assert state == original and state.stage == "ready"
+    assert upgraded.runtime.refresh(workspace.workspace_id) == ()
 
 
 def test_primary_edit_during_rebuild_enters_through_normal_source_sync(

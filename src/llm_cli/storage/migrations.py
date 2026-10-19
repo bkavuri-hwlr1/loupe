@@ -1075,6 +1075,41 @@ CREATE INDEX authority_journals_target
     ON authority_journals(kind,reference_id,physical_key);
 """,
     ),
+    Migration(
+        27,
+        "isolated_dependency_rebuilding_stage",
+        """
+-- Preparation is durable before installers run outside publication locks.
+-- Preserve every frozen source/runtime receipt while extending only the stage.
+CREATE TABLE isolated_workspaces_rebuilding (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(workspace_id),
+    session_id TEXT NOT NULL UNIQUE,
+    base_oid TEXT NOT NULL,
+    source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0),
+    source_manifest_json TEXT NOT NULL,
+    runtime_paths_json TEXT NOT NULL,
+    runtime_files_json TEXT NOT NULL,
+    notices_json TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    creation_token TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK(stage IN (
+        'planned', 'registered', 'materialized', 'rebuilding', 'hydrated',
+        'ready', 'attention'
+    ))
+);
+INSERT INTO isolated_workspaces_rebuilding (
+    workspace_id, session_id, base_oid, source_sequence, source_manifest_json,
+    runtime_paths_json, runtime_files_json, notices_json, source_fingerprint,
+    creation_token, stage
+)
+SELECT workspace_id, session_id, base_oid, source_sequence, source_manifest_json,
+       runtime_paths_json, runtime_files_json, notices_json, source_fingerprint,
+       creation_token, stage
+FROM isolated_workspaces;
+DROP TABLE isolated_workspaces;
+ALTER TABLE isolated_workspaces_rebuilding RENAME TO isolated_workspaces;
+""",
+    ),
 )
 
 
