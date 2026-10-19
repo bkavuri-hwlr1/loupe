@@ -280,6 +280,8 @@ class Metrics:
     # Tool results and answer parts recorded more than once.
     repeated_results: int = 0
     repeated_answers: int = 0
+    retrieval_calls: int = 0
+    helper_retrieval_calls: int = 0
     resumed: bool = False
     review_attempts: int = 0
     reviews: list[dict[str, object]] = field(default_factory=list)
@@ -337,6 +339,9 @@ def summarize_events(events: Iterable[tuple[str, Mapping[str, Any]]]) -> Metrics
             if type(context) is not int:
                 context = usage.get("prompt_tokens", usage.get("input_tokens", 0))
             metrics.peak_context_tokens = max(metrics.peak_context_tokens, context)
+        elif kind == "retrieval.completed":
+            metrics.retrieval_calls += 1
+            metrics.helper_retrieval_calls += int(bool(payload.get("helper")))
         elif kind == "model.tool_call":
             tool = str(payload.get("tool"))
             metrics.main_tool_calls[tool] = metrics.main_tool_calls.get(tool, 0) + 1
@@ -511,6 +516,10 @@ def task_result(
         "suspended_seconds": round(suspended_seconds, 1),
         "main_turns": metrics.main_turns,
         "main_tool_calls": sum(metrics.main_tool_calls.values()),
+        "all_tool_calls": sum(metrics.main_tool_calls.values())
+        + sum(int(item.get("tool_calls", 0)) for item in metrics.explorations),
+        "retrieval_calls": metrics.retrieval_calls,
+        "helper_retrieval_calls": metrics.helper_retrieval_calls,
         "tools": metrics.main_tool_calls,
         "peak_context_tokens": metrics.peak_context_tokens,
         # Runs from before prompt_tokens existed only report input_tokens.
@@ -545,6 +554,16 @@ def task_result(
 # Nobody is at the terminal to approve a command or a web page, and a pending
 # approval would also count as a question. Sandboxed commands run without
 # asking, and pages are not fetched, so runs do not depend on the network.
+RETRIEVAL_TASKS = frozenset(
+    {
+        "trace-shared-edit",
+        "repo-summary",
+        "where-source-privacy",
+        "where-index-updates",
+        "where-final-answer",
+    }
+)
+
 _DEFAULT_SETTINGS = {"commands": '"allow"', "web_fetch": '"off"'}
 
 
@@ -552,6 +571,7 @@ def write_config(directory: Path, settings: Sequence[str], profile: str) -> Path
     """Write the run's configuration, refusing settings Loupe would reject."""
 
     values = dict(_DEFAULT_SETTINGS)
+    knowledge: str | None = None
     for item in settings:
         key, separator, value = item.partition("=")
         if not separator or not key.strip():
@@ -562,8 +582,15 @@ def write_config(directory: Path, settings: Sequence[str], profile: str) -> Path
             literal = value.strip()
         else:
             literal = json.dumps(value.strip())
-        values[key.strip()] = literal
+        if key.strip() == "knowledge.index":
+            if value.strip() not in {"off", "lexical"}:
+                raise ValueError("knowledge.index must be off or lexical")
+            knowledge = value.strip()
+        else:
+            values[key.strip()] = literal
     lines = ["[agent]", *(f"{key} = {literal}" for key, literal in values.items())]
+    if knowledge is not None:
+        lines.extend(["", "[knowledge]", f"index = {json.dumps(knowledge)}"])
     path = directory / "llm-coord" / "config.toml"
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -578,8 +605,13 @@ def compare(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
     if old.get("suite_version") != new.get("suite_version"):
         lines.append("! These runs used different task versions; compare with care.")
 
-    def key(task: Mapping[str, Any]) -> tuple[object, object, object]:
-        return task["id"], task.get("repetition", 1), task.get("review_arm", "off")
+    def key(task: Mapping[str, Any]) -> tuple[object, ...]:
+        return (
+            task["id"],
+            task.get("repetition", 1),
+            task.get("review_arm", "off"),
+            task.get("retrieval_arm", "off"),
+        )
 
     previous = {key(task): task for task in old.get("tasks", [])}
     header = f"{'task':<20} {'passed':>11} {'wall s':>15} {'main calls':>13} "
@@ -608,6 +640,11 @@ def compare(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
         lines += ["", "Review arms (counts and tokens are totals; time is median):"]
         for label, document in (("old", old), ("new", new)):
             for arm, summary in review_summary(document).items():
+                lines.append(f"{label} {arm}: {json.dumps(summary, sort_keys=True)}")
+    if new.get("retrieval_paired"):
+        lines += ["", "Retrieval arms (totals; task time excludes index builds):"]
+        for label, document in (("old", old), ("new", new)):
+            for arm, summary in retrieval_summary(document).items():
                 lines.append(f"{label} {arm}: {json.dumps(summary, sort_keys=True)}")
     return lines
 
@@ -783,6 +820,50 @@ def review_summary(document: Mapping[str, Any]) -> dict[str, Any]:
         )
         summary["usage_accounting_valid"] = review_tokens <= all_tokens
         summaries[arm] = summary
+    return summaries
+
+
+def retrieval_summary(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Matched task arms; include failures rather than cherry-picking answers."""
+    rows = document.get("tasks", [])
+    summaries: dict[str, Any] = {}
+    for arm in ("off", "on"):
+        measured = [row for row in rows if row.get("retrieval_arm") == arm]
+        if not measured:
+            continue
+        summaries[arm] = {
+            "runs": len(measured),
+            "passed": sum(bool(row["passed"]) for row in measured),
+            "facts_found": sum(len(row["facts_found"]) for row in measured),
+            "facts_total": sum(
+                len(row["facts_found"]) + len(row["facts_missed"]) for row in measured
+            ),
+            "prompt_tokens": sum(row["prompt_tokens"] for row in measured),
+            "output_tokens": sum(row["output_tokens"] for row in measured),
+            "tool_calls": sum(row["all_tool_calls"] for row in measured),
+            "retrieval_calls": sum(row["retrieval_calls"] for row in measured),
+            "median_wall_seconds": statistics.median(
+                row["wall_seconds"] for row in measured
+            ),
+            "index_build_seconds": sum(row["index_build_seconds"] for row in measured),
+            "cost_usd": None,
+            "per_case": {},
+        }
+        for case in sorted({row["id"] for row in measured}):
+            cases = [row for row in measured if row["id"] == case]
+            summaries[arm]["per_case"][case] = {
+                "runs": len(cases),
+                "passed": sum(bool(row["passed"]) for row in cases),
+                "median_wall_seconds": statistics.median(
+                    row["wall_seconds"] for row in cases
+                ),
+                "median_tokens": statistics.median(
+                    row["prompt_tokens"] + row["output_tokens"] for row in cases
+                ),
+                "median_tool_calls": statistics.median(
+                    row["all_tool_calls"] for row in cases
+                ),
+            }
     return summaries
 
 
@@ -1132,15 +1213,21 @@ def run(arguments: argparse.Namespace) -> int:
         raise SystemExit("use a separate, signed-in profile, not the default one")
     suite = load_suite(arguments.tasks)
     repeat = getattr(arguments, "repeat", 1)
-    paired = getattr(arguments, "review_paired", False)
+    review_paired = getattr(arguments, "review_paired", False)
+    retrieval_paired = getattr(arguments, "retrieval_paired", False)
+    if review_paired and retrieval_paired:
+        raise SystemExit("review and retrieval comparisons must run separately")
+    paired = review_paired or retrieval_paired
     tasks = [t for t in suite.tasks if not arguments.only or t.id in arguments.only]
-    if paired and not arguments.only:
+    if review_paired and not arguments.only:
         tasks = [t for t in tasks if t.review_kind is not None]
+    if retrieval_paired and not arguments.only:
+        tasks = [t for t in tasks if t.id in RETRIEVAL_TASKS]
     if not tasks:
         raise SystemExit("no task matches --only")
     if repeat < 1 or arguments.budget_tokens < 1:
         raise SystemExit("repeat and token budget must be positive")
-    if paired and any(task.review_kind is None for task in tasks):
+    if review_paired and any(task.review_kind is None for task in tasks):
         raise SystemExit("--review-paired requires only review corpus tasks")
     if any(task.acceptance for task in tasks) and available_sandbox() is None:
         raise SystemExit("hidden acceptance requires a working sandbox")
@@ -1171,7 +1258,8 @@ def run(arguments: argparse.Namespace) -> int:
             "tasks": results,
             "run_kind": "live",
             "repeat": repeat,
-            "review_paired": paired,
+            "review_paired": review_paired,
+            "retrieval_paired": retrieval_paired,
             "budget_tokens": arguments.budget_tokens,
             "spent_tokens": spent,
             "budget_respected": spent <= arguments.budget_tokens,
@@ -1179,6 +1267,7 @@ def run(arguments: argparse.Namespace) -> int:
             "complete": len(results) == expected,
             "status": status,
         }
+        document["retrieval_summary"] = retrieval_summary(document)
         document["review_summary"] = review_summary(document)
         document["measurement_complete"] = (
             document["complete"]
@@ -1253,9 +1342,15 @@ def run(arguments: argparse.Namespace) -> int:
                         capture_output=True,
                         check=False,
                     )
-                    write_config(
-                        config_home, [*arguments.set, f"review={review_arm}"], profile
+                    arm_settings = (
+                        [
+                            "knowledge.index="
+                            + ("lexical" if review_arm == "on" else "off")
+                        ]
+                        if retrieval_paired
+                        else [f"review={review_arm}"]
                     )
+                    write_config(config_home, [*arguments.set, *arm_settings], profile)
                     subprocess.run(
                         [*loupe, "daemon", "start"],
                         env=environment,
@@ -1287,6 +1382,15 @@ def run(arguments: argparse.Namespace) -> int:
                                 check=True,
                             )
                 assert repository is not None
+                build_seconds = 0.0
+                if retrieval_paired and review_arm == "on":
+                    started_build = time.monotonic()
+                    client = DaemonClient(paths, timeout_seconds=90)
+                    client.call("repo.add", {"path": str(repository)})
+                    built = client.call("index.build", {"path": str(repository)})
+                    if built.get("state") != "ready":
+                        raise SystemExit("retrieval comparison requires a ready index")
+                    build_seconds = time.monotonic() - started_build
                 since = int(time.time() * 1000)
                 wall, monotonic = time.time(), time.monotonic()
                 deadline = wall + arguments.timeout
@@ -1364,6 +1468,17 @@ def run(arguments: argparse.Namespace) -> int:
                     ),
                     "off",
                 )
+                if retrieval_paired:
+                    result["retrieval_arm"] = review_arm
+                    result["review_arm"] = next(
+                        (
+                            item.partition("=")[2]
+                            for item in reversed(arguments.set)
+                            if item.startswith("review=")
+                        ),
+                        "off",
+                    )
+                    result["index_build_seconds"] = round(build_seconds, 3)
                 if task.review_kind is not None:
                     result["review_kind"] = task.review_kind
                     result["seed_observed"] = seed_observed(task, events)
@@ -1429,6 +1544,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tasks", type=Path, default=TASKS, help="task file")
     parser.add_argument("--only", nargs="+", metavar="ID", help="run these tasks")
     parser.add_argument("--repeat", type=int, default=1, help="repetitions per task")
+    parser.add_argument(
+        "--retrieval-paired",
+        action="store_true",
+        help="alternate optional project retrieval off/on for discovery tasks",
+    )
     parser.add_argument(
         "--review-paired",
         action="store_true",

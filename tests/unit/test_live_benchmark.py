@@ -423,3 +423,48 @@ def test_deadline_cancels_detached_work_before_returning(tmp_path: Path) -> None
         assert cancelled == [True]
     finally:
         connection.close()
+
+
+def test_retrieval_config_is_separate_and_invalid_value_refused(tmp_path: Path) -> None:
+    path = benchmark.write_config(tmp_path, ["knowledge.index=lexical"], "bench")
+    settings = benchmark.load_settings(path, profile_id="bench")
+    assert settings.knowledge_index == "lexical"
+    assert '[knowledge]\nindex = "lexical"' in path.read_text()
+    with pytest.raises(ValueError, match=r"knowledge\.index"):
+        benchmark.write_config(tmp_path, ["knowledge.index=all"], "bench")
+
+
+def test_retrieval_corpus_and_paired_order_cover_three_repeats() -> None:
+    suite = benchmark.load_suite()
+    tasks = [task for task in suite.tasks if task.id in benchmark.RETRIEVAL_TASKS]
+    assert len(tasks) == 5 and all(task.fixture is None for task in tasks)
+    assert len(benchmark.execution_order(tasks, 3, True)) == 30
+    assert [row[2] for row in benchmark.execution_order(tasks[:1], 3, True)] == [
+        "off",
+        "on",
+        "on",
+        "off",
+        "off",
+        "on",
+    ]
+    assert suite.revision == "6e5d65d148d6b4ac92fc849cb4fd861c63f8b5c3"
+
+
+def test_retrieval_metrics_include_helper_calls_and_summary_failures() -> None:
+    events = [
+        *_events(),
+        ("retrieval.completed", {"helper": False}),
+        ("retrieval.completed", {"helper": True}),
+    ]
+    metrics = benchmark.summarize_events(events)
+    assert metrics.retrieval_calls == 2 and metrics.helper_retrieval_calls == 1
+    task = next(
+        task for task in benchmark.load_suite().tasks if task.id == "repo-summary"
+    )
+    row = benchmark.task_result(task, "completed", None, metrics, 4, 0)
+    assert row["all_tool_calls"] == 14
+    row.update(retrieval_arm="on", index_build_seconds=2)
+    summary = benchmark.retrieval_summary({"tasks": [row]})
+    assert summary["on"]["retrieval_calls"] == 2
+    assert summary["on"]["runs"] == 1
+    assert summary["on"]["cost_usd"] is None

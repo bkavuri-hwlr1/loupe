@@ -975,6 +975,18 @@ tests, `docs/implementation-status.md`, `docs/experiments/`.
 - A missing or broken index degrades with a notice instead of an error.
 - The live comparison is recorded with its recommendation.
 
+**Implemented (Wave 6 F3, live measurement pending).** The opt-in
+`search_project` tool offers bounded cited lexical snippets plus one graph hop to
+main agents and read-only helpers. It revalidates source privacy and identities
+in each task's root, labels stale evidence, counts calls/returned bytes, and
+fails softly without changing coordination or initializing a missing store.
+Mandatory coordination context precedes optional result blocks; tight context
+budgets preserve the mandatory facts. Scripted visibility, privacy, stale/broken
+index and cursor/write-authority negative controls cover these boundaries.
+The five-task off/on corpus is pinned to merged main `6e5d65d`; three alternating
+repetitions yield 30 live cells. Measurement and the F4/default recommendation
+remain pending until the recorded run completes. See [optional retrieval](optional-retrieval.md).
+
 ### F4. Embeddings with exact scoring
 
 **Gate.** Run only if F3 shows retrieval helps, or the user asks for semantic

@@ -71,6 +71,7 @@ def neighbors(
     *,
     edge: str | None = None,
     depth: int = 1,
+    current_root: Path | None = None,
 ) -> dict[str, Any]:
     if (
         not isinstance(node, str)
@@ -89,7 +90,7 @@ def neighbors(
     if source is None or not source["active_generation"]:
         return {"state": "not_built", "nodes": [], "edges": []}
     source_id = str(source["source_id"])
-    root = Path(source["canonical_path"])
+    root = current_root or Path(source["canonical_path"])
     deadline = time.monotonic() + 2
 
     def remaining() -> float:

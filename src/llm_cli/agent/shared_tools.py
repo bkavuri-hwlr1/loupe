@@ -318,6 +318,7 @@ class SharedToolBroker(ToolBroker):
             "update_plan",
             "explore",
             "web_fetch",
+            "search_project",
         } or name.startswith(MCP_PREFIX):
             return ToolBroker.invoke(self, name, arguments)
         before = self.usage.calls

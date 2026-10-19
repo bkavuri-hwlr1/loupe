@@ -342,6 +342,15 @@ class SharedTaskExecutionRunner:
             broker = SharedToolBroker(
                 worktree=Path(workspace.canonical_path),
                 scopes=claim.scopes,
+                project_search=(
+                    functools.partial(
+                        self.lifecycle.project_search,
+                        checkout.checkout_id,
+                        Path(workspace.canonical_path),
+                    )
+                    if self.lifecycle.project_search is not None
+                    else None
+                ),
                 on_read=record_read,
                 case_insensitive_filesystem=repository.path_case_insensitive,
                 limits=self.lifecycle.limits,

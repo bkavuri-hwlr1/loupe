@@ -968,6 +968,24 @@ global equality/history and complete restore/downgrade fencing remain deferred.
 In-place manual restore preserving the database inode/ID is unsupported. E2 stays
 deferred; this work adds no billed live provider run, release or version change.
 
+## Wave 6 F3: optional agent retrieval
+
+`search_project` is available to main agents and read-only exploration helpers
+only with `knowledge.index = "lexical"`. It combines bounded lexical snippets
+and a one-hop graph expansion, revalidates the task root's current privacy policy
+and identities, and labels optional/stale evidence separately from mandatory
+coordination facts. Read-only lookup failures become notices without source,
+coordination, cursor, publication-authority or worker-health changes. Calls and
+returned bytes use ordinary task/helper budgets. The default remains off.
+
+Scripted tests cover visibility, helper inheritance, budgets, exact UTF-8 context
+bounds, stale/private roots, broken/missing stores and read/write/cursor negative
+controls. The live comparison adds three discovery tasks to `trace-shared-edit`
+and `repo-summary`, with three alternating off/on repetitions and aggregate
+metrics. Its measurement and F4/default recommendation are pending; no answer
+quality or token/time improvement is claimed yet. See the
+[optional retrieval guide](optional-retrieval.md).
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
@@ -980,9 +998,9 @@ Waves 4–7, as packages that separate sessions can run at once.
    command environment (C9) and dependency rebuild adapters (C10).
 3. B6 now records paired synthetic review quality and cost. Keep review disabled
    by default; evaluate natural-work effectiveness before reconsidering it.
-4. F1 lexical discovery and F2's deterministic code graph are implemented. Next
-   add retrieval in the agent with a live comparison (F3). Add embeddings with
-   exact scoring (F4) only if that comparison shows retrieval helps.
+4. F1 lexical discovery, F2's code graph and F3's optional agent tool are
+   implemented. Complete F3's recorded live comparison before recommending a
+   default change or exact-scoring embeddings (F4).
 5. E2's live provider checks are on hold.
 
 The full phased design remains in

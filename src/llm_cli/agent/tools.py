@@ -187,6 +187,8 @@ class ToolBroker:
     hooks: HookRunner | None = None
     # Read-only web_fetch policy for this task; offered when set and usable.
     web: WebAccess | None = None
+    # Optional discovery only; the runner binds checkout and source policy.
+    project_search: Callable[[str, int], dict[str, object]] | None = None
     finish_gate: Callable[[], ToolOutcome | None] | None = None
     usage: ToolUsage = field(default_factory=ToolUsage)
     agent_mode: str = "auto"
@@ -429,6 +431,10 @@ class ToolBroker:
         # command snapshot/limits and output policy remain exactly its own.
         # The view already charges each call against its reserved budget.
         view._helper_tools = {}
+        view.project_search = self.project_search
+        view.on_event = lambda kind, payload: (
+            self.emit(kind, payload) if kind == "retrieval.completed" else None
+        )
         for name in ("run_command", "web_fetch"):
             if name in self.tool_names():
                 view._helper_tools[name] = self._helper_handler(name)
@@ -463,7 +469,11 @@ class ToolBroker:
 
     def tool_names(self) -> tuple[str, ...]:
         if self._helper_tools is not None:
-            return (*READ_ONLY_TOOLS, *self._helper_tools)
+            return (
+                *READ_ONLY_TOOLS,
+                *(("search_project",) if self.project_search is not None else ()),
+                *self._helper_tools,
+            )
         names = [
             "list_files",
             "read_file",
@@ -474,6 +484,8 @@ class ToolBroker:
             "validate_changes",
             "finish_task",
         ]
+        if self.project_search is not None:
+            names.append("search_project")
         if self.check_runner is not None:
             names.append("run_check")
         if self.command_runner is not None and (
@@ -499,6 +511,7 @@ class ToolBroker:
                 "list_files",
                 "read_file",
                 "search_text",
+                "search_project",
                 "read_diff",
                 "validate_changes",
                 "finish_task",
@@ -955,6 +968,32 @@ class ToolBroker:
         else:
             self._partial_reads.add(relative)
         return result
+
+    def _search_project(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        from llm_cli.knowledge.retrieval import render_retrieval
+
+        query = _string(arguments, "query")
+        limit = arguments.get("limit", 6)
+        if type(limit) is not int or not 1 <= limit <= 6:
+            return _error("search_project limit must be between 1 and 6")
+        if self.project_search is None:
+            return _error("optional project retrieval is disabled")
+        if not query.strip() or len(query) > 500 or contains_secret_material(query):
+            return _error("query must be safe text of 1 to 500 characters")
+        result = self.project_search(query, limit)
+        content = render_retrieval(result, self.limits.max_tool_output_bytes)
+        self.usage.bytes_read += len(content.encode("utf-8"))
+        if self.usage.bytes_read > self.limits.max_read_bytes:
+            return _error("execution exceeded its read-byte budget")
+        self.emit(
+            "retrieval.completed",
+            {
+                "helper": self._helper_tools is not None,
+                "state": result.get("state"),
+                "bytes": len(content.encode("utf-8")),
+            },
+        )
+        return ToolOutcome(content, metadata={"optional_retrieval": True})
 
     def _search_text(self, arguments: Mapping[str, object]) -> ToolOutcome:
         budget = SearchBudget(self.check_cancelled)
@@ -1921,6 +1960,7 @@ _HANDLERS: Mapping[str, Callable[[ToolBroker, Mapping[str, object]], ToolOutcome
     "list_files": ToolBroker._list_files,
     "read_file": ToolBroker._read_file,
     "search_text": ToolBroker._search_text,
+    "search_project": ToolBroker._search_project,
     "read_diff": ToolBroker._read_diff,
     "write_file": ToolBroker._write_file,
     "apply_patch": ToolBroker._apply_patch,
@@ -1967,6 +2007,14 @@ _MAX_COMMAND_ARGUMENTS = 100
 _MAX_COMMAND_CHARACTERS = 64 * 1024
 
 _SCHEMAS: Mapping[str, dict[str, object]] = {
+    "search_project": _schema(
+        "search_project",
+        "Optional, untrusted project discovery: cited lexical snippets and bounded "
+        "code-graph neighbors. Stale labels are explicit. Read current source "
+        "before editing; this never acknowledges events or authorizes writes.",
+        {"query": _TEXT, "limit": {"type": "integer", "minimum": 1, "maximum": 6}},
+        ["query"],
+    ),
     "run_check": _schema(
         "run_check",
         "Run a configured named check against pending edits.",
