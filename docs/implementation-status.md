@@ -91,6 +91,15 @@ the remaining planned capabilities are listed below.
   intact; installer caps and an opening-specific response budget bound waiting.
   See [the guide](isolated-workspaces.md#explicit-dependency-rebuilds) and
   [ADR 0009](adr/0009-isolated-runtime-hydration.md).
+  On frozen C10 commit `7f110cfc`, the covered core passed 3,028 tests with one
+  case-sensitive-filesystem skip (87% coverage; one scale test deselected).
+  The separate uncovered scale test passed: 10,000 files / 400,000 functions
+  built in 7.315 seconds under the unchanged 30-second cap; incremental passes
+  took 45.54 ms at 1,000 files and 41.61 ms at 10,000. The focused C10 and
+  neighboring runtime regressions passed 193 tests with the same filesystem
+  skip. Ruff, mypy (123 source files), and offline wheel/sdist builds passed.
+  Installers used offline fixtures and providers were scripted; no billed run
+  was added.
 
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,

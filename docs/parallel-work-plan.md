@@ -753,6 +753,16 @@ with the installer-specific opening timeout covering the active daemon policy.
 See [the guide](isolated-workspaces.md#explicit-dependency-rebuilds) for the
 quoted TOML keys, budgets and creation-barrier tradeoff.
 
+**Validation:** frozen commit `7f110cfc` passed the covered core (3,028 passed,
+one filesystem skip; 87% coverage), the separate strict uncovered index-scale
+test, Ruff, mypy for 123 source files, and offline package builds. The focused
+rebuild/config/hydration/sandbox/creation/C8 cases passed 193 tests with one
+filesystem skip. Regression coverage includes over-budget and escaping primary
+dependencies, dependency imports in checks, held apply after restart, failed
+installer cleanup and screened diagnostics, hard-crash private-home scrubbing
+with late-source quarantine, physical-authority recovery, frozen secret consent
+and installer-time source/runtime changes. No billed provider call was needed.
+
 ## Lane D — operations
 
 Run D1 → D2 → D3 in one session, in order: they share `cli/app.py`.
