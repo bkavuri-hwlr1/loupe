@@ -80,28 +80,32 @@ def test_six_cli_instances_repeated_seeded_publication(
                 changes["docs/shared.md"] = f"shared {seed} {round_number} {name}\n"
             proposals[name] = changes
             cluster.submit(clients[name], labels[name], changes)
-        for name in names:
-            ready = cluster.ready(labels[name])
-            paths = list(proposals[name])
-            assert [item.split(_CONTEXT)[0] for item in ready["results_0"]] == [
-                expected[path] for path in paths
-            ]
-        tasks = [cluster.task(labels[name]) for name in names]
-        assert len({task["session_id"] for task in tasks}) == 6
-        assert all(task["coordination_state"] == "active_work" for task in tasks)
-        claims = cluster.rpc("claim.list", path=str(cluster.repository))
-        current = {task["current_claim_id"] for task in tasks}
-        assert all(
-            claim["scheduling_mode"] == "optimistic" and not claim["blocking_claim_ids"]
-            for claim in claims
-            if claim["claim_id"] in current
-        )
-        assert all(
-            (cluster.repository / path).read_text() == content
-            for path, content in expected.items()
-        )
-        for name in rng.sample(names, len(names)):
-            cluster.release(labels[name])
+        try:
+            readies = cluster.ready_all(tuple(labels.values()))
+            for name in names:
+                ready = readies[labels[name]]
+                paths = list(proposals[name])
+                assert [item.split(_CONTEXT)[0] for item in ready["results_0"]] == [
+                    expected[path] for path in paths
+                ]
+            tasks = [cluster.task(labels[name]) for name in names]
+            assert len({task["session_id"] for task in tasks}) == 6
+            assert all(task["coordination_state"] == "active_work" for task in tasks)
+            claims = cluster.rpc("claim.list", path=str(cluster.repository))
+            current = {task["current_claim_id"] for task in tasks}
+            assert all(
+                claim["scheduling_mode"] == "optimistic"
+                and not claim["blocking_claim_ids"]
+                for claim in claims
+                if claim["claim_id"] in current
+            )
+            assert all(
+                (cluster.repository / path).read_text() == content
+                for path, content in expected.items()
+            )
+        finally:
+            for name in rng.sample(names, len(names)):
+                cluster.release(labels[name])
         outcomes = {name: cluster.settled(labels[name]) for name in names}
         winners = [name for name in names if outcomes[name]["state"] == "completed"]
         # Every worker read the same shared base. Each later one merges onto

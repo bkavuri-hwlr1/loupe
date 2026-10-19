@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -115,7 +116,7 @@ class _BarrierProvider:
             self._record("ready")
             _wait(
                 lambda: (self.signals / f"{self.request['label']}.release").exists(),
-                timeout=30,
+                timeout=150,
             )
             # Another tool boundary delivers metadata for the peer publication.
             return ModelTurn(text="", tool_calls=(_turn("list_files", path="docs"),))
@@ -257,6 +258,8 @@ class _Cluster:
         self.client = DaemonClient(self.paths, timeout_seconds=60.0)
         self.stack = ExitStack()
         self.processes: list[subprocess.Popen[str]] = []
+        self.process_names: dict[int, str] = {}
+        self.submissions: dict[str, subprocess.Popen[str]] = {}
         self.daemon = self._spawn(
             "daemon",
             [
@@ -288,6 +291,7 @@ class _Cluster:
             text=True,
         )
         self.processes.append(process)
+        self.process_names[process.pid] = name
         return process
 
     def chat(
@@ -329,6 +333,7 @@ class _Cluster:
         files: dict[str, str],
         **kwargs: Any,
     ) -> None:
+        self.submissions[label] = process
         self.send(
             process,
             "ORCHESTRATION " + json.dumps({"label": label, "files": files, **kwargs}),
@@ -337,10 +342,79 @@ class _Cluster:
     def rpc(self, method: str, **params: Any) -> Any:
         return self.client.call(method, params, autostart=False)
 
+    def diagnostics(self) -> str:
+        """Read existing evidence without another potentially blocked RPC."""
+        evidence: dict[str, Any] = {
+            "signals": sorted(p.name for p in self.signals.iterdir())
+        }
+        evidence["processes"] = {
+            self.process_names[process.pid]: {
+                "pid": process.pid,
+                "exit": process.poll(),
+            }
+            for process in self.processes
+        }
+        evidence["logs"] = {}
+        for name in self.process_names.values():
+            path = self.root / f"{name}.log"
+            if path.exists():
+                with path.open("rb") as log:
+                    log.seek(max(0, path.stat().st_size - 8_192))
+                    evidence["logs"][name] = log.read().decode(errors="replace")
+        try:
+            with closing(sqlite3.connect(
+                self.paths.control_db.as_uri() + "?mode=ro", timeout=0.1, uri=True
+            )) as con:
+                con.row_factory = sqlite3.Row
+                evidence["tasks"] = [
+                    dict(row)
+                    for row in con.execute(
+                        "SELECT task_id,title,state,failure_code FROM tasks "
+                        "ORDER BY created_at DESC LIMIT 12"
+                    )
+                ]
+                evidence["events"] = [
+                    dict(row)
+                    for row in con.execute(
+                        "SELECT task_id,sequence,event_type,payload_json "
+                        "FROM task_events "
+                        "ORDER BY sequence DESC LIMIT 24"
+                    )
+                ]
+        except sqlite3.Error as exc:
+            evidence["database_error"] = str(exc)
+        return json.dumps(evidence, indent=2)
+
+    def ready_all(
+        self, labels: Sequence[str], *, timeout: float = 120
+    ) -> dict[str, dict[str, Any]]:
+        """All participants share one deadline; a dead child fails immediately."""
+        deadline = time.monotonic() + timeout
+        pending = set(labels)
+        while pending:
+            pending = {
+                label
+                for label in pending
+                if not (self.signals / f"{label}.ready.json").exists()
+            }
+            if not pending:
+                break
+            exited = self.daemon.poll() is not None or any(
+                self.submissions[label].poll() is not None for label in pending
+            )
+            if exited or time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"CLI preparation did not reach its barrier: {sorted(pending)}\n"
+                    + self.diagnostics()
+                )
+            time.sleep(0.02)
+        return {
+            label: json.loads((self.signals / f"{label}.ready.json").read_text())
+            for label in labels
+        }
+
     def ready(self, label: str) -> dict[str, Any]:
-        path = self.signals / f"{label}.ready.json"
-        _wait(path.exists)
-        return json.loads(path.read_text())
+        return self.ready_all((label,))[label]
 
     def release(self, label: str) -> None:
         (self.signals / f"{label}.release").touch()
@@ -363,8 +437,8 @@ class _Cluster:
         )
 
     def close(self) -> None:
-        for marker in self.signals.glob("*.ready.json"):
-            self.release(marker.name.removesuffix(".ready.json"))
+        for label in self.submissions:
+            self.release(label)
         for process in reversed(self.processes):
             if process.poll() is None:
                 process.terminate()
