@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -24,6 +25,41 @@ from test_shared_agent_execution import (
 )
 
 from llm_cli.daemon.service import DaemonService
+
+
+async def _wait_prepared(
+    service: DaemonService,
+    staged: dict[str, threading.Event],
+    backgrounds: list[asyncio.Task[None]],
+    *,
+    timeout: float = 30,
+) -> None:
+    """A single barrier deadline preserves the real failure before cleanup."""
+    deadline = time.monotonic() + timeout
+    while pending := [
+        task_id for task_id, ready in staged.items() if not ready.is_set()
+    ]:
+        if any(task.done() for task in backgrounds) or time.monotonic() >= deadline:
+            evidence = {
+                task_id: {
+                    "task": service.store.get_task(task_id),
+                    "events": service.store.list_task_events(task_id)[-12:],
+                }
+                for task_id in staged
+            }
+            outcomes = [
+                repr(task.exception())
+                if task.done() and not task.cancelled()
+                else "cancelled"
+                if task.cancelled()
+                else "running"
+                for task in backgrounds
+            ]
+            raise AssertionError(
+                f"Preparation did not reach its barrier: {pending}; "
+                f"backgrounds={outcomes}; evidence={evidence}"
+            )
+        await asyncio.sleep(0.02)
 
 
 @pytest.mark.parametrize("modes", [("isolated", "isolated"), ("shared", "isolated")])
@@ -102,8 +138,14 @@ def test_same_scope_isolated_and_mixed_preparation_overlaps_before_publication(
                     )
                 )
             # Neither task may need the other's publication to begin preparation.
-            for ready in staged:
-                assert await asyncio.to_thread(ready.wait, 5)
+            await _wait_prepared(
+                service,
+                {
+                    provider.model: ready
+                    for provider, ready in zip(providers, staged, strict=True)
+                },
+                backgrounds,
+            )
             for provider in providers:
                 _assert_active_optimistic(service, provider.model, provider.model)
             assert (repository / "docs/first.md").read_text() == "base first\n"

@@ -55,6 +55,9 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers --cov-config=pyproject.toml"
 testpaths = ["tests"]
+markers = [
+  "index_scale: production index build and incremental timing, measured without coverage",
+]
 
 [tool.coverage.run]
 branch = true

@@ -38,7 +38,8 @@ Install the locked development environment, then run the same checks as CI:
 
 ```sh
 uv sync --locked --all-groups --all-extras
-uv run pytest --cov=llm_cli
+uv run pytest --cov=llm_cli -m 'not index_scale'
+uv run pytest -m index_scale -s
 uv run ruff check .
 uv run mypy
 uv build --no-sources
@@ -107,6 +108,20 @@ success path and its relevant failure paths. The planned test layers are:
 Prefer deterministic clocks, seeded identifiers, temporary local repositories,
 and explicit time bounds. A mocked SQLite transaction or mocked Git diff is not
 enough to establish cross-process or repository safety.
+
+CI runs the `index_scale` test separately without coverage instrumentation on
+every supported OS/Python matrix entry. It retains the 10,000-file,
+400,000-function fixture, strict 30-second build limit, and the 1,000-versus-
+10,000-file incremental publication checks. Coverage applies to the ordinary
+correctness suite; production runtime limits are measured without tracing
+overhead. The scale test prints build phase wall/CPU times before asserting.
+
+Concurrency barriers test overlapping preparation and publication correctness.
+All CLI participants share a 120-second readiness deadline, and isolated-session
+participants share 30 seconds. Scripted providers allow an additional release
+margin; `finally` blocks release every participant. Dead children and completed
+background workers fail early with process logs or persisted task/event evidence,
+so a product failure remains visible rather than becoming a bare timeout.
 
 Tests that create repositories, state directories, sockets, or databases must
 use dedicated temporary paths and must never clean a path derived only from an

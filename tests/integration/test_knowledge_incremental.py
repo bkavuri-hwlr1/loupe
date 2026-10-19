@@ -204,6 +204,7 @@ def test_policy_changes_remove_unchanged_private_documents_without_rechunking(
     )
 
 
+@pytest.mark.index_scale
 def test_one_publication_work_stays_bounded_at_one_and_ten_thousand_files(
     batch_env: BatchEnvironment,
     tmp_path: Path,
@@ -222,9 +223,45 @@ def test_one_publication_work_stays_bounded_at_one_and_ten_thousand_files(
         git_run(env.repository, "add", "src")
         git_run(env.repository, "commit", "-m", f"scale {count}")
         index, checkout = _index(env, tmp_path)
+        phases: dict[str, dict[str, float]] = {}
+
+        def measured(
+            name: str,
+            operation: Any,
+            recordings: dict[str, dict[str, float]] = phases,
+        ) -> Any:
+            def run(*args: Any, **kwargs: Any) -> Any:
+                wall, cpu = time.perf_counter(), time.process_time()
+                try:
+                    return operation(*args, **kwargs)
+                finally:
+                    recordings[name] = {
+                        "wall": time.perf_counter() - wall,
+                        "cpu": time.process_time() - cpu,
+                    }
+
+            return run
+
         baseline_started = time.perf_counter()
-        built = index.build(checkout)
-        baseline_elapsed = time.perf_counter() - baseline_started
+        try:
+            with monkeypatch.context() as profile:
+                for target, methods in (
+                    (index, ("_baseline", "_filter", "_policy_signature")),
+                    (index.store, ("replace",)),
+                ):
+                    for method in methods:
+                        profile.setattr(
+                            target, method, measured(method, getattr(target, method))
+                        )
+                built = index.build(checkout)
+        finally:
+            baseline_elapsed = time.perf_counter() - baseline_started
+            # Emit before assertions so even a timed-out build names its phase.
+            print(
+                f"dense graph baseline: {count} files, {count * 40} functions "
+                f"in {baseline_elapsed:.3f}s; phases={phases}",
+                flush=True,
+            )
         assert built["state"] == "ready", built
         assert baseline_elapsed < 30, (count, baseline_elapsed)
         assert built["documents"] == count + 2
@@ -235,10 +272,6 @@ def test_one_publication_work_stays_bounded_at_one_and_ten_thousand_files(
                 ).fetchone()[0]
                 == count * 40
             )
-        print(
-            f"dense graph baseline: {count} files, {count * 40} functions "
-            f"in {baseline_elapsed:.3f}s"
-        )
         elapsed: list[float] = []
 
         def forbidden(*args: Any, **kwargs: Any) -> Any:
