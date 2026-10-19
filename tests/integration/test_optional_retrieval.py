@@ -194,3 +194,63 @@ def test_daemon_setting_wires_scripted_task_surface(
             service.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["write_file", "delete_file", "rename_file"])
+def test_pending_overlay_and_helper_label_indexed_evidence_stale_without_new_authority(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    git_run: Callable[..., str],
+    operation: str,
+) -> None:
+    import copy
+
+    from llm_cli.agent.limits import ExecutionLimits
+
+    env = batch_env
+    _prepare(env, git_run)
+    index, checkout = _index(env, tmp_path)
+    assert index.build(checkout)["state"] == "ready"
+    path = "src/pkg/workspace/batches.py"
+    broker = SharedToolBroker(
+        env.repository,
+        ("*",),
+        project_search=functools.partial(
+            index.project_search, checkout, env.repository
+        ),
+    )
+    assert not broker.invoke("read_file", {"path": path}).is_error
+    if operation == "write_file":
+        arguments = {"path": path, "content": "class PendingOnlyMarker: pass\n"}
+    elif operation == "delete_file":
+        arguments = {"path": path}
+    else:
+        arguments = {"source": path, "destination": "src/pkg/renamed.py"}
+    staged = broker.invoke(operation, arguments)
+    assert not staged.is_error, staged
+    context = SharedCoordinationContext(env.store, "first", ("*",), scan_external=False)
+    before = context(None)
+    with env.store.connection() as con:
+        dump = "\n".join(con.iterdump())
+    original = index.project_search(checkout, env.repository, path)
+    assert any(not row["stale"] and row["path"] == path for row in original["results"])
+    for surface in (broker, broker.read_only_view(ExecutionLimits())):
+        observations = copy.deepcopy(surface._observations)
+        writes = surface.usage.writes
+        outcome = surface.invoke("search_project", {"query": path})
+        assert not outcome.is_error
+        assert "PendingOnlyMarker" not in outcome.content
+        data = json.loads(outcome.content.split("\n", 2)[2].rsplit("\n", 1)[0])
+        hit = next(row for row in data["results"] if row["path"] == path)
+        assert hit["stale"] and "pending task edit" in hit["label"]
+        matching = [
+            edge
+            for edge in data["graph"]["edges"]
+            if edge["path"] == path or edge["target"] == "file:" + path
+        ]
+        assert matching and all(edge["stale"] for edge in matching)
+        assert surface._observations == observations and surface.usage.writes == writes
+    assert original == index.project_search(checkout, env.repository, path)
+    assert before == context(None)
+    with env.store.connection() as con:
+        assert dump == "\n".join(con.iterdump())

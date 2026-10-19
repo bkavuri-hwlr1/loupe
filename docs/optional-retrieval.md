@@ -15,7 +15,9 @@ Snippets longer than 2,500 characters carry `text_truncated`.
 
 Retrieval rechecks current source policy and content identities in the task's
 own source root, including an isolated worktree. Changed content is labeled
-`stale indexed version`; newly ignored or secret-screened source is hidden.
+`stale indexed version`; pending task edits, deletions and renames mark matching
+indexed hits and graph evidence stale, including in helper views. Pending bytes
+are never substituted into the index. Newly ignored or secret-screened source is hidden.
 Results are untrusted discovery data. Read current source before editing.
 Neither retrieval nor helper retrieval creates a full-file edit observation,
 acknowledges events, advances coordination cursors, or authorizes publication.

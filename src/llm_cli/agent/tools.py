@@ -969,8 +969,11 @@ class ToolBroker:
             self._partial_reads.add(relative)
         return result
 
+    def _retrieval_pending_paths(self) -> frozenset[str]:
+        return frozenset()
+
     def _search_project(self, arguments: Mapping[str, object]) -> ToolOutcome:
-        from llm_cli.knowledge.retrieval import render_retrieval
+        from llm_cli.knowledge.retrieval import mark_pending, render_retrieval
 
         query = _string(arguments, "query")
         limit = arguments.get("limit", 6)
@@ -980,7 +983,9 @@ class ToolBroker:
             return _error("optional project retrieval is disabled")
         if not query.strip() or len(query) > 500 or contains_secret_material(query):
             return _error("query must be safe text of 1 to 500 characters")
-        result = self.project_search(query, limit)
+        result = mark_pending(
+            self.project_search(query, limit), self._retrieval_pending_paths()
+        )
         content = render_retrieval(result, self.limits.max_tool_output_bytes)
         self.usage.bytes_read += len(content.encode("utf-8"))
         if self.usage.bytes_read > self.limits.max_read_bytes:
