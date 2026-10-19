@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from llm_cli.agent.source_policy import contains_secret_material
 from llm_cli.config.loader import load_settings
 from llm_cli.errors import LlmCoordError
+from llm_cli.execution.checks import supervised_run
 from llm_cli.execution.environment import (
     CommandEnvironment,
     SessionEnvironments,
@@ -246,3 +249,105 @@ def test_primary_checkout_aliases_rewrite_to_exact_private_paths(
     )
     values, _ = environment.capture(snapshot)
     assert values == {"PWD": str(snapshot), "PATH": str(snapshot / "dep" / "bin")}
+
+
+@pytest.mark.parametrize("separator", ["\n", "\r\n", "\r", "\u2028"])
+def test_screening_uses_line_fragments_without_mutating_environment(
+    tmp_path: Path, separator: str
+) -> None:
+    original = separator.join(("opaque-origin-a-f2e7", "opaque-origin-b-83ad"))
+    override = separator.join(("opaque-override-a-d791", "opaque-override-b-e204"))
+    environment = CommandEnvironment({"PROJECT_PASSWORD": original})
+    values, redactions = environment.capture(
+        tmp_path, overrides={"DATABASE_URL": override}
+    )
+    assert environment.values == {"PROJECT_PASSWORD": original}
+    assert values == {"PROJECT_PASSWORD": original, "DATABASE_URL": override}
+    assert {original, override, *original.splitlines(), *override.splitlines()} <= set(
+        redactions
+    )
+    assert set(original.splitlines()) <= set(environment.sensitive_values)
+
+
+@pytest.mark.parametrize(
+    "case", ["lf", "crlf-read-boundary", "long-read-boundary", "capped", "lf-capped"]
+)
+def test_session_secret_screening_across_output_boundaries(
+    tmp_path: Path, case: str
+) -> None:
+    first = "opaque-first-line-370dab"
+    second = "opaque-second-line-c8e129"
+    prefix = ""
+    canary = first + "\n" + second
+    cap = 65536
+    if case == "crlf-read-boundary":
+        canary = first + "\r\n" + second
+        # CR ends the first possible 4096-byte read; LF starts the next.
+        prefix = "p" * (4095 - len(first))
+    elif case in {"long-read-boundary", "capped"}:
+        canary = first + "z" * 9000 + second
+        if case == "capped":
+            cap = 4097
+    elif case == "lf-capped":
+        cap = len(first) + 1 + len(second) // 2
+    assert not contains_secret_material(canary)
+    environment = CommandEnvironment({"PROJECT_PASSWORD": canary})
+    values, redactions = environment.capture(tmp_path)
+    output_events: list[str] = []
+    exit_code, output, clipped, stopped = supervised_run(
+        [
+            sys.executable,
+            "-c",
+            "import os; "
+            "os.write(1, os.environ['PREFIX'].encode() + "
+            "os.environ['PROJECT_PASSWORD'].encode() + b'\\nsafe-complete\\n')",
+        ],
+        cwd=tmp_path,
+        env={**values, "PREFIX": prefix},
+        deadline=time.monotonic() + 10,
+        remaining=cap,
+        cancelled=lambda: False,
+        on_output=output_events.append,
+        sensitive_values=redactions,
+    )
+    assert exit_code == 0 and stopped is None
+    assert output == "".join(output_events)
+    assert canary not in output
+    for line in canary.splitlines():
+        assert line not in output
+    if case == "capped":
+        # Never emit the prefix of a private value cut by the raw byte cap.
+        assert output == "" and clipped
+    elif case == "lf-capped":
+        assert output == "[private value]\n" and clipped
+        assert second[: len(second) // 2] not in output
+    else:
+        assert not clipped
+        assert output.startswith(prefix + "[private value]")
+        assert output.endswith("safe-complete\n")
+    assert environment.values == {"PROJECT_PASSWORD": canary}
+
+
+def test_rewritten_secret_paths_screen_original_and_effective_lines(
+    tmp_path: Path,
+) -> None:
+    primary, private, snapshot = (
+        tmp_path / name for name in ("primary", "private", "snapshot")
+    )
+    relative = Path("runtime") / "opaque-first-375db\nopaque-second-4ad81"
+    for root in (primary, private, snapshot):
+        (root / "runtime").mkdir(parents=True)
+        (root / relative).write_text("runtime")
+    original = str(primary / relative)
+    environment = CommandEnvironment(
+        {"PROJECT_SECRET_PATH": original},
+        source_root=primary,
+        hydrated_root=private,
+        hydrated_paths=("runtime",),
+    )
+    values, redactions = environment.capture(snapshot)
+    effective = str(snapshot / relative)
+    assert values == {"PROJECT_SECRET_PATH": effective}
+    assert environment.values == {"PROJECT_SECRET_PATH": original}
+    expected = {original, effective, *original.splitlines(), *effective.splitlines()}
+    assert expected <= set(redactions)

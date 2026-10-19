@@ -83,6 +83,13 @@ def filtered_environment(
     return kept, tuple(sorted(removed))
 
 
+def _screening_values(value: str) -> set[str]:
+    # The supervisor screens complete output lines before emitting them. A
+    # multiline value therefore also needs its nonempty logical lines screened;
+    # never split into arbitrary read-sized prefixes or alter the child value.
+    return {part for part in (value, *value.splitlines()) if part}
+
+
 def unavailable() -> LlmCoordError:
     return LlmCoordError(
         ErrorCode.SESSION_NOT_ACTIVE,
@@ -115,9 +122,10 @@ class CommandEnvironment:
             self.require()
             return tuple(
                 {
-                    body
+                    protected
                     for name, body in self.values.items()
-                    if body and _SECRET_NAME.search(name)
+                    if _SECRET_NAME.search(name)
+                    for protected in _screening_values(body)
                 }
             )
 
@@ -142,14 +150,16 @@ class CommandEnvironment:
             protected = set(self.sensitive_values)
             if overrides:
                 protected.update(
-                    body
+                    protected
                     for name, body in overrides.items()
-                    if body and _SECRET_NAME.search(name)
+                    if _SECRET_NAME.search(name)
+                    for protected in _screening_values(body)
                 )
             protected.update(
-                body
+                protected
                 for name, body in values.items()
-                if body and _SECRET_NAME.search(name)
+                if _SECRET_NAME.search(name)
+                for protected in _screening_values(body)
             )
             return values, tuple(protected)
 

@@ -84,15 +84,19 @@ async def _open(
 
 
 @pytest.mark.parametrize("workspace", ["shared", "isolated"])
+@pytest.mark.parametrize("separator", [None, "\n", "\r\n"])
 def test_session_commands_and_checks_screen_values_before_storage(
     tmp_path: Path,
     repository_factory: Any,
     service_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
     workspace: str,
+    separator: str | None,
 ) -> None:
     # This is a process-output test, not a signature-screening test.
     canary = "c9-terminal-private-canary-92b5ce6d"
+    if separator is not None:
+        canary += separator + "c9-terminal-second-private-line-4068fd3a"
     assert not contains_secret_material(canary)
     monkeypatch.setenv("PROJECT_MODE", "wrong-daemon-terminal")
     monkeypatch.setattr(shared, "available_sandbox", lambda: "test")
@@ -205,11 +209,22 @@ def test_session_commands_and_checks_screen_values_before_storage(
             assert "CUSTOM_BILLING_KEY" in plan["removed_names"]
             if workspace == "isolated":
                 assert "PWD" in plan["rewritten_names"]
-            assert canary not in dump + json.dumps(events) + json.dumps(shown) + repr(
-                provider.results
+            stored = (
+                dump
+                + json.dumps(events)
+                + json.dumps(shown)
+                + repr(provider.results)
+                + service.paths.control_db.read_bytes().decode("latin-1")
+                + service.paths.log_file.read_text()
             )
-            assert canary not in service.paths.control_db.read_bytes().decode("latin-1")
-            assert canary not in service.paths.log_file.read_text()
+            for fragment in (canary, *canary.splitlines()):
+                assert fragment not in stored
+            assert (
+                service.session_environments.get(provider.model).values[
+                    "PROJECT_PASSWORD"
+                ]
+                == canary
+            )
             await service.handle(_request("session.close", credentials))
             assert (
                 service.session_environments.plan(provider.model)["state"]
