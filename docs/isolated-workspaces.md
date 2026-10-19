@@ -79,7 +79,7 @@ not copy runtime changes back to the primary checkout.
 ## Explicit dependency rebuilds
 
 When a dependency tree is too large to copy, contains an escaping store link,
-or lives outside the checkout, configure a private rebuild in the profile's
+or lives outside the checkout, configure a private rebuild in the shared
 `config.toml`. Quote `.venv`: an unquoted dotted TOML key is a different table.
 
 ```toml
@@ -89,8 +89,10 @@ or lives outside the checkout, configure a private rebuild in the profile's
 ```
 
 The setting approves exactly these installer commands for new isolated
-conversations using that profile. There is no default installer and no inferred
-command from package manifests. A shorthand argv denies network access and has
+conversations in daemons that load this shared configuration. Restart each
+daemon whose policy should change; other running daemons retain their loaded
+settings. There is no default installer and no inferred command from package
+manifests. A shorthand argv denies network access and has
 a 60-second timeout. A table accepts `argv`, boolean `network` (default `false`),
 and `timeout_seconds` from 1 through 300. `network = true` permits outbound IP
 connections only during that installer, including local endpoints; it does not
@@ -187,7 +189,7 @@ with no provider request. Other filesystems retain private-copy fallbacks.
 Commands retain Loupe's existing minimized child environment. The general
 per-terminal environment forwarding and long-running process interfaces in the
 workspace design are future work. Dependency rebuilding requires the explicit
-profile setting above.
+shared setting above.
 An isolated session does not grant additional access to provider credentials.
 
 Configured MCP servers follow the same approval and plan-mode rules as shared
