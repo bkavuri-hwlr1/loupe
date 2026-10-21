@@ -61,12 +61,21 @@ subscription tokens. Do not retry paid cells merely to improve the score.
 A default-setting change and F4 embeddings require the recorded comparison's
 recommendation; neither follows merely from implementing this tool.
 
-## Initial pilot status
+## Measurement status: incomplete
 
-The [retained pilot](experiments/optional-retrieval-f3-2026-10-18-pilot.md)
-completed one off-arm baseline using Codex `gpt-6-astra` at `xhigh`, consuming
-1,164,063 observed prompt/output tokens including helpers and cached input.
-Admission control stopped before the second cell under the 3,000,000-token
-cohort ceiling. The full comparison awaits the user's budget/model choice.
-This single baseline cannot establish retrieval benefit; indexing stays off
-by default and F4 remains gated.
+The [retained Astra/xhigh pilot](experiments/optional-retrieval-f3-2026-10-18-pilot.md)
+used 1,164,063 observed tokens for one off-arm baseline. The user then authorized
+a separate `gpt-6-sol`/`high` matched comparison, capped at 3,000,000 additional
+tokens. Its [bounded attempt](experiments/optional-retrieval-f3-2026-10-20-sol.md)
+recorded one failed off-arm cell and zero matched pairs after correcting an
+instrumentation defect. All Sol attempts used 1,273,436 observed tokens; one
+request without a usage receipt retains a conservative 1,178,000-token bound.
+The combined charge is 2,451,436, leaving insufficient headroom for another
+worst-case request. No further paid calls were made.
+
+The experiment used a disposable request-level guard; the example runner's
+`--budget-tokens` flag remains cell-level admission. The record includes the
+invalid attempt's cost and the guard's queue overhead. The two model cohorts
+are not compared with each other. Use the request ledger's total rather than
+the failed task's incomplete checkpoint usage. Retrieval benefit remains
+inconclusive; indexing stays off by default and F4 remains gated.

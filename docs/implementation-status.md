@@ -982,12 +982,16 @@ Scripted tests cover visibility, helper inheritance, budgets, exact UTF-8 contex
 bounds, stale/private roots, broken/missing stores and read/write/cursor negative
 controls. The live comparison adds three discovery tasks to `trace-shared-edit`
 and `repo-summary`, with three alternating off/on repetitions and aggregate
-metrics. One retained off-arm pilot used 1,164,063 observed tokens before
-admission control stopped ahead of cell two. Further billed cells await a user
-budget/model choice. The comparison and F4/default recommendation remain
-pending; no answer-quality or token/time improvement is claimed. See the
-[optional retrieval guide](optional-retrieval.md) and
-[pilot audit](experiments/optional-retrieval-f3-2026-10-18-pilot.md).
+metrics. The retained Astra/xhigh pilot used 1,164,063 observed tokens. The
+user-authorized Sol/high follow-up, under a shared 3,000,000 additional-token
+cap, stopped with one failed off-arm cell and zero valid matched pairs. All
+Sol attempts consumed 1,273,436 observed tokens, including the invalid initial
+instrumentation attempt; one unknown request retains a 1,178,000-token bound.
+The combined charge of 2,451,436 leaves insufficient headroom for another
+worst-case request. The comparison remains incomplete and inconclusive;
+indexing stays off and F4 remains gated. No answer-quality or token/time
+improvement is claimed. See the [optional retrieval guide](optional-retrieval.md)
+and [bounded attempt record](experiments/optional-retrieval-f3-2026-10-20-sol.md).
 
 Offline validation on the frozen F3 source/test candidate passed 3,022 covered
 correctness tests, with one case-sensitive-filesystem skip. The separate strict

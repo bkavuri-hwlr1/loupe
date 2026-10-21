@@ -984,11 +984,15 @@ Mandatory coordination context precedes optional result blocks; tight context
 budgets preserve the mandatory facts. Scripted visibility, privacy, stale/broken
 index and cursor/write-authority negative controls cover these boundaries.
 The five-task off/on corpus is pinned to merged main `6e5d65d`; three alternating
-repetitions yield 30 live cells. A retained off-arm pilot used 1,164,063
-observed tokens before admission control stopped the run ahead of cell two.
-Further calls await the user's budget/model choice; the comparison and
-F4/default recommendation remain pending. See [optional retrieval](optional-retrieval.md)
-and the [pilot record](experiments/optional-retrieval-f3-2026-10-18-pilot.md).
+repetitions yield 30 planned live cells. The retained Astra/xhigh pilot used
+1,164,063 observed tokens. The user-authorized Sol/high follow-up stopped with
+one failed off-arm cell and zero valid matched pairs. Including the invalid
+instrumentation attempt, its observed usage is 1,273,436 tokens, plus an
+unknown request's conservative 1,178,000-token reservation: 2,451,436 against
+the shared 3,000,000 additional-token cap. No further request fits safely.
+The live measurement remains incomplete and benefit is inconclusive; indexing
+stays off and F4 remains gated. See [optional retrieval](optional-retrieval.md)
+and the [bounded attempt record](experiments/optional-retrieval-f3-2026-10-20-sol.md).
 
 ### F4. Embeddings with exact scoring
 
