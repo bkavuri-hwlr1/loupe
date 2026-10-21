@@ -432,6 +432,9 @@ class PhysicalAuthority:
         self.root = account_authority_root() if root is None else root
         self.installation = InstallationIdentity(store)
         self._lock = threading.RLock()
+        # Observers run inside SQLite writer transactions. Never access SQLite
+        # while holding this lock, or acquire the authority lock from it.
+        self._observation_lock = threading.RLock()
         self._owned: dict[str, _Owned] = {}
         self._store_locks: dict[str, threading.RLock] = {}
         self._closing = False
@@ -513,11 +516,19 @@ class PhysicalAuthority:
         """Observe the physical regime without creating ownership or a marker."""
         physical = PhysicalCheckout.inspect(root)
         try:
-            with self._lock:
+            # Marker writes precede their SQL generation. Read SQL first so a
+            # concurrent publication cannot make a valid marker look stale.
+            with self.store.connection() as connection:
+                bindings = connection.execute(
+                    "SELECT a.* FROM authority_checkouts a "
+                    "LEFT JOIN checkouts c ON c.checkout_id=a.checkout_id "
+                    "WHERE a.physical_key=? OR c.canonical_path=?",
+                    (physical.key, str(physical.root)),
+                ).fetchall()
+            with self._observation_lock:
+                physical.validate()
                 owned = self._owned.get(physical.key)
                 if owned is not None:
-                    # This observer also runs inside coordinator write transactions.
-                    # Full installation validation writes; outer pins own that duty.
                     owned.physical.validate()
                     held = os.fstat(owned.descriptor)
                     named = (self._directory(physical.key) / "ownership.lock").lstat()
@@ -533,13 +544,6 @@ class PhysicalAuthority:
                         raise recovery_error("authority regime ownership changed")
                 else:
                     marker = private_read(self._directory(physical.key) / "marker.json")
-                with self.store.connection() as connection:
-                    bindings = connection.execute(
-                        "SELECT a.* FROM authority_checkouts a "
-                        "LEFT JOIN checkouts c ON c.checkout_id=a.checkout_id "
-                        "WHERE a.physical_key=? OR c.canonical_path=?",
-                        (physical.key, str(physical.root)),
-                    ).fetchall()
                 if any(
                     row["physical_key"] != physical.key
                     or row["binding_json"] != encode(physical.binding).decode()
@@ -689,8 +693,11 @@ class PhysicalAuthority:
                 "journal_id": journal_id,
                 "journal_kind": journal_kind,
             }
-            private_write(self._directory(owner.physical.key) / "marker.json", marker)
-            owner.marker = marker
+            with self._observation_lock:
+                private_write(
+                    self._directory(owner.physical.key) / "marker.json", marker
+                )
+                owner.marker = marker
             with self.store.connection() as connection:
                 connection.execute(
                     "UPDATE authority_checkouts SET marker_generation=? WHERE "
@@ -880,7 +887,8 @@ class PhysicalAuthority:
                             self._handoff(physical, checkout_id, marker)
                         self._write_marker(owner, "clean")
                     private_write(directory / "owner.json", self._metadata(instance))
-                    self._owned[physical.key] = owner
+                    with self._observation_lock:
+                        self._owned[physical.key] = owner
                     owner.pins = 1
                     return OwnershipPin(self, owner, activity=activity)
                 except Exception:
@@ -1242,10 +1250,11 @@ class PhysicalAuthority:
                     self._release(owner)
 
     def _release(self, owner: _Owned) -> None:
-        fcntl.flock(owner.descriptor, fcntl.LOCK_UN)
-        os.close(owner.descriptor)
-        owner.physical.close()
-        self._owned.pop(owner.physical.key, None)
+        with self._observation_lock:
+            fcntl.flock(owner.descriptor, fcntl.LOCK_UN)
+            os.close(owner.descriptor)
+            owner.physical.close()
+            self._owned.pop(owner.physical.key, None)
 
     def close(self) -> None:
         with self._lock:
