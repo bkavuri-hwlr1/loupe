@@ -43,8 +43,13 @@ effort with index off/on three times per task; arm order alternates each repeat:
 ```sh
 python scripts/live_benchmark.py --profile NON_DEFAULT_PROFILE \
   --retrieval-paired --repeat 3 --provider PROVIDER --model MODEL --effort EFFORT \
-  --budget-tokens 3000000 --timeout 900 --out /absolute/path/results.json
+  --budget-tokens TOKEN_ALLOWANCE --timeout 900 --out /absolute/path/results.json
 ```
+
+Choose a positive integer for `TOKEN_ALLOWANCE` large enough for the matrix.
+The runner submits multiline prose as one plain-chat task. The October 21 run
+used a disposable uncapped adapter after the user removed its token ceiling;
+the command above retains the shipped runner’s cell-level admission limit.
 
 This is a billed live comparison and does not run in tests or CI. Use an already
 signed-in, non-default profile; the harness restarts its service with temporary
@@ -61,21 +66,24 @@ subscription tokens. Do not retry paid cells merely to improve the score.
 A default-setting change and F4 embeddings require the recorded comparison's
 recommendation; neither follows merely from implementing this tool.
 
-## Measurement status: incomplete
+## Measurement status: complete; keep indexing off
 
-The [retained Astra/xhigh pilot](experiments/optional-retrieval-f3-2026-10-18-pilot.md)
-used 1,164,063 observed tokens for one off-arm baseline. The user then authorized
-a separate `gpt-6-sol`/`high` matched comparison, capped at 3,000,000 additional
-tokens. Its [bounded attempt](experiments/optional-retrieval-f3-2026-10-20-sol.md)
-recorded one failed off-arm cell and zero matched pairs after correcting an
-instrumentation defect. All Sol attempts used 1,273,436 observed tokens; one
-request without a usage receipt retains a conservative 1,178,000-token bound.
-The combined charge is 2,451,436, leaving insufficient headroom for another
-worst-case request. No further paid calls were made.
+The [Sol/high comparison](experiments/optional-retrieval-f3-2026-10-21-sol.md)
+records all 30 cells and 15 matched pairs. Both arms passed 12 of 15 task
+contracts. Retrieval enabled covered 90/102 expected facts, versus 92/102 off;
+no pair gained facts. Median paired time increased 6.5 seconds and tool use
+increased six calls. Helpers made all seven retrieval calls, across six enabled
+cells. Keep indexing off by default and leave F4 gated.
 
-The experiment used a disposable request-level guard; the example runner's
-`--budget-tokens` flag remains cell-level admission. The record includes the
-invalid attempt's cost and the guard's queue overhead. The two model cohorts
-are not compared with each other. Use the request ledger's total rather than
-the failed task's incomplete checkpoint usage. Retrieval benefit remains
-inconclusive; indexing stays off by default and F4 remains gated.
+The record combines four unchanged valid cells with 26 fresh cells after fixing
+multiline prompt framing. Failed valid cells remain; malformed attempts enter
+cumulative accounting only. The equivalent harness fix was applied after the
+frozen measurement. Eligible usage is 17,904,476 known tokens plus 76 unknown
+attempts; cumulative known usage including excluded and historical attempts is
+22,677,799, plus 80 unknown attempts. Only one pair has exact token accounting,
+so no overall token-savings claim is supported. The small fixture’s keyword
+checks and transport retries limit quality and latency conclusions.
+
+The [Astra pilot](experiments/optional-retrieval-f3-2026-10-18-pilot.md) and
+[bounded Sol attempt](experiments/optional-retrieval-f3-2026-10-20-sol.md) remain
+separate historical evidence; the user superseded the earlier token ceiling.

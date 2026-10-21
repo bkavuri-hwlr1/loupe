@@ -1412,7 +1412,9 @@ def run(arguments: argparse.Namespace) -> int:
                     # Only the prompt is typed. A question finds no more input,
                     # so the chat leaves it pending and exits, and the answer
                     # is given below, only if the agent asked.
-                    process.stdin.write(task.prompt + "\n")
+                    # Plain chat submits each physical line as a new task.
+                    prompt = task.prompt.replace("\r\n", " ").replace("\r", " ")
+                    process.stdin.write(prompt.replace("\n", " ") + "\n")
                     process.stdin.close()
                     interrupted = task.interrupt is not None and _interrupt(
                         task.interrupt,
