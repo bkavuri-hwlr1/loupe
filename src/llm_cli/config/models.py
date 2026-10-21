@@ -48,6 +48,16 @@ class HookConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RebuildConfig:
+    """Explicit permission to construct one private dependency root."""
+
+    root: str
+    argv: tuple[str, ...]
+    network: bool = False
+    timeout_seconds: int = 60
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     profile_id: str = "default"
     coordination_mode: str = "enforce"
@@ -58,6 +68,9 @@ class Settings:
     # Sandboxed run_command policy: "ask" needs the user's approval in an
     # interactive session, "allow" runs without asking, "off" never offers it.
     agent_commands: str = "ask"
+    # Forward only the opening/resuming terminal, ephemerally and opt-in.
+    agent_command_environment: str = "minimal"
+    isolated_rebuild: tuple[RebuildConfig, ...] = ()
     # Offer the explore tool, whose read-only helpers spend extra model tokens.
     agent_explore: bool = True
     # The most reasoning effort explore helpers use; None means the task's own.
@@ -87,4 +100,4 @@ class Settings:
     max_frame_bytes: int = 4 * 1024 * 1024
 
 
-__all__ = ["HookConfig", "McpServerConfig", "Settings"]
+__all__ = ["HookConfig", "McpServerConfig", "RebuildConfig", "Settings"]

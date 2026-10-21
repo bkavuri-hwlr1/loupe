@@ -13,7 +13,9 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+from llm_cli.config.loader import load_settings
 from llm_cli.errors import ErrorCode, LlmCoordError
+from llm_cli.execution.environment import filtered_environment
 from llm_cli.ids import new_id
 from llm_cli.paths import AppPaths, make_private_file
 from llm_cli.protocol.envelopes import Request, Response
@@ -292,3 +294,17 @@ def _error_code(raw: object) -> ErrorCode:
         return ErrorCode(raw)
     except ValueError:
         return ErrorCode.INTERNAL_RECOVERABLE
+
+
+def session_environment_params(paths: AppPaths) -> dict[str, object]:
+    """Capture this terminal only when forwarding is explicitly enabled."""
+    try:
+        settings = load_settings(paths.config_file, profile_id=paths.profile_id)
+    except LlmCoordError:
+        # A saved invalid/pending config must not alter a running minimal
+        # daemon. A session-policy daemon refuses missing values explicitly.
+        return {}
+    if settings.agent_command_environment != "session":
+        return {}
+    environment, _ = filtered_environment(dict(os.environ))
+    return {"command_environment": environment}

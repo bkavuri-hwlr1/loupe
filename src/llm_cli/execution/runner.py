@@ -134,6 +134,9 @@ class TaskExecutionRunner:
         self.web_fetch = "off"
         self.web_domains: tuple[str, ...] = ()
         self.web_proxy: str | None = None
+        self.project_search: (
+            Callable[[str, Path, str, int], dict[str, object]] | None
+        ) = None
 
     def web_access(self) -> WebAccess | None:
         """A fresh web policy for one task, or None when web_fetch is off."""
@@ -286,9 +289,24 @@ class TaskExecutionRunner:
             checkpoint = self.store.get_execution_checkpoint(execution.execution_id)
             if resuming and checkpoint is None:
                 raise ClaimConflict("resumable execution has no driver checkpoint")
+            retrieval = None
+            if self.project_search is not None:
+                checkout = next(
+                    (
+                        item
+                        for item in self.store.list_checkouts(repository.repository_id)
+                        if item.canonical_path == repository.main_worktree_path
+                    ),
+                    None,
+                )
+                if checkout is not None:
+                    retrieval = functools.partial(
+                        self.project_search, checkout.checkout_id, managed.path
+                    )
             broker = ToolBroker(
                 worktree=managed.path,
                 scopes=claim.scopes,
+                project_search=retrieval,
                 case_insensitive_filesystem=repository.path_case_insensitive,
                 base_oid=base_oid,
                 limits=self.limits,

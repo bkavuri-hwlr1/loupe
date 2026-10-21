@@ -17,10 +17,12 @@ from llm_cli.cli import active_controls
 from llm_cli.cli.app import build_parser, dispatch
 from llm_cli.cli.output import emit
 from llm_cli.execution.checks import validate_config
+from llm_cli.paths import AppPaths
 
 
 class Client:
-    def __init__(self) -> None:
+    def __init__(self, tmp_path: Path) -> None:
+        self.paths = AppPaths.resolve("workflow-test", home=tmp_path, environ={})
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.called = threading.Event()
 
@@ -31,8 +33,8 @@ class Client:
 
 
 @pytest.mark.parametrize("action", ["diff", "checks", "undo", "cancel", "apply"])
-def test_cli_dispatches_task_operations(action: str) -> None:
-    client = Client()
+def test_cli_dispatches_task_operations(action: str, tmp_path: Path) -> None:
+    client = Client(tmp_path)
     args = build_parser().parse_args(["task", action, "task-example"])
     dispatch(args, client)
     assert client.calls[0][0] == "task." + action
@@ -41,8 +43,8 @@ def test_cli_dispatches_task_operations(action: str) -> None:
         assert not client.calls[0][1]["allow_unverified"]
 
 
-def test_explicit_apply_override_and_publication_mode() -> None:
-    client = Client()
+def test_explicit_apply_override_and_publication_mode(tmp_path: Path) -> None:
+    client = Client(tmp_path)
     args = build_parser().parse_args(
         ["task", "apply", "task-example", "--allow-unverified"]
     )
@@ -57,7 +59,7 @@ def test_explicit_apply_override_and_publication_mode() -> None:
 def test_configuration_import_and_json_output(tmp_path: Path) -> None:
     config = tmp_path / "checks.toml"
     config.write_text('[checks.test]\nargv = ["python3", "-m", "pytest"]\n')
-    client = Client()
+    client = Client(tmp_path)
     dispatch(
         build_parser().parse_args(["checks", "configure", "--file", str(config)]),
         client,
@@ -92,7 +94,9 @@ def test_configuration_rejects_invalid_commands(config: dict[str, Any]) -> None:
         validate_config(config)
 
 
-def test_live_stop_input_has_bounded_lifetime(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_live_stop_input_has_bounded_lifetime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     read_fd, write_fd = os.pipe()
 
     class Keyboard:
@@ -114,7 +118,7 @@ def test_live_stop_input_has_bounded_lifetime(monkeypatch: pytest.MonkeyPatch) -
             return True
 
     monkeypatch.setattr(active_controls, "create_input", lambda **_: Keyboard())
-    client = Client()
+    client = Client(tmp_path)
     output = io.StringIO()
     try:
         with active_controls.active_controls(
@@ -139,7 +143,7 @@ def test_live_stop_input_has_bounded_lifetime(monkeypatch: pytest.MonkeyPatch) -
     ],
 )
 def test_live_input_other_than_stop_is_explained_not_dropped(
-    monkeypatch: pytest.MonkeyPatch, typed: str, expected: str
+    monkeypatch: pytest.MonkeyPatch, typed: str, expected: str, tmp_path: Path
 ) -> None:
     read_fd, write_fd = os.pipe()
 
@@ -162,7 +166,7 @@ def test_live_input_other_than_stop_is_explained_not_dropped(
             return True
 
     monkeypatch.setattr(active_controls, "create_input", lambda **_: Keyboard())
-    client = Client()
+    client = Client(tmp_path)
     notices: list[str] = []
     noticed = threading.Event()
 

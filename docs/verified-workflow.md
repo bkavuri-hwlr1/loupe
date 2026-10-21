@@ -39,9 +39,13 @@ argv = [".venv/bin/mypy"]
 A check accepts `argv`, `cwd` (default `.`), `timeout` in seconds (default 600,
 maximum 7200), `required` (default true), and an optional `env` table. Commands
 are argument arrays, not shell expressions. Use absolute executable paths or
-snapshot-relative executables. The subprocess receives a minimal environment,
-private home/cache/temp directories, and explicit environment settings; it does
-not inherit provider credentials or your login-shell environment.
+snapshot-relative executables. By default, the subprocess receives a minimal
+environment, private home/cache/temp directories, and explicit environment
+settings. Opt into the opening or resuming terminal's project variables with
+`agent.command_environment = "session"`; provider credentials are filtered and
+sandbox directories retain their private overrides. See
+[command environments](command-environments.md) for output screening, names-only
+inspection, restart recovery, and applying held proposals after closing a chat.
 
 `runtime_paths` can list ignored files or directories to copy into the snapshot.
 Copies are private, not hard links. Missing paths, source collisions, symlinks,

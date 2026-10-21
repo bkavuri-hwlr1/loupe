@@ -53,6 +53,12 @@ from llm_cli.coordination.scopes import ScopeValidationError, normalize_changed_
 from llm_cli.doctor import run_doctor
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.execution.commands import CommandSettings, cleanup_command_snapshots
+from llm_cli.execution.environment import (
+    CommandEnvironment,
+    SessionEnvironments,
+    filtered_environment,
+    unavailable,
+)
 from llm_cli.execution.recovery import (
     ExecutionReconciler,
     RecoveryOutcome,
@@ -180,6 +186,8 @@ class DaemonService:
     ) -> None:
         self.paths = paths
         self.settings = settings
+        self.session_environments = SessionEnvironments()
+        self._environment_waiters: set[str] = set()
         self.config_sources = (
             dict(config_sources)
             if config_sources is not None
@@ -219,6 +227,9 @@ class DaemonService:
             boot_id=boot_id,
             renewal_interval_seconds=settings.renewal_interval_ms / 1_000,
         )
+        self.runner.project_search = (
+            self.knowledge.project_search if self.knowledge.enabled else None
+        )
         self.workspace_batches = SharedBatchPublisher(
             self.store, paths.candidate_dir, threading.RLock()
         )
@@ -231,9 +242,18 @@ class DaemonService:
             paths.candidate_dir,
             self.workspace_batches.lock,
             self.shared_runner.ensure_available,
+            rebuild=settings.isolated_rebuild,
+            rebuild_protected=(
+                paths.config_dir,
+                paths.data_dir,
+                paths.state_dir,
+                paths.runtime_dir,
+            ),
         )
         self.shared_runner.isolated = self.isolated_workspaces
         self.workflow = self.shared_runner.workflow
+        self.shared_runner.command_environment = self._command_environment
+        self.workflow.command_environment = self._command_environment
         self.shared_runner.is_shutting_down = self.shutdown.is_set
         self.shared_runner.commands = CommandSettings(
             snapshot_root=paths.data_dir / "command-snapshots",
@@ -256,8 +276,16 @@ class DaemonService:
         # adapter selected for one launch. Provider construction does not open
         # a client or resolve credentials; that happens on first use.
         self.providers = ProviderRegistry()
-        self.providers.register("anthropic", self._anthropic_provider)
-        self.providers.register("openai", self._openai_provider)
+        self.providers.register(
+            "anthropic",
+            self._anthropic_provider,
+            credential_environment_names=("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+        )
+        self.providers.register(
+            "openai",
+            self._openai_provider,
+            credential_environment_names=("OPENAI_API_KEY",),
+        )
         self.providers.register("codex", self._codex_provider)
         self.drivers = DriverRegistry()
         self.drivers.register(
@@ -281,6 +309,7 @@ class DaemonService:
         self._external_scanner = ExternalWorkspaceScanner(self.store)
         self._next_external_scan_at = 0.0
         self._authority_lock = asyncio.Lock()
+        self._pending_session_opens: set[str] = set()
         self._background_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
         # Executions whose answer is being written again right now.
         self._answer_rewrites: set[str] = set()
@@ -424,6 +453,7 @@ class DaemonService:
         # be stopped by cancelling it, and pretending otherwise would hide the
         # work that outlives this process from the next boot's recovery.
         self._background_tasks.clear()
+        self.session_environments.clear()
         if self._knowledge_task is not None:
             self._knowledge_task.cancel()
         if self._ownership_idle_task is not None:
@@ -576,6 +606,24 @@ class DaemonService:
                         maximum=3_600_000,
                     ),
                 )
+            if request.method == "session.open":
+                # Private dependency installation may take minutes. Setup and
+                # activation lock independently; the installer never pins the
+                # dispatch barrier used by every other terminal.
+                session_id = _string(request.params, "session_id")
+                async with self._authority_lock:
+                    if session_id in self._pending_session_opens:
+                        raise LlmCoordError(
+                            ErrorCode.REPOSITORY_UNSAFE,
+                            "session setup is already running",
+                        )
+                    self._pending_session_opens.add(session_id)
+                try:
+                    return await self._session_open(request.params)
+                finally:
+                    # Only the event loop touches this reservation. Keep it
+                    # through registration, including the worker-return gap.
+                    self._pending_session_opens.discard(session_id)
             if request.method == "session.compact":
                 # The summary is a model request. Hold the authority lock only
                 # to read and to save, never while the provider responds.
@@ -630,6 +678,10 @@ class DaemonService:
                 value["state"] = "awaiting_review"
             elif row["stop_requested"] and task.state not in _SETTLED_TASK_STATES:
                 value["state"] = "stopping"
+        if task.session_id is not None:
+            value["command_environment"] = self._environment_plan(task.session_id)
+        if task_id in self._environment_waiters:
+            value["state"] = "awaiting_session_environment"
         return value
 
     def _task_retry(self, task_id: str) -> dict[str, Any]:
@@ -835,9 +887,14 @@ class DaemonService:
                 return await self._workspace_publish_candidate(params)
         if method == "session.resume":
             session = self._authenticated_session(params)
+            if session.state == "closed":
+                raise ValueError("a closed session cannot be resumed")
+            self._accept_session_environment(session, params)
             resumed, event = self.store.resume_session(session.session_id)
+            self._schedule_ready_launches()
             return {
                 "session": asdict(resumed),
+                "command_environment": self._environment_plan(session.session_id),
                 "event": asdict(event) if event is not None else None,
                 "cursor": _asdict_or_none(
                     self.store.get_session_cursor(session.session_id)
@@ -852,6 +909,7 @@ class DaemonService:
                 raise KeyError("session")
             return {
                 "session": asdict(shown),
+                "command_environment": self._environment_plan(shown.session_id),
                 "cursor": _asdict_or_none(
                     self.store.get_session_cursor(shown.session_id)
                 ),
@@ -883,6 +941,12 @@ class DaemonService:
             ]
         if method == "session.close":
             session = self._authenticated_session(params)
+            for task_id in tuple(self._environment_waiters):
+                task = self.store.get_task(task_id)
+                if task is not None and task.session_id == session.session_id:
+                    self.workflow.cancel(task_id)
+                    self._finish_environment_waiter(task_id)
+            self.session_environments.discard(session.session_id)
             closed, event = self.store.close_session(
                 session.session_id,
                 reason=_optional_string(params, "reason") or "operator_exit",
@@ -954,14 +1018,28 @@ class DaemonService:
                     pending = self._questions.get(task_id)
                     if pending:
                         pending.ready.set()
+                if task_id in self._environment_waiters:
+                    self._finish_environment_waiter(task_id)
+                    workflow_result = {"state": "cancelled"}
                 self._schedule_ready_launches()
                 return workflow_result
-            workflow_result = await asyncio.to_thread(
-                self.workflow.apply,
-                task_id,
-                undo=method == "task.undo",
-                allow_unverified=bool(params.get("allow_unverified", False)),
+            environment = (
+                self._apply_environment(task_id, params)
+                if method == "task.apply" else None
             )
+            try:
+                workflow_result = await asyncio.to_thread(
+                    self.workflow.apply,
+                    task_id,
+                    undo=method == "task.undo",
+                    allow_unverified=bool(params.get("allow_unverified", False)),
+                    environment=(
+                        (lambda: environment) if environment is not None else None
+                    ),
+                )
+            finally:
+                if environment is not None:
+                    environment.invalidate()
             await asyncio.to_thread(self.isolated_workspaces.cleanup_closed)
             self._schedule_ready_launches()
             return workflow_result
@@ -1092,38 +1170,170 @@ class DaemonService:
             "base_oid": info.base_oid,
         }
 
+    def _environment_plan(self, session_id: str) -> dict[str, object]:
+        if self.settings.agent_command_environment == "minimal":
+            return {"policy": "minimal", "state": "ready"}
+        return self.session_environments.plan(session_id)
+
+    def _command_environment(self, session_id: str) -> CommandEnvironment | None:
+        if self.settings.agent_command_environment == "minimal":
+            return None
+        return self.session_environments.get(session_id)
+
+    def _accept_session_environment(
+        self, session: SessionRecord, params: dict[str, Any]
+    ) -> None:
+        if (
+            self.settings.agent_command_environment != "session"
+            or "command_environment" not in params
+        ):
+            return
+        values, removed = filtered_environment(
+            params["command_environment"],
+            registered=self.providers.credential_environment_names,
+        )
+        try:
+            prior = self.session_environments.get(session.session_id)
+        except LlmCoordError:
+            prior = None
+        if prior is not None and prior.matches(values):
+            return
+        environment = self._build_session_environment(session, values, removed)
+        def invalidate_checks() -> None:
+            # Values are never persisted. Invalidation and binding replacement
+            # serialize with the final successful check write under one lease.
+            with self.store.connection() as connection:
+                connection.execute(
+                    "UPDATE check_runs SET state='stale' WHERE state='passed' "
+                    "AND task_id IN (SELECT task_id FROM tasks WHERE session_id=?)",
+                    (session.session_id,),
+                )
+
+        self.session_environments.replace(
+            session.session_id, environment, before_replace=invalidate_checks
+        )
+
+    def _build_session_environment(
+        self, session: SessionRecord, values: dict[str, str], removed: tuple[str, ...]
+    ) -> CommandEnvironment:
+        checkout = self.store.get_checkout(session.checkout_id)
+        assert checkout is not None
+        environment = CommandEnvironment(
+            values, removed,
+            source_root=Path(checkout.canonical_path),
+            credential_names=self.providers.credential_environment_names,
+        )
+        if session.workspace_mode == "isolated":
+            state = self.isolated_workspaces.validate(session.workspace_id or "")
+            workspace = self.store.get_workspace(session.workspace_id or "")
+            assert workspace is not None
+            environment.hydrated_root = Path(workspace.canonical_path)
+            environment.hydrated_paths = tuple(
+                sorted(set(state.source_manifest) | set(state.runtime_files))
+            )
+        return environment
+
+    def _apply_environment(
+        self, task_id: str, params: dict[str, Any]
+    ) -> CommandEnvironment | None:
+        if (self.settings.agent_command_environment != "session"
+                or "command_environment" not in params
+                or params.get("allow_unverified", False)):
+            return None
+        task = self.store.get_task(task_id)
+        session = self.store.get_session(task.session_id or "") if task else None
+        workflow = self.workflow.get(task_id)
+        if (session is None or workflow is None
+                or workflow["status"] not in {"awaiting_review", "cancelled"}
+                or workflow["proposal_json"] is None):
+            return None
+        try:
+            self.session_environments.get(session.session_id)
+        except LlmCoordError:
+            pass
+        else:
+            # Another applying terminal cannot replace this session's origin.
+            return None
+        values, removed = filtered_environment(
+            params["command_environment"],
+            registered=self.providers.credential_environment_names,
+        )
+        environment = self._build_session_environment(session, values, removed)
+        with self.store.connection() as connection:
+            connection.execute(
+                "UPDATE check_runs SET state='stale' "
+                "WHERE state='passed' AND task_id=?",
+                (task_id,),
+            )
+        return environment
+
+    def _finish_environment_waiter(self, task_id: str) -> None:
+        task = self.store.get_task(task_id)
+        if task is None:
+            self._environment_waiters.discard(task_id)
+            return
+        execution = self.store.get_execution(task_id, task.attempt)
+        with self.workspace_batches.lock:
+            if execution is not None and execution.state == "running":
+                self.shared_runner._retain_checkpoint_candidates(execution)
+                self.workflow.hold(
+                    task_id,
+                    task.attempt,
+                    execution.execution_id,
+                    cancelled=True,
+                    completion_outcome="cancelled",
+                )
+            elif task.current_claim_id is not None:
+                self.coordinator.release_claim(
+                    task.current_claim_id, reason="cancelled", task_state="cancelled"
+                )
+                self.workflow.update(task_id, task.attempt, status="cancelled")
+        self._environment_waiters.discard(task_id)
+
     async def _session_open(self, params: dict[str, Any]) -> dict[str, Any]:
         """Bind a durable conversation to one exact checkout and provider."""
 
-        agent_mode = resolve_agent_mode(
-            params.get("mode"), params.get("publish"), default="auto"
-        )
-        session_id = _string(params, "session_id")
-        resume_token_hash = _string(params, "resume_token_hash")
-        if len(resume_token_hash) != 64 or any(
-            character not in "0123456789abcdef" for character in resume_token_hash
-        ):
-            raise ValueError("resume_token_hash must be a lowercase SHA-256 digest")
-        repository = await self._registered_repository_for_path(_path(params, "path"))
-        checkout = await self._registered_checkout_for_path(
-            _path(params, "path"), repository
-        )
-        provider = _optional_string(params, "provider") or self.settings.agent_provider
-        model = _optional_string(params, "model")
-        effort = _optional_string(params, "effort")
-        if model is None and provider == self.settings.agent_provider:
-            model = self.settings.agent_model
-        adapter = self.providers.create(provider, model, effort=effort)
-        workspace_mode = _workspace_mode(params, self.settings.workspace_mode)
-        approved = params.get("approved_runtime_files", [])
-        if (
-            not isinstance(approved, list)
-            or len(approved) > 1000
-            or any(not isinstance(path, str) for path in approved)
-        ):
-            raise ValueError("approved_runtime_files must be exact relative paths")
-        if approved and workspace_mode != "isolated":
-            raise ValueError("runtime consent requires isolated mode")
+        async with self._authority_lock:
+            if self.settings.agent_command_environment == "session":
+                if "command_environment" not in params:
+                    raise unavailable()
+                filtered_environment(
+                    params["command_environment"],
+                    registered=self.providers.credential_environment_names,
+                )
+            agent_mode = resolve_agent_mode(
+                params.get("mode"), params.get("publish"), default="auto"
+            )
+            session_id = _string(params, "session_id")
+            resume_token_hash = _string(params, "resume_token_hash")
+            if len(resume_token_hash) != 64 or any(
+                character not in "0123456789abcdef" for character in resume_token_hash
+            ):
+                raise ValueError("resume_token_hash must be a lowercase SHA-256 digest")
+            repository = await self._registered_repository_for_path(
+                _path(params, "path")
+            )
+            checkout = await self._registered_checkout_for_path(
+                _path(params, "path"), repository
+            )
+            provider = (
+                _optional_string(params, "provider") or self.settings.agent_provider
+            )
+            model = _optional_string(params, "model")
+            effort = _optional_string(params, "effort")
+            if model is None and provider == self.settings.agent_provider:
+                model = self.settings.agent_model
+            adapter = self.providers.create(provider, model, effort=effort)
+            workspace_mode = _workspace_mode(params, self.settings.workspace_mode)
+            approved = params.get("approved_runtime_files", [])
+            if (
+                not isinstance(approved, list)
+                or len(approved) > 1000
+                or any(not isinstance(path, str) for path in approved)
+            ):
+                raise ValueError("approved_runtime_files must be exact relative paths")
+            if approved and workspace_mode != "isolated":
+                raise ValueError("runtime consent requires isolated mode")
         notices: tuple[str, ...] = ()
         if workspace_mode == "isolated":
             workspace, notices = await asyncio.to_thread(
@@ -1133,36 +1343,43 @@ class DaemonService:
                 approved_secrets=tuple(sorted(set(approved))),
             )
         else:
-            workspace = await asyncio.to_thread(
-                self.store.ensure_shared_workspace, checkout
-            )
-        if self.physical_authority.status(Path(checkout.canonical_path)).get(
-            "history_gap"
-        ):
-            notices += (
-                "Checkout ownership changed; earlier ownership history is incomplete. "
-                "Re-read current source before applying retained proposals.",
-            )
-        session, event, bootstrap_sequence = self.store.open_session(
-            session_id=session_id,
-            checkout_id=checkout.checkout_id,
-            resume_token_hash=resume_token_hash,
-            provider=adapter.name,
-            model=adapter.model,
-            effort=effort,
-            workspace_id=workspace.workspace_id,
-            workspace_mode=workspace_mode,
-            agent_mode=agent_mode,
-        )
-        return {
-            "session": asdict(session),
-            "checkout": asdict(checkout),
-            "workspace": asdict(workspace),
-            "bootstrap_event": asdict(event),
-            "bootstrap_sequence": bootstrap_sequence,
-            "workspace_notices": list(notices),
-            "approved_runtime_files": sorted(set(approved)),
-        }
+            async with self._authority_lock:
+                with self.physical_authority.pin(Path(checkout.canonical_path)):
+                    workspace = await asyncio.to_thread(
+                        self.store.ensure_shared_workspace, checkout
+                    )
+        async with self._authority_lock:
+            with self.physical_authority.pin(Path(checkout.canonical_path)):
+                if self.physical_authority.status(Path(checkout.canonical_path)).get(
+                    "history_gap"
+                ):
+                    notices += (
+                        "Checkout ownership changed; earlier ownership history "
+                        "is incomplete. "
+                        "Re-read current source before applying retained proposals.",
+                    )
+                session, event, bootstrap_sequence = self.store.open_session(
+                    session_id=session_id,
+                    checkout_id=checkout.checkout_id,
+                    resume_token_hash=resume_token_hash,
+                    provider=adapter.name,
+                    model=adapter.model,
+                    effort=effort,
+                    workspace_id=workspace.workspace_id,
+                    workspace_mode=workspace_mode,
+                    agent_mode=agent_mode,
+                )
+                self._accept_session_environment(session, params)
+                return {
+                    "session": asdict(session),
+                    "command_environment": self._environment_plan(session.session_id),
+                    "checkout": asdict(checkout),
+                    "workspace": asdict(workspace),
+                    "bootstrap_event": asdict(event),
+                    "bootstrap_sequence": bootstrap_sequence,
+                    "workspace_notices": list(notices),
+                    "approved_runtime_files": sorted(set(approved)),
+                }
 
     async def _workspace_status(self, params: dict[str, Any]) -> dict[str, Any]:
         """Report the workspace for a checkout, including what it cannot promise.
@@ -1522,6 +1739,8 @@ class DaemonService:
             )
             if checkout.checkout_id != session.checkout_id:
                 raise ValueError("task path is outside the session's selected checkout")
+            if session.agent_mode != "plan":
+                self._command_environment(session.session_id)
             # Legacy records can still point at another clone sharing the same
             # remote identity. A session-associated task is never allowed to
             # inherit that mutable path; it executes against its exact checkout.
@@ -2054,6 +2273,38 @@ class DaemonService:
             existing = self._background_tasks.get(key)
             if existing is not None and not existing.done():
                 continue
+            if (
+                self.settings.agent_command_environment == "session"
+                and task.session_id is not None
+            ):
+                try:
+                    self.session_environments.get(task.session_id)
+                except LlmCoordError:
+                    row = self.workflow.get(task.task_id)
+                    session = self.store.get_session(task.session_id)
+                    if (row and row["stop_requested"]) or (
+                        session and session.state == "closed"
+                    ):
+                        self._finish_environment_waiter(task.task_id)
+                        continue
+                    if claim.fencing_token is not None:
+                        with suppress(CoordinationError):
+                            self.coordinator.renew_claim(
+                                task_id=task.task_id,
+                                claim_id=claim.claim_id,
+                                fencing_token=claim.fencing_token,
+                                attempt=task.attempt,
+                            )
+                    if task.task_id not in self._environment_waiters:
+                        self._environment_waiters.add(task.task_id)
+                        self.store.record_task_event(
+                            claim_id=claim.claim_id,
+                            task_id=task.task_id,
+                            event_type="execution.awaiting_session_environment",
+                            payload={"state": "awaiting_session_environment"},
+                        )
+                    continue
+            self._environment_waiters.discard(task.task_id)
             try:
                 driver = self._driver_for_launch(launch)
             except Exception as exc:

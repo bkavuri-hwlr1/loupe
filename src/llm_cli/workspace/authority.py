@@ -990,7 +990,7 @@ class PhysicalAuthority:
                 if (
                     owner.pins
                     or owner.marker["state"] != "clean"
-                    or (not force and instant - owner.idle_since < IDLE_SECONDS)
+                    or (not force and instant < owner.idle_since + IDLE_SECONDS)
                 ):
                     continue
                 with self.store.connection() as connection:

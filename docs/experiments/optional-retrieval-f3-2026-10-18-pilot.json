@@ -1,0 +1,179 @@
+{
+  "suite_version": 5,
+  "revision": "6e5d65d148d6b4ac92fc849cb4fd861c63f8b5c3",
+  "loupe_commit": "1475acc78795730645f08cf22285712098b8ab19",
+  "settings": {
+    "set": [
+      "review=off"
+    ],
+    "provider": "codex",
+    "model": "gpt-6-astra",
+    "effort": "xhigh"
+  },
+  "tasks": [
+    {
+      "id": "trace-shared-edit",
+      "passed": true,
+      "checks": {
+        "state": true,
+        "recorded_once": true,
+        "one_task": true,
+        "facts": true,
+        "explored": true
+      },
+      "state": "completed",
+      "failure_code": null,
+      "outcome": "completed",
+      "facts_found": [
+        "_write_file",
+        "_stage",
+        "os.replace",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "retain",
+        "operator_attention",
+        "CheckRunner",
+        "restore_usage",
+        "atomic_replace"
+      ],
+      "facts_missed": [
+        "settle_shared_execution"
+      ],
+      "wall_seconds": 419.0,
+      "suspended_seconds": 0.0,
+      "main_turns": 13,
+      "main_tool_calls": 38,
+      "all_tool_calls": 165,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "tools": {
+        "list_files": 3,
+        "search_text": 5,
+        "explore": 4,
+        "read_file": 26
+      },
+      "peak_context_tokens": 58613,
+      "prompt_tokens": 1145369,
+      "output_tokens": 18694,
+      "cached_tokens": 920192,
+      "cache_write_tokens": 0,
+      "helper_prompt_tokens": 816800,
+      "explorations": [
+        {
+          "state": "completed",
+          "tool_calls": 39,
+          "seconds": 99.0,
+          "retries": 0,
+          "effort": "low",
+          "reason": null
+        },
+        {
+          "state": "completed",
+          "tool_calls": 28,
+          "seconds": 100.8,
+          "retries": 0,
+          "effort": "low",
+          "reason": null
+        },
+        {
+          "state": "completed",
+          "tool_calls": 35,
+          "seconds": 117.5,
+          "retries": 0,
+          "effort": "low",
+          "reason": null
+        },
+        {
+          "state": "completed",
+          "tool_calls": 25,
+          "seconds": 98.2,
+          "retries": 0,
+          "effort": "low",
+          "reason": null
+        }
+      ],
+      "review_attempts": 0,
+      "reviews": [],
+      "review_prompt_tokens": 0,
+      "review_output_tokens": 0,
+      "review_cached_tokens": 0,
+      "review_cache_write_tokens": 0,
+      "review_seconds": 0.0,
+      "review_incomplete": 0,
+      "review_timeouts": 0,
+      "review_repair_edits": 0,
+      "answer_characters": 16816,
+      "questions": 0,
+      "edits": 0,
+      "files_kept": null,
+      "verification": "not_applicable",
+      "repeated_results": 0,
+      "repeated_answers": 0,
+      "tasks_created": 1,
+      "interrupt": null,
+      "task_id": "chat_01a1520b65059a9d1403ee1b17c357ab",
+      "repetition": 1,
+      "review_arm": "off",
+      "retrieval_arm": "off",
+      "index_build_seconds": 0.0,
+      "stranded_question": false,
+      "runner_timed_out": false
+    }
+  ],
+  "run_kind": "live",
+  "repeat": 3,
+  "review_paired": false,
+  "retrieval_paired": true,
+  "budget_tokens": 3000000,
+  "spent_tokens": 1164063,
+  "budget_respected": true,
+  "expected_runs": 30,
+  "complete": false,
+  "status": "finished",
+  "retrieval_summary": {
+    "off": {
+      "runs": 1,
+      "passed": 1,
+      "facts_found": 10,
+      "facts_total": 11,
+      "prompt_tokens": 1145369,
+      "output_tokens": 18694,
+      "tool_calls": 165,
+      "retrieval_calls": 0,
+      "median_wall_seconds": 419.0,
+      "index_build_seconds": 0.0,
+      "cost_usd": null,
+      "per_case": {
+        "trace-shared-edit": {
+          "runs": 1,
+          "passed": 1,
+          "median_wall_seconds": 419.0,
+          "median_tokens": 1164063,
+          "median_tool_calls": 165
+        }
+      }
+    }
+  },
+  "review_summary": {},
+  "measurement_complete": false,
+  "audit": {
+    "comparison_complete": false,
+    "reason_stopped": "Admission control stopped before the second cell: the 2,328,126-token reserve exceeded the 1,835,937 tokens remaining under the 3,000,000-token cohort ceiling.",
+    "observed_tokens": 1164063,
+    "additional_paid_calls": "Pending user budget/model choice; no additional calls made.",
+    "raw_runner_sha256": "e0654d5b8edb3e268e61ca0d7ec56492c26b2ca5c787e2df3b19792fb9895c39",
+    "runtime": {
+      "source_commit": "1475acc78795730645f08cf22285712098b8ab19",
+      "verified_source_modules": 123,
+      "all_source_modules_exact_match": true,
+      "editable": false,
+      "wheel_sha256": "c523f100a470cc94b73ba26c9c271978dc409f91404add5f44966ac13f176b34"
+    },
+    "recommendation": "Inconclusive. Keep indexing off by default and F4 gated until a complete matched comparison supports a recommendation.",
+    "limitations": [
+      "One off-arm task only; no on-arm result or paired contrast.",
+      "Token counts include helpers and cached input; they are not uncached billing tokens or a dollar-cost estimate.",
+      "The first completed attempt is retained; no paid retries were made."
+    ]
+  }
+}

@@ -3,7 +3,8 @@
 macOS uses Seatbelt (``sandbox-exec``) with a deny-by-default profile, and
 Linux uses bubblewrap. Under either, a command:
 
-- has no network access, except Unix sockets inside its writable paths;
+- has no network access by default, except Unix sockets inside writable paths;
+  explicitly configured dependency installers may opt into outbound IP access;
 - can write only to its writable paths (a disposable snapshot and home);
 - can read the rest of the filesystem except protected paths, which hold
   credentials, Loupe's own state, and the real checkout;
@@ -147,6 +148,8 @@ class SandboxPolicy:
     protected: tuple[Path, ...] = ()
     # Read-only exceptions inside protected paths, such as dependency folders.
     readable: tuple[Path, ...] = ()
+    # Only explicitly configured dependency installers may opt into IP access.
+    network: bool = False
 
 
 def sandbox_kind() -> str | None:
@@ -233,6 +236,8 @@ def _seatbelt(policy: SandboxPolicy, argv: Sequence[str]) -> list[str]:
             names.append(f'({kind} (param "{name}"))')
         return " ".join(names)
 
+    if policy.network:
+        rules.append("(allow network-outbound (remote ip))")
     if policy.protected:
         rules.append(f"(deny file-read* {filters('PROTECTED', policy.protected)})")
     if policy.readable:
@@ -288,6 +293,8 @@ def _bubblewrap(policy: SandboxPolicy, argv: Sequence[str], cwd: Path) -> list[s
         "--tmpfs",
         "/run",
     ]
+    if policy.network:
+        command.append("--share-net")
     # --die-with-parent and the private process namespace already stop
     # everything the command started when bubblewrap is killed.
     # A protected directory becomes an empty tmpfs. If a writable path lies

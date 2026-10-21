@@ -29,6 +29,7 @@ from llm_cli.execution.checks import (
     source_snapshot,
     supervised_run,
 )
+from llm_cli.execution.environment import SANDBOX_VARIABLES, EnvironmentSupplier
 from llm_cli.execution.sandbox import SandboxPolicy, uses_reaper, wrap
 from llm_cli.git.environment import run_git
 from llm_cli.ids import new_id
@@ -87,7 +88,9 @@ class CommandRunner:
         runtime_files: tuple[str, ...] = (),
         suppress_output: bool = False,
         sensitive_paths: tuple[str, ...] = (),
+        environment: EnvironmentSupplier | None = None,
     ) -> None:
+        self.environment = environment
         self.runtime_files = runtime_files
         self.suppress_output = suppress_output
         self.sensitive_paths = sensitive_paths
@@ -166,17 +169,29 @@ class CommandRunner:
         clipped = False
         state, exit_code = "error", None
         files: dict[str, bytes | None] = {}
-        emit(
-            "command.started",
-            {
-                "run_id": run_id,
-                "argv": list(argv),
-                "cwd": relative_cwd,
-                "timeout": timeout,
-                "sandbox": self.sandbox,
-            },
-        )
+        environment = None
+        sensitive_values: tuple[str, ...] = ()
         try:
+            environment = self.environment() if self.environment is not None else None
+            if environment is not None:
+                sensitive_values = environment.sensitive_values
+            public_argv = list(argv)
+            public_cwd = relative_cwd
+            for value in sorted(sensitive_values, key=len, reverse=True):
+                public_argv = [
+                    arg.replace(value, "[private value]") for arg in public_argv
+                ]
+                public_cwd = public_cwd.replace(value, "[private value]")
+            emit(
+                "command.started",
+                {
+                    "run_id": run_id,
+                    "argv": public_argv,
+                    "cwd": public_cwd,
+                    "timeout": timeout,
+                    "sandbox": self.sandbox,
+                },
+            )
             source = run_directory / "source"
             home = run_directory / "home"
             source.mkdir(parents=True)
@@ -188,7 +203,7 @@ class CommandRunner:
             readable = () if self.runtime_files else self._link_dependencies(source)
             from llm_cli.workspace.runtime import private_output_values
 
-            sensitive_values = private_output_values(
+            sensitive_values += private_output_values(
                 source,
                 tuple(sorted(self.runtime_files)),
                 source_paths=tuple(sorted(set(self.sensitive_paths) | screened)),
@@ -201,6 +216,18 @@ class CommandRunner:
                     f"{relative_cwd} is not a directory in the checkout snapshot"
                 )
             env = self._environment(home)
+            if environment is not None:
+                overrides = {
+                    name: value
+                    for name, value in env.items()
+                    if name in SANDBOX_VARIABLES
+                }
+                session_values, session_secrets = environment.capture(
+                    source, readable_roots=readable
+                )
+                env.update(session_values)
+                env.update(overrides)
+                sensitive_values += session_secrets
             if hook_input is not None:
                 input_file = home / "hook-input.json"
                 input_file.write_text(json.dumps(hook_input), encoding="utf-8")
@@ -227,6 +254,8 @@ class CommandRunner:
                 ),
                 reaper=uses_reaper(self.sandbox),
             )
+            if environment is not None:
+                environment.require()
             # "error" from the supervisor means output was withheld for secret
             # material; the command itself still ran to completion.
             state = "completed" if stopped is None or stopped == "error" else stopped
@@ -242,7 +271,10 @@ class CommandRunner:
                 files = captured
         except (OSError, ValueError, RuntimeError, LlmCoordError) as exc:
             state = "cancelled" if self.cancelled() else "error"
-            output += f"\n{exc}"
+            message = str(exc)
+            for value in sorted(sensitive_values, key=len, reverse=True):
+                message = message.replace(value, "[private value]")
+            output += "\n" + message
         finally:
             with suppress(OSError):
                 shutil.rmtree(run_directory)

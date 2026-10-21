@@ -26,7 +26,7 @@ from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.ids import new_id
 from llm_cli.paths import AppPaths, reject_symlink_components
-from llm_cli.protocol.client import DaemonClient
+from llm_cli.protocol.client import DaemonClient, session_environment_params
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +103,51 @@ _DETERMINISTIC_OPEN_REFUSALS = frozenset(
 )
 
 
+def _runtime_open_client(
+    client: DaemonClient, workspace_mode: str | None, *, resume: bool = False
+) -> DaemonClient:
+    """Bound session setup, adding installer time only for private runtimes."""
+    setup = _session_setup_client(client)
+    if not isinstance(client, DaemonClient) or (
+        workspace_mode != "isolated" and not resume
+    ):
+        return setup
+    from llm_cli.config.loader import load_settings
+
+    rebuild = load_settings(
+        client.paths.config_file, profile_id=client.paths.profile_id
+    ).isolated_rebuild
+    # Consult the daemon's effective policy: saved config can be pending a
+    # restart and must not shorten a still-active installer's response window.
+    probe = _patient(
+        setup,
+        SESSION_SETUP_TIMEOUT_SECONDS + sum(spec.timeout_seconds for spec in rebuild),
+    )
+    effective = probe.call("config.show")
+    entries = effective.get("settings", []) if isinstance(effective, dict) else []
+    active = next(
+        (
+            entry.get("value")
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("key") == "isolated.rebuild"
+        ),
+        None,
+    )
+    if isinstance(active, list):
+        seconds = sum(
+            entry["timeout_seconds"]
+            for entry in active
+            if isinstance(entry, dict)
+            and type(entry.get("timeout_seconds")) is int
+            and 1 <= entry["timeout_seconds"] <= 300
+        )
+        if not active:
+            return setup
+        # At most 16 installers, each capped at 300 seconds by the strict loader.
+        return _patient(setup, SESSION_SETUP_TIMEOUT_SECONDS + min(seconds, 16 * 300))
+    return probe if rebuild else setup
+
+
 def open_or_resume_session(
     client: DaemonClient,
     *,
@@ -122,9 +167,13 @@ def open_or_resume_session(
     setup_client = _session_setup_client(client)
     if resume_session_id is not None:
         secret = session_resume_secret(client.paths, resume_session_id)
-        resumed = setup_client.call(
+        resumed = _runtime_open_client(client, workspace_mode, resume=True).call(
             "session.resume",
-            {"session_id": resume_session_id, "resume_secret": secret},
+            {
+                "session_id": resume_session_id,
+                "resume_secret": secret,
+                **session_environment_params(client.paths),
+            },
         )
         session = _object(resumed, "session")
         cursor = _object(resumed, "cursor")
@@ -149,7 +198,7 @@ def open_or_resume_session(
     secret = secrets.token_urlsafe(32)
     _write_secret(client.paths, session_id, secret)
     try:
-        opened = setup_client.call(
+        opened = _runtime_open_client(client, workspace_mode).call(
             "session.open",
             {
                 "session_id": session_id,
@@ -159,6 +208,7 @@ def open_or_resume_session(
                 "model": model,
                 "workspace": workspace_mode,
                 "mode": selected_mode,
+                **session_environment_params(client.paths),
                 **(
                     {"approved_runtime_files": list(approved_runtime_files)}
                     if approved_runtime_files

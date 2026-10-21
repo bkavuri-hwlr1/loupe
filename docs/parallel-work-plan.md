@@ -708,6 +708,16 @@ it starts as an opt-in setting.
 - No variable value appears in the database or logs (search for a canary).
 - `minimal` behaves exactly as today.
 
+**Implemented.** C9 adds opt-in, memory-only per-session command environments,
+role filtering, immutable secret screening (including multiline values), and
+names-only inspection. Restarted launches wait for their originating client
+without blocking unrelated sessions; cancel/close can settle them. Reconnect
+invalidates environment-sensitive check evidence atomically. Exact hydrated
+path rewrites support logical checkout aliases and retained runtime generations.
+Closed-session held apply can receive a temporary applying-terminal map for fresh
+checks without reopening the session. See
+[command environments](command-environments.md) for configuration and recovery.
+
 ### C10. Dependency rebuild adapters
 
 **Why.** Copying dependency trees has limits: 200,000 entries, 5 GiB and
@@ -718,7 +728,7 @@ explicit rebuild as the alternative. No installer runs automatically today.
 **Scope.**
 
 - **Configuration.** A new `[isolated.rebuild]` table maps a dependency root
-  to an installer argv, for example `.venv = ["uv", "sync", "--frozen"]` or
+  to an installer argv, for example `".venv" = ["uv", "sync", "--frozen"]` or
   `node_modules = ["npm", "ci"]`. With that setting, the hydration plan shows
   `rebuild` for the root instead of `copy`. The explicit setting is the
   approval; nothing runs without it.
@@ -740,6 +750,50 @@ explicit rebuild as the alternative. No installer runs automatically today.
 - A failing rebuild produces the notice and leaves no partial tree.
 - A crash during a rebuild recovers.
 - Without the setting, nothing runs.
+
+**Implemented (Wave 6 C10).** Explicit shared settings now select bounded,
+sandboxed private rebuilds for ignored dependency roots, with network denied
+unless individually enabled. Plans do not traverse the primary rebuild root.
+Failure removes partial output while allowing the conversation to open; compact
+creation journals replay incomplete installers and dispose their private home
+on recovery. Rebuilt roots retain normal private check/apply generations and
+remain excluded from primary runtime refresh. First-opening secret consent is
+frozen across recovery.
+
+Creation records durable `rebuilding` preparation under the publication and
+physical-authority mutation locks. Installers then run outside those locks and
+the daemon dispatch lock, with a live ownership pin preventing checkout takeover.
+Unrelated RPCs, commands, checks and shared publication can continue. Finalization
+reacquires protection, verifies the frozen private source and creation identity,
+records runtime receipts and activates the workspace. Primary source changes
+arrive through ordinary incoming synchronization. Same-session setup reservations
+last through daemon registration and refuse duplicate opens without disturbing
+the original installer. The opening/resuming caller waits under the active
+daemon's installer-specific timeout plus a bounded creation margin.
+See [the guide](isolated-workspaces.md#explicit-dependency-rebuilds) for quoted
+TOML keys, budgets, unlocked installation and recovery.
+
+**Initial validation:** frozen commit `7f110cfc` passed the covered core (3,028 passed,
+one filesystem skip; 87% coverage), the separate strict uncovered index-scale
+test, Ruff, mypy for 123 source files, and offline package builds. The focused
+rebuild/config/hydration/sandbox/creation/C8 cases passed 193 tests with one
+filesystem skip. Regression coverage includes over-budget and escaping primary
+dependencies, dependency imports in checks, held apply after restart, failed
+installer cleanup and screened diagnostics, hard-crash private-home scrubbing
+with late-source quarantine, physical-authority recovery, frozen secret consent
+and installer-time source/runtime changes. No billed provider call was needed.
+
+**Follow-up validation:** frozen C10 `592b55ab` passed 3,062 covered tests, and the
+combined C9/F3 resolution `501db76f` passed 3,154. Each had one expected
+case-sensitive-filesystem skip, one separately measured scale test deselected,
+and 87% coverage. Separate 10,000-file / 400,000-function builds took 6.299 seconds
+on C10 and 6.338 seconds on the combined resolution against the unchanged
+30-second cap. Five real-RPC and identity regressions cover publication during
+installation, prompt duplicate refusal and the late registration boundary;
+rebuild/recovery, schema-upgrade and sandbox regressions also passed. Ruff,
+mypy and offline package builds passed on both frozen branches. These are prior
+frozen validation receipts; this documentation merge does not claim a new full
+suite result.
 
 ## Lane D — operations
 
@@ -974,6 +1028,32 @@ tests, `docs/implementation-status.md`, `docs/experiments/`.
 - Stale results carry their label.
 - A missing or broken index degrades with a notice instead of an error.
 - The live comparison is recorded with its recommendation.
+
+**Implemented (Wave 6 F3, live comparison complete; indexing stays off).** The opt-in
+`search_project` tool offers bounded cited lexical snippets plus one graph hop to
+main agents and read-only helpers. It revalidates source privacy and identities
+in each task's root, labels stale evidence, counts calls/returned bytes, and
+fails softly without changing coordination or initializing a missing store.
+Mandatory coordination context precedes optional result blocks; tight context
+budgets preserve the mandatory facts. Scripted visibility, privacy, stale/broken
+index and cursor/write-authority negative controls cover these boundaries.
+The five-task off/on corpus is pinned to merged main `6e5d65d`; all three
+alternating repetitions now yield 30 valid cells and 15 matched pairs. Both
+arms passed 12/15 contracts. On covered 90/102 facts versus 92/102 off; median
+paired time increased 6.5 seconds and tool use six calls. Keep indexing off and
+F4 gated. Seven retrieval calls came entirely from helpers.
+
+The user superseded the old token ceiling. Four valid cells remain unchanged;
+26 fresh cells followed a multiline input-framing repair. Valid failures stay
+in the comparison, and malformed-attempt usage stays in cumulative accounting.
+The equivalent shipped harness fix followed measurement and passed 42 tests.
+Eligible usage is 17,904,476 known tokens plus 76 unknown attempts; cumulative
+known usage, including excluded and historical attempts, is 22,677,799 plus 80
+unknown attempts. Only one pair has exact token accounting. The small fixture
+supports no overall token-savings or statistical-significance claim. See
+[optional retrieval](optional-retrieval.md) and the
+[completed comparison](experiments/optional-retrieval-f3-2026-10-21-sol.md);
+the older pilot and bounded-attempt records remain unchanged.
 
 ### F4. Embeddings with exact scoring
 

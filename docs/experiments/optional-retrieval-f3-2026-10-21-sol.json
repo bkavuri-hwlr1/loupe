@@ -1,0 +1,3576 @@
+{
+  "protocol": {
+    "suite_version": 5,
+    "corpus_revision": "6e5d65d148d6b4ac92fc849cb4fd861c63f8b5c3",
+    "runtime_product_source": "6c69ac3fa9336f4aa9259f2bf2dba86c1f438ada",
+    "runner_checkout_head": "b7b503c652dc2b9ff319692deb141a6ff41c5d0e",
+    "provider": "codex",
+    "model": "gpt-6-sol",
+    "effort": "high",
+    "expected_cells": 30,
+    "expected_pairs": 15,
+    "issues": [],
+    "observer_mode": "accounting only; no enforcement or artificial request queue"
+  },
+  "coverage": {
+    "recorded_cells": 30,
+    "passed_cells": 24,
+    "failed_cells": 6,
+    "matched_pairs": 15,
+    "collection_complete": true,
+    "quality_contract_all_passed": false,
+    "missing_cells": [],
+    "duplicate_cells": [],
+    "runner_status": "aggregate_collected",
+    "run_exit_code": null,
+    "aggregate_final_accounting_artifacts_present": true
+  },
+  "accounting": {
+    "new_known_observed_tokens": 20240300,
+    "new_unknown_transport_attempts": 79,
+    "all_recorded_transport_attempts_have_known_usage": false,
+    "recorded_cell_checkpoint_tokens": 17904476,
+    "new_known_observed_minus_recorded_checkpoint_tokens": 2335824,
+    "historical_astra_pilot_observed_tokens": 1164063,
+    "historical_sol_attempts_observed_tokens": 1273436,
+    "historical_sol_unresolved_bound_tokens": 1178000,
+    "historical_observed_total_tokens": 2437499,
+    "cumulative_known_observed_tokens": 22677799,
+    "historical_bound_is_new_observed_usage": false,
+    "new_unknown_usage_bound_tokens": null,
+    "historical_attempts_in_matched_comparison": false,
+    "transport_attempt_count_semantics": "Transport attempt records do not prove provider receipt when usage is unknown.",
+    "unknown_usage_semantics": "Unknown usage remains unknown; no finite bound is inferred for the uncapped cohort. Known observed totals are lower bounds whenever unknown attempts exist.",
+    "eligible_comparison_known_observed_tokens": 17904476,
+    "eligible_comparison_unknown_transport_attempts": 76,
+    "excluded_input_framing_known_observed_tokens": 2335824,
+    "excluded_input_framing_unknown_transport_attempts": 3,
+    "eligible_known_observed_minus_recorded_checkpoint_tokens": 0,
+    "historical_sol_unknown_transport_attempts": 1,
+    "cumulative_unknown_transport_attempts": 80,
+    "excluded_framing_in_matched_scores": false
+  },
+  "observer_totals": {
+    "transport_attempts": 1540,
+    "known_attempts": 1464,
+    "unknown_attempts": 76,
+    "known_input_tokens": 17699855,
+    "known_output_tokens": 204621,
+    "known_total_tokens": 17904476,
+    "unknown_categories": {
+      "missing_receipt": 76
+    },
+    "effort_usage": {}
+  },
+  "unassigned_observer_usage": {
+    "transport_attempts": 0,
+    "known_attempts": 0,
+    "unknown_attempts": 0,
+    "known_input_tokens": 0,
+    "known_output_tokens": 0,
+    "known_total_tokens": 0,
+    "unknown_categories": {},
+    "effort_usage": {}
+  },
+  "observed_effort_usage": {
+    "high": {
+      "transport_attempts": 279,
+      "known_attempts": 253,
+      "unknown_attempts": 26,
+      "known_input_tokens": 5035913,
+      "known_output_tokens": 69935,
+      "known_total_tokens": 5105848,
+      "unknown_categories": {
+        "missing_receipt": 26
+      },
+      "effort_usage": {}
+    },
+    "low": {
+      "transport_attempts": 1261,
+      "known_attempts": 1211,
+      "unknown_attempts": 50,
+      "known_input_tokens": 12663942,
+      "known_output_tokens": 134686,
+      "known_total_tokens": 12798628,
+      "unknown_categories": {
+        "missing_receipt": 50
+      },
+      "effort_usage": {}
+    }
+  },
+  "observer_outcome_kind_counts": {
+    "closed": 1464,
+    "create_failed": 76
+  },
+  "observer_problems": [],
+  "runtime_provenance": {
+    "source_head": "6c69ac3fa9336f4aa9259f2bf2dba86c1f438ada",
+    "documentation_head": "b7b503c652dc2b9ff319692deb141a6ff41c5d0e",
+    "head": "6c69ac3fa9336f4aa9259f2bf2dba86c1f438ada",
+    "installed_modules": 123,
+    "all_source_modules_exact_match": true,
+    "wheel_sha256": "9b6a427f6681d11984973ef1a70ace93adf0c37d9bf9706d150e4038e7ddccaa",
+    "runner_sha256": "0863003c70b22d111797fd8b2ceffb81d297933d36064b3dc92d183f76b9b490",
+    "tasks_sha256": "d6faf771dd9fe640d74574819b87cccac4c53cbf48119aa0241defd6c32ae740",
+    "source_test_script_sha256": "2cc86dffb7149ae6d08acd3bc5be56a0ac614eb0fdff751a129f67a65866434b"
+  },
+  "cells": [
+    {
+      "ordinal": 1,
+      "id": "trace-shared-edit",
+      "repetition": 1,
+      "retrieval_arm": "off",
+      "passed": false,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [
+        "facts"
+      ],
+      "facts_found": [
+        "_write_file",
+        "_stage",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "retain",
+        "operator_attention",
+        "atomic_replace"
+      ],
+      "facts_missed": [
+        "os.replace",
+        "settle_shared_execution",
+        "CheckRunner",
+        "restore_usage"
+      ],
+      "facts_found_count": 7,
+      "facts_total": 11,
+      "fact_coverage": 0.6363636363636364,
+      "checkpoint_prompt_tokens": 1298093,
+      "checkpoint_output_tokens": 8505,
+      "checkpoint_total_tokens": 1306598,
+      "checkpoint_cached_tokens": 1115136,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 1106321,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 31,
+      "all_tool_calls": 105,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 144.7,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 61,
+        "known_attempts": 61,
+        "unknown_attempts": 0,
+        "known_input_tokens": 1298093,
+        "known_output_tokens": 8505,
+        "known_total_tokens": 1306598,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 9,
+            "known_attempts": 9,
+            "unknown_attempts": 0,
+            "known_input_tokens": 191772,
+            "known_output_tokens": 2959,
+            "known_total_tokens": 194731,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 52,
+            "known_attempts": 52,
+            "unknown_attempts": 0,
+            "known_input_tokens": 1106321,
+            "known_output_tokens": 5546,
+            "known_total_tokens": 1111867,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 2,
+      "id": "trace-shared-edit",
+      "repetition": 1,
+      "retrieval_arm": "on",
+      "passed": false,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [
+        "facts"
+      ],
+      "facts_found": [
+        "_write_file",
+        "_stage",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "retain",
+        "operator_attention",
+        "atomic_replace"
+      ],
+      "facts_missed": [
+        "os.replace",
+        "settle_shared_execution",
+        "CheckRunner",
+        "restore_usage"
+      ],
+      "facts_found_count": 7,
+      "facts_total": 11,
+      "fact_coverage": 0.6363636363636364,
+      "checkpoint_prompt_tokens": 1110832,
+      "checkpoint_output_tokens": 10107,
+      "checkpoint_total_tokens": 1120939,
+      "checkpoint_cached_tokens": 909312,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 822527,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 34,
+      "all_tool_calls": 128,
+      "retrieval_calls": 1,
+      "helper_retrieval_calls": 1,
+      "wall_seconds": 243.3,
+      "index_build_seconds": 1.281,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 103,
+        "known_attempts": 101,
+        "unknown_attempts": 2,
+        "known_input_tokens": 1110832,
+        "known_output_tokens": 10107,
+        "known_total_tokens": 1120939,
+        "unknown_categories": {
+          "missing_receipt": 2
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 13,
+            "known_attempts": 12,
+            "unknown_attempts": 1,
+            "known_input_tokens": 288305,
+            "known_output_tokens": 3075,
+            "known_total_tokens": 291380,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 90,
+            "known_attempts": 89,
+            "unknown_attempts": 1,
+            "known_input_tokens": 822527,
+            "known_output_tokens": 7032,
+            "known_total_tokens": 829559,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 3,
+      "id": "repo-summary",
+      "repetition": 1,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "daemon",
+        "sqlite",
+        "claim",
+        "provider",
+        "pytest"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 5,
+      "facts_total": 5,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 308781,
+      "checkpoint_output_tokens": 5056,
+      "checkpoint_total_tokens": 313837,
+      "checkpoint_cached_tokens": 228608,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 137361,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 27,
+      "all_tool_calls": 63,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 133.1,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 24,
+        "known_attempts": 24,
+        "unknown_attempts": 0,
+        "known_input_tokens": 308781,
+        "known_output_tokens": 5056,
+        "known_total_tokens": 313837,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 10,
+            "known_attempts": 10,
+            "unknown_attempts": 0,
+            "known_input_tokens": 171420,
+            "known_output_tokens": 2004,
+            "known_total_tokens": 173424,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 14,
+            "known_attempts": 14,
+            "unknown_attempts": 0,
+            "known_input_tokens": 137361,
+            "known_output_tokens": 3052,
+            "known_total_tokens": 140413,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 4,
+      "id": "repo-summary",
+      "repetition": 1,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "daemon",
+        "sqlite",
+        "claim",
+        "provider",
+        "pytest"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 5,
+      "facts_total": 5,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 201713,
+      "checkpoint_output_tokens": 4633,
+      "checkpoint_total_tokens": 206346,
+      "checkpoint_cached_tokens": 128384,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 105649,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 22,
+      "all_tool_calls": 69,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 103.4,
+      "index_build_seconds": 1.098,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 22,
+        "known_attempts": 21,
+        "unknown_attempts": 1,
+        "known_input_tokens": 201713,
+        "known_output_tokens": 4633,
+        "known_total_tokens": 206346,
+        "unknown_categories": {
+          "missing_receipt": 1
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 9,
+            "known_attempts": 8,
+            "unknown_attempts": 1,
+            "known_input_tokens": 96064,
+            "known_output_tokens": 1716,
+            "known_total_tokens": 97780,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 13,
+            "known_attempts": 13,
+            "unknown_attempts": 0,
+            "known_input_tokens": 105649,
+            "known_output_tokens": 2917,
+            "known_total_tokens": 108566,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 5,
+      "id": "where-source-privacy",
+      "repetition": 1,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "source_policy",
+        "contains_secret_material",
+        "excluded_paths",
+        "ensure_safe_content",
+        "current_state",
+        "explorer"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 465195,
+      "checkpoint_output_tokens": 6223,
+      "checkpoint_total_tokens": 471418,
+      "checkpoint_cached_tokens": 345856,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 366594,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 24,
+      "all_tool_calls": 71,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 114.6,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 43,
+        "known_attempts": 42,
+        "unknown_attempts": 1,
+        "known_input_tokens": 465195,
+        "known_output_tokens": 6223,
+        "known_total_tokens": 471418,
+        "unknown_categories": {
+          "missing_receipt": 1
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 6,
+            "known_attempts": 6,
+            "unknown_attempts": 0,
+            "known_input_tokens": 98601,
+            "known_output_tokens": 2156,
+            "known_total_tokens": 100757,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 37,
+            "known_attempts": 36,
+            "unknown_attempts": 1,
+            "known_input_tokens": 366594,
+            "known_output_tokens": 4067,
+            "known_total_tokens": 370661,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 6,
+      "id": "where-source-privacy",
+      "repetition": 1,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "source_policy",
+        "contains_secret_material",
+        "excluded_paths",
+        "ensure_safe_content",
+        "current_state",
+        "explorer"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 623621,
+      "checkpoint_output_tokens": 8204,
+      "checkpoint_total_tokens": 631825,
+      "checkpoint_cached_tokens": 454400,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 385352,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 28,
+      "all_tool_calls": 92,
+      "retrieval_calls": 1,
+      "helper_retrieval_calls": 1,
+      "wall_seconds": 173.4,
+      "index_build_seconds": 1.065,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 49,
+        "known_attempts": 49,
+        "unknown_attempts": 0,
+        "known_input_tokens": 623621,
+        "known_output_tokens": 8204,
+        "known_total_tokens": 631825,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 9,
+            "known_attempts": 9,
+            "unknown_attempts": 0,
+            "known_input_tokens": 238269,
+            "known_output_tokens": 2617,
+            "known_total_tokens": 240886,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 40,
+            "known_attempts": 40,
+            "unknown_attempts": 0,
+            "known_input_tokens": 385352,
+            "known_output_tokens": 5587,
+            "known_total_tokens": 390939,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 7,
+      "id": "where-index-updates",
+      "repetition": 1,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "knowledge_outbox",
+        "process_pending",
+        "KnowledgeIndex",
+        "generation",
+        "stale",
+        "transaction"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 289524,
+      "checkpoint_output_tokens": 5508,
+      "checkpoint_total_tokens": 295032,
+      "checkpoint_cached_tokens": 201472,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 201382,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 24,
+      "all_tool_calls": 71,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 101.9,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 45,
+        "known_attempts": 45,
+        "unknown_attempts": 0,
+        "known_input_tokens": 289524,
+        "known_output_tokens": 5508,
+        "known_total_tokens": 295032,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 6,
+            "known_attempts": 6,
+            "unknown_attempts": 0,
+            "known_input_tokens": 88142,
+            "known_output_tokens": 2052,
+            "known_total_tokens": 90194,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 39,
+            "known_attempts": 39,
+            "unknown_attempts": 0,
+            "known_input_tokens": 201382,
+            "known_output_tokens": 3456,
+            "known_total_tokens": 204838,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 8,
+      "id": "where-index-updates",
+      "repetition": 1,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "knowledge_outbox",
+        "process_pending",
+        "KnowledgeIndex",
+        "generation",
+        "stale",
+        "transaction"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 535336,
+      "checkpoint_output_tokens": 5991,
+      "checkpoint_total_tokens": 541327,
+      "checkpoint_cached_tokens": 434304,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 440708,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 19,
+      "all_tool_calls": 76,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 123.8,
+      "index_build_seconds": 1.041,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 61,
+        "known_attempts": 60,
+        "unknown_attempts": 1,
+        "known_input_tokens": 535336,
+        "known_output_tokens": 5991,
+        "known_total_tokens": 541327,
+        "unknown_categories": {
+          "missing_receipt": 1
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 7,
+            "known_attempts": 7,
+            "unknown_attempts": 0,
+            "known_input_tokens": 94628,
+            "known_output_tokens": 1942,
+            "known_total_tokens": 96570,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 54,
+            "known_attempts": 53,
+            "unknown_attempts": 1,
+            "known_input_tokens": 440708,
+            "known_output_tokens": 4049,
+            "known_total_tokens": 444757,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 9,
+      "id": "where-final-answer",
+      "repetition": 1,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "_finalize_response",
+        "SettlementFacts",
+        "prepare_finalization",
+        "finalize",
+        "checkpoint",
+        "finalization_failed"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 671994,
+      "checkpoint_output_tokens": 6676,
+      "checkpoint_total_tokens": 678670,
+      "checkpoint_cached_tokens": 528512,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 554943,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 21,
+      "all_tool_calls": 86,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 115.7,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 60,
+        "known_attempts": 60,
+        "unknown_attempts": 0,
+        "known_input_tokens": 671994,
+        "known_output_tokens": 6676,
+        "known_total_tokens": 678670,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 7,
+            "known_attempts": 7,
+            "unknown_attempts": 0,
+            "known_input_tokens": 117051,
+            "known_output_tokens": 2060,
+            "known_total_tokens": 119111,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 53,
+            "known_attempts": 53,
+            "unknown_attempts": 0,
+            "known_input_tokens": 554943,
+            "known_output_tokens": 4616,
+            "known_total_tokens": 559559,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 10,
+      "id": "where-final-answer",
+      "repetition": 1,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "_finalize_response",
+        "SettlementFacts",
+        "prepare_finalization",
+        "finalize",
+        "checkpoint",
+        "finalization_failed"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 723889,
+      "checkpoint_output_tokens": 8214,
+      "checkpoint_total_tokens": 732103,
+      "checkpoint_cached_tokens": 590080,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 623152,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 17,
+      "all_tool_calls": 106,
+      "retrieval_calls": 1,
+      "helper_retrieval_calls": 1,
+      "wall_seconds": 200.6,
+      "index_build_seconds": 1.07,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 75,
+        "known_attempts": 70,
+        "unknown_attempts": 5,
+        "known_input_tokens": 723889,
+        "known_output_tokens": 8214,
+        "known_total_tokens": 732103,
+        "unknown_categories": {
+          "missing_receipt": 5
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 7,
+            "known_attempts": 7,
+            "unknown_attempts": 0,
+            "known_input_tokens": 100737,
+            "known_output_tokens": 1961,
+            "known_total_tokens": 102698,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 68,
+            "known_attempts": 63,
+            "unknown_attempts": 5,
+            "known_input_tokens": 623152,
+            "known_output_tokens": 6253,
+            "known_total_tokens": 629405,
+            "unknown_categories": {
+              "missing_receipt": 5
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 11,
+      "id": "trace-shared-edit",
+      "repetition": 2,
+      "retrieval_arm": "on",
+      "passed": false,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [
+        "facts"
+      ],
+      "facts_found": [
+        "_write_file",
+        "_stage",
+        "os.replace",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "retain",
+        "operator_attention"
+      ],
+      "facts_missed": [
+        "settle_shared_execution",
+        "CheckRunner",
+        "restore_usage",
+        "atomic_replace"
+      ],
+      "facts_found_count": 7,
+      "facts_total": 11,
+      "fact_coverage": 0.6363636363636364,
+      "checkpoint_prompt_tokens": 1036021,
+      "checkpoint_output_tokens": 8701,
+      "checkpoint_total_tokens": 1044722,
+      "checkpoint_cached_tokens": 883200,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 595989,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 44,
+      "all_tool_calls": 111,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 224.5,
+      "index_build_seconds": 1.036,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 73,
+        "known_attempts": 70,
+        "unknown_attempts": 3,
+        "known_input_tokens": 1036021,
+        "known_output_tokens": 8701,
+        "known_total_tokens": 1044722,
+        "unknown_categories": {
+          "missing_receipt": 3
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 16,
+            "known_attempts": 16,
+            "unknown_attempts": 0,
+            "known_input_tokens": 440032,
+            "known_output_tokens": 3706,
+            "known_total_tokens": 443738,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 57,
+            "known_attempts": 54,
+            "unknown_attempts": 3,
+            "known_input_tokens": 595989,
+            "known_output_tokens": 4995,
+            "known_total_tokens": 600984,
+            "unknown_categories": {
+              "missing_receipt": 3
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 12,
+      "id": "trace-shared-edit",
+      "repetition": 2,
+      "retrieval_arm": "off",
+      "passed": false,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [
+        "facts"
+      ],
+      "facts_found": [
+        "_write_file",
+        "_stage",
+        "os.replace",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "retain",
+        "operator_attention",
+        "atomic_replace"
+      ],
+      "facts_missed": [
+        "settle_shared_execution",
+        "CheckRunner",
+        "restore_usage"
+      ],
+      "facts_found_count": 8,
+      "facts_total": 11,
+      "fact_coverage": 0.7272727272727273,
+      "checkpoint_prompt_tokens": 742449,
+      "checkpoint_output_tokens": 7677,
+      "checkpoint_total_tokens": 750126,
+      "checkpoint_cached_tokens": 595328,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 576834,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 27,
+      "all_tool_calls": 90,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 172.8,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 52,
+        "known_attempts": 52,
+        "unknown_attempts": 0,
+        "known_input_tokens": 742449,
+        "known_output_tokens": 7677,
+        "known_total_tokens": 750126,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 8,
+            "known_attempts": 8,
+            "unknown_attempts": 0,
+            "known_input_tokens": 165615,
+            "known_output_tokens": 2553,
+            "known_total_tokens": 168168,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 44,
+            "known_attempts": 44,
+            "unknown_attempts": 0,
+            "known_input_tokens": 576834,
+            "known_output_tokens": 5124,
+            "known_total_tokens": 581958,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 13,
+      "id": "repo-summary",
+      "repetition": 2,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "daemon",
+        "sqlite",
+        "claim",
+        "provider",
+        "pytest"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 5,
+      "facts_total": 5,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 638569,
+      "checkpoint_output_tokens": 6881,
+      "checkpoint_total_tokens": 645450,
+      "checkpoint_cached_tokens": 470144,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 464553,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 24,
+      "all_tool_calls": 101,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 113.7,
+      "index_build_seconds": 1.065,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 37,
+        "known_attempts": 37,
+        "unknown_attempts": 0,
+        "known_input_tokens": 638569,
+        "known_output_tokens": 6881,
+        "known_total_tokens": 645450,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 10,
+            "known_attempts": 10,
+            "unknown_attempts": 0,
+            "known_input_tokens": 174016,
+            "known_output_tokens": 1862,
+            "known_total_tokens": 175878,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 27,
+            "known_attempts": 27,
+            "unknown_attempts": 0,
+            "known_input_tokens": 464553,
+            "known_output_tokens": 5019,
+            "known_total_tokens": 469572,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 14,
+      "id": "repo-summary",
+      "repetition": 2,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "daemon",
+        "sqlite",
+        "claim",
+        "provider",
+        "pytest"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 5,
+      "facts_total": 5,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 323901,
+      "checkpoint_output_tokens": 6185,
+      "checkpoint_total_tokens": 330086,
+      "checkpoint_cached_tokens": 205952,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 226497,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 23,
+      "all_tool_calls": 75,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 91.3,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 27,
+        "known_attempts": 26,
+        "unknown_attempts": 1,
+        "known_input_tokens": 323901,
+        "known_output_tokens": 6185,
+        "known_total_tokens": 330086,
+        "unknown_categories": {
+          "missing_receipt": 1
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 9,
+            "known_attempts": 9,
+            "unknown_attempts": 0,
+            "known_input_tokens": 97404,
+            "known_output_tokens": 1961,
+            "known_total_tokens": 99365,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 18,
+            "known_attempts": 17,
+            "unknown_attempts": 1,
+            "known_input_tokens": 226497,
+            "known_output_tokens": 4224,
+            "known_total_tokens": 230721,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 15,
+      "id": "where-source-privacy",
+      "repetition": 2,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "source_policy",
+        "contains_secret_material",
+        "excluded_paths",
+        "ensure_safe_content",
+        "current_state",
+        "explorer"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 825017,
+      "checkpoint_output_tokens": 8013,
+      "checkpoint_total_tokens": 833030,
+      "checkpoint_cached_tokens": 699776,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 424388,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 39,
+      "all_tool_calls": 102,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 151.5,
+      "index_build_seconds": 1.103,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 52,
+        "known_attempts": 52,
+        "unknown_attempts": 0,
+        "known_input_tokens": 825017,
+        "known_output_tokens": 8013,
+        "known_total_tokens": 833030,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 13,
+            "known_attempts": 13,
+            "unknown_attempts": 0,
+            "known_input_tokens": 400629,
+            "known_output_tokens": 3079,
+            "known_total_tokens": 403708,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 39,
+            "known_attempts": 39,
+            "unknown_attempts": 0,
+            "known_input_tokens": 424388,
+            "known_output_tokens": 4934,
+            "known_total_tokens": 429322,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 16,
+      "id": "where-source-privacy",
+      "repetition": 2,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "source_policy",
+        "contains_secret_material",
+        "excluded_paths",
+        "ensure_safe_content",
+        "current_state",
+        "explorer"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 590307,
+      "checkpoint_output_tokens": 7504,
+      "checkpoint_total_tokens": 597811,
+      "checkpoint_cached_tokens": 438144,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 389984,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 31,
+      "all_tool_calls": 92,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 152.7,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 46,
+        "known_attempts": 44,
+        "unknown_attempts": 2,
+        "known_input_tokens": 590307,
+        "known_output_tokens": 7504,
+        "known_total_tokens": 597811,
+        "unknown_categories": {
+          "missing_receipt": 2
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 9,
+            "known_attempts": 9,
+            "unknown_attempts": 0,
+            "known_input_tokens": 200323,
+            "known_output_tokens": 2662,
+            "known_total_tokens": 202985,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 37,
+            "known_attempts": 35,
+            "unknown_attempts": 2,
+            "known_input_tokens": 389984,
+            "known_output_tokens": 4842,
+            "known_total_tokens": 394826,
+            "unknown_categories": {
+              "missing_receipt": 2
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 17,
+      "id": "where-index-updates",
+      "repetition": 2,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "knowledge_outbox",
+        "process_pending",
+        "KnowledgeIndex",
+        "generation",
+        "stale",
+        "transaction"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 374569,
+      "checkpoint_output_tokens": 5471,
+      "checkpoint_total_tokens": 380040,
+      "checkpoint_cached_tokens": 296448,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 299814,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 17,
+      "all_tool_calls": 67,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 121.5,
+      "index_build_seconds": 1.06,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 51,
+        "known_attempts": 51,
+        "unknown_attempts": 0,
+        "known_input_tokens": 374569,
+        "known_output_tokens": 5471,
+        "known_total_tokens": 380040,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 6,
+            "known_attempts": 6,
+            "unknown_attempts": 0,
+            "known_input_tokens": 74755,
+            "known_output_tokens": 1791,
+            "known_total_tokens": 76546,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 45,
+            "known_attempts": 45,
+            "unknown_attempts": 0,
+            "known_input_tokens": 299814,
+            "known_output_tokens": 3680,
+            "known_total_tokens": 303494,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 18,
+      "id": "where-index-updates",
+      "repetition": 2,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "knowledge_outbox",
+        "process_pending",
+        "KnowledgeIndex",
+        "generation",
+        "stale",
+        "transaction"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 435507,
+      "checkpoint_output_tokens": 5819,
+      "checkpoint_total_tokens": 441326,
+      "checkpoint_cached_tokens": 334976,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 302100,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 25,
+      "all_tool_calls": 77,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 146.3,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 57,
+        "known_attempts": 57,
+        "unknown_attempts": 0,
+        "known_input_tokens": 435507,
+        "known_output_tokens": 5819,
+        "known_total_tokens": 441326,
+        "unknown_categories": {},
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 8,
+            "known_attempts": 8,
+            "unknown_attempts": 0,
+            "known_input_tokens": 133407,
+            "known_output_tokens": 2118,
+            "known_total_tokens": 135525,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 49,
+            "known_attempts": 49,
+            "unknown_attempts": 0,
+            "known_input_tokens": 302100,
+            "known_output_tokens": 3701,
+            "known_total_tokens": 305801,
+            "unknown_categories": {},
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 19,
+      "id": "where-final-answer",
+      "repetition": 2,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "_finalize_response",
+        "SettlementFacts",
+        "prepare_finalization",
+        "finalize",
+        "checkpoint",
+        "finalization_failed"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 568848,
+      "checkpoint_output_tokens": 6728,
+      "checkpoint_total_tokens": 575576,
+      "checkpoint_cached_tokens": 447488,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 345407,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 34,
+      "all_tool_calls": 83,
+      "retrieval_calls": 1,
+      "helper_retrieval_calls": 1,
+      "wall_seconds": 148.6,
+      "index_build_seconds": 1.041,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 59,
+        "known_attempts": 52,
+        "unknown_attempts": 7,
+        "known_input_tokens": 568848,
+        "known_output_tokens": 6728,
+        "known_total_tokens": 575576,
+        "unknown_categories": {
+          "missing_receipt": 7
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 16,
+            "known_attempts": 10,
+            "unknown_attempts": 6,
+            "known_input_tokens": 223441,
+            "known_output_tokens": 2863,
+            "known_total_tokens": 226304,
+            "unknown_categories": {
+              "missing_receipt": 6
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 43,
+            "known_attempts": 42,
+            "unknown_attempts": 1,
+            "known_input_tokens": 345407,
+            "known_output_tokens": 3865,
+            "known_total_tokens": 349272,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 20,
+      "id": "where-final-answer",
+      "repetition": 2,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "_finalize_response",
+        "SettlementFacts",
+        "prepare_finalization",
+        "finalize",
+        "checkpoint",
+        "finalization_failed"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 636035,
+      "checkpoint_output_tokens": 7038,
+      "checkpoint_total_tokens": 643073,
+      "checkpoint_cached_tokens": 496384,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 513939,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 25,
+      "all_tool_calls": 90,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 152.8,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 68,
+        "known_attempts": 63,
+        "unknown_attempts": 5,
+        "known_input_tokens": 636035,
+        "known_output_tokens": 7038,
+        "known_total_tokens": 643073,
+        "unknown_categories": {
+          "missing_receipt": 5
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 8,
+            "known_attempts": 7,
+            "unknown_attempts": 1,
+            "known_input_tokens": 122096,
+            "known_output_tokens": 2585,
+            "known_total_tokens": 124681,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 60,
+            "known_attempts": 56,
+            "unknown_attempts": 4,
+            "known_input_tokens": 513939,
+            "known_output_tokens": 4453,
+            "known_total_tokens": 518392,
+            "unknown_categories": {
+              "missing_receipt": 4
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 21,
+      "id": "trace-shared-edit",
+      "repetition": 3,
+      "retrieval_arm": "off",
+      "passed": false,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [
+        "facts"
+      ],
+      "facts_found": [
+        "_write_file",
+        "_stage",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "retain",
+        "operator_attention",
+        "CheckRunner",
+        "atomic_replace"
+      ],
+      "facts_missed": [
+        "os.replace",
+        "settle_shared_execution",
+        "restore_usage"
+      ],
+      "facts_found_count": 8,
+      "facts_total": 11,
+      "fact_coverage": 0.7272727272727273,
+      "checkpoint_prompt_tokens": 539731,
+      "checkpoint_output_tokens": 7189,
+      "checkpoint_total_tokens": 546920,
+      "checkpoint_cached_tokens": 419840,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 347065,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 29,
+      "all_tool_calls": 84,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 129.5,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 49,
+        "known_attempts": 45,
+        "unknown_attempts": 4,
+        "known_input_tokens": 539731,
+        "known_output_tokens": 7189,
+        "known_total_tokens": 546920,
+        "unknown_categories": {
+          "missing_receipt": 4
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 12,
+            "known_attempts": 9,
+            "unknown_attempts": 3,
+            "known_input_tokens": 192666,
+            "known_output_tokens": 2841,
+            "known_total_tokens": 195507,
+            "unknown_categories": {
+              "missing_receipt": 3
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 37,
+            "known_attempts": 36,
+            "unknown_attempts": 1,
+            "known_input_tokens": 347065,
+            "known_output_tokens": 4348,
+            "known_total_tokens": 351413,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 22,
+      "id": "trace-shared-edit",
+      "repetition": 3,
+      "retrieval_arm": "on",
+      "passed": false,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [
+        "facts"
+      ],
+      "facts_found": [
+        "_write_file",
+        "_stage",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "retain",
+        "operator_attention",
+        "atomic_replace"
+      ],
+      "facts_missed": [
+        "os.replace",
+        "settle_shared_execution",
+        "CheckRunner",
+        "restore_usage"
+      ],
+      "facts_found_count": 7,
+      "facts_total": 11,
+      "fact_coverage": 0.6363636363636364,
+      "checkpoint_prompt_tokens": 736206,
+      "checkpoint_output_tokens": 7830,
+      "checkpoint_total_tokens": 744036,
+      "checkpoint_cached_tokens": 593920,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 422347,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 40,
+      "all_tool_calls": 104,
+      "retrieval_calls": 2,
+      "helper_retrieval_calls": 2,
+      "wall_seconds": 136.0,
+      "index_build_seconds": 1.059,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 55,
+        "known_attempts": 45,
+        "unknown_attempts": 10,
+        "known_input_tokens": 736206,
+        "known_output_tokens": 7830,
+        "known_total_tokens": 744036,
+        "unknown_categories": {
+          "missing_receipt": 10
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 15,
+            "known_attempts": 11,
+            "unknown_attempts": 4,
+            "known_input_tokens": 313859,
+            "known_output_tokens": 3321,
+            "known_total_tokens": 317180,
+            "unknown_categories": {
+              "missing_receipt": 4
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 40,
+            "known_attempts": 34,
+            "unknown_attempts": 6,
+            "known_input_tokens": 422347,
+            "known_output_tokens": 4509,
+            "known_total_tokens": 426856,
+            "unknown_categories": {
+              "missing_receipt": 6
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 23,
+      "id": "repo-summary",
+      "repetition": 3,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "daemon",
+        "sqlite",
+        "claim",
+        "provider",
+        "pytest"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 5,
+      "facts_total": 5,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 213173,
+      "checkpoint_output_tokens": 5315,
+      "checkpoint_total_tokens": 218488,
+      "checkpoint_cached_tokens": 127488,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 159476,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 9,
+      "all_tool_calls": 69,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 81.8,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 22,
+        "known_attempts": 20,
+        "unknown_attempts": 2,
+        "known_input_tokens": 213173,
+        "known_output_tokens": 5315,
+        "known_total_tokens": 218488,
+        "unknown_categories": {
+          "missing_receipt": 2
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 6,
+            "known_attempts": 5,
+            "unknown_attempts": 1,
+            "known_input_tokens": 53697,
+            "known_output_tokens": 1327,
+            "known_total_tokens": 55024,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 16,
+            "known_attempts": 15,
+            "unknown_attempts": 1,
+            "known_input_tokens": 159476,
+            "known_output_tokens": 3988,
+            "known_total_tokens": 163464,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 24,
+      "id": "repo-summary",
+      "repetition": 3,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "daemon",
+        "sqlite",
+        "claim",
+        "provider",
+        "pytest"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 5,
+      "facts_total": 5,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 386286,
+      "checkpoint_output_tokens": 5581,
+      "checkpoint_total_tokens": 391867,
+      "checkpoint_cached_tokens": 288512,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 302517,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 17,
+      "all_tool_calls": 73,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 108.1,
+      "index_build_seconds": 1.034,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 32,
+        "known_attempts": 28,
+        "unknown_attempts": 4,
+        "known_input_tokens": 386286,
+        "known_output_tokens": 5581,
+        "known_total_tokens": 391867,
+        "unknown_categories": {
+          "missing_receipt": 4
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 8,
+            "known_attempts": 8,
+            "unknown_attempts": 0,
+            "known_input_tokens": 83769,
+            "known_output_tokens": 1708,
+            "known_total_tokens": 85477,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 24,
+            "known_attempts": 20,
+            "unknown_attempts": 4,
+            "known_input_tokens": 302517,
+            "known_output_tokens": 3873,
+            "known_total_tokens": 306390,
+            "unknown_categories": {
+              "missing_receipt": 4
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 25,
+      "id": "where-source-privacy",
+      "repetition": 3,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "source_policy",
+        "contains_secret_material",
+        "excluded_paths",
+        "ensure_safe_content",
+        "current_state",
+        "explorer"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 845811,
+      "checkpoint_output_tokens": 7619,
+      "checkpoint_total_tokens": 853430,
+      "checkpoint_cached_tokens": 689792,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 449360,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 35,
+      "all_tool_calls": 97,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 148.4,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 57,
+        "known_attempts": 47,
+        "unknown_attempts": 10,
+        "known_input_tokens": 845811,
+        "known_output_tokens": 7619,
+        "known_total_tokens": 853430,
+        "unknown_categories": {
+          "missing_receipt": 10
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 17,
+            "known_attempts": 12,
+            "unknown_attempts": 5,
+            "known_input_tokens": 396451,
+            "known_output_tokens": 3102,
+            "known_total_tokens": 399553,
+            "unknown_categories": {
+              "missing_receipt": 5
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 40,
+            "known_attempts": 35,
+            "unknown_attempts": 5,
+            "known_input_tokens": 449360,
+            "known_output_tokens": 4517,
+            "known_total_tokens": 453877,
+            "unknown_categories": {
+              "missing_receipt": 5
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 26,
+      "id": "where-source-privacy",
+      "repetition": 3,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "source_policy",
+        "contains_secret_material",
+        "excluded_paths",
+        "ensure_safe_content",
+        "current_state",
+        "explorer"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 585621,
+      "checkpoint_output_tokens": 6707,
+      "checkpoint_total_tokens": 592328,
+      "checkpoint_cached_tokens": 478336,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 465928,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 29,
+      "all_tool_calls": 76,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 111.1,
+      "index_build_seconds": 1.061,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 52,
+        "known_attempts": 45,
+        "unknown_attempts": 7,
+        "known_input_tokens": 585621,
+        "known_output_tokens": 6707,
+        "known_total_tokens": 592328,
+        "unknown_categories": {
+          "missing_receipt": 7
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 7,
+            "known_attempts": 6,
+            "unknown_attempts": 1,
+            "known_input_tokens": 119693,
+            "known_output_tokens": 2351,
+            "known_total_tokens": 122044,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 45,
+            "known_attempts": 39,
+            "unknown_attempts": 6,
+            "known_input_tokens": 465928,
+            "known_output_tokens": 4356,
+            "known_total_tokens": 470284,
+            "unknown_categories": {
+              "missing_receipt": 6
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 27,
+      "id": "where-index-updates",
+      "repetition": 3,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "knowledge_outbox",
+        "process_pending",
+        "KnowledgeIndex",
+        "generation",
+        "stale",
+        "transaction"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 568912,
+      "checkpoint_output_tokens": 6121,
+      "checkpoint_total_tokens": 575033,
+      "checkpoint_cached_tokens": 459520,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 455307,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 20,
+      "all_tool_calls": 77,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 128.6,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 62,
+        "known_attempts": 57,
+        "unknown_attempts": 5,
+        "known_input_tokens": 568912,
+        "known_output_tokens": 6121,
+        "known_total_tokens": 575033,
+        "unknown_categories": {
+          "missing_receipt": 5
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 10,
+            "known_attempts": 8,
+            "unknown_attempts": 2,
+            "known_input_tokens": 113605,
+            "known_output_tokens": 1821,
+            "known_total_tokens": 115426,
+            "unknown_categories": {
+              "missing_receipt": 2
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 52,
+            "known_attempts": 49,
+            "unknown_attempts": 3,
+            "known_input_tokens": 455307,
+            "known_output_tokens": 4300,
+            "known_total_tokens": 459607,
+            "unknown_categories": {
+              "missing_receipt": 3
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 28,
+      "id": "where-index-updates",
+      "repetition": 3,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "knowledge_outbox",
+        "process_pending",
+        "KnowledgeIndex",
+        "generation",
+        "stale",
+        "transaction"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 425367,
+      "checkpoint_output_tokens": 6100,
+      "checkpoint_total_tokens": 431467,
+      "checkpoint_cached_tokens": 339200,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 367705,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 17,
+      "all_tool_calls": 80,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 111.9,
+      "index_build_seconds": 1.036,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 56,
+        "known_attempts": 53,
+        "unknown_attempts": 3,
+        "known_input_tokens": 425367,
+        "known_output_tokens": 6100,
+        "known_total_tokens": 431467,
+        "unknown_categories": {
+          "missing_receipt": 3
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 6,
+            "known_attempts": 5,
+            "unknown_attempts": 1,
+            "known_input_tokens": 57662,
+            "known_output_tokens": 1754,
+            "known_total_tokens": 59416,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 50,
+            "known_attempts": 48,
+            "unknown_attempts": 2,
+            "known_input_tokens": 367705,
+            "known_output_tokens": 4346,
+            "known_total_tokens": 372051,
+            "unknown_categories": {
+              "missing_receipt": 2
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 29,
+      "id": "where-final-answer",
+      "repetition": 3,
+      "retrieval_arm": "off",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "_finalize_response",
+        "SettlementFacts",
+        "prepare_finalization",
+        "finalize",
+        "checkpoint",
+        "finalization_failed"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 385170,
+      "checkpoint_output_tokens": 6689,
+      "checkpoint_total_tokens": 391859,
+      "checkpoint_cached_tokens": 284160,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 326258,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 17,
+      "all_tool_calls": 88,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 148.8,
+      "index_build_seconds": 0.0,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 47,
+        "known_attempts": 46,
+        "unknown_attempts": 1,
+        "known_input_tokens": 385170,
+        "known_output_tokens": 6689,
+        "known_total_tokens": 391859,
+        "unknown_categories": {
+          "missing_receipt": 1
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 5,
+            "known_attempts": 5,
+            "unknown_attempts": 0,
+            "known_input_tokens": 58912,
+            "known_output_tokens": 1788,
+            "known_total_tokens": 60700,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 42,
+            "known_attempts": 41,
+            "unknown_attempts": 1,
+            "known_input_tokens": 326258,
+            "known_output_tokens": 4901,
+            "known_total_tokens": 331159,
+            "unknown_categories": {
+              "missing_receipt": 1
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    },
+    {
+      "ordinal": 30,
+      "id": "where-final-answer",
+      "repetition": 3,
+      "retrieval_arm": "on",
+      "passed": true,
+      "state": "completed",
+      "failure_code": null,
+      "failed_checks": [],
+      "facts_found": [
+        "_finalize_response",
+        "SettlementFacts",
+        "prepare_finalization",
+        "finalize",
+        "checkpoint",
+        "finalization_failed"
+      ],
+      "facts_missed": [],
+      "facts_found_count": 6,
+      "facts_total": 6,
+      "fact_coverage": 1.0,
+      "checkpoint_prompt_tokens": 613377,
+      "checkpoint_output_tokens": 6336,
+      "checkpoint_total_tokens": 619713,
+      "checkpoint_cached_tokens": 498944,
+      "checkpoint_cache_write_tokens": 0,
+      "checkpoint_helper_prompt_tokens": 484485,
+      "known_transport_tokens_omitted_from_checkpoint": 0,
+      "main_tool_calls": 25,
+      "all_tool_calls": 78,
+      "retrieval_calls": 1,
+      "helper_retrieval_calls": 1,
+      "wall_seconds": 109.6,
+      "index_build_seconds": 1.065,
+      "suspended_seconds": 0.0,
+      "latency_reliable": true,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "observer": {
+        "transport_attempts": 43,
+        "known_attempts": 41,
+        "unknown_attempts": 2,
+        "known_input_tokens": 613377,
+        "known_output_tokens": 6336,
+        "known_total_tokens": 619713,
+        "unknown_categories": {
+          "missing_receipt": 2
+        },
+        "effort_usage": {
+          "high": {
+            "transport_attempts": 7,
+            "known_attempts": 7,
+            "unknown_attempts": 0,
+            "known_input_tokens": 128892,
+            "known_output_tokens": 2200,
+            "known_total_tokens": 131092,
+            "unknown_categories": {},
+            "effort_usage": {}
+          },
+          "low": {
+            "transport_attempts": 36,
+            "known_attempts": 34,
+            "unknown_attempts": 2,
+            "known_input_tokens": 484485,
+            "known_output_tokens": 4136,
+            "known_total_tokens": 488621,
+            "unknown_categories": {
+              "missing_receipt": 2
+            },
+            "effort_usage": {}
+          }
+        }
+      },
+      "warnings": [
+        "Some transport usage is unknown; observed totals are a known subtotal"
+      ],
+      "matrix_key_valid": true
+    }
+  ],
+  "matched_pairs": [
+    {
+      "id": "trace-shared-edit",
+      "repetition": 1,
+      "off_ordinal": 1,
+      "on_ordinal": 2,
+      "off_passed": false,
+      "on_passed": false,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": -185659,
+        "checkpoint_cached_tokens": -205824,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 23,
+        "main_tool_calls": 3,
+        "retrieval_calls": 1,
+        "helper_retrieval_calls": 1,
+        "wall_seconds": 98.6,
+        "index_build_seconds": 1.281,
+        "known_observed_tokens": -185659,
+        "unknown_transport_attempts": 2
+      },
+      "off_component": "retained-original",
+      "on_component": "retained-original",
+      "same_transport_component": true
+    },
+    {
+      "id": "repo-summary",
+      "repetition": 1,
+      "off_ordinal": 3,
+      "on_ordinal": 4,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": -107491,
+        "checkpoint_cached_tokens": -100224,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 6,
+        "main_tool_calls": -5,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": -29.7,
+        "index_build_seconds": 1.098,
+        "known_observed_tokens": -107491,
+        "unknown_transport_attempts": 1
+      },
+      "off_component": "retained-original",
+      "on_component": "retained-original",
+      "same_transport_component": true
+    },
+    {
+      "id": "where-source-privacy",
+      "repetition": 1,
+      "off_ordinal": 5,
+      "on_ordinal": 6,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 160407,
+        "checkpoint_cached_tokens": 108544,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 21,
+        "main_tool_calls": 4,
+        "retrieval_calls": 1,
+        "helper_retrieval_calls": 1,
+        "wall_seconds": 58.8,
+        "index_build_seconds": 1.065,
+        "known_observed_tokens": 160407,
+        "unknown_transport_attempts": -1
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "where-index-updates",
+      "repetition": 1,
+      "off_ordinal": 7,
+      "on_ordinal": 8,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 246295,
+        "checkpoint_cached_tokens": 232832,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 5,
+        "main_tool_calls": -5,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": 21.9,
+        "index_build_seconds": 1.041,
+        "known_observed_tokens": 246295,
+        "unknown_transport_attempts": 1
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "where-final-answer",
+      "repetition": 1,
+      "off_ordinal": 9,
+      "on_ordinal": 10,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 53433,
+        "checkpoint_cached_tokens": 61568,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 20,
+        "main_tool_calls": -4,
+        "retrieval_calls": 1,
+        "helper_retrieval_calls": 1,
+        "wall_seconds": 84.9,
+        "index_build_seconds": 1.07,
+        "known_observed_tokens": 53433,
+        "unknown_transport_attempts": 5
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "trace-shared-edit",
+      "repetition": 2,
+      "off_ordinal": 12,
+      "on_ordinal": 11,
+      "off_passed": false,
+      "on_passed": false,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": -1,
+        "fact_coverage": -0.09090909090909094,
+        "checkpoint_total_tokens": 294596,
+        "checkpoint_cached_tokens": 287872,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 21,
+        "main_tool_calls": 17,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": 51.7,
+        "index_build_seconds": 1.036,
+        "known_observed_tokens": 294596,
+        "unknown_transport_attempts": 3
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "repo-summary",
+      "repetition": 2,
+      "off_ordinal": 14,
+      "on_ordinal": 13,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 315364,
+        "checkpoint_cached_tokens": 264192,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 26,
+        "main_tool_calls": 1,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": 22.4,
+        "index_build_seconds": 1.065,
+        "known_observed_tokens": 315364,
+        "unknown_transport_attempts": -1
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "where-source-privacy",
+      "repetition": 2,
+      "off_ordinal": 16,
+      "on_ordinal": 15,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 235219,
+        "checkpoint_cached_tokens": 261632,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 10,
+        "main_tool_calls": 8,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": -1.2,
+        "index_build_seconds": 1.103,
+        "known_observed_tokens": 235219,
+        "unknown_transport_attempts": -2
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "where-index-updates",
+      "repetition": 2,
+      "off_ordinal": 18,
+      "on_ordinal": 17,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": true,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": -61286,
+        "checkpoint_cached_tokens": -38528,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": -10,
+        "main_tool_calls": -8,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": -24.8,
+        "index_build_seconds": 1.06,
+        "known_observed_tokens": -61286,
+        "unknown_transport_attempts": 0
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "where-final-answer",
+      "repetition": 2,
+      "off_ordinal": 20,
+      "on_ordinal": 19,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": -67497,
+        "checkpoint_cached_tokens": -48896,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": -7,
+        "main_tool_calls": 9,
+        "retrieval_calls": 1,
+        "helper_retrieval_calls": 1,
+        "wall_seconds": -4.2,
+        "index_build_seconds": 1.041,
+        "known_observed_tokens": -67497,
+        "unknown_transport_attempts": 2
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "trace-shared-edit",
+      "repetition": 3,
+      "off_ordinal": 21,
+      "on_ordinal": 22,
+      "off_passed": false,
+      "on_passed": false,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": -1,
+        "fact_coverage": -0.09090909090909094,
+        "checkpoint_total_tokens": 197116,
+        "checkpoint_cached_tokens": 174080,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 20,
+        "main_tool_calls": 11,
+        "retrieval_calls": 2,
+        "helper_retrieval_calls": 2,
+        "wall_seconds": 6.5,
+        "index_build_seconds": 1.059,
+        "known_observed_tokens": 197116,
+        "unknown_transport_attempts": 6
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "repo-summary",
+      "repetition": 3,
+      "off_ordinal": 23,
+      "on_ordinal": 24,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 173379,
+        "checkpoint_cached_tokens": 161024,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 4,
+        "main_tool_calls": 8,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": 26.3,
+        "index_build_seconds": 1.034,
+        "known_observed_tokens": 173379,
+        "unknown_transport_attempts": 2
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "where-source-privacy",
+      "repetition": 3,
+      "off_ordinal": 25,
+      "on_ordinal": 26,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": -261102,
+        "checkpoint_cached_tokens": -211456,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": -21,
+        "main_tool_calls": -6,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": -37.3,
+        "index_build_seconds": 1.061,
+        "known_observed_tokens": -261102,
+        "unknown_transport_attempts": -3
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "where-index-updates",
+      "repetition": 3,
+      "off_ordinal": 27,
+      "on_ordinal": 28,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": -143566,
+        "checkpoint_cached_tokens": -120320,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 3,
+        "main_tool_calls": -3,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": -16.7,
+        "index_build_seconds": 1.036,
+        "known_observed_tokens": -143566,
+        "unknown_transport_attempts": -2
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    },
+    {
+      "id": "where-final-answer",
+      "repetition": 3,
+      "off_ordinal": 29,
+      "on_ordinal": 30,
+      "off_passed": true,
+      "on_passed": true,
+      "latency_reliable": true,
+      "observed_token_delta_exact": false,
+      "on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 227854,
+        "checkpoint_cached_tokens": 214784,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": -10,
+        "main_tool_calls": 8,
+        "retrieval_calls": 1,
+        "helper_retrieval_calls": 1,
+        "wall_seconds": -39.2,
+        "index_build_seconds": 1.065,
+        "known_observed_tokens": 227854,
+        "unknown_transport_attempts": 1
+      },
+      "off_component": "framing-corrected",
+      "on_component": "framing-corrected",
+      "same_transport_component": true
+    }
+  ],
+  "arm_totals": {
+    "off": {
+      "recorded_cells": 15,
+      "passed_cells": 12,
+      "facts_found": 92,
+      "facts_total": 102,
+      "observer": {
+        "transport_attempts": 720,
+        "known_attempts": 689,
+        "unknown_attempts": 31,
+        "known_input_tokens": 8314583,
+        "known_output_tokens": 99124,
+        "known_total_tokens": 8413707,
+        "unknown_categories": {
+          "missing_receipt": 31
+        },
+        "effort_usage": {}
+      },
+      "checkpoint_total_tokens": 8413707,
+      "checkpoint_cached_tokens": 6471168,
+      "all_tool_calls": 1235,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "index_build_seconds": 0.0,
+      "median_wall_seconds": 133.1,
+      "individual_index_build_seconds": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "on": {
+      "recorded_cells": 15,
+      "passed_cells": 12,
+      "facts_found": 90,
+      "facts_total": 102,
+      "observer": {
+        "transport_attempts": 820,
+        "known_attempts": 775,
+        "unknown_attempts": 45,
+        "known_input_tokens": 9385272,
+        "known_output_tokens": 105497,
+        "known_total_tokens": 9490769,
+        "unknown_categories": {
+          "missing_receipt": 45
+        },
+        "effort_usage": {}
+      },
+      "checkpoint_total_tokens": 9490769,
+      "checkpoint_cached_tokens": 7512448,
+      "all_tool_calls": 1346,
+      "retrieval_calls": 7,
+      "helper_retrieval_calls": 7,
+      "index_build_seconds": 16.115,
+      "median_wall_seconds": 123.8,
+      "individual_index_build_seconds": [
+        1.281,
+        1.098,
+        1.065,
+        1.041,
+        1.07,
+        1.036,
+        1.065,
+        1.103,
+        1.06,
+        1.041,
+        1.059,
+        1.034,
+        1.061,
+        1.036,
+        1.065
+      ]
+    }
+  },
+  "per_task_paired_effects": {
+    "trace-shared-edit": {
+      "matched_pairs": 3,
+      "median_on_minus_off": {
+        "facts_found_count": -1,
+        "fact_coverage": -0.09090909090909094,
+        "checkpoint_total_tokens": 197116,
+        "checkpoint_cached_tokens": 174080,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 21,
+        "main_tool_calls": 11,
+        "retrieval_calls": 1,
+        "helper_retrieval_calls": 1,
+        "wall_seconds": 51.7,
+        "index_build_seconds": 1.059
+      },
+      "median_exact_observed_token_delta": null
+    },
+    "repo-summary": {
+      "matched_pairs": 3,
+      "median_on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 173379,
+        "checkpoint_cached_tokens": 161024,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 6,
+        "main_tool_calls": 1,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": 22.4,
+        "index_build_seconds": 1.065
+      },
+      "median_exact_observed_token_delta": null
+    },
+    "where-source-privacy": {
+      "matched_pairs": 3,
+      "median_on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 160407,
+        "checkpoint_cached_tokens": 108544,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 10,
+        "main_tool_calls": 4,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": -1.2,
+        "index_build_seconds": 1.065
+      },
+      "median_exact_observed_token_delta": null
+    },
+    "where-index-updates": {
+      "matched_pairs": 3,
+      "median_on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": -61286,
+        "checkpoint_cached_tokens": -38528,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": 3,
+        "main_tool_calls": -5,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": -16.7,
+        "index_build_seconds": 1.041
+      },
+      "median_exact_observed_token_delta": -61286
+    },
+    "where-final-answer": {
+      "matched_pairs": 3,
+      "median_on_minus_off": {
+        "facts_found_count": 0,
+        "fact_coverage": 0.0,
+        "checkpoint_total_tokens": 53433,
+        "checkpoint_cached_tokens": 61568,
+        "checkpoint_cache_write_tokens": 0,
+        "all_tool_calls": -7,
+        "main_tool_calls": 8,
+        "retrieval_calls": 1,
+        "helper_retrieval_calls": 1,
+        "wall_seconds": -4.2,
+        "index_build_seconds": 1.065
+      },
+      "median_exact_observed_token_delta": null
+    }
+  },
+  "recommendation": "Keep indexing off by default and F4 gated. This fixture shows no fact-coverage benefit from optional retrieval, and median paired time and tool use increase. Unknown usage prevents an exact overall token-cost conclusion.",
+  "limitations": [
+    "Every recorded failure is retained; historical attempts never enter new matched contrasts.",
+    "Facts are keyword coverage, not an independent semantic answer-quality assessment.",
+    "Cache and helper checkpoint counters are subsets and are never added again to actual input/output tokens.",
+    "Unknown or unassigned transport usage is not inferred into an exact pair.",
+    "Task wall time excludes separately recorded index builds. Request durations can overlap and are not added to task wall time.",
+    "Three repeats per task provide limited evidence; this report makes no statistical-significance claim."
+  ],
+  "all_experiment_observer_totals": {
+    "transport_attempts": 1712,
+    "known_attempts": 1633,
+    "unknown_attempts": 79,
+    "known_input_tokens": 20009495,
+    "known_output_tokens": 230805,
+    "known_total_tokens": 20240300,
+    "unknown_categories": {
+      "missing_receipt": 79
+    },
+    "effort_usage": {}
+  },
+  "excluded_input_framing": {
+    "observer_totals": {
+      "transport_attempts": 172,
+      "known_attempts": 169,
+      "unknown_attempts": 3,
+      "known_input_tokens": 2309640,
+      "known_output_tokens": 26184,
+      "known_total_tokens": 2335824,
+      "unknown_categories": {
+        "missing_receipt": 3
+      },
+      "effort_usage": {}
+    },
+    "outcome_kind_counts": {
+      "closed": 169,
+      "create_failed": 3
+    },
+    "unassigned_usage": {
+      "transport_attempts": 0,
+      "known_attempts": 0,
+      "unknown_attempts": 0,
+      "known_input_tokens": 0,
+      "known_output_tokens": 0,
+      "known_total_tokens": 0,
+      "unknown_categories": {},
+      "effort_usage": {}
+    },
+    "recorded_cells": [
+      {
+        "component_id": "retained-original",
+        "ordinal": 1,
+        "id": "where-source-privacy",
+        "repetition": 1,
+        "retrieval_arm": "off",
+        "passed": false,
+        "state": "completed",
+        "failure_code": null,
+        "failed_checks": [
+          "one_task",
+          "facts"
+        ],
+        "facts_found": [
+          "source_policy",
+          "contains_secret_material",
+          "excluded_paths",
+          "ensure_safe_content"
+        ],
+        "facts_missed": [
+          "current_state",
+          "explorer"
+        ],
+        "facts_found_count": 4,
+        "facts_total": 6,
+        "fact_coverage": 0.6666666666666666,
+        "checkpoint_prompt_tokens": 311477,
+        "checkpoint_output_tokens": 4253,
+        "checkpoint_total_tokens": 315730,
+        "checkpoint_cached_tokens": 239104,
+        "checkpoint_cache_write_tokens": 0,
+        "checkpoint_helper_prompt_tokens": 270995,
+        "known_transport_tokens_omitted_from_checkpoint": 837349,
+        "main_tool_calls": 11,
+        "all_tool_calls": 52,
+        "retrieval_calls": 0,
+        "helper_retrieval_calls": 0,
+        "wall_seconds": 280.1,
+        "index_build_seconds": 0.0,
+        "suspended_seconds": 0.0,
+        "latency_reliable": true,
+        "runner_timed_out": false,
+        "stranded_question": false,
+        "observer": {
+          "transport_attempts": 87,
+          "known_attempts": 85,
+          "unknown_attempts": 2,
+          "known_input_tokens": 1139823,
+          "known_output_tokens": 13256,
+          "known_total_tokens": 1153079,
+          "unknown_categories": {
+            "missing_receipt": 2
+          },
+          "effort_usage": {
+            "high": {
+              "transport_attempts": 15,
+              "known_attempts": 13,
+              "unknown_attempts": 2,
+              "known_input_tokens": 255392,
+              "known_output_tokens": 4067,
+              "known_total_tokens": 259459,
+              "unknown_categories": {
+                "missing_receipt": 2
+              },
+              "effort_usage": {}
+            },
+            "low": {
+              "transport_attempts": 72,
+              "known_attempts": 72,
+              "unknown_attempts": 0,
+              "known_input_tokens": 884431,
+              "known_output_tokens": 9189,
+              "known_total_tokens": 893620,
+              "unknown_categories": {},
+              "effort_usage": {}
+            }
+          }
+        },
+        "warnings": [
+          "Known transport usage is omitted from checkpoint counters",
+          "Some transport usage is unknown; observed totals are a known subtotal"
+        ],
+        "matrix_key_valid": true
+      }
+    ]
+  },
+  "aggregation": {
+    "record_kind": "explicit_component_aggregate",
+    "components": [
+      {
+        "id": "retained-original",
+        "input_framing": "Original single-line prompts; retained unchanged",
+        "usage_selection": "matching_selected_cells",
+        "planned_selected_cells": 4,
+        "recorded_selected_cells": 4,
+        "missing_selected_cells": [],
+        "raw_recorded_cells": 5,
+        "raw_expected_runs": 30,
+        "raw_complete": false,
+        "raw_status": "running",
+        "raw_exit_code": 130,
+        "closed_receipt_present": true,
+        "selected_attempts_exported": 210,
+        "excluded_attempts_exported": 172,
+        "accounting": {
+          "all_known_tokens": 5283544,
+          "all_unknown_attempts": 6,
+          "selected_known_tokens": 2947720,
+          "selected_unknown_attempts": 3,
+          "excluded_known_tokens": 2335824,
+          "excluded_unknown_attempts": 3
+        },
+        "selected_raw_row_proofs": [
+          {
+            "key": {
+              "id": "trace-shared-edit",
+              "repetition": 1,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "2940cff1c195e6cd96aa7b704325978ca7ecc97d7cf90673670dca976a442487"
+          },
+          {
+            "key": {
+              "id": "trace-shared-edit",
+              "repetition": 1,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "7319af65257c84d967cede4d837396e034226fced219154960f546dd9626bc03"
+          },
+          {
+            "key": {
+              "id": "repo-summary",
+              "repetition": 1,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "646c5a3c041bda1adf8e7b966b8e8dc4a57713ac490ec2e4baebbc6b1db2f49f"
+          },
+          {
+            "key": {
+              "id": "repo-summary",
+              "repetition": 1,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "1a9fc990a3ab3a12493290c843dc424e89136665ce90a6267b4c9e454c0f6223"
+          }
+        ],
+        "artifacts": {
+          "results": {
+            "filename": "results.json",
+            "sha256": "318da632cdba5a9e7515c25573256020c77aab17cd85fcd1202c1b858237c16e"
+          },
+          "ledger": {
+            "filename": "final-ledger.json",
+            "sha256": "1241fd0c6fba05b8e149a6310e5e595f3754b89352e9131b80250e4e14e72536",
+            "logical_snapshot_sha256": "1fa4f46691a1a255f4f711b57d4ca501e42f5bfde12c524a5a3a208f9b551e7b"
+          },
+          "run_receipt": {
+            "filename": "run-receipt.json",
+            "sha256": "28756638528e0ccd1d8789822c185cce06108f3ef1546929f04e0fbf77926051"
+          }
+        }
+      },
+      {
+        "id": "framing-corrected",
+        "input_framing": "Internal LF whitespace-normalized before plain-composer submission",
+        "usage_selection": "all_attempts",
+        "planned_selected_cells": 26,
+        "recorded_selected_cells": 26,
+        "missing_selected_cells": [],
+        "raw_recorded_cells": 26,
+        "raw_expected_runs": 30,
+        "raw_complete": false,
+        "raw_status": "finished",
+        "raw_exit_code": 1,
+        "closed_receipt_present": true,
+        "selected_attempts_exported": 1330,
+        "excluded_attempts_exported": 0,
+        "accounting": {
+          "all_known_tokens": 14956756,
+          "all_unknown_attempts": 73,
+          "selected_known_tokens": 14956756,
+          "selected_unknown_attempts": 73,
+          "excluded_known_tokens": 0,
+          "excluded_unknown_attempts": 0
+        },
+        "selected_raw_row_proofs": [
+          {
+            "key": {
+              "id": "where-source-privacy",
+              "repetition": 1,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "6b33dc5f34900e111f68376660d14df6082f96e7578317ca9204bb41d9b6b414"
+          },
+          {
+            "key": {
+              "id": "where-source-privacy",
+              "repetition": 1,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "cc95d1b7c792ff37afad53277babe9cd8eb4ec421eb305f5acb39b5ab5c0e142"
+          },
+          {
+            "key": {
+              "id": "where-index-updates",
+              "repetition": 1,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "03eaa0635c9ae355862e4c0f5077e4febaaac15025392b1cc8d0ad8d51742697"
+          },
+          {
+            "key": {
+              "id": "where-index-updates",
+              "repetition": 1,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "08c0b5ad17ab455eccc260be39d82f7baac6b1e6ff45b3126dc8c1b1889ae761"
+          },
+          {
+            "key": {
+              "id": "where-final-answer",
+              "repetition": 1,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "7c70c07966377471a39eb2cabd34b17381b47724bf50a07eed3ecbc1c0b02ef9"
+          },
+          {
+            "key": {
+              "id": "where-final-answer",
+              "repetition": 1,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "c0015505029862784bc9384efcc83d6649c09a7c46a60f733818cd10ebdb9356"
+          },
+          {
+            "key": {
+              "id": "trace-shared-edit",
+              "repetition": 2,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "1ac588a29b43ee05d3d4b8fc1b89f8e9a71e99b5d30dec71d503952934e37901"
+          },
+          {
+            "key": {
+              "id": "trace-shared-edit",
+              "repetition": 2,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "9126711af7aeb7358b3ac12620ab0c3e5e1e2834458d2da954d4a5f2a2772e96"
+          },
+          {
+            "key": {
+              "id": "repo-summary",
+              "repetition": 2,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "a000cd0fc16d1eddb0f5816b8bae309df36e6b7cff8203d221957ce1079b29be"
+          },
+          {
+            "key": {
+              "id": "repo-summary",
+              "repetition": 2,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "c4c1dccecf74b40fb2d349f0638787841518f4f156435951680068367b75e7c1"
+          },
+          {
+            "key": {
+              "id": "where-source-privacy",
+              "repetition": 2,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "9852aff7b50961736bdbc0cb6786357f10e3d53e4a2904fabf540469a2121083"
+          },
+          {
+            "key": {
+              "id": "where-source-privacy",
+              "repetition": 2,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "32a3a94205c3a39370c8a5fe8b554c05cb12cd78eed5b990127505481f30e34d"
+          },
+          {
+            "key": {
+              "id": "where-index-updates",
+              "repetition": 2,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "62f21156090bc2ecb72d0185c5a52898fa1754a4316b1e853f7f0da7f33c1e54"
+          },
+          {
+            "key": {
+              "id": "where-index-updates",
+              "repetition": 2,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "196308648e97727fe4f4f1e73641df91ceb55580665da0a48b18620d416aba80"
+          },
+          {
+            "key": {
+              "id": "where-final-answer",
+              "repetition": 2,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "7bdf5f923a6958c7dc33ec21a576463cbe5adfac849f4cd6554c89fa4b10dad0"
+          },
+          {
+            "key": {
+              "id": "where-final-answer",
+              "repetition": 2,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "e4102afdb231c8a0213ecb4a91f0bf9473039e64b8759cb08a808a8a2ca0eb4d"
+          },
+          {
+            "key": {
+              "id": "trace-shared-edit",
+              "repetition": 3,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "2e909ad89a1ff462aeb2f1b15c2120ca1531017bb22a279796c267acbf8ced19"
+          },
+          {
+            "key": {
+              "id": "trace-shared-edit",
+              "repetition": 3,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "f7fe35ba471c8499e9e54b79ae20609fb47b36967b035cef43084461e415e347"
+          },
+          {
+            "key": {
+              "id": "repo-summary",
+              "repetition": 3,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "e00f16555aaea0ba263895a3c74414df54abfae9f07479e36a5f5ae2130b7627"
+          },
+          {
+            "key": {
+              "id": "repo-summary",
+              "repetition": 3,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "ceb7396a27c0d5f0ddf593ce078fef8774c556f94a234b2d5803c640ff1d9296"
+          },
+          {
+            "key": {
+              "id": "where-source-privacy",
+              "repetition": 3,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "82aca2dd5633600c96fe7b5915bf2413f282485544da016a8ab1c3c8e2efd318"
+          },
+          {
+            "key": {
+              "id": "where-source-privacy",
+              "repetition": 3,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "e6a482490697018e722e46435bc10da9be4e579b9862e0d99d12f0fc5de4e08a"
+          },
+          {
+            "key": {
+              "id": "where-index-updates",
+              "repetition": 3,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "18704d61cd1229fb29574ed04cdaef3675320b071242a35decb327f80f83e891"
+          },
+          {
+            "key": {
+              "id": "where-index-updates",
+              "repetition": 3,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "cebc4e9c866cc678cedf180db8083fec850e2272f9d41b4dbd7162cc4fab59db"
+          },
+          {
+            "key": {
+              "id": "where-final-answer",
+              "repetition": 3,
+              "retrieval_arm": "off"
+            },
+            "canonical_raw_row_sha256": "66e28e0772081acb15471da02c31ccffb21a57d13d1011583095ef7f49b42c02"
+          },
+          {
+            "key": {
+              "id": "where-final-answer",
+              "repetition": 3,
+              "retrieval_arm": "on"
+            },
+            "canonical_raw_row_sha256": "2467e3bc7b30c6039f315f057c335a719c25b75da27c4216b8d8f4c11f3f00b6"
+          }
+        ],
+        "artifacts": {
+          "results": {
+            "filename": "results-framed-part.json",
+            "sha256": "64ffa490b069364c8be5b9d1d469f7df1808a9ee69d63040455c36be9e1e33e5"
+          },
+          "ledger": {
+            "filename": "final-framed-ledger.json",
+            "sha256": "46e1b58d4582cc5a8b869ec2af6fb431d8bb0c53a0eb446ab8f5f69c92d0aa04",
+            "logical_snapshot_sha256": "f9e46250e7b839874e4976f9493a2c01ba13d969cc00629f0a2d7adcfbe1e125"
+          },
+          "run_receipt": {
+            "filename": "run-framed-receipt.json",
+            "sha256": "55812a95f14030ac826a5b3b2a6e09f693a470e45712f2712d6143f7ce3e951d"
+          }
+        }
+      }
+    ],
+    "raw_runner_completion_not_rewritten": true,
+    "aggregate_collection_complete": true,
+    "all_component_receipts_closed": true,
+    "source_proof_artifacts": {
+      "input_framing": {
+        "filename": "input-framing-verification.json",
+        "sha256": "a30e35591d04911fee8e40c86e598d3338fb84beaf7c00e445c406b4fe98ebc9"
+      }
+    },
+    "runtime_receipt_artifact": {
+      "filename": "runtime-receipt.json",
+      "sha256": "09f0b35b64b4dc370fde6ca8dfffe42d199abb372c93e1bac2e9955a72494b00"
+    },
+    "meaning": "Raw component counts and exits are preserved. A new component with 26 selected cells may have raw expected_runs 30, complete=false and exit 1 while the independently validated aggregate has 30 eligible cells.",
+    "manifest_sha256": "aa6a11049581fe51c52aec22c202073860cbdbe66e1047e34daeff3fcedb58ae"
+  },
+  "decision": {
+    "index_default": "off",
+    "f4_gate": "not_satisfied",
+    "basis": "No additional expected facts in any pair; both arms pass 12/15 contracts; on has 90/102 facts versus 92/102 off. Median paired on-minus-off is +6.5 seconds and +6 tool calls.",
+    "scope": "Five tasks in one pinned repository, one model/effort setting, three repetitions; no statistical-significance or general model-quality claim.",
+    "overall_token_effect_exact": false
+  },
+  "publication_provenance": {
+    "derived_summary_sha256": "8732da7cd0823ef8433af675a993fedd465dbf572cd445c8b3ae08dd3a5ff749",
+    "measurement_date": "2026-10-21",
+    "user_removed_token_ceiling": true,
+    "token_ceiling": null,
+    "private_raw_logs_and_ledgers_published": false,
+    "framing_helper_sha256": "99eaf1bbc4c773065c162a610ca069a52e27747d67101d03521e81715a3d8bfb",
+    "uncapped_runner_adapter_sha256": "7d3624400e2b8152a6e827bda4960d452710163a4ea72994117807a6e34d3329",
+    "usage_observer_sha256": "dccc2127eb54877399f76b0e0b3ead462743cd749a0f5f89661b44b53dba46b0",
+    "observer_bootstrap_sha256": "3154043fc2cfcc905e474ce0cfc10b9d476b513174f92ef17c8d9634c8c07013",
+    "offline_tests": {
+      "accounting_observer": 27,
+      "uncapped_runner_adapter": 14,
+      "input_framing": 25,
+      "reporter": 14,
+      "component_merger": 14,
+      "post_measurement_shipped_harness": 42
+    },
+    "harness_followup": {
+      "applied_after_measurement": true,
+      "production_change": "Normalize internal CRLF/CR/LF to spaces before one final plain-chat submission newline.",
+      "all30_corpus_wires_byte_match_measured_adapter": true,
+      "additional_paid_cells": 0
+    },
+    "closed_live_proof": {
+      "fresh_cells": 26,
+      "retained_cells": 4,
+      "fresh_daemon_activation_proofs": 27,
+      "installed_modules_exact": 123,
+      "single_task_cells": 30,
+      "terminal_completed_cells": 30,
+      "detected_suspension_cells": 0,
+      "owned_daemon_claims_and_executions_cleaned": true
+    },
+    "reported_time_decimal_places": 3
+  }
+}

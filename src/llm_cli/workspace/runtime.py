@@ -667,6 +667,23 @@ def _files(
             os.close(descriptor)
 
 
+def url_credentials(text: str, *, minimum: int = 1) -> tuple[str, ...]:
+    """Extract URL userinfo without exposing it in inspection or parser errors."""
+    values: set[str] = set()
+    with suppress(ValueError):
+        parsed = urlsplit(text)
+        if parsed.scheme and parsed.hostname:
+            for raw, floor in (
+                (parsed.password or "", minimum),
+                (parsed.username or "", max(minimum, _UNNAMED_MINIMUM)),
+            ):
+                for value in (raw, unquote(raw)):
+                    for candidate in (value.strip(), *value.splitlines()):
+                        if len(candidate.strip()) >= floor:
+                            values.add(candidate.strip())
+    return tuple(sorted(values, key=len, reverse=True))
+
+
 def private_output_values(
     root: Path, paths: tuple[str, ...], *, source_paths: tuple[str, ...] = ()
 ) -> tuple[str, ...]:
@@ -711,13 +728,6 @@ def private_output_values(
             for item in value:
                 sensitive_fields(item)
 
-    def url_credentials(text: str) -> None:
-        with suppress(ValueError):
-            parsed = urlsplit(text)
-            if parsed.scheme and parsed.hostname:
-                add(unquote(parsed.password or ""))
-                add(unquote(parsed.username or ""), _UNNAMED_MINIMUM)
-
     def wanted(path: str) -> bool:
         return not _in_dependency_tree(path) or dependency_credential(
             path, directory=False
@@ -754,10 +764,14 @@ def private_output_values(
                         elif word.casefold() in {"login", "account"}:
                             add(words[index + 1], _UNNAMED_MINIMUM)
                 for line in text.splitlines():
-                    url_credentials(line.strip())
+                    values.update(url_credentials(line.strip(), minimum=floor))
                     assignment = _ASSIGNMENT.match(line)
                     if assignment:
-                        url_credentials(assignment[2].strip().strip("\"'"))
+                        values.update(
+                            url_credentials(
+                                assignment[2].strip().strip("\"'"), minimum=floor
+                            )
+                        )
             for parse in (json.loads, tomllib.loads):
                 with suppress(ValueError):
                     structured = parse(text)

@@ -17,7 +17,7 @@ import sys
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -31,6 +31,10 @@ from llm_cli.agent.source_policy import (
 from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
+from llm_cli.execution.environment import (
+    SANDBOX_VARIABLES,
+    EnvironmentSupplier,
+)
 from llm_cli.git.environment import run_git
 from llm_cli.git.worktrees import (
     ManagedWorktree,
@@ -643,7 +647,9 @@ class CheckRunner:
         suppress_output: bool = False,
         runtime_root: Path | None = None,
         sensitive_paths: tuple[str, ...] = (),
+        environment: EnvironmentSupplier | None = None,
     ) -> None:
+        self.environment = environment
         self.workflow, self.row, self.root = workflow, row, root
         self.runtime_root = runtime_root or root
         # Told (name, state, output) after every run, for repair limits.
@@ -702,7 +708,9 @@ class CheckRunner:
         source = verification_identity(
             self.root, self.config, runtime_root=self.runtime_root
         )
-        with self.store.connection() as con:
+        environment = self.environment() if self.environment is not None else None
+        guard = environment.accepted_run() if environment is not None else nullcontext()
+        with guard, self.store.connection() as con:
             row = con.execute(
                 (
                     "SELECT state FROM check_runs WHERE task_id=? AND attemp"
@@ -737,6 +745,7 @@ class CheckRunner:
             spec["timeout"], max(0, self.deadline_at - time.time())
         )
         worktree = None
+        environment = None
         output = ""
         truncated = False
         state, exit_code = "error", None
@@ -763,6 +772,10 @@ class CheckRunner:
             )
         self.emit("check.started", {"run_id": run_id, "name": name})
         try:
+            environment = self.environment() if self.environment is not None else None
+            self.sensitive_values = (
+                environment.sensitive_values if environment is not None else ()
+            )
             for attempt in range(_PREPARE_ATTEMPTS):
                 try:
                     worktree, source = self._prepare(run_id, files)
@@ -786,16 +799,33 @@ class CheckRunner:
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "LC_ALL": "C.UTF-8",
             }
-            env.update(spec["env"])
+            if environment is None:
+                env.update(spec["env"])
+            else:
+                overrides = {
+                    name: value
+                    for name, value in env.items()
+                    if name in SANDBOX_VARIABLES
+                }
+                session_values, session_secrets = environment.capture(
+                    snapshot,
+                    overrides=spec["env"],
+                    runtime_root=self.runtime_root,
+                    runtime_paths=tuple(self.config.get("runtime_paths", [])),
+                )
+                env.update(session_values)
+                env.update(overrides)
             from llm_cli.workspace.runtime import private_output_values
 
-            self.sensitive_values = private_output_values(
+            self.sensitive_values += private_output_values(
                 snapshot,
                 tuple(sorted(set(self.config.get("runtime_paths", [])))),
                 source_paths=tuple(
                     sorted(set(self.sensitive_paths) | self._snapshot_sensitive_paths)
                 ),
             )
+            if environment is not None:
+                self.sensitive_values += session_secrets
             before = source_snapshot(snapshot)[0]
             commands = [*self.config.get("setup", []), spec["argv"]]
             for index, argv in enumerate(commands):
@@ -822,12 +852,17 @@ class CheckRunner:
                     break
             else:
                 state = "passed"
+            if environment is not None:
+                environment.require()
             if source_snapshot(snapshot)[0] != before:
                 state = "source_mutated"
                 output += "\nCheck/setup modified source; those changes were discarded."
         except (OSError, ValueError, RuntimeError, LlmCoordError) as exc:
             state = "cancelled" if self.cancelled() else "error"
-            output += "\n" + str(exc)
+            message = str(exc)
+            for value in sorted(self.sensitive_values, key=len, reverse=True):
+                message = message.replace(value, "[private value]")
+            output += "\n" + message
         finally:
             if worktree is not None:
                 with suppress(Exception):
@@ -843,22 +878,37 @@ class CheckRunner:
             duration = time.monotonic() - started
             if self.suppress_output:
                 output = "[Check output withheld: private runtime inputs.]"
-            with self.store.connection() as con:
-                con.execute(
-                    (
-                        "UPDATE check_runs SET state=?,source_digest=?,exit_code"
-                        "=?,duration=?,output=?,truncated=? WHERE run_id=?"
-                    ),
-                    (
-                        state,
-                        source,
-                        exit_code,
-                        duration,
-                        output[:_OUTPUT_LIMIT],
-                        int(truncated),
-                        run_id,
-                    ),
+
+            def record_result() -> None:
+                with self.store.connection() as con:
+                    con.execute(
+                        (
+                            "UPDATE check_runs SET state=?,source_digest=?,exit_code"
+                            "=?,duration=?,output=?,truncated=? WHERE run_id=?"
+                        ),
+                        (
+                            state,
+                            source,
+                            exit_code,
+                            duration,
+                            output[:_OUTPUT_LIMIT],
+                            int(truncated),
+                            run_id,
+                        ),
+                    )
+
+            guard = (
+                environment.accepted_run() if environment is not None else nullcontext()
+            )
+            try:
+                with guard:
+                    record_result()
+            except LlmCoordError:
+                state = "error"
+                output += (
+                    "\nSession environment changed; reconnect and rerun this check."
                 )
+                record_result()
             self.emit(
                 "check.finished",
                 {
@@ -1059,6 +1109,7 @@ def check_retained_proposal(
     runtime_root: Path | None = None,
     suppress_output: bool = False,
     sensitive_paths: tuple[str, ...] = (),
+    environment: EnvironmentSupplier | None = None,
 ) -> str | None:
     """Refresh required evidence for a manual apply's captured candidate.
 
@@ -1083,6 +1134,7 @@ def check_retained_proposal(
         runtime_root=runtime_root,
         suppress_output=suppress_output,
         sensitive_paths=sensitive_paths,
+        environment=environment,
     )
     outcome = runner.gate()
     return outcome.content if outcome else None
