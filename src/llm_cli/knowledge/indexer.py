@@ -337,6 +337,34 @@ class KnowledgeIndex:
                     "edges": [],
                 }
 
+    def project_search(
+        self, checkout_id: str, root: Path, query: str, limit: int = 6
+    ) -> dict[str, object]:
+        from llm_cli.knowledge.retrieval import project_search
+
+        if not self.enabled:
+            return {"state": "off", "results": []}
+        # Retrieval never schedules work, initializes a store, records health,
+        # or acquires the indexer's writer lock. A broken projection is advisory.
+        try:
+            with self.control.connection() as con:
+                subscribed = outbox.subscribed(con, self.control, checkout_id)
+            if not subscribed:
+                return {
+                    "state": "not_built",
+                    "results": [],
+                    "notice": "Optional project index is not built; use source tools.",
+                }
+            return project_search(
+                self.store.path, checkout_id, root, query, limit=limit
+            )
+        except Exception:
+            return {
+                "state": "unavailable",
+                "results": [],
+                "notice": "Optional project index unavailable; use source tools.",
+            }
+
     def process_pending(self, *, limit: int = 8) -> int:
         if not self.enabled or not self.lock.acquire(blocking=False):
             return 0

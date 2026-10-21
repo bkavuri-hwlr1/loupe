@@ -78,6 +78,47 @@ the remaining planned capabilities are listed below.
   these exclude changed-tree copying. See the
   [measurement record](experiments/runtime-refresh-c8-2026-10-18.json).
 
+- Explicit dependency rebuild adapters (Wave 6 C10): `[isolated.rebuild]`
+  approves installer argv per ignored dependency root; hydration previews mark
+  `rebuild` and avoid reading its primary contents. Real command sandboxes keep
+  source read-only, constrain writes to the private root/home and deny network
+  unless explicitly enabled. Bounded failures remove partial roots and still
+  open the conversation with screened diagnostics. Creation records a durable
+  `rebuilding` stage, releases the daemon dispatch and publication/mutation
+  locks while the installer runs, then reacquires protection to verify frozen
+  private source, record receipts and activate the workspace. Unrelated RPCs
+  and shared publication can continue. A live ownership pin prevents takeover;
+  same-session setup reservations last through daemon registration and refuse
+  duplicate opens without disturbing the running installer.
+  Token-bound journals retry incomplete installers after disposing their private
+  home; compact metadata receipts recognize completed roots without storing
+  runtime bodies. C8 excludes rebuilt roots from primary refresh and retains
+  private generations for apply. Installer caps and an opening-specific response
+  budget bound the opening caller's wait. See
+  [the guide](isolated-workspaces.md#explicit-dependency-rebuilds) and
+  [ADR 0009](adr/0009-isolated-runtime-hydration.md).
+  On frozen C10 commit `592b55ab`, the covered core passed 3,062 tests; the
+  combined C9/F3 resolution `501db76f` passed 3,154. Each had one expected
+  case-sensitive-filesystem skip, one separate scale test deselected and 87%
+  coverage. The separate 10,000-file / 400,000-function scale runs built in
+  6.299 seconds on C10 and 6.338 seconds on the combined resolution, under the
+  unchanged 30-second cap. Five real-RPC and identity regressions cover shared
+  publication during installation, prompt duplicate refusal and the registration
+  boundary. Rebuild/recovery, schema-upgrade and sandbox regressions passed;
+  Ruff, mypy and offline wheel/sdist builds passed on both frozen branches.
+  Installers used offline fixtures and providers were scripted; these C10
+  checks added no billed run.
+
+  At the initial C10 checkpoint `7f110cfc`, the covered core passed 3,028 tests
+  with one case-sensitive-filesystem skip (87% coverage; one scale test deselected).
+  The separate uncovered scale test passed: 10,000 files / 400,000 functions
+  built in 7.315 seconds under the unchanged 30-second cap; incremental passes
+  took 45.54 ms at 1,000 files and 41.61 ms at 10,000. The focused C10 and
+  neighboring runtime regressions passed 193 tests with the same filesystem
+  skip. Ruff, mypy (123 source files), and offline wheel/sdist builds passed.
+  Installers used offline fixtures and providers were scripted; no billed run
+  was added.
+
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
   retained review proposals, task diffs, apply, undo, and cancellation. Shared
@@ -485,8 +526,9 @@ publication. Indexing does not acknowledge changes, choose write bases or grant
 publication authority. F2 adds deterministic source graph projections and explicit
 CLI/RPC neighbors with parser/version/identity/generation evidence. Changed
 documents replace their graph facts atomically; unchanged graph rows remain.
-Agent retrieval tools and their live comparison, embedding providers, semantic
-retrieval and `sqlite-vec` remain planned.
+F3 adds optional agent/helper retrieval; its 30-cell live comparison is complete,
+with indexing kept off and F4 gated by the recorded result.
+Embedding providers, semantic retrieval and `sqlite-vec` remain planned.
 
 F2 validation at `0ab3fcd` passed 2,824 tests, with one case-sensitive-filesystem
 skip and the existing G1 cross-profile expected failure. Ruff, mypy over 119 source
@@ -998,6 +1040,44 @@ long lines and capped partial output, exact hydrated paths, reconnect races,
 restarted scheduling, cancellation, close and retained apply. No billed provider
 run, release, or version change was added.
 
+## Wave 6 F3: optional agent retrieval
+
+`search_project` is available to main agents and read-only exploration helpers
+only with `knowledge.index = "lexical"`. It combines bounded lexical snippets
+and a one-hop graph expansion, revalidates the task root's current privacy policy
+and identities, and labels optional/stale evidence separately from mandatory
+coordination facts. Read-only lookup failures become notices without source,
+coordination, cursor, publication-authority or worker-health changes. Calls and
+returned bytes use ordinary task/helper budgets. The default remains off.
+
+Scripted tests cover visibility, helper inheritance, budgets, exact UTF-8 context
+bounds, stale/private roots, broken/missing stores and read/write/cursor negative
+controls. The live comparison adds three discovery tasks to `trace-shared-edit`
+and `repo-summary`, with three alternating off/on repetitions and aggregate
+metrics. The [Sol/high comparison](experiments/optional-retrieval-f3-2026-10-21-sol.md)
+now records all 30 cells and 15 matched pairs. Both arms passed 12/15 contracts;
+on covered 90/102 facts versus 92/102 off. Median paired on-minus-off time is
++6.5 seconds and tool use +6 calls. All seven retrieval calls came from helpers.
+Keep indexing off and F4 gated; this small fixture shows no fact-coverage gain.
+
+The user removed the earlier token ceiling. Four valid cells were retained
+unchanged and 26 fresh cells completed after repairing multiline input framing;
+all valid failures remain. The equivalent shipped harness fix followed closure
+and passed 42 focused tests. Eligible usage is 17,904,476 known tokens plus 76
+unknown attempts. Including malformed framing and prior experiments, cumulative
+known usage is 22,677,799 plus 80 unknown attempts. Only one pair has exact token
+accounting; no overall token savings or statistical-significance claim follows.
+See the [optional retrieval guide](optional-retrieval.md) and the new record for
+raw component outcomes, accounting and frozen provenance.
+
+Offline validation on the frozen F3 source/test candidate passed 3,022 covered
+correctness tests, with one case-sensitive-filesystem skip. The separate strict
+scale test retained 10,000 files and 400,000 function nodes, building in 7.207 s
+against the unchanged 30 s cap. Incremental medians were 0.04407 s at 1,000 files
+and 0.04868 s at 10,000. Ruff, mypy over 123 source files, source distribution
+and wheel builds passed. This establishes implementation correctness under the
+scripted contracts; the completed live comparison supports keeping indexing off.
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
@@ -1006,13 +1086,14 @@ Waves 4–7, as packages that separate sessions can run at once.
 1. Complete reviewed G2 validation, then implement G3's explicit claim-free legacy
    migration under the accepted authority contract.
 2. Complete isolated-mode live validation (C6); C7 implements faster checks.
-   C8 implements runtime refresh and C9 adds opt-in per-session command
-   environments. Dependency rebuild adapters (C10) extend runtime support next.
+   C8 implements runtime refresh, C9 adds opt-in per-session command
+   environments, and C10 adds explicit dependency rebuild adapters under
+   bounded creation and sandbox policies.
 3. B6 now records paired synthetic review quality and cost. Keep review disabled
    by default; evaluate natural-work effectiveness before reconsidering it.
-4. F1 lexical discovery and F2's deterministic code graph are implemented. Next
-   add retrieval in the agent with a live comparison (F3). Add embeddings with
-   exact scoring (F4) only if that comparison shows retrieval helps.
+4. F1 lexical discovery, F2's code graph and F3's optional agent tool are
+   implemented. F3's completed live comparison leaves indexing off and
+   exact-scoring embeddings (F4) gated.
 5. E2's live provider checks are on hold.
 
 The full phased design remains in

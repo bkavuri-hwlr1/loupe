@@ -33,6 +33,7 @@ from llm_cli.agent.source_policy import (
     runtime_path,
     runtime_path_matches,
 )
+from llm_cli.config.models import RebuildConfig
 from llm_cli.coordination.models import CheckoutRecord, WorkspaceRecord
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import ErrorCode, LlmCoordError
@@ -610,12 +611,18 @@ class IsolatedWorkspaceManager:
         candidate_dir: Path,
         publication_lock: RLock,
         ensure_available: Callable[[str], None],
+        *,
+        rebuild: tuple[RebuildConfig, ...] = (),
+        rebuild_protected: tuple[Path, ...] = (),
     ) -> None:
         self.store = store
         self.managed_root = managed_root
         self.candidate_dir = candidate_dir
         self.lock = publication_lock
         self.ensure_available = ensure_available
+        self.rebuild = rebuild
+        self.rebuild_protected = rebuild_protected
+        self._opening_sessions: set[str] = set()
         self.fault: Callable[[str], None] = lambda stage: None
         from llm_cli.workspace.runtime_refresh import RuntimeRefresher
 
@@ -1240,6 +1247,18 @@ class IsolatedWorkspaceManager:
             )
         return True
 
+    @contextmanager
+    def _opening(self, session_id: str) -> Iterator[None]:
+        with self.lock:
+            if session_id in self._opening_sessions:
+                raise _error("isolated session setup is already running")
+            self._opening_sessions.add(session_id)
+        try:
+            yield
+        finally:
+            with self.lock:
+                self._opening_sessions.discard(session_id)
+
     def recover(self) -> None:
         with self.lock:
             self._scrub_removed_archives()
@@ -1248,37 +1267,192 @@ class IsolatedWorkspaceManager:
                 rows = con.execute(
                     "SELECT workspace_id,stage FROM isolated_workspaces"
                 ).fetchall()
-            for row in rows:
-                workspace_id = str(row["workspace_id"])
-                if row["stage"] == "attention":
+        for row in rows:
+            workspace_id = str(row["workspace_id"])
+            if row["stage"] == "attention":
+                continue
+            try:
+                workspace = self.store.get_workspace(workspace_id)
+                checkout = (
+                    self.store.get_checkout(workspace.checkout_id)
+                    if workspace else None
+                )
+                state = self.get(workspace_id)
+                if checkout is None or state is None:
                     continue
-                try:
-                    workspace = self.store.get_workspace(workspace_id)
-                    checkout = (
-                        self.store.get_checkout(workspace.checkout_id)
-                        if workspace
-                        else None
-                    )
+                with self.lock:
                     state = self.get(workspace_id)
-                    if checkout is None or state is None:
+                    if state is None or state.session_id in self._opening_sessions:
                         continue
-                    from llm_cli.workspace.authority import managed_pin
+                from llm_cli.workspace.authority import managed_pin
 
-                    with managed_pin(
-                        self.store, Path(checkout.canonical_path), recovery=True
-                    ):
-                        if row["stage"] == "ready":
+                with managed_pin(
+                    self.store, Path(checkout.canonical_path), recovery=True
+                ):
+                    if state.stage == "ready":
+                        with self.lock:
                             self.validate(workspace_id)
-                        elif not self._clean_incomplete(workspace_id):
-                            self._quarantine(workspace_id)
-                except (LlmCoordError, OSError, ValueError) as exc:
-                    if isinstance(exc, LlmCoordError) and exc.code in {
-                        ErrorCode.CHECKOUT_OWNED_BY_OTHER_PROFILE,
-                        ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
-                        ErrorCode.CHECKOUT_IDENTITY_CHANGED,
-                    }:
-                        continue
+                    elif state.stage in {
+                        "materialized", "rebuilding", "hydrated",
+                    } and self._recover_rebuild(workspace_id):
+                        pass
+                    else:
+                        with self.lock:
+                            if not self._clean_incomplete(workspace_id):
+                                self._quarantine(workspace_id)
+            except (LlmCoordError, OSError, ValueError) as exc:
+                if isinstance(exc, LlmCoordError) and exc.code in {
+                    ErrorCode.CHECKOUT_OWNED_BY_OTHER_PROFILE,
+                    ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
+                    ErrorCode.CHECKOUT_IDENTITY_CHANGED,
+                }:
+                    continue
+                with self.lock:
                     self._quarantine(workspace_id)
+
+    def _verify_rebuild_owner(
+        self, state: IsolatedState, workspace: WorkspaceRecord,
+        git_dir: Path, primary: Path,
+    ) -> None:
+        if state.stage not in {"materialized", "rebuilding", "hydrated"}:
+            raise _error("dependency rebuild state changed before finalization")
+        managed = resume_managed_worktree(
+            primary,
+            managed_root=self.managed_root,
+            registered_path=Path(workspace.canonical_path),
+            task_id=state.workspace_id,
+            base_oid=state.base_oid,
+        )
+        if managed.git_dir != git_dir:
+            raise _error("dependency rebuild administration changed")
+        with _source(git_dir, "loupe-isolated-owner") as descriptor:
+            if _read(descriptor, 1024).decode() != state.creation_token:
+                raise _error("dependency rebuild ownership changed")
+
+    def _activate(self, workspace_id: str) -> None:
+        state = self.get(workspace_id)
+        workspace = self.store.get_workspace(workspace_id)
+        assert state is not None and workspace is not None
+        self._stage(workspace_id, "hydrated")
+        register_runtime_paths(Path(workspace.canonical_path), state.runtime_paths)
+        with self.store.connection() as con, immediate_transaction(con):
+            con.execute(
+                "UPDATE workspaces SET state='active',state_version=state_version+1,"
+                "last_verified_at=? WHERE workspace_id=?",
+                (self.store._now(None), workspace_id),
+            )
+            con.execute(
+                "UPDATE isolated_workspaces SET stage='ready' WHERE workspace_id=?",
+                (workspace_id,),
+            )
+        self.fault("ready")
+
+    def _complete_rebuild(
+        self, workspace_id: str, git_dir: Path, primary: Path,
+        *, recovery: bool = False,
+    ) -> None:
+        from llm_cli.workspace.authority import managed_mutation
+        from llm_cli.workspace.rebuild import discard_interrupted, run_pending
+
+        state = self.get(workspace_id)
+        workspace = self.store.get_workspace(workspace_id)
+        assert state is not None and workspace is not None
+        private = Path(workspace.canonical_path)
+        try:
+            with self.lock, managed_mutation(
+                self.store, primary, "isolated_create", state.session_id,
+                recovery=recovery,
+            ) as operation:
+                self._verify_rebuild_owner(state, workspace, git_dir, primary)
+                register_runtime_paths(private, state.runtime_paths)
+                discard_interrupted(private, git_dir, state.creation_token)
+                if capture_source(private, self.candidate_dir) != state.source_manifest:
+                    raise _error(
+                        "isolated source changed before dependency rebuild recovery"
+                    )
+                with self.store.connection() as con:
+                    con.execute(
+                        "UPDATE isolated_workspaces SET stage='rebuilding' "
+                        "WHERE workspace_id=?", (workspace_id,),
+                    )
+                if operation is not None:
+                    operation.confirm()
+            # Only the ordinary ownership pin survives here. No publication or
+            # authority mutation lock is held while the private installer runs.
+            self.fault("rebuilding")
+            successful, notices = run_pending(
+                private, primary, git_dir, state.creation_token,
+                runtime_files=state.runtime_files,
+                source_paths=tuple(
+                    path for path, entry in state.source_manifest.items()
+                    if entry.get("screened")
+                ),
+                fault=self.fault,
+                protected=self.rebuild_protected,
+            )
+            with self.lock, managed_mutation(
+                self.store, primary, "isolated_create", state.session_id,
+                recovery=recovery,
+            ) as operation:
+                current = self.get(workspace_id)
+                if (
+                    current is None or current.stage != "rebuilding"
+                    or current.creation_token != state.creation_token
+                    or current.source_manifest != state.source_manifest
+                ):
+                    raise _error("dependency rebuild state changed during installation")
+                self._verify_rebuild_owner(current, workspace, git_dir, primary)
+                if capture_source(private, self.candidate_dir) != state.source_manifest:
+                    raise _error("dependency installer changed isolated source")
+                with self.store.connection() as con, immediate_transaction(con):
+                    con.execute(
+                        "UPDATE isolated_workspaces SET "
+                        "runtime_files_json=?,notices_json=? WHERE workspace_id=?",
+                        (
+                            json.dumps(
+                                sorted(set(state.runtime_files) | set(successful))
+                            ),
+                            json.dumps(
+                                tuple(dict.fromkeys((*state.notices, *notices)))
+                            ),
+                            workspace_id,
+                        ),
+                    )
+                # Preserve opening consent and copied-runtime generation zero.
+                self.runtime.finish_creation(workspace_id, successful)
+                self._stage(workspace_id, "hydrated")
+                self.fault("rebuilt")
+                self._activate(workspace_id)
+                if operation is not None:
+                    operation.confirm()
+        except Exception:
+            # Finish only this exact failed operation; an ordinary pin must
+            # refuse the dirty marker left by its failed validation phase.
+            with self.lock, managed_mutation(
+                self.store, primary, "isolated_create", state.session_id,
+                recovery=True,
+            ) as operation:
+                self._quarantine(workspace_id)
+                if operation is not None:
+                    operation.confirm()
+            raise
+
+    def _recover_rebuild(self, workspace_id: str) -> bool:
+        from llm_cli.workspace.rebuild import read_journal
+
+        state = self.get(workspace_id)
+        workspace = self.store.get_workspace(workspace_id)
+        assert state is not None and workspace is not None
+        checkout = self.store.get_checkout(workspace.checkout_id)
+        assert checkout is not None and workspace.git_dir is not None
+        primary = Path(checkout.canonical_path)
+        git_dir = Path(workspace.git_dir)
+        self._verify_rebuild_owner(state, workspace, git_dir, primary)
+        if read_journal(git_dir, state.creation_token) is None:
+            return False
+        with self._opening(state.session_id):
+            self._complete_rebuild(workspace_id, git_dir, primary, recovery=True)
+        return True
 
     def open(
         self,
@@ -1287,29 +1461,52 @@ class IsolatedWorkspaceManager:
         *,
         approved_secrets: tuple[str, ...] = (),
     ) -> tuple[WorkspaceRecord, tuple[str, ...]]:
-        authority = self.store.authority
-        if authority is None:
-            return self._open_owned(
-                checkout, session_id, approved_secrets=approved_secrets
-            )
-        with self.lock, authority.mutation(
-            Path(checkout.canonical_path), "isolated_create", session_id
-        ) as operation:
-            try:
-                result = self._open_owned(
-                    checkout, session_id, approved_secrets=approved_secrets
-                )
-            except Exception:
-                with self.store.connection() as con:
-                    planned = con.execute(
-                        "SELECT 1 FROM isolated_workspaces WHERE session_id=?",
-                        (session_id,),
-                    ).fetchone()
-                if planned is None:
+        from llm_cli.workspace.authority import managed_mutation, managed_pin
+
+        primary = Path(checkout.canonical_path)
+        with self._opening(session_id), managed_pin(self.store, primary):
+            # Reusing a session ID must never select another checkout's private
+            # workspace, even before a daemon session row has been registered.
+            with self.lock, self.store.connection() as con:
+                prior = con.execute(
+                    "SELECT w.checkout_id FROM isolated_workspaces i "
+                    "JOIN workspaces w ON w.workspace_id=i.workspace_id "
+                    "WHERE i.session_id=?", (session_id,),
+                ).fetchone()
+                if prior is not None and prior[0] != checkout.checkout_id:
+                    raise _error("isolated session belongs to another checkout")
+            with self.lock, managed_mutation(
+                self.store, primary, "isolated_create", session_id
+            ) as operation:
+                try:
+                    result = self._open_owned(
+                        checkout, session_id, approved_secrets=approved_secrets
+                    )
+                except Exception:
+                    with self.store.connection() as con:
+                        planned = con.execute(
+                            "SELECT 1 FROM isolated_workspaces WHERE session_id=?",
+                            (session_id,),
+                        ).fetchone()
+                    if planned is None and operation is not None:
+                        operation.confirm()
+                    raise
+                if operation is not None:
                     operation.confirm()
-                raise
-            operation.confirm()
-            return result
+            workspace, notices = result
+            state = self.get(workspace.workspace_id)
+            assert state is not None
+            if state.stage == "rebuilding":
+                assert workspace.git_dir is not None
+                self._complete_rebuild(
+                    workspace.workspace_id, Path(workspace.git_dir), primary
+                )
+                ready_workspace = self.store.get_workspace(workspace.workspace_id)
+                state = self.get(state.workspace_id)
+                assert ready_workspace is not None and state is not None
+                workspace = ready_workspace
+                notices = state.notices
+            return workspace, notices
 
     def _open_owned(
         self,
@@ -1351,7 +1548,9 @@ class IsolatedWorkspaceManager:
                 )
             assert isinstance(head.stdout, str)
             base_oid = head.stdout.strip()
-            plan = plan_hydration(root, approved_secret_paths=approved_secrets)
+            plan = plan_hydration(
+                root, approved_secret_paths=approved_secrets, rebuild=self.rebuild
+            )
             policy_paths = tuple(
                 entry.path
                 for entry in plan.entries
@@ -1402,6 +1601,7 @@ class IsolatedWorkspaceManager:
                     "clone_or_copy",
                     "private_tree",
                     "create_directory",
+                    "rebuild",
                     "exclude_administration",
                 }
             )
@@ -1552,8 +1752,6 @@ class IsolatedWorkspaceManager:
                         "WHERE workspace_id=?",
                         (json.dumps(notices), workspace_id),
                     )
-                self.runtime.initialize(workspace_id, approved_secrets)
-                self._stage(workspace_id, "hydrated")
                 if (
                     source_fingerprint(root, policy_paths) != fingerprint
                     or capture_source(root, self.candidate_dir) != source
@@ -1562,7 +1760,9 @@ class IsolatedWorkspaceManager:
                         "source or ignore/attribute/config policy changed during "
                         "isolated creation"
                     )
-                fresh = plan_hydration(root, approved_secret_paths=approved_secrets)
+                fresh = plan_hydration(
+                    root, approved_secret_paths=approved_secrets, rebuild=self.rebuild
+                )
                 if not fresh.complete or [
                     entry
                     for entry in fresh.entries
@@ -1580,21 +1780,25 @@ class IsolatedWorkspaceManager:
                     != base_oid
                 ):
                     raise _error("HEAD changed during isolated creation")
-                register_runtime_paths(managed.path, runtime)
-                with self.store.connection() as con, immediate_transaction(con):
-                    con.execute(
-                        "UPDATE workspaces SET "
-                        "state='active',state_version=state_version+1,"
-                        "last_verified_at=? "
-                        "WHERE workspace_id=?",
-                        (now, workspace_id),
+                if self.rebuild:
+                    from llm_cli.workspace.rebuild import prepare
+
+                    self.runtime.initialize(
+                        workspace_id, approved_secrets,
+                        rebuilt_roots=tuple(spec.root for spec in self.rebuild),
                     )
-                    con.execute(
-                        "UPDATE isolated_workspaces SET stage='ready' WHERE "
-                        "workspace_id=?",
-                        (workspace_id,),
-                    )
-                self.fault("ready")
+                    prepare(managed.git_dir, token, self.rebuild)
+                    self.fault("rebuild_prepared")
+                    with self.store.connection() as con:
+                        con.execute(
+                            "UPDATE isolated_workspaces SET stage='rebuilding' "
+                            "WHERE workspace_id=?", (workspace_id,),
+                        )
+                    workspace = self.store.get_workspace(workspace_id)
+                    assert workspace is not None
+                    return workspace, notices
+                self.runtime.initialize(workspace_id, approved_secrets)
+                self._activate(workspace_id)
             except Exception:
                 self._quarantine(workspace_id)
                 raise

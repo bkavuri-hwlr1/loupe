@@ -154,7 +154,13 @@ class RuntimeRefresher:
                 raise _error("runtime generation ownership changed")
         return root
 
-    def initialize(self, workspace_id: str, approved: Sequence[str] = ()) -> None:
+    def initialize(
+        self,
+        workspace_id: str,
+        approved: Sequence[str] = (),
+        *,
+        rebuilt_roots: Sequence[str] = (),
+    ) -> None:
         with self.lock:
             with self.store.connection() as con:
                 if con.execute(
@@ -177,7 +183,10 @@ class RuntimeRefresher:
                 if dependency_path(path) or not (primary / path).is_dir()
             )
             files = _roots(json.loads(row["runtime_files_json"]))
-            before = {path: _signature(primary, path) for path in paths}
+            rebuilt = tuple(rebuilt_roots) or self._rebuilt_roots(workspace_id)
+            before = {
+                path: _signature(primary, path) for path in paths if path not in rebuilt
+            }
             copied = {path: _signature(private, path) for path in files}
             with self.store.connection() as con, immediate_transaction(con):
                 con.execute(
@@ -189,6 +198,52 @@ class RuntimeRefresher:
                     "INSERT OR IGNORE INTO isolated_runtime_generations VALUES (?,0,?)",
                     (workspace_id, _json({"paths": files, "private": copied})),
                 )
+
+    def finish_creation(self, workspace_id: str, rebuilt: Sequence[str]) -> None:
+        """Attach new roots without rebasing the opening copied-runtime receipts."""
+        from llm_cli.workspace.isolated import _error
+
+        with self.lock:
+            _, private, _ = self._binding(workspace_id)
+            added = {path: _signature(private, path) for path in rebuilt}
+            with self.store.connection() as con, immediate_transaction(con):
+                row = con.execute(
+                    "SELECT generation,private_json FROM isolated_runtime_state "
+                    "WHERE workspace_id=?",
+                    (workspace_id,),
+                ).fetchone()
+                if row is None or row["generation"] != 0:
+                    raise _error("dependency creation runtime generation changed")
+                copied = json.loads(row["private_json"])
+                copied.update(added)
+                con.execute(
+                    "UPDATE isolated_runtime_state SET private_json=? "
+                    "WHERE workspace_id=?",
+                    (_json(copied), workspace_id),
+                )
+                con.execute(
+                    "UPDATE isolated_runtime_generations SET paths_json=? "
+                    "WHERE workspace_id=? AND generation=0",
+                    (
+                        _json({"paths": tuple(sorted(copied)), "private": copied}),
+                        workspace_id,
+                    ),
+                )
+
+    def _rebuilt_roots(self, workspace_id: str) -> tuple[str, ...]:
+        from llm_cli.workspace.rebuild import configured_roots
+
+        with self.store.connection() as con:
+            row = con.execute(
+                "SELECT w.git_dir,i.creation_token FROM workspaces w "
+                "JOIN isolated_workspaces i USING(workspace_id) WHERE workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+        return (
+            configured_roots(Path(row["git_dir"]), str(row["creation_token"]))
+            if row and row["git_dir"]
+            else ()
+        )
 
     def _state(self, workspace_id: str) -> dict[str, Any]:
         self.initialize(workspace_id)
@@ -235,7 +290,14 @@ class RuntimeRefresher:
         baseline = json.loads(state["primary_json"])
         copied = json.loads(state["private_json"])
         noticed = json.loads(state["noticed_json"])
-        plan = plan_hydration(primary, approved_secret_paths=approved)
+        # Installer approval is frozen to opening. Refresh never imports a
+        # primary dependency tree over an explicitly rebuilt private root.
+        rebuilt = self._rebuilt_roots(workspace_id)
+        plan = plan_hydration(
+            primary,
+            approved_secret_paths=approved,
+            frozen_rebuild_roots=rebuilt,
+        )
         if not plan.complete:
             return ("Runtime refresh deferred; hydration inventory is incomplete.",)
         entries = {
@@ -243,10 +305,13 @@ class RuntimeRefresher:
             for entry in plan.entries
             if entry.action != "exclude_administration"
             and entry.classification == "ignored_runtime"
+            and entry.path not in rebuilt
             and (entry.kind != "directory" or entry.action == "private_tree")
         }
         # Never let an edited ignore rule reclassify a pinned runtime path as source.
-        paths = _roots((*baseline, *entries))
+        paths = tuple(
+            path for path in _roots((*baseline, *entries)) if path not in rebuilt
+        )
         fresh = {path: _signature(primary, path) for path in paths}
         updates: dict[str, Any] = {}
         notices: list[str] = []

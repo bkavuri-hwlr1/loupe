@@ -71,6 +71,7 @@ def search(
     *,
     limit: int = 8,
     explain: bool = False,
+    current_root: Path | None = None,
 ) -> dict[str, Any]:
     if (
         not isinstance(query, str)
@@ -103,7 +104,7 @@ def search(
             "END,rank,c.relative_path,c.ordinal LIMIT ?",
             (expression, source["source_id"], query, limit * 4),
         ).fetchall()
-    root = Path(source["canonical_path"])
+    root = current_root or Path(source["canonical_path"])
     excluded = excluded_paths(
         root,
         [str(row["relative_path"]) for row in rows],
@@ -113,7 +114,12 @@ def search(
     seen: set[str] = set()
     for row in rows:
         path = str(row["relative_path"])
-        if path in excluded or not eligible_path(path) or path in seen:
+        if (
+            path in excluded
+            or not eligible_path(path)
+            or path in seen
+            or contains_secret_material(str(row["text"]))
+        ):
             continue
         seen.add(path)
         doc = Document(

@@ -212,3 +212,44 @@ configuration. Later live-runtime refresh does not replace those inputs for
 staging and large dependency copies do not hold the shared publication lock.
 Generation directories are owner-only, carry the session ownership token, and
 are removed with the workspace once live work and held proposals release it.
+
+
+## C10 follow-up decision (Wave 6)
+
+A profile may explicitly approve one installer argv per ignored, untracked
+`.venv`, `venv` or `node_modules` root in `[isolated.rebuild]`. The quoted
+`".venv"` key is required in TOML. The preview reports `rebuild` without reading
+the primary dependency tree; it can rebuild missing or unsupported primary
+layouts. No setting means no installer. Network access defaults off; only an
+explicit `network = true` enables outbound IP for that installer. Ordinary
+commands and checks retain their default network refusal.
+
+Opening completes ordinary source/runtime stability checks before installation.
+The installer runs through the real command sandbox with immutable private
+source and writes limited to its dependency root and private disposable home.
+It inherits only the minimal command environment, including its search path;
+terminal variables and daemon-held provider credentials are not forwarded. Existing source-policy and actual-private-value
+output screening apply before an opening notice can persist diagnostics.
+Timeouts (60 seconds by default, at most 300) and bounded entry, byte, allocation,
+depth, per-file and metadata-observation limits apply. Observed size enforcement
+is not a filesystem quota. Failure removes the partial private root and still
+opens the conversation with a notice.
+
+A token-bound creation journal records frozen argv/network/timeout policy and
+compact stat-only completion receipts. C8 records opening exact-file consent
+and copied-runtime receipts before that journal. It keeps
+runtime bodies and installer output out of durable recovery metadata. Recovery
+removes partial roots and its deterministic disposable home, then retries an
+uncompleted installer. Later unexpected writes to a recorded completed tree
+require attention. Rebuilds reuse existing creation phases and G2's physical
+checkout journal; confirming readiness acknowledges that authority only after
+source and runtime are consistent.
+
+C8 freezes rebuilt roots as private inputs: later primary changes and ignore-rule
+edits cannot replace them, and safe-point refresh does not run installers. Other
+runtime paths retain their opening consent and normal refresh behavior. Held
+proposals keep immutable private dependency generations for apply. Worktree and
+Git-registration cleanup also removes journal-owned installer homes and rebuilt
+runtime. The existing creation publication barrier remains held during rebuilds;
+this bounded delay is an explicit tradeoff, rather than a change to authority
+or publication ordering.

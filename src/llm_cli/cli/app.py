@@ -22,7 +22,7 @@ from llm_cli.cli.session import (
     APPLY_TIMEOUT_SECONDS,
     _follow,
     _patient,
-    _session_setup_client,
+    _runtime_open_client,
     open_or_resume_session,
     remove_session_secret,
     run_session,
@@ -473,6 +473,7 @@ def _hydration_preview_text(plan: HydrationPlan) -> str:
     lines.append("Actions (all counts; up to 2 sample paths each, 8 total):")
     labels = {
         "private_tree": "Private dependency trees",
+        "rebuild": "Approved private rebuilds",
         "clone_or_copy": "Copy candidates",
         "private_copy": "Approved private copies",
         "create_directory": "Directory containers",
@@ -750,6 +751,7 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
         if arguments.workspace_command == "hydrate":
             from llm_cli.workspace.hydration import HydrationBudgets, plan_hydration
 
+            profile_paths = getattr(client, "paths", None)
             plan = plan_hydration(
                 Path(arguments.path),
                 budgets=HydrationBudgets(
@@ -762,6 +764,13 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                     max_seconds=arguments.max_seconds,
                 ),
                 approved_secret_paths=arguments.approve_secret,
+                rebuild=(
+                    load_settings(
+                        profile_paths.config_file, profile_id=profile_paths.profile_id
+                    ).isolated_rebuild
+                    if profile_paths is not None
+                    else ()
+                ),
             )
             return (
                 plan.to_dict() if arguments.as_json else _hydration_preview_text(plan)
@@ -1069,7 +1078,7 @@ def _dispatch_session(arguments: argparse.Namespace, client: DaemonClient) -> An
         "resume_secret": secret,
     }
     if action == "resume":
-        return _session_setup_client(client).call(
+        return _runtime_open_client(client, None, resume=True).call(
             "session.resume",
             {**authenticated, **session_environment_params(client.paths)},
         )
