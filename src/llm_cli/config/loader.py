@@ -5,17 +5,18 @@ from __future__ import annotations
 import ipaddress
 import re
 import tomllib
+import unicodedata
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
-from llm_cli.config.models import HookConfig, McpServerConfig, Settings
+from llm_cli.config.models import HookConfig, McpServerConfig, RebuildConfig, Settings
 from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.web.fetch import WebFetchError, check_proxy
 
-_ROOT_KEYS = {"agent", "core", "hooks", "leases", "mcp", "knowledge"}
+_ROOT_KEYS = {"agent", "core", "hooks", "leases", "mcp", "knowledge", "isolated"}
 _HOOK_KINDS = ("pre_tool", "post_edit")
 _HOOK_KEYS = {"match", "command", "timeout", "name"}
 _MAX_HOOKS = 16
@@ -190,6 +191,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "agent_provider": provider,
         "agent_model": model,
         "agent_commands": commands,
+        "isolated_rebuild": _rebuild(_table(data, "isolated")),
         "agent_explore": explore,
         "agent_explore_effort": explore_effort,
         "agent_review": review,
@@ -221,6 +223,97 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
             "lease renewal interval must be shorter than the work lease",
         )
     return candidate
+
+
+def _rebuild(isolated: dict[str, Any]) -> tuple[RebuildConfig, ...]:
+    if set(isolated) - {"rebuild"}:
+        raise _unknown("isolated", set(isolated) - {"rebuild"})
+    entries = _table(isolated, "rebuild")
+    if len(entries) > 16:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID, "at most 16 rebuild roots allowed"
+        )
+    result: list[RebuildConfig] = []
+    for root, value in sorted(entries.items()):
+        where = "isolated.rebuild." + root
+        parts = PurePosixPath(root).parts
+        alias = unicodedata.normalize("NFC", root).casefold()
+        if (
+            not root
+            or len(root) > 256
+            or "\\" in root
+            or any(ord(char) < 32 for char in root)
+            or root.startswith("/")
+            or root != PurePosixPath(root).as_posix()
+            or any(
+                part in {".", "..", ".git", ".loupe", ".llm-coord", ".codex", ".agents"}
+                for part in root.split("/")
+            )
+            or not parts
+            or parts[-1] not in {".venv", "venv", "node_modules"}
+            or any(
+                alias == unicodedata.normalize("NFC", entry.root).casefold()
+                or alias.startswith(
+                    unicodedata.normalize("NFC", entry.root).casefold() + "/"
+                )
+                or unicodedata.normalize("NFC", entry.root)
+                .casefold()
+                .startswith(alias + "/")
+                for entry in result
+            )
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "rebuild roots must be distinct, normalized checkout-relative "
+                ".venv, venv or node_modules paths",
+            )
+        raw = {"argv": value} if isinstance(value, list) else value
+        if not isinstance(raw, dict):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, where + " must be argv or table"
+            )
+        if set(raw) - {"argv", "network", "timeout_seconds"}:
+            raise _unknown(where, set(raw) - {"argv", "network", "timeout_seconds"})
+        argv = raw.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not 1 <= len(argv) <= 64
+            or sum(
+                len(arg.encode("utf-8")) if isinstance(arg, str) else 8193
+                for arg in argv
+            )
+            > 8192
+            or any(
+                not isinstance(arg, str)
+                or not arg
+                or len(arg) > 4096
+                or any(ord(char) < 32 for char in arg)
+                for arg in argv
+            )
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                where + ".argv must list 1 to 64 bounded strings",
+            )
+        from llm_cli.agent.source_policy import contains_secret_material
+
+        if contains_secret_material("\0".join(argv)):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, where + ".argv contains secret material"
+            )
+        network = raw.get("network", False)
+        timeout = raw.get("timeout_seconds", 60)
+        if (
+            type(network) is not bool
+            or type(timeout) is not int
+            or not 1 <= timeout <= 300
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                where + " requires boolean network and timeout_seconds 1..300",
+            )
+        result.append(RebuildConfig(root, tuple(argv), network, timeout))
+    return tuple(result)
 
 
 def _hooks(hooks: dict[str, Any]) -> tuple[HookConfig, ...]:

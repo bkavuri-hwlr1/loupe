@@ -78,6 +78,29 @@ the remaining planned capabilities are listed below.
   these exclude changed-tree copying. See the
   [measurement record](experiments/runtime-refresh-c8-2026-10-18.json).
 
+- Explicit dependency rebuild adapters (Wave 6 C10): `[isolated.rebuild]`
+  approves installer argv per ignored dependency root; hydration previews mark
+  `rebuild` and avoid reading its primary contents. Real command sandboxes keep
+  source read-only, constrain writes to the private root/home and deny network
+  unless explicitly enabled. Bounded failures remove partial roots and still
+  open the conversation with screened diagnostics. Durable token-bound creation
+  journals retry incomplete installers after disposing their private home;
+  compact metadata receipts recognize completed roots without storing runtime
+  bodies. C8 excludes rebuilt roots from primary refresh and retains their
+  private generations for apply. Existing publication-barrier ordering stays
+  intact; installer caps and an opening-specific response budget bound waiting.
+  See [the guide](isolated-workspaces.md#explicit-dependency-rebuilds) and
+  [ADR 0009](adr/0009-isolated-runtime-hydration.md).
+  On frozen C10 commit `7f110cfc`, the covered core passed 3,028 tests with one
+  case-sensitive-filesystem skip (87% coverage; one scale test deselected).
+  The separate uncovered scale test passed: 10,000 files / 400,000 functions
+  built in 7.315 seconds under the unchanged 30-second cap; incremental passes
+  took 45.54 ms at 1,000 files and 41.61 ms at 10,000. The focused C10 and
+  neighboring runtime regressions passed 193 tests with the same filesystem
+  skip. Ruff, mypy (123 source files), and offline wheel/sdist builds passed.
+  Installers used offline fixtures and providers were scripted; no billed run
+  was added.
+
 - Verified shared-task workflow: named checks in disposable worktrees, explicit
   dependency setup, bounded replayable subprocess output, required-check gating,
   retained review proposals, task diffs, apply, undo, and cancellation. Shared
@@ -1016,7 +1039,8 @@ Waves 4–7, as packages that separate sessions can run at once.
    migration under the accepted authority contract.
 2. Complete isolated-mode live validation (C6); C7 implements faster checks.
    C8 now implements runtime refresh; extend runtime support with a per-session
-   command environment (C9) and dependency rebuild adapters (C10).
+   command environment (C9). C10 implements explicit dependency rebuild adapters
+   under bounded creation and sandbox policies.
 3. B6 now records paired synthetic review quality and cost. Keep review disabled
    by default; evaluate natural-work effectiveness before reconsidering it.
 4. F1 lexical discovery, F2's code graph and F3's optional agent tool are

@@ -29,6 +29,7 @@ _ALIASES = {
     "profile_id": "profile",
     "coordination_mode": "core.coordination_mode",
     "knowledge_index": "knowledge.index",
+    "isolated_rebuild": "isolated.rebuild",
     "launch_lease_ms": "leases.launch_ms",
     "work_lease_ms": "leases.work_ms",
     "renewal_interval_ms": "leases.renewal_interval_ms",

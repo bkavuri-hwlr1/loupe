@@ -718,7 +718,7 @@ explicit rebuild as the alternative. No installer runs automatically today.
 **Scope.**
 
 - **Configuration.** A new `[isolated.rebuild]` table maps a dependency root
-  to an installer argv, for example `.venv = ["uv", "sync", "--frozen"]` or
+  to an installer argv, for example `".venv" = ["uv", "sync", "--frozen"]` or
   `node_modules = ["npm", "ci"]`. With that setting, the hydration plan shows
   `rebuild` for the root instead of `copy`. The explicit setting is the
   approval; nothing runs without it.
@@ -740,6 +740,28 @@ explicit rebuild as the alternative. No installer runs automatically today.
 - A failing rebuild produces the notice and leaves no partial tree.
 - A crash during a rebuild recovers.
 - Without the setting, nothing runs.
+
+**Implemented (Wave 6 C10).** Explicit profile settings now select bounded,
+sandboxed private rebuilds for ignored dependency roots, with network denied
+unless individually enabled. Plans do not traverse the primary rebuild root.
+Failure removes partial output while allowing the conversation to open; compact
+creation journals replay incomplete installers and dispose their private home
+on recovery. Rebuilt roots retain normal private check/apply generations and
+remain excluded from primary runtime refresh. Opening secret consent is frozen
+across recovery. Existing creation/publication lock ordering remains unchanged,
+with the installer-specific opening timeout covering the active daemon policy.
+See [the guide](isolated-workspaces.md#explicit-dependency-rebuilds) for the
+quoted TOML keys, budgets and creation-barrier tradeoff.
+
+**Validation:** frozen commit `7f110cfc` passed the covered core (3,028 passed,
+one filesystem skip; 87% coverage), the separate strict uncovered index-scale
+test, Ruff, mypy for 123 source files, and offline package builds. The focused
+rebuild/config/hydration/sandbox/creation/C8 cases passed 193 tests with one
+filesystem skip. Regression coverage includes over-budget and escaping primary
+dependencies, dependency imports in checks, held apply after restart, failed
+installer cleanup and screened diagnostics, hard-crash private-home scrubbing
+with late-source quarantine, physical-authority recovery, frozen secret consent
+and installer-time source/runtime changes. No billed provider call was needed.
 
 ## Lane D — operations
 
