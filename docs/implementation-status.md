@@ -485,8 +485,9 @@ publication. Indexing does not acknowledge changes, choose write bases or grant
 publication authority. F2 adds deterministic source graph projections and explicit
 CLI/RPC neighbors with parser/version/identity/generation evidence. Changed
 documents replace their graph facts atomically; unchanged graph rows remain.
-Agent retrieval tools and their live comparison, embedding providers, semantic
-retrieval and `sqlite-vec` remain planned.
+F3 adds optional agent/helper retrieval; its 30-cell live comparison is complete,
+with indexing kept off and F4 gated by the recorded result.
+Embedding providers, semantic retrieval and `sqlite-vec` remain planned.
 
 F2 validation at `0ab3fcd` passed 2,824 tests, with one case-sensitive-filesystem
 skip and the existing G1 cross-profile expected failure. Ruff, mypy over 119 source
@@ -968,6 +969,44 @@ global equality/history and complete restore/downgrade fencing remain deferred.
 In-place manual restore preserving the database inode/ID is unsupported. E2 stays
 deferred; this work adds no billed live provider run, release or version change.
 
+## Wave 6 F3: optional agent retrieval
+
+`search_project` is available to main agents and read-only exploration helpers
+only with `knowledge.index = "lexical"`. It combines bounded lexical snippets
+and a one-hop graph expansion, revalidates the task root's current privacy policy
+and identities, and labels optional/stale evidence separately from mandatory
+coordination facts. Read-only lookup failures become notices without source,
+coordination, cursor, publication-authority or worker-health changes. Calls and
+returned bytes use ordinary task/helper budgets. The default remains off.
+
+Scripted tests cover visibility, helper inheritance, budgets, exact UTF-8 context
+bounds, stale/private roots, broken/missing stores and read/write/cursor negative
+controls. The live comparison adds three discovery tasks to `trace-shared-edit`
+and `repo-summary`, with three alternating off/on repetitions and aggregate
+metrics. The [Sol/high comparison](experiments/optional-retrieval-f3-2026-10-21-sol.md)
+now records all 30 cells and 15 matched pairs. Both arms passed 12/15 contracts;
+on covered 90/102 facts versus 92/102 off. Median paired on-minus-off time is
++6.5 seconds and tool use +6 calls. All seven retrieval calls came from helpers.
+Keep indexing off and F4 gated; this small fixture shows no fact-coverage gain.
+
+The user removed the earlier token ceiling. Four valid cells were retained
+unchanged and 26 fresh cells completed after repairing multiline input framing;
+all valid failures remain. The equivalent shipped harness fix followed closure
+and passed 42 focused tests. Eligible usage is 17,904,476 known tokens plus 76
+unknown attempts. Including malformed framing and prior experiments, cumulative
+known usage is 22,677,799 plus 80 unknown attempts. Only one pair has exact token
+accounting; no overall token savings or statistical-significance claim follows.
+See the [optional retrieval guide](optional-retrieval.md) and the new record for
+raw component outcomes, accounting and frozen provenance.
+
+Offline validation on the frozen F3 source/test candidate passed 3,022 covered
+correctness tests, with one case-sensitive-filesystem skip. The separate strict
+scale test retained 10,000 files and 400,000 function nodes, building in 7.207 s
+against the unchanged 30 s cap. Incremental medians were 0.04407 s at 1,000 files
+and 0.04868 s at 10,000. Ruff, mypy over 123 source files, source distribution
+and wheel builds passed. This establishes implementation correctness under the
+scripted contracts; the completed live comparison supports keeping indexing off.
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
@@ -980,9 +1019,9 @@ Waves 4–7, as packages that separate sessions can run at once.
    command environment (C9) and dependency rebuild adapters (C10).
 3. B6 now records paired synthetic review quality and cost. Keep review disabled
    by default; evaluate natural-work effectiveness before reconsidering it.
-4. F1 lexical discovery and F2's deterministic code graph are implemented. Next
-   add retrieval in the agent with a live comparison (F3). Add embeddings with
-   exact scoring (F4) only if that comparison shows retrieval helps.
+4. F1 lexical discovery, F2's code graph and F3's optional agent tool are
+   implemented. F3's completed live comparison leaves indexing off and
+   exact-scoring embeddings (F4) gated.
 5. E2's live provider checks are on hold.
 
 The full phased design remains in

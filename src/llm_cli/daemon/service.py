@@ -219,6 +219,9 @@ class DaemonService:
             boot_id=boot_id,
             renewal_interval_seconds=settings.renewal_interval_ms / 1_000,
         )
+        self.runner.project_search = (
+            self.knowledge.project_search if self.knowledge.enabled else None
+        )
         self.workspace_batches = SharedBatchPublisher(
             self.store, paths.candidate_dir, threading.RLock()
         )

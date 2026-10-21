@@ -318,6 +318,7 @@ class SharedToolBroker(ToolBroker):
             "update_plan",
             "explore",
             "web_fetch",
+            "search_project",
         } or name.startswith(MCP_PREFIX):
             return ToolBroker.invoke(self, name, arguments)
         before = self.usage.calls
@@ -356,6 +357,12 @@ class SharedToolBroker(ToolBroker):
                 if self.usage.calls == before:
                     self.record_interrupted_call()
                 return _error(f"the repository refused that operation: {exc.message}")
+
+    def _retrieval_pending_paths(self) -> frozenset[str]:
+        # Discovery labels the logical source view without observing file bases
+        # or passing unpublished bytes into the optional index.
+        with self.publication_lock:
+            return frozenset(self._contents)
 
     def read_only_view(self, limits: ExecutionLimits) -> SharedToolBroker:
         """A helper's view: the same shared source and pending edits, read-only.

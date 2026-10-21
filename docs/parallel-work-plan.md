@@ -975,6 +975,32 @@ tests, `docs/implementation-status.md`, `docs/experiments/`.
 - A missing or broken index degrades with a notice instead of an error.
 - The live comparison is recorded with its recommendation.
 
+**Implemented (Wave 6 F3, live comparison complete; indexing stays off).** The opt-in
+`search_project` tool offers bounded cited lexical snippets plus one graph hop to
+main agents and read-only helpers. It revalidates source privacy and identities
+in each task's root, labels stale evidence, counts calls/returned bytes, and
+fails softly without changing coordination or initializing a missing store.
+Mandatory coordination context precedes optional result blocks; tight context
+budgets preserve the mandatory facts. Scripted visibility, privacy, stale/broken
+index and cursor/write-authority negative controls cover these boundaries.
+The five-task off/on corpus is pinned to merged main `6e5d65d`; all three
+alternating repetitions now yield 30 valid cells and 15 matched pairs. Both
+arms passed 12/15 contracts. On covered 90/102 facts versus 92/102 off; median
+paired time increased 6.5 seconds and tool use six calls. Keep indexing off and
+F4 gated. Seven retrieval calls came entirely from helpers.
+
+The user superseded the old token ceiling. Four valid cells remain unchanged;
+26 fresh cells followed a multiline input-framing repair. Valid failures stay
+in the comparison, and malformed-attempt usage stays in cumulative accounting.
+The equivalent shipped harness fix followed measurement and passed 42 tests.
+Eligible usage is 17,904,476 known tokens plus 76 unknown attempts; cumulative
+known usage, including excluded and historical attempts, is 22,677,799 plus 80
+unknown attempts. Only one pair has exact token accounting. The small fixture
+supports no overall token-savings or statistical-significance claim. See
+[optional retrieval](optional-retrieval.md) and the
+[completed comparison](experiments/optional-retrieval-f3-2026-10-21-sol.md);
+the older pilot and bounded-attempt records remain unchanged.
+
 ### F4. Embeddings with exact scoring
 
 **Gate.** Run only if F3 shows retrieval helps, or the user asks for semantic

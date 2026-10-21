@@ -21,8 +21,8 @@
 #                          interpreter, which has pytest
 # Bump `version` whenever the tasks, facts, fixtures, or revision change, so
 # results from different task sets are not compared.
-version = 4
-revision = "c47444e0ecfeeecf1005a2bca79ba30e11015a5e"
+version = 5
+revision = "6e5d65d148d6b4ac92fc849cb4fd861c63f8b5c3"
 
 [[tasks]]
 id = "narrow-function"
@@ -507,3 +507,66 @@ prompt = "Exercise the independent review gate with a prescribed candidate edit.
 [tasks.checks.smoke]
 argv = ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
 timeout = 120
+
+# F3 comparison: exact same pinned checkout, prompt, model and effort per arm.
+[[tasks]]
+id = "where-source-privacy"
+mode = "plan"
+prompt = """
+Where does Loupe prevent source files containing credentials or ignored runtime
+files from reaching a model? Trace source reads, optional lexical/graph search,
+and exploration helpers, naming the policy functions and privacy checks. Do not
+change any files.
+"""
+edits = "none"
+min_facts = 0.8
+facts = [
+    ["source_policy"],
+    ["contains_secret_material"],
+    ["excluded_paths"],
+    ["ensure_safe_content"],
+    ["current_state"],
+    ["explorer"],
+]
+
+[[tasks]]
+id = "where-index-updates"
+mode = "plan"
+prompt = """
+Where does an accepted shared-file publication become a new lexical index and
+code-graph generation? Trace the outbox write and independent worker projection,
+including how changed documents replace graph edges and how queries label stale
+evidence. Name the functions and explain why a broken index cannot block a
+publication. Do not change any files.
+"""
+edits = "none"
+min_facts = 0.8
+facts = [
+    ["knowledge_outbox", "outbox"],
+    ["process_pending"],
+    ["KnowledgeIndex"],
+    ["generation"],
+    ["stale"],
+    ["transaction"],
+]
+
+[[tasks]]
+id = "where-final-answer"
+mode = "plan"
+prompt = """
+Where does Loupe hold an edit task's draft answer until file publication and
+checks have settled? Trace shared execution, finalization state/checkpoints,
+trusted settlement facts, and the provider's final response. Explain the failure
+behavior if that final response cannot complete. Name concrete functions and do
+not change files.
+"""
+edits = "none"
+min_facts = 0.8
+facts = [
+    ["_finalize_response"],
+    ["SettlementFacts"],
+    ["prepare_finalization"],
+    ["finalize"],
+    ["checkpoint"],
+    ["finalization_failed", "missing"],
+]

@@ -1903,11 +1903,36 @@ def _results_with_coordination(
         return tuple(results)
     if not results:
         raise ValueError("checkout update has no completed tool result")
-    available = limit - len(suffix.encode("utf-8"))
-    last = results[-1]
+    # Optional discovery follows mandatory facts in the same model request.
+    # Keep native call IDs/order and decorate only the selected result.
+    position = next(
+        (
+            index
+            for index, result in enumerate(results)
+            if result.content.startswith("[optional_retrieval]")
+        ),
+        len(results) - 1,
+    )
+    last = results[position]
+    optional = last.content.startswith("[optional_retrieval]")
+    separator = "\n\n" if optional else ""
+    available = limit - len((suffix + separator).encode("utf-8"))
     content = last.content
     encoded = content.encode("utf-8")
-    if len(encoded) > available:
+    if optional and len(encoded) > available:
+        # Preserve both trust labels; arbitrary truncation could leave JSON and
+        # its closing boundary incomplete. Mandatory facts keep their priority.
+        content = (
+            "[optional_retrieval]\nOmitted: output budget.\n[/optional_retrieval]"
+        )
+        if len(content.encode("utf-8")) > available:
+            content, separator = "", ""
+        if len(suffix.encode("utf-8")) > limit:
+            raise LlmCoordError(
+                ErrorCode.CONTEXT_TOO_LARGE,
+                "coordination context cannot fit the configured tool-result limit",
+            )
+    elif len(encoded) > available:
         note = "\n[... tool output truncated to fit coordination update ...]"
         remaining = available - len(note.encode("utf-8"))
         if remaining < 0:
@@ -1917,8 +1942,13 @@ def _results_with_coordination(
             )
         content = encoded[:remaining].decode("utf-8", errors="ignore") + note
     return (
-        *results[:-1],
-        ToolCallResult(last.call_id, content + suffix, last.is_error),
+        *results[:position],
+        ToolCallResult(
+            last.call_id,
+            suffix + separator + content if optional else content + suffix,
+            last.is_error,
+        ),
+        *results[position + 1 :],
     )
 
 

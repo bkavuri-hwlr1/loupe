@@ -1,0 +1,644 @@
+{
+  "protocol": {
+    "suite_version": 5,
+    "corpus_revision": "6e5d65d148d6b4ac92fc849cb4fd861c63f8b5c3",
+    "source_revision": "6c69ac3fa9336f4aa9259f2bf2dba86c1f438ada",
+    "provider": "codex",
+    "model": "gpt-6-sol",
+    "effort": "high",
+    "tasks": [
+      "trace-shared-edit",
+      "repo-summary",
+      "where-source-privacy",
+      "where-index-updates",
+      "where-final-answer"
+    ],
+    "repetitions": [
+      1,
+      2,
+      3
+    ],
+    "arms": {
+      "off": "index off",
+      "on": "lexical index"
+    },
+    "expected_cells": 30,
+    "expected_pairs": 15,
+    "metadata_issues": []
+  },
+  "coverage": {
+    "recorded_cells": 1,
+    "passed_cells": 0,
+    "failed_cells": 1,
+    "cells_with_issues": 0,
+    "pairs_with_both_arms": 0,
+    "valid_matched_pairs": 0,
+    "matrix_complete": false,
+    "valid_comparison_complete": false,
+    "runner_complete": false,
+    "runner_measurement_complete": false,
+    "runner_status": "finished",
+    "run_exit_code": 1,
+    "final_accounting_artifacts_present": true,
+    "missing_cells": [
+      {
+        "id": "trace-shared-edit",
+        "repetition": 1,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "repo-summary",
+        "repetition": 1,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "repo-summary",
+        "repetition": 1,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "where-source-privacy",
+        "repetition": 1,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "where-source-privacy",
+        "repetition": 1,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "where-index-updates",
+        "repetition": 1,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "where-index-updates",
+        "repetition": 1,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "where-final-answer",
+        "repetition": 1,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "where-final-answer",
+        "repetition": 1,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "trace-shared-edit",
+        "repetition": 2,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "trace-shared-edit",
+        "repetition": 2,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "repo-summary",
+        "repetition": 2,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "repo-summary",
+        "repetition": 2,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "where-source-privacy",
+        "repetition": 2,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "where-source-privacy",
+        "repetition": 2,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "where-index-updates",
+        "repetition": 2,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "where-index-updates",
+        "repetition": 2,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "where-final-answer",
+        "repetition": 2,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "where-final-answer",
+        "repetition": 2,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "trace-shared-edit",
+        "repetition": 3,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "trace-shared-edit",
+        "repetition": 3,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "repo-summary",
+        "repetition": 3,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "repo-summary",
+        "repetition": 3,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "where-source-privacy",
+        "repetition": 3,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "where-source-privacy",
+        "repetition": 3,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "where-index-updates",
+        "repetition": 3,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "where-index-updates",
+        "repetition": 3,
+        "retrieval_arm": "on"
+      },
+      {
+        "id": "where-final-answer",
+        "repetition": 3,
+        "retrieval_arm": "off"
+      },
+      {
+        "id": "where-final-answer",
+        "repetition": 3,
+        "retrieval_arm": "on"
+      }
+    ],
+    "duplicate_cells": []
+  },
+  "accounting": {
+    "authorized_additional_cap_tokens": 3000000,
+    "recorded_cell_checkpoint_tokens": 2195,
+    "runner_reported_checkpoint_tokens": 2195,
+    "ledger_observed_settled_tokens": 1273436,
+    "receipt_observed_tokens": 1273436,
+    "all_attempt_transport_minus_recorded_checkpoint_tokens": 1271241,
+    "excluded_instrumentation_attempt_observed_tokens": 832827,
+    "excluded_instrumentation_attempt_usage_unknown": false,
+    "matched_phase_observed_tokens": 440609,
+    "known_transport_usage_omitted_from_failed_task_counters": 438414,
+    "matched_phase_transport_minus_recorded_checkpoint_tokens": 438414,
+    "receipt_minus_ledger_observed_tokens": 0,
+    "ledger_conservative_charge_tokens": 2451436,
+    "receipt_conservative_charge_tokens": 2451436,
+    "transport_ledger_and_receipt_totals_match": true,
+    "unknown_held_requests": 1,
+    "unknown_held_conservative_charge_tokens": 1178000,
+    "request_status_counts": {
+      "settled": 128,
+      "held": 1
+    },
+    "receipt_unknown_reservations": 1,
+    "receipt_outbound_requests": 129,
+    "transport_attempts_recorded": 129,
+    "confirmed_provider_received_requests": null,
+    "transport_attempt_count_semantics": "The raw receipt field outbound_requests counts transport attempts. A transport attempt that failed without a usage receipt does not prove the provider received it or consumed tokens.",
+    "additional_observed_tokens": 1273436,
+    "additional_conservative_charge_tokens": 2451436,
+    "additional_cap_respected_by_conservative_charge": true,
+    "prior_astra_pilot_observed_tokens": 1164063,
+    "prior_astra_pilot_in_matched_comparison": false,
+    "cumulative_observed_pilot_plus_cohort_tokens": 2437499,
+    "cumulative_pilot_plus_conservative_charge_tokens": 3615499,
+    "issues": [],
+    "notes": [
+      "v2: Failed parent checkpoint reports only2195tokens; transport ledger records440609known v2 tokens.438414known helper/request tokens are absent from the failed-parent durable total; global transport ledger remains authoritative for cap accounting.",
+      "Recorded failed-task checkpoint counters omit 438,414 known transport tokens after excluded instrumentation attempts are removed. The independent transport ledger remains authoritative for global observed usage and cap accounting."
+    ]
+  },
+  "attempts": [
+    {
+      "id": "v1",
+      "valid_for_matched_comparison": false,
+      "invalid_reason": "v1 guard rejected temporary concurrent helper reservation pressure instead of waiting",
+      "observed_tokens": 832827,
+      "outbound_requests": 87,
+      "exit_code": 130,
+      "status": null,
+      "recorded_cells": 3,
+      "matched_pairs": null,
+      "unknown_reservations": null,
+      "held_token_bound": null,
+      "stop_reason": null,
+      "accounting_note": null
+    },
+    {
+      "id": "v2",
+      "valid_for_matched_comparison": true,
+      "invalid_reason": null,
+      "observed_tokens": 440609,
+      "outbound_requests": 42,
+      "exit_code": 1,
+      "status": "finished_incomplete",
+      "recorded_cells": 1,
+      "matched_pairs": 0,
+      "unknown_reservations": 1,
+      "held_token_bound": 1178000,
+      "stop_reason": "A create_failed request has no usage receipt; shared ledger cannot safely admit another worst-case request.",
+      "accounting_note": "Failed parent checkpoint reports only2195tokens; transport ledger records440609known v2 tokens.438414known helper/request tokens are absent from the failed-parent durable total; global transport ledger remains authoritative for cap accounting."
+    }
+  ],
+  "queue_instrumentation": {
+    "recorded": true,
+    "admission_attempts": 44,
+    "status_counts": {
+      "admitted": 42,
+      "denied": 2
+    },
+    "aggregate_admission_seconds": 168.931319,
+    "sum_recorded_admission_seconds": 168.931319,
+    "aggregate_matches_recorded_durations": true,
+    "max_admission_seconds": 13.439333,
+    "records_without_duration": 0,
+    "scope": "budget-guard instrumentation across parallel admission attempts",
+    "overlaps_task_wall_time": true,
+    "additive_to_task_wall_time": false,
+    "ordinary_product_latency_estimate": false
+  },
+  "cell_token_counter_semantics": "durable task checkpoints; failed-task counters may omit known transport usage",
+  "cells": [
+    {
+      "ordinal": 1,
+      "id": "trace-shared-edit",
+      "repetition": 1,
+      "retrieval_arm": "off",
+      "passed": false,
+      "state": "failed",
+      "failure_code": "EXECUTION_FAILED",
+      "outcome": null,
+      "failed_checks": [
+        "state",
+        "facts"
+      ],
+      "facts_found": [],
+      "facts_missed": [
+        "_write_file",
+        "_stage",
+        "os.replace",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "settle_shared_execution",
+        "retain",
+        "operator_attention",
+        "CheckRunner",
+        "restore_usage",
+        "atomic_replace"
+      ],
+      "facts_found_count": 0,
+      "facts_total": 11,
+      "fact_coverage": 0.0,
+      "prompt_tokens": 1972,
+      "output_tokens": 223,
+      "total_tokens": 2195,
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "helper_prompt_tokens": 0,
+      "main_tool_calls": 3,
+      "all_tool_calls": 60,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 105.4,
+      "suspended_seconds": 0.0,
+      "index_build_seconds": 0.0,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "helper_tool_calls": 57,
+      "main_retrieval_calls": 0,
+      "issues": []
+    }
+  ],
+  "matched_pairs": [],
+  "arm_totals_all_recorded_cells": {
+    "off": {
+      "recorded_cells": 1,
+      "passed_cells": 0,
+      "facts_found": 0,
+      "facts_total": 11,
+      "prompt_tokens": 1972,
+      "output_tokens": 223,
+      "total_tokens": 2195,
+      "cached_tokens": 0,
+      "helper_prompt_tokens": 0,
+      "all_tool_calls": 60,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "index_build_seconds": [
+        0.0
+      ],
+      "median_wall_seconds": 105.4,
+      "index_build_seconds_total": 0.0
+    },
+    "on": {
+      "recorded_cells": 0,
+      "passed_cells": 0,
+      "facts_found": 0,
+      "facts_total": 0,
+      "prompt_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0,
+      "cached_tokens": 0,
+      "helper_prompt_tokens": 0,
+      "all_tool_calls": 0,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "index_build_seconds": [],
+      "median_wall_seconds": null,
+      "index_build_seconds_total": 0
+    }
+  },
+  "paired_per_task": {
+    "trace-shared-edit": {
+      "valid_matched_pairs": 0,
+      "median_on_minus_off": {
+        "facts_found_count": null,
+        "total_tokens": null,
+        "cached_tokens": null,
+        "all_tool_calls": null,
+        "wall_seconds": null
+      }
+    },
+    "repo-summary": {
+      "valid_matched_pairs": 0,
+      "median_on_minus_off": {
+        "facts_found_count": null,
+        "total_tokens": null,
+        "cached_tokens": null,
+        "all_tool_calls": null,
+        "wall_seconds": null
+      }
+    },
+    "where-source-privacy": {
+      "valid_matched_pairs": 0,
+      "median_on_minus_off": {
+        "facts_found_count": null,
+        "total_tokens": null,
+        "cached_tokens": null,
+        "all_tool_calls": null,
+        "wall_seconds": null
+      }
+    },
+    "where-index-updates": {
+      "valid_matched_pairs": 0,
+      "median_on_minus_off": {
+        "facts_found_count": null,
+        "total_tokens": null,
+        "cached_tokens": null,
+        "all_tool_calls": null,
+        "wall_seconds": null
+      }
+    },
+    "where-final-answer": {
+      "valid_matched_pairs": 0,
+      "median_on_minus_off": {
+        "facts_found_count": null,
+        "total_tokens": null,
+        "cached_tokens": null,
+        "all_tool_calls": null,
+        "wall_seconds": null
+      }
+    }
+  },
+  "runtime_provenance": {
+    "head": "6c69ac3fa9336f4aa9259f2bf2dba86c1f438ada",
+    "wheel_sha256": "9b6a427f6681d11984973ef1a70ace93adf0c37d9bf9706d150e4038e7ddccaa",
+    "all_source_modules_exact_match": true,
+    "installed_modules": 123,
+    "source_test_script_files": 393,
+    "source_test_script_sha256": "2cc86dffb7149ae6d08acd3bc5be56a0ac614eb0fdff751a129f67a65866434b",
+    "runner_sha256": "0863003c70b22d111797fd8b2ceffb81d297933d36064b3dc92d183f76b9b490",
+    "tasks_sha256": "d6faf771dd9fe640d74574819b87cccac4c53cbf48119aa0241defd6c32ae740",
+    "dependency_source": "Retained pilot runtime dependencies copied; fresh F3 wheel installed; coverage startup hooks omitted",
+    "guard_sha256": {
+      "sitecustomize.py": "e675d63e42ab9f6ce693d96c0f2e55a450c531f032d96b460751e5bc5aa15249",
+      "strict_codex_budget.py": "a88be93cf29e8b26d7c6b37ef40be3d22aa36379a339d2748469a8d531aade82"
+    }
+  },
+  "recommendation": "Comparison incomplete or invalid; keep retrieval off by default and F4 gated.",
+  "limitations": [
+    "Prior Astra pilot contributes only to cumulative accounting; no cross-model benefit contrast is made.",
+    "Token usage includes cached input and helpers; cache/helper counters are subsets, not additions to prompt totals.",
+    "Arm totals may have unequal coverage; only exact task/repetition pairs support paired contrasts.",
+    "Facts use shipped keyword coverage and are not an independent semantic answer-quality judgment.",
+    "Three repetitions per task do not establish statistical significance.",
+    "Task wall time excludes separately recorded index builds; machine suspension affects latency.",
+    "Unknown held reservations are conservative charges, not observed usage; no dollar cost is inferred."
+  ],
+  "excluded_instrumentation_cells": [
+    {
+      "ordinal": 1,
+      "id": "trace-shared-edit",
+      "repetition": 1,
+      "retrieval_arm": "off",
+      "passed": false,
+      "state": "failed",
+      "failure_code": "EXECUTION_FAILED",
+      "outcome": null,
+      "failed_checks": [
+        "state",
+        "facts"
+      ],
+      "facts_found": [],
+      "facts_missed": [
+        "_write_file",
+        "_stage",
+        "os.replace",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "settle_shared_execution",
+        "retain",
+        "operator_attention",
+        "CheckRunner",
+        "restore_usage",
+        "atomic_replace"
+      ],
+      "facts_found_count": 0,
+      "facts_total": 11,
+      "fact_coverage": 0.0,
+      "prompt_tokens": 1972,
+      "output_tokens": 248,
+      "total_tokens": 2220,
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "helper_prompt_tokens": 0,
+      "main_tool_calls": 3,
+      "all_tool_calls": 46,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 70.2,
+      "suspended_seconds": 0.0,
+      "index_build_seconds": 0.0,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "helper_tool_calls": 43,
+      "main_retrieval_calls": 0,
+      "issues": [],
+      "excluded_from_matched_comparison": true,
+      "artifact_filename": "results.json"
+    },
+    {
+      "ordinal": 2,
+      "id": "trace-shared-edit",
+      "repetition": 1,
+      "retrieval_arm": "on",
+      "passed": false,
+      "state": "failed",
+      "failure_code": "EXECUTION_FAILED",
+      "outcome": null,
+      "failed_checks": [
+        "state",
+        "facts"
+      ],
+      "facts_found": [],
+      "facts_missed": [
+        "_write_file",
+        "_stage",
+        "os.replace",
+        "SharedBatchPublisher",
+        "reserve_shared_publication",
+        "settle_shared_execution",
+        "retain",
+        "operator_attention",
+        "CheckRunner",
+        "restore_usage",
+        "atomic_replace"
+      ],
+      "facts_found_count": 0,
+      "facts_total": 11,
+      "fact_coverage": 0.0,
+      "prompt_tokens": 2040,
+      "output_tokens": 249,
+      "total_tokens": 2289,
+      "cached_tokens": 0,
+      "cache_write_tokens": 0,
+      "helper_prompt_tokens": 0,
+      "main_tool_calls": 3,
+      "all_tool_calls": 22,
+      "retrieval_calls": 1,
+      "helper_retrieval_calls": 1,
+      "wall_seconds": 40.1,
+      "suspended_seconds": 0.0,
+      "index_build_seconds": 0.97,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "helper_tool_calls": 19,
+      "main_retrieval_calls": 0,
+      "issues": [],
+      "excluded_from_matched_comparison": true,
+      "artifact_filename": "results.json"
+    },
+    {
+      "ordinal": 3,
+      "id": "repo-summary",
+      "repetition": 1,
+      "retrieval_arm": "off",
+      "passed": false,
+      "state": "failed",
+      "failure_code": "EXECUTION_FAILED",
+      "outcome": null,
+      "failed_checks": [
+        "state",
+        "facts"
+      ],
+      "facts_found": [],
+      "facts_missed": [
+        "daemon",
+        "sqlite",
+        "claim",
+        "provider",
+        "pytest"
+      ],
+      "facts_found_count": 0,
+      "facts_total": 5,
+      "fact_coverage": 0.0,
+      "prompt_tokens": 6251,
+      "output_tokens": 232,
+      "total_tokens": 6483,
+      "cached_tokens": 2944,
+      "cache_write_tokens": 0,
+      "helper_prompt_tokens": 0,
+      "main_tool_calls": 3,
+      "all_tool_calls": 26,
+      "retrieval_calls": 0,
+      "helper_retrieval_calls": 0,
+      "wall_seconds": 32.5,
+      "suspended_seconds": 0.0,
+      "index_build_seconds": 0.0,
+      "runner_timed_out": false,
+      "stranded_question": false,
+      "helper_tool_calls": 23,
+      "main_retrieval_calls": 0,
+      "issues": [],
+      "excluded_from_matched_comparison": true,
+      "artifact_filename": "results.json"
+    }
+  ],
+  "input_artifacts": {
+    "results": {
+      "filename": "results.json",
+      "present": true,
+      "sha256": "f18ee63a9b6f4c72078cb06eb20373d93c3e2355efdcd53a8687b426643b2dde"
+    },
+    "ledger": {
+      "filename": "final-ledger.json",
+      "present": true,
+      "sha256": "9f76868068ef1c092f9c49c397bda7f6ab3203b146778c6f6be18da23bad2a70"
+    },
+    "run_receipt": {
+      "filename": "run-receipt.json",
+      "present": true,
+      "sha256": "17661818b256fe961f67fcd8b52334c3c5bba4b5543d56e61de43915401cf4dd"
+    },
+    "runtime_receipt": {
+      "filename": "runtime-receipt.json",
+      "present": true,
+      "sha256": "89abd617d353e5f50407b67d77590e729f1a03491cb2eccd75e121e6898cd109"
+    },
+    "attempts": {
+      "filename": "attempts.json",
+      "present": true,
+      "sha256": "7f946911b9eeca5d0cb9175acc25f875d0c7dfe69f004bab29d8db1bc82cb098"
+    },
+    "invalid_results_1": {
+      "filename": "results.json",
+      "present": true,
+      "sha256": "481bede6a1ff417e54f4384324d35cb426bf90e3557aad58a42896857ceda125"
+    }
+  },
+  "record_date": "2026-10-20",
+  "method_notes": [
+    "The user authorized gpt-6-sol/high and a shared cap of 3,000,000 additional tokens.",
+    "Both Sol attempts share the same persistent request ledger; invalid attempts are not refunded.",
+    "The disposable runtime adds request admission before every outbound call. The shipped --budget-tokens flag alone is cell-level admission.",
+    "Each request reserves 1,178,000 tokens until usage is validated. One create_failed request has no receipt and retains the full bound.",
+    "The remaining 548,564-token headroom cannot admit another worst-case request. No further paid calls or retries were made.",
+    "The original Astra pilot contributes only to cumulative accounting, never to a matched retrieval comparison."
+  ],
+  "offline_reporting_checks": {
+    "guard_fake_provider_tests": 45,
+    "report_fixture_cases": 10,
+    "paid_calls": 0
+  }
+}

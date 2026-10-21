@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sqlite3
 import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from llm_cli.cli.composer import Composer
 from llm_cli.errors import LlmCoordError
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -19,6 +22,80 @@ benchmark = importlib.util.module_from_spec(_SPEC)
 # Dataclasses resolve their annotations through the module's registered entry.
 sys.modules["live_benchmark"] = benchmark
 _SPEC.loader.exec_module(benchmark)
+
+
+def _capture_plain_prompt(
+    prompt: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    task = benchmark.Task(id="framing-probe", prompt=prompt)
+    suite = benchmark.Suite(version=1, revision="a" * 40, tasks=(task,))
+    state = tmp_path / "state"
+    (state / "benchmark").mkdir(parents=True)
+    paths = SimpleNamespace(state_dir=state)
+    monkeypatch.setattr(benchmark, "load_suite", lambda path: suite)
+    monkeypatch.setattr(benchmark.AppPaths, "resolve", lambda profile: paths)
+    monkeypatch.setattr(benchmark, "write_config", lambda *args: None)
+    monkeypatch.setattr(benchmark, "_clone", lambda *args: tmp_path / "checkout")
+    monkeypatch.setattr(benchmark, "_loupe", lambda: ["offline-framing-probe"])
+
+    def fake_run(argv, **kwargs):
+        assert argv[0] in {"git", "offline-framing-probe"}
+        return SimpleNamespace(returncode=0, stdout="a" * 40, stderr="")
+
+    monkeypatch.setattr(benchmark.subprocess, "run", fake_run)
+    written = []
+
+    class PromptCaptured(Exception):
+        pass
+
+    class Pipe:
+        def write(self, value):
+            written.append(value)
+            return len(value)
+
+        def close(self):
+            raise PromptCaptured
+
+    def fake_popen(argv, **kwargs):
+        assert argv[0] == "offline-framing-probe" and "--plain" in argv
+        return SimpleNamespace(stdin=Pipe())
+
+    monkeypatch.setattr(benchmark.subprocess, "Popen", fake_popen)
+    with pytest.raises(PromptCaptured):
+        benchmark.main(["--profile", "framing-probe"])
+    assert len(written) == 1
+    return written[0]
+
+
+@pytest.mark.parametrize("task_id", sorted(benchmark.RETRIEVAL_TASKS))
+def test_retrieval_prompts_create_one_plain_submission(
+    task_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = next(task for task in benchmark.load_suite().tasks if task.id == task_id)
+    wire = _capture_plain_prompt(task.prompt, tmp_path, monkeypatch)
+    composer = Composer(io.StringIO(wire, newline=None), io.StringIO(), plain=True)
+
+    assert composer.read().split() == task.prompt.split()
+    with pytest.raises(EOFError):
+        composer.read()
+    if "\n" not in task.prompt and "\r" not in task.prompt:
+        assert wire == task.prompt + "\n"
+
+
+@pytest.mark.parametrize(
+    ("prompt", "wire"),
+    [
+        ("alpha\r\nbeta", "alpha beta\n"),
+        ("alpha\rbeta", "alpha beta\n"),
+        ("alpha\n\nbeta", "alpha  beta\n"),
+        ("naïve 🐍\n日本語 café", "naïve 🐍 日本語 café\n"),
+        (r"keep literal \n and \r escapes", "keep literal \\n and \\r escapes\n"),
+    ],
+)
+def test_plain_prompt_framing_preserves_prose_and_literal_escapes(
+    prompt: str, wire: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _capture_plain_prompt(prompt, tmp_path, monkeypatch) == wire
 
 
 def test_the_shipped_tasks_are_valid() -> None:
@@ -423,3 +500,48 @@ def test_deadline_cancels_detached_work_before_returning(tmp_path: Path) -> None
         assert cancelled == [True]
     finally:
         connection.close()
+
+
+def test_retrieval_config_is_separate_and_invalid_value_refused(tmp_path: Path) -> None:
+    path = benchmark.write_config(tmp_path, ["knowledge.index=lexical"], "bench")
+    settings = benchmark.load_settings(path, profile_id="bench")
+    assert settings.knowledge_index == "lexical"
+    assert '[knowledge]\nindex = "lexical"' in path.read_text()
+    with pytest.raises(ValueError, match=r"knowledge\.index"):
+        benchmark.write_config(tmp_path, ["knowledge.index=all"], "bench")
+
+
+def test_retrieval_corpus_and_paired_order_cover_three_repeats() -> None:
+    suite = benchmark.load_suite()
+    tasks = [task for task in suite.tasks if task.id in benchmark.RETRIEVAL_TASKS]
+    assert len(tasks) == 5 and all(task.fixture is None for task in tasks)
+    assert len(benchmark.execution_order(tasks, 3, True)) == 30
+    assert [row[2] for row in benchmark.execution_order(tasks[:1], 3, True)] == [
+        "off",
+        "on",
+        "on",
+        "off",
+        "off",
+        "on",
+    ]
+    assert suite.revision == "6e5d65d148d6b4ac92fc849cb4fd861c63f8b5c3"
+
+
+def test_retrieval_metrics_include_helper_calls_and_summary_failures() -> None:
+    events = [
+        *_events(),
+        ("retrieval.completed", {"helper": False}),
+        ("retrieval.completed", {"helper": True}),
+    ]
+    metrics = benchmark.summarize_events(events)
+    assert metrics.retrieval_calls == 2 and metrics.helper_retrieval_calls == 1
+    task = next(
+        task for task in benchmark.load_suite().tasks if task.id == "repo-summary"
+    )
+    row = benchmark.task_result(task, "completed", None, metrics, 4, 0)
+    assert row["all_tool_calls"] == 14
+    row.update(retrieval_arm="on", index_build_seconds=2)
+    summary = benchmark.retrieval_summary({"tasks": [row]})
+    assert summary["on"]["retrieval_calls"] == 2
+    assert summary["on"]["runs"] == 1
+    assert summary["on"]["cost_usd"] is None
