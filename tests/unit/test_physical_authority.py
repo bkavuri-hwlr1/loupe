@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -227,8 +228,11 @@ def test_database_replacement_or_missing_external_binding_stays_read_only(
         restarted.acquire(repository)
 
 
+@pytest.mark.parametrize("idle_origin", [None, 63.1, 1000.1])
 def test_idle_release_waits_30_seconds_and_handoff_emits_only_paths(
-    tmp_path: Path, repository_factory: Callable[..., Path]
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    idle_origin: float | None,
 ) -> None:
     secret = "runtime-canary-value-592730"
     repository = repository_factory(
@@ -245,10 +249,15 @@ def test_idle_release_waits_30_seconds_and_handoff_emits_only_paths(
             first.release_idle(now=acquired + 31)
             with pytest.raises(LlmCoordError):
                 second.acquire(repository)
+        if idle_origin is not None:
+            pin.owner.idle_since = idle_origin
         idle = pin.owner.idle_since
+        deadline = idle + module.IDLE_SECONDS
         first.release_idle(now=idle + 29.99)
         assert first._owned
-        first.release_idle(now=idle + 30)
+        first.release_idle(now=math.nextafter(deadline, -math.inf))
+        assert first._owned
+        first.release_idle(now=deadline)
         assert not first._owned
         with second.pin(repository), second.store.connection() as connection:
             event = connection.execute(
