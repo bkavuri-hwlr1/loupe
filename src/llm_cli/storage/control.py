@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 from llm_cli.agent.finalization import (
     checkpoint_finalization,
@@ -40,6 +40,7 @@ from llm_cli.coordination.models import (
     TaskRecord,
     WorkspaceCandidateRecord,
     WorkspaceDivergenceRecord,
+    WorkspaceExecutionRecord,
     WorkspacePublicationRecord,
     WorkspaceRecord,
 )
@@ -51,15 +52,33 @@ from llm_cli.workspace.identity import FileIdentity, ObjectKind
 if TYPE_CHECKING:
     from llm_cli.workspace.authority import PhysicalAuthority
 
+
+class ExecutionUpdate(TypedDict):
+    state: str
+    result_tree_id: NotRequired[str | None]
+    result_commit_id: NotRequired[str | None]
+    patch_hash: NotRequired[str | None]
+    summary: NotRequired[str | None]
+    tool_calls: NotRequired[int | None]
+    usage: NotRequired[Mapping[str, int] | None]
+    failure_code: NotRequired[str | None]
+    now: NotRequired[int | None]
+
+
 _REPO_KEY = re.compile(r"^[a-f0-9]{64}$")
 _ANSWER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _ANSWER_CHUNK_CHARACTERS = 4096
 # A session runs at most one task at a time; these states are still live.
 _LIVE_SESSION_TASK = """
     SELECT task_id FROM tasks
-    WHERE session_id = ? AND state NOT IN (
+    WHERE session_id = ? AND (state NOT IN (
         'completed', 'failed', 'cancelled', 'ready_for_integration',
         'operator_attention', 'reviewing'
+    ) OR EXISTS (SELECT 1 FROM workspace_executions e
+        WHERE e.task_id=tasks.task_id AND e.task_attempt=tasks.attempt
+        AND e.state NOT IN ('published','failed'))) AND NOT (
+        ?=1 AND EXISTS (SELECT 1 FROM claims c
+            WHERE c.claim_id=tasks.current_claim_id AND c.state='queued')
     ) LIMIT 1
 """
 
@@ -287,6 +306,21 @@ class ControlStore:
                 """,
                 (repo_key, timestamp, timestamp, timestamp),
             )
+            connection.execute(
+                "INSERT INTO repository_registration_provenance("
+                "repository_id,repo_key,canonical_path,git_common_dir,target_ref,"
+                "integration_adapter,provenance,recorded_at) "
+                "VALUES (?,?,?,?,?,?, 'registration',?)",
+                (
+                    effective_id,
+                    repo_key,
+                    main_worktree_path,
+                    git_common_dir,
+                    target_ref,
+                    integration_adapter,
+                    timestamp,
+                ),
+            )
             row = connection.execute(
                 "SELECT * FROM repositories WHERE repo_key = ?", (repo_key,)
             ).fetchone()
@@ -301,6 +335,7 @@ class ControlStore:
         title: str = "",
         coordination_mode: str | None = None,
         session_id: str | None = None,
+        workspace_execution: bool = False,
         attempt: int = 1,
         parent_task_id: str | None = None,
         group_id: str | None = None,
@@ -310,6 +345,10 @@ class ControlStore:
 
         if attempt <= 0:
             raise ValueError("attempt must be positive")
+        if workspace_execution and (session_id is None or self.authority is None):
+            raise ValueError(
+                "workspace task creation requires physical session authority"
+            )
         timestamp = self._now(now)
         effective_task_id = task_id or new_identifier("task")
         with self.connection() as connection, immediate_transaction(connection):
@@ -330,11 +369,17 @@ class ControlStore:
                 if str(session["state"]) != "active":
                     raise ValueError("a task requires an active session")
                 checkout = connection.execute(
-                    "SELECT repository_id FROM checkouts WHERE checkout_id = ?",
+                    "SELECT repository_id,canonical_path FROM checkouts "
+                    "WHERE checkout_id = ?",
                     (session["checkout_id"],),
                 ).fetchone()
                 if checkout is None or str(checkout["repository_id"]) != repository_id:
                     raise ValueError("session belongs to another repository")
+                if workspace_execution:
+                    assert self.authority is not None
+                    self.authority.assert_regime(
+                        Path(checkout["canonical_path"]), allowed=("workspace",)
+                    )
             existing = connection.execute(
                 "SELECT * FROM tasks WHERE task_id = ?", (effective_task_id,)
             ).fetchone()
@@ -350,7 +395,7 @@ class ControlStore:
                 return self.task_from_row(existing)
             if session_id is not None:
                 live_task = connection.execute(
-                    _LIVE_SESSION_TASK, (session_id,)
+                    _LIVE_SESSION_TASK, (session_id, int(workspace_execution))
                 ).fetchone()
                 if live_task is not None:
                     raise ValueError("this session already has an active task")
@@ -1406,8 +1451,15 @@ class ControlStore:
                         t.state NOT IN ('completed','failed','cancelled',
                             'ready_for_integration','operator_attention','reviewing')
                         OR c.state IN ('queued','active_work','publishing',
-                            'active_integration')) LIMIT 1""",
-                (session_id,),
+                            'active_integration') OR EXISTS (
+                            SELECT 1 FROM workspace_executions e
+                            WHERE e.task_id=t.task_id AND e.task_attempt=t.attempt
+                            AND e.state NOT IN ('published','failed'))) AND NOT (
+                        ?=1 AND COALESCE(c.state='queued',0)) LIMIT 1""",
+                (
+                    session_id,
+                    int(self._session_uses_workspace_execution(connection, session_id)),
+                ),
             ).fetchone()
             if busy is not None:
                 raise ClaimConflict(
@@ -1903,7 +1955,7 @@ class ControlStore:
             rows = connection.execute(
                 """
                 SELECT e.execution_id, e.state, e.usage_json
-                FROM task_executions e JOIN tasks t ON t.task_id = e.task_id
+                FROM all_task_executions e JOIN tasks t ON t.task_id = e.task_id
                 WHERE t.session_id = ?
                 ORDER BY e.created_at, e.execution_id
                 """,
@@ -1918,9 +1970,31 @@ class ControlStore:
                 for row in rows
             )
 
+    def _session_uses_workspace_execution(
+        self, connection: sqlite3.Connection, session_id: str
+    ) -> bool:
+        if self.authority is None:
+            return False
+        checkout = connection.execute(
+            "SELECT c.canonical_path FROM sessions s JOIN checkouts c "
+            "ON c.checkout_id=s.checkout_id WHERE s.session_id=?",
+            (session_id,),
+        ).fetchone()
+        return bool(
+            checkout is not None
+            and self.authority.regime(Path(checkout["canonical_path"]))["regime"]
+            == "workspace"
+        )
+
     def session_has_active_task(self, session_id: str) -> bool:
         with self.connection() as connection:
-            row = connection.execute(_LIVE_SESSION_TASK, (session_id,)).fetchone()
+            row = connection.execute(
+                _LIVE_SESSION_TASK,
+                (
+                    session_id,
+                    int(self._session_uses_workspace_execution(connection, session_id)),
+                ),
+            ).fetchone()
             return row is not None
 
     def session_conversation(
@@ -2099,11 +2173,46 @@ class ControlStore:
                 return None
             return self.publication_from_row(connection, row)
 
-    def get_execution(self, task_id: str, attempt: int) -> ExecutionRecord | None:
+    @staticmethod
+    def execution_table(connection: sqlite3.Connection, execution_id: str) -> str:
+        row = connection.execute(
+            "SELECT execution_contract FROM all_task_executions WHERE execution_id = ?",
+            (execution_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"execution {execution_id!r} does not exist")
+        return (
+            "workspace_executions"
+            if row["execution_contract"] == "workspace_v1"
+            else "task_executions"
+        )
+
+    @staticmethod
+    def _execution_children(connection: sqlite3.Connection, execution_id: str) -> str:
+        return (
+            "workspace_execution"
+            if ControlStore.execution_table(connection, execution_id)
+            == "workspace_executions"
+            else "execution"
+        )
+
+    def get_execution_by_id(
+        self, execution_id: str
+    ) -> ExecutionRecord | WorkspaceExecutionRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM all_task_executions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            return self.execution_from_row(row) if row is not None else None
+
+    def get_execution(
+        self, task_id: str, attempt: int
+    ) -> ExecutionRecord | WorkspaceExecutionRecord | None:
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT * FROM task_executions
+                SELECT * FROM all_task_executions
                 WHERE task_id = ? AND task_attempt = ?
                 """,
                 (task_id, attempt),
@@ -2221,7 +2330,7 @@ class ControlStore:
         with self.connection() as connection:
             row = connection.execute(
                 """SELECT c.*, a.execution_id IS NOT NULL AS terminal_event_persisted
-                    FROM execution_checkpoints c LEFT JOIN execution_answers a
+                    FROM all_execution_checkpoints c LEFT JOIN all_execution_answers a
                     ON a.execution_id = c.execution_id WHERE c.execution_id = ?""",
                 (execution_id,),
             ).fetchone()
@@ -2232,7 +2341,7 @@ class ControlStore:
 
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM execution_answers WHERE execution_id = ?",
+                "SELECT * FROM all_execution_answers WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
             if row is None:
@@ -2248,7 +2357,9 @@ class ControlStore:
                 created_at=int(row["created_at"]),
             )
 
-    def latest_session_execution(self, session_id: str) -> ExecutionRecord | None:
+    def latest_session_execution(
+        self, session_id: str
+    ) -> ExecutionRecord | WorkspaceExecutionRecord | None:
         """Return the execution of a session's most recent task, if it ran."""
 
         with self.connection() as connection:
@@ -2256,7 +2367,7 @@ class ControlStore:
                 """SELECT e.* FROM (
                         SELECT task_id, attempt FROM tasks WHERE session_id = ?
                         ORDER BY created_at DESC, rowid DESC LIMIT 1
-                    ) t JOIN task_executions e
+                    ) t JOIN all_task_executions e
                     ON e.task_id = t.task_id AND e.task_attempt = t.attempt""",
                 (session_id,),
             ).fetchone()
@@ -2267,7 +2378,7 @@ class ControlStore:
 
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT COUNT(*) FROM execution_answer_revisions "
+                "SELECT COUNT(*) FROM all_execution_answer_revisions "
                 "WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
@@ -2302,17 +2413,19 @@ class ControlStore:
         timestamp = self._now(now)
         with self.connection() as connection, immediate_transaction(connection):
             execution = connection.execute(
-                "SELECT * FROM task_executions WHERE execution_id = ?",
+                "SELECT * FROM all_task_executions WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
             accepted = connection.execute(
-                "SELECT payload_json FROM execution_answers WHERE execution_id = ?",
+                "SELECT payload_json FROM all_execution_answers WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
             if execution is None or accepted is None:
                 raise ValueError("only an accepted answer can be written again")
+            table = self.execution_table(connection, execution_id)
+            children = self._execution_children(connection, execution_id)
             if connection.execute(
-                "SELECT 1 FROM execution_answer_revisions WHERE execution_id = ?",
+                "SELECT 1 FROM all_execution_answer_revisions WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone():
                 raise ValueError("this answer was already written again")
@@ -2334,7 +2447,7 @@ class ControlStore:
                 connection, execution=execution, payload=payload, now=timestamp
             )
             connection.execute(
-                """INSERT INTO execution_answer_revisions(
+                f"""INSERT INTO {children}_answer_revisions(
                     execution_id, revision, answer_id, payload_json, content_sha256,
                     first_event_sequence, last_event_sequence, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2354,7 +2467,7 @@ class ControlStore:
             for key, count in usage.items():
                 spent[key] = spent.get(key, 0) + count
             connection.execute(
-                """UPDATE task_executions SET usage_json = ?, updated_at = ?
+                f"""UPDATE {table} SET usage_json = ?, updated_at = ?
                     WHERE execution_id = ?""",
                 (json.dumps(spent, sort_keys=True), timestamp, execution_id),
             )
@@ -2374,7 +2487,15 @@ class ControlStore:
                 and isinstance(current, dict)
                 and current.get("session") == replaces
                 and connection.execute(
-                    _LIVE_SESSION_TASK, (owner["session_id"],)
+                    _LIVE_SESSION_TASK,
+                    (
+                        owner["session_id"],
+                        int(
+                            self._session_uses_workspace_execution(
+                                connection, owner["session_id"]
+                            )
+                        ),
+                    ),
                 ).fetchone()
                 is None
             )
@@ -2424,8 +2545,9 @@ class ControlStore:
         checkpoint_finalization(checkpoint)
         timestamp = self._now(now)
         with self.connection() as connection, immediate_transaction(connection):
+            children = self._execution_children(connection, execution_id)
             execution = connection.execute(
-                "SELECT * FROM task_executions WHERE execution_id = ?",
+                "SELECT * FROM all_task_executions WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
             if execution is None:
@@ -2433,7 +2555,7 @@ class ControlStore:
             if str(execution["driver"]) != driver:
                 raise ValueError("checkpoint driver does not match its execution")
             prior_row = connection.execute(
-                "SELECT checkpoint_json FROM execution_checkpoints "
+                "SELECT checkpoint_json FROM all_execution_checkpoints "
                 "WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
@@ -2447,7 +2569,7 @@ class ControlStore:
             validate_finalization_transition(prior, checkpoint)
             answer = checkpoint.get("accepted_answer")
             existing_answer = connection.execute(
-                "SELECT 1 FROM execution_answers WHERE execution_id = ?",
+                "SELECT 1 FROM all_execution_answers WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
             if answer is not None:
@@ -2465,21 +2587,21 @@ class ControlStore:
             elif existing_answer is not None:
                 raise ValueError("a checkpoint cannot discard its accepted answer")
             connection.execute(
-                """
-                INSERT INTO execution_checkpoints(
+                f"""
+                INSERT INTO {children}_checkpoints(
                     execution_id, driver, checkpoint_json, revision, created_at,
                     updated_at
                 ) VALUES (?, ?, ?, 1, ?, ?)
                 ON CONFLICT(execution_id) DO UPDATE SET
                     checkpoint_json = excluded.checkpoint_json,
-                    revision = execution_checkpoints.revision + 1,
+                    revision = {children}_checkpoints.revision + 1,
                     updated_at = excluded.updated_at
                 """,
                 (execution_id, driver, encoded, timestamp, timestamp),
             )
             row = connection.execute(
                 """SELECT c.*, a.execution_id IS NOT NULL AS terminal_event_persisted
-                    FROM execution_checkpoints c LEFT JOIN execution_answers a
+                    FROM all_execution_checkpoints c LEFT JOIN all_execution_answers a
                     ON a.execution_id = c.execution_id WHERE c.execution_id = ?""",
                 (execution_id,),
             ).fetchone()
@@ -2498,8 +2620,9 @@ class ControlStore:
         payload = _accepted_answer(answer, checkpoint)
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         execution_id = str(execution["execution_id"])
+        children = self._execution_children(connection, execution_id)
         existing = connection.execute(
-            "SELECT payload_json FROM execution_answers WHERE execution_id = ?",
+            "SELECT payload_json FROM all_execution_answers WHERE execution_id = ?",
             (execution_id,),
         ).fetchone()
         if existing is not None:
@@ -2510,7 +2633,7 @@ class ControlStore:
             connection, execution=execution, payload=payload, now=now
         )
         connection.execute(
-            """INSERT INTO execution_answers(
+            f"""INSERT INTO {children}_answers(
                 execution_id, answer_id, version, payload_json, content_sha256,
                 first_event_sequence, last_event_sequence, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -2550,7 +2673,11 @@ class ControlStore:
             event_id = self.append_task_event(
                 connection,
                 task_id=str(execution["task_id"]),
-                claim_id=str(execution["claim_id"]),
+                claim_id=(
+                    str(execution["claim_id"])
+                    if execution["claim_id"] is not None
+                    else None
+                ),
                 event_type="model.finished",
                 payload=event_payload,
                 now=now,
@@ -2573,6 +2700,19 @@ class ControlStore:
         )
 
     @staticmethod
+    def promote_workspace_conversation(
+        connection: sqlite3.Connection, execution_id: str, *, now: int
+    ) -> None:
+        if (
+            ControlStore.execution_table(connection, execution_id)
+            != "workspace_executions"
+        ):
+            raise ValueError("workspace conversation requires a workspace execution")
+        ControlStore.promote_execution_conversation(
+            connection, execution_id, now=now, shared_only=True
+        )
+
+    @staticmethod
     def promote_execution_conversation(
         connection: sqlite3.Connection,
         execution_id: str,
@@ -2587,7 +2727,7 @@ class ControlStore:
         """
 
         owner = connection.execute(
-            """SELECT t.session_id FROM task_executions e
+            """SELECT t.session_id FROM all_task_executions e
                 JOIN tasks t ON t.task_id = e.task_id WHERE e.execution_id = ?""",
             (execution_id,),
         ).fetchone()
@@ -2595,9 +2735,9 @@ class ControlStore:
             return
         row = connection.execute(
             """SELECT c.checkpoint_json, s.session_id, s.provider, s.model
-                FROM task_executions e JOIN tasks t ON t.task_id = e.task_id
+                FROM all_task_executions e JOIN tasks t ON t.task_id = e.task_id
                 JOIN sessions s ON s.session_id = t.session_id
-                JOIN execution_checkpoints c ON c.execution_id = e.execution_id
+                JOIN all_execution_checkpoints c ON c.execution_id = e.execution_id
                 WHERE e.execution_id = ?
                 AND (? = 0 OR e.workspace_id = s.workspace_id)""",
             (execution_id, int(shared_only)),
@@ -2633,16 +2773,17 @@ class ControlStore:
         *,
         boot_id: str,
         now: int | None = None,
-    ) -> ExecutionRecord:
+    ) -> ExecutionRecord | WorkspaceExecutionRecord:
         """Assign a recoverable running execution to this daemon boot."""
 
         if not boot_id:
             raise ValueError("execution owner boot must not be empty")
         timestamp = self._now(now)
         with self.connection() as connection, immediate_transaction(connection):
+            table = self.execution_table(connection, execution_id)
             updated = connection.execute(
-                """
-                UPDATE task_executions SET boot_id = ?, updated_at = ?
+                f"""
+                UPDATE {table} SET boot_id = ?, updated_at = ?
                 WHERE execution_id = ? AND state = 'running'
                 """,
                 (boot_id, timestamp, execution_id),
@@ -2650,7 +2791,7 @@ class ControlStore:
             if updated.rowcount != 1:
                 raise ValueError("only a running execution can be adopted")
             row = connection.execute(
-                "SELECT * FROM task_executions WHERE execution_id = ?",
+                "SELECT * FROM all_task_executions WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
             assert row is not None
@@ -2680,7 +2821,11 @@ class ControlStore:
                 """,
                 (boot_id,),
             ).fetchall()
-            return tuple(self.execution_from_row(row) for row in rows)
+            records = tuple(self.execution_from_row(row) for row in rows)
+            assert all(isinstance(record, ExecutionRecord) for record in records)
+            return tuple(
+                record for record in records if isinstance(record, ExecutionRecord)
+            )
 
     def latest_publication_intent(
         self, task_id: str, attempt: int
@@ -2719,6 +2864,150 @@ class ControlStore:
                 """
             ).fetchall()
             return tuple(self.publication_from_row(connection, row) for row in rows)
+
+    def create_workspace_execution(
+        self,
+        *,
+        task_id: str,
+        attempt: int,
+        session_id: str,
+        workspace_id: str,
+        scopes: tuple[str, ...],
+        physical_key: str,
+        regime_generation: int,
+        driver: str,
+        worktree_path: str,
+        base_oid: str,
+        boot_id: str,
+        now: int | None = None,
+    ) -> WorkspaceExecutionRecord:
+        """Reserve a durable workspace task without allocating an editing claim."""
+
+        if (
+            attempt <= 0
+            or not session_id
+            or not workspace_id
+            or not physical_key
+            or type(regime_generation) is not int
+            or regime_generation <= 0
+            or not worktree_path
+            or not base_oid
+            or not boot_id
+            or not driver
+            or len(driver) > 64
+        ):
+            raise ValueError("workspace execution identity is invalid")
+        normalized = normalize_scopes(scopes)
+        timestamp = self._now(now)
+        with self.connection() as connection, immediate_transaction(connection):
+            binding = connection.execute(
+                """SELECT t.attempt, t.current_claim_id, s.workspace_id, s.state,
+                    w.state AS workspace_state, w.canonical_path
+                    FROM tasks t JOIN sessions s ON s.session_id=t.session_id
+                    JOIN workspaces w ON w.workspace_id=s.workspace_id
+                    WHERE t.task_id=? AND t.session_id=?""",
+                (task_id, session_id),
+            ).fetchone()
+            if (
+                binding is None
+                or int(binding["attempt"]) != attempt
+                or binding["current_claim_id"] is not None
+                or binding["workspace_id"] != workspace_id
+                or binding["state"] not in {"active", "disconnected"}
+                or binding["workspace_state"] != "active"
+                or binding["canonical_path"] != worktree_path
+            ):
+                raise ValueError(
+                    "workspace execution does not match its durable session"
+                )
+            row = connection.execute(
+                "SELECT * FROM all_task_executions WHERE task_id=? AND task_attempt=?",
+                (task_id, attempt),
+            ).fetchone()
+            if row is not None:
+                record = self.execution_from_row(row)
+                if not isinstance(record, WorkspaceExecutionRecord) or (
+                    record.session_id != session_id
+                    or record.workspace_id != workspace_id
+                    or record.scopes != normalized
+                    or record.physical_key != physical_key
+                    or record.regime_generation != regime_generation
+                    or record.driver != driver
+                    or record.worktree_path != worktree_path
+                    or record.base_oid != base_oid
+                ):
+                    raise ValueError(
+                        "task attempt already belongs to another execution"
+                    )
+                return record
+            execution_id = new_identifier("wexec")
+            connection.execute(
+                """INSERT INTO workspace_executions(
+                    execution_id, task_id, task_attempt, session_id, workspace_id,
+                    scopes_json, physical_key, regime_generation, driver, state,
+                    boot_id, worktree_path, base_oid, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'preparing', ?, ?, ?, ?, ?)""",
+                (
+                    execution_id,
+                    task_id,
+                    attempt,
+                    session_id,
+                    workspace_id,
+                    json.dumps(normalized),
+                    physical_key,
+                    regime_generation,
+                    driver,
+                    boot_id,
+                    worktree_path,
+                    base_oid,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                """UPDATE tasks SET state='preparing', coordination_state='active_work',
+                    current_claim_id=NULL, current_fencing_token=NULL, updated_at=?
+                    WHERE task_id=? AND attempt=? AND current_claim_id IS NULL""",
+                (timestamp, task_id, attempt),
+            )
+            self.append_task_event(
+                connection,
+                task_id=task_id,
+                claim_id=None,
+                event_type="execution.preparing",
+                payload={
+                    "execution_id": execution_id,
+                    "driver": driver,
+                    "execution_contract": "workspace_v1",
+                },
+                now=timestamp,
+            )
+            row = connection.execute(
+                "SELECT * FROM workspace_executions WHERE execution_id=?",
+                (execution_id,),
+            ).fetchone()
+            assert row is not None
+            record = self.execution_from_row(row)
+            assert isinstance(record, WorkspaceExecutionRecord)
+            return record
+
+    def list_orphaned_workspace_executions(
+        self, boot_id: str
+    ) -> tuple[WorkspaceExecutionRecord, ...]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM workspace_executions WHERE state IN (
+                    'preparing','running','validated','publishing','operator_attention'
+                    ) AND (boot_id IS NULL OR boot_id<>?)
+                    ORDER BY created_at, execution_id""",
+                (boot_id,),
+            ).fetchall()
+            records = tuple(self.execution_from_row(row) for row in rows)
+            return tuple(
+                record
+                for record in records
+                if isinstance(record, WorkspaceExecutionRecord)
+            )
 
     def create_execution(
         self,
@@ -2787,7 +3076,9 @@ class ControlStore:
                     (existing["execution_id"],),
                 ).fetchone()
                 assert refreshed is not None
-                return self.execution_from_row(refreshed)
+                record = self.execution_from_row(refreshed)
+                assert isinstance(record, ExecutionRecord)
+                return record
             execution_id = new_identifier("exec")
             connection.execute(
                 """
@@ -2824,7 +3115,9 @@ class ControlStore:
                 (execution_id,),
             ).fetchone()
             assert row is not None
-            return self.execution_from_row(row)
+            record = self.execution_from_row(row)
+            assert isinstance(record, ExecutionRecord)
+            return record
 
     def record_execution_usage(
         self, execution_id: str, usage: Mapping[str, int], *, now: int | None = None
@@ -2841,8 +3134,9 @@ class ControlStore:
         ):
             raise ValueError("execution usage must be non-negative token counts")
         with self.connection() as connection, immediate_transaction(connection):
+            table = self.execution_table(connection, execution_id)
             connection.execute(
-                """UPDATE task_executions SET usage_json = ?, updated_at = ?
+                f"""UPDATE {table} SET usage_json = ?, updated_at = ?
                     WHERE execution_id = ?""",
                 (
                     json.dumps(dict(usage), sort_keys=True),
@@ -2864,7 +3158,7 @@ class ControlStore:
         usage: Mapping[str, int] | None = None,
         failure_code: str | None = None,
         now: int | None = None,
-    ) -> ExecutionRecord:
+    ) -> ExecutionRecord | WorkspaceExecutionRecord:
         """Advance a persisted execution without making Git authority changes."""
 
         valid_states = {
@@ -2890,9 +3184,10 @@ class ControlStore:
             timestamp if state in {"published", "cleanup_failed", "failed"} else None
         )
         with self.connection() as connection, immediate_transaction(connection):
+            table = self.execution_table(connection, execution_id)
             updated = connection.execute(
-                """
-                UPDATE task_executions SET
+                f"""
+                UPDATE {table} SET
                     state = ?,
                     result_tree_id = COALESCE(?, result_tree_id),
                     result_commit_id = COALESCE(?, result_commit_id),
@@ -2926,14 +3221,25 @@ class ControlStore:
             if updated.rowcount != 1:
                 raise KeyError(f"execution {execution_id!r} does not exist")
             row = connection.execute(
-                "SELECT * FROM task_executions WHERE execution_id = ?",
+                "SELECT * FROM all_task_executions WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
             assert row is not None
+            if table == "workspace_executions" and state == "running":
+                started = connection.execute(
+                    """UPDATE tasks SET state='running',
+                        started_at=COALESCE(started_at,?), updated_at=?
+                        WHERE task_id=? AND attempt=? AND current_claim_id IS NULL""",
+                    (timestamp, timestamp, row["task_id"], row["task_attempt"]),
+                )
+                if started.rowcount != 1:
+                    raise ValueError("workspace execution task attempt changed")
             self.append_task_event(
                 connection,
                 task_id=str(row["task_id"]),
-                claim_id=str(row["claim_id"]),
+                claim_id=(
+                    str(row["claim_id"]) if row["claim_id"] is not None else None
+                ),
                 event_type=f"execution.{state}",
                 payload={
                     "execution_id": execution_id,
@@ -3181,7 +3487,51 @@ class ControlStore:
         )
 
     @staticmethod
-    def execution_from_row(row: sqlite3.Row) -> ExecutionRecord:
+    def execution_from_row(
+        row: sqlite3.Row,
+    ) -> ExecutionRecord | WorkspaceExecutionRecord:
+        if (
+            "regime_generation" in tuple(row.keys())
+            and row["regime_generation"] is not None
+        ):
+            return WorkspaceExecutionRecord(
+                execution_id=str(row["execution_id"]),
+                task_id=str(row["task_id"]),
+                task_attempt=int(row["task_attempt"]),
+                session_id=str(row["session_id"]),
+                scopes=tuple(json.loads(str(row["scopes_json"]))),
+                physical_key=str(row["physical_key"]),
+                regime_generation=int(row["regime_generation"]),
+                driver=str(row["driver"]),
+                state=str(row["state"]),
+                boot_id=str(row["boot_id"]) if row["boot_id"] is not None else None,
+                worktree_path=str(row["worktree_path"]),
+                base_oid=str(row["base_oid"]),
+                result_tree_id=(
+                    str(row["result_tree_id"])
+                    if row["result_tree_id"] is not None
+                    else None
+                ),
+                result_commit_id=(
+                    str(row["result_commit_id"])
+                    if row["result_commit_id"] is not None
+                    else None
+                ),
+                patch_hash=(
+                    str(row["patch_hash"]) if row["patch_hash"] is not None else None
+                ),
+                summary=str(row["summary"]) if row["summary"] is not None else None,
+                tool_calls=int(row["tool_calls"]),
+                usage=_decoded_usage(row["usage_json"]),
+                failure_code=(
+                    str(row["failure_code"])
+                    if row["failure_code"] is not None
+                    else None
+                ),
+                created_at=int(row["created_at"]),
+                updated_at=int(row["updated_at"]),
+                workspace_id=str(row["workspace_id"]),
+            )
         return ExecutionRecord(
             execution_id=str(row["execution_id"]),
             task_id=str(row["task_id"]),

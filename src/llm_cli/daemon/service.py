@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import hashlib
 import json
 import sqlite3
 import threading
@@ -47,9 +48,14 @@ from llm_cli.coordination.models import (
     TaskEventRecord,
     TaskRecord,
     WorkspaceCandidateRecord,
+    WorkspaceExecutionRecord,
     WorkspaceRecord,
 )
-from llm_cli.coordination.scopes import ScopeValidationError, normalize_changed_path
+from llm_cli.coordination.scopes import (
+    ScopeValidationError,
+    normalize_changed_path,
+    normalize_scopes,
+)
 from llm_cli.doctor import run_doctor
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.execution.commands import CommandSettings, cleanup_command_snapshots
@@ -77,6 +83,7 @@ from llm_cli.git.inspect import RepositoryInfo, inspect_repository
 from llm_cli.ids import new_id
 from llm_cli.knowledge.indexer import KnowledgeIndex
 from llm_cli.paths import AppPaths, validate_owned_sqlite_paths
+from llm_cli.protocol.capabilities import WORKSPACE_CAPABILITIES
 from llm_cli.protocol.envelopes import Request, Response
 from llm_cli.protocol.framing import DEFAULT_MAX_FRAME_BYTES
 from llm_cli.providers.anthropic_provider import AnthropicProvider
@@ -110,6 +117,7 @@ from llm_cli.workspace.identity import (
     read_identified_path,
 )
 from llm_cli.workspace.isolated import IsolatedWorkspaceManager
+from llm_cli.workspace.regime import CutoverManager
 
 # Section 15.1 requires these limits to be visible to operators rather than
 # living only in implementation notes.
@@ -200,6 +208,7 @@ class DaemonService:
             self.store, paths.profile_id, boot_id, paths.socket, root=authority_root
         )
         self.store.authority = self.physical_authority
+        self.cutovers = CutoverManager(self.store, self.physical_authority)
         self.knowledge = KnowledgeIndex(
             self.store,
             paths.knowledge_db,
@@ -311,6 +320,8 @@ class DaemonService:
         self._authority_lock = asyncio.Lock()
         self._pending_session_opens: set[str] = set()
         self._background_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
+        self._workspace_workers: set[tuple[str, int]] = set()
+        self._workspace_workers_lock = threading.RLock()
         # Executions whose answer is being written again right now.
         self._answer_rewrites: set[str] = set()
         # Model calls may block on network or user input for minutes. Keep
@@ -726,7 +737,17 @@ class DaemonService:
         if "path" in params:
             # Git discovers the selected worktree, never another remote clone.
             requested = _path(params, "path")
-            if method == "task.run" and params.get("session_id") is None:
+            requested_checkout = await self._registered_checkout_for_path(requested)
+            # Observe before choosing the task's immutable legacy checkout;
+            # the final selected root is pinned below before any mutation.
+            requested_regime = self.physical_authority.regime(
+                Path(requested_checkout.canonical_path)
+            )
+            if (
+                method == "task.run"
+                and params.get("session_id") is None
+                and requested_regime["regime"] == "legacy"
+            ):
                 legacy = await self._registered_repository_for_path(requested)
                 prior = self.store.get_task(str(params.get("task_id", "")))
                 if prior is not None:
@@ -757,11 +778,15 @@ class DaemonService:
         if root is None:
             return await self._dispatch_owned(request)
         with self.physical_authority.pin(root):
+            if method in {"claim.release", "claim.renew"}:
+                self.physical_authority.assert_regime(root, allowed=("legacy",))
             return await self._dispatch_owned(request)
 
     async def _dispatch_owned(self, request: Request) -> Any:
         method = request.method
         params = request.params
+        if method.startswith("workspace.cutover."):
+            return await asyncio.to_thread(self._cutover_request, method, params)
         if method == "system.init":
             self.initialize()
             return {"initialized": True, **self._ping(), "paths": self._safe_paths()}
@@ -1025,7 +1050,8 @@ class DaemonService:
                 return workflow_result
             environment = (
                 self._apply_environment(task_id, params)
-                if method == "task.apply" else None
+                if method == "task.apply"
+                else None
             )
             try:
                 workflow_result = await asyncio.to_thread(
@@ -1131,6 +1157,108 @@ class DaemonService:
         raise LlmCoordError(
             ErrorCode.PROTOCOL_MISMATCH, f"unknown RPC method: {method}"
         )
+
+    def _cutover_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        root = _path(params, "path")
+        if method == "workspace.cutover.plan":
+            return self.cutovers.preview(root)
+        if method == "workspace.cutover.status":
+            return self.cutovers.status(root)
+        if method == "workspace.cutover.apply":
+            dispositions = params.get("dispositions", {})
+            if not isinstance(dispositions, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in dispositions.items()
+            ):
+                raise ValueError("dispositions must map legacy identifiers to actions")
+            with self.workspace_batches.lock:
+                return self.cutovers.begin(
+                    root,
+                    checkpoint=_string(params, "checkpoint"),
+                    dispositions=dispositions,
+                    intent_id=_optional_string(params, "intent_id"),
+                )
+        if method == "workspace.cutover.resume":
+            with self.workspace_batches.lock:
+                return self.cutovers.resume(
+                    root,
+                    intent_id=_string(params, "intent_id"),
+                    checkpoint=_string(params, "checkpoint"),
+                )
+        if method == "workspace.cutover.export":
+            return self._cutover_export(root)
+        raise LlmCoordError(ErrorCode.PROTOCOL_MISMATCH, "unknown cutover operation")
+
+    def _cutover_export(self, root: Path) -> dict[str, Any]:
+        # Export only the enumerated metadata columns. Checkpoints, command
+        # output, conversations and private runtime/source content stay out.
+        plan = self.cutovers.inventory(root)
+        mappings = plan.get("mappings", [])
+        keys = sorted(
+            {
+                str(mapping["repo_key"])
+                for mapping in mappings
+                if isinstance(mapping, dict)
+                and isinstance(mapping.get("repo_key"), str)
+            }
+        )
+        tasks: list[dict[str, Any]] = []
+        claims: list[dict[str, Any]] = []
+        executions: list[dict[str, Any]] = []
+        refs: list[dict[str, Any]] = []
+        if keys:
+            slots = ",".join("?" for _ in keys)
+            with self.store.connection() as connection:
+                tasks = [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT task_id,repository_id,repo_key,state,attempt,"
+                        "session_id,"
+                        "created_at,updated_at FROM tasks "
+                        f"WHERE repo_key IN ({slots})",
+                        keys,
+                    )
+                ]
+                claims = [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT claim_id,task_id,task_attempt,repo_key,state,"
+                        "created_at,updated_at FROM claims "
+                        f"WHERE repo_key IN ({slots})",
+                        keys,
+                    )
+                ]
+                executions = [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT e.execution_id,e.task_id,e.task_attempt,e.claim_id,"
+                        "e.driver,e.state,e.base_oid,e.result_tree_id,e.result_commit_id,"
+                        "e.patch_hash,e.created_at,e.updated_at FROM task_executions e "
+                        f"JOIN tasks t USING(task_id) WHERE t.repo_key IN ({slots})",
+                        keys,
+                    )
+                ]
+                refs = [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT intent_id,task_id,task_attempt,repo_key,"
+                        "target_ref,task_ref,"
+                        "result_tree_id,result_commit_id,operation_state "
+                        f"FROM publication_intents WHERE repo_key IN ({slots})",
+                        keys,
+                    )
+                ]
+        return {
+            "format": "loupe.legacy-metadata.v1",
+            "checkpoint": plan["checkpoint"],
+            "mappings": mappings,
+            "tasks": tasks,
+            "claims": claims,
+            "executions": executions,
+            "publication_refs": refs,
+            "dispositions": plan.get("dispositions", []),
+            "notice": "Metadata export only; retained diffs and refs remain in place.",
+        }
 
     async def _repo_add(self, params: dict[str, Any]) -> dict[str, Any]:
         path = _path(params, "path")
@@ -1283,12 +1411,29 @@ class DaemonService:
                     cancelled=True,
                     completion_outcome="cancelled",
                 )
+            elif (
+                isinstance(execution, WorkspaceExecutionRecord)
+                and execution.state == "preparing"
+            ):
+                if self.workspace_batches.get(execution.execution_id) is not None:
+                    raise ClaimAuthorityError(
+                        "preparing workspace journal needs recovery"
+                    )
+                self.coordinator.settle_workspace_execution(
+                    execution.execution_id,
+                    outcome="failed_safe",
+                    failure_code="CANCELLED",
+                )
+                self.workflow.update(task_id, task.attempt, status="cancelled")
             elif task.current_claim_id is not None:
                 self.coordinator.release_claim(
                     task.current_claim_id, reason="cancelled", task_state="cancelled"
                 )
                 self.workflow.update(task_id, task.attempt, status="cancelled")
         self._environment_waiters.discard(task_id)
+        launch = self.store.get_execution_launch(task_id, task.attempt)
+        if launch is not None:
+            self._close_one_shot_if_settled(task,launch)
 
     async def _session_open(self, params: dict[str, Any]) -> dict[str, Any]:
         """Bind a durable conversation to one exact checkout and provider."""
@@ -1315,6 +1460,9 @@ class DaemonService:
             )
             checkout = await self._registered_checkout_for_path(
                 _path(params, "path"), repository
+            )
+            self.physical_authority.assert_regime(
+                Path(checkout.canonical_path), allowed=("legacy", "workspace")
             )
             provider = (
                 _optional_string(params, "provider") or self.settings.agent_provider
@@ -1721,14 +1869,129 @@ class DaemonService:
             raise ValueError("task session checkout is no longer valid")
         return replace(repository, main_worktree_path=checkout.canonical_path)
 
+    def _one_shot_session(
+        self, checkout: CheckoutRecord, params: dict[str, Any]
+    ) -> SessionRecord:
+        provider = _optional_string(params, "provider") or self.settings.agent_provider
+        model = _optional_string(params, "model")
+        if model is None and provider == self.settings.agent_provider:
+            model = self.settings.agent_model
+        effort = _optional_string(params, "effort")
+        adapter = self.providers.create(provider, model, effort=effort)
+        if self.settings.agent_command_environment == "session":
+            if "command_environment" not in params:
+                raise unavailable()
+            filtered_environment(
+                params["command_environment"],
+                registered=self.providers.credential_environment_names,
+            )
+        agent_mode = resolve_agent_mode(
+            params.get("mode"), params.get("publish"), default="auto"
+        )
+        workspace = self.store.ensure_shared_workspace(checkout)
+        session, _event, sequence = self.store.open_session(
+            session_id=new_id("oneshot"),
+            checkout_id=checkout.checkout_id,
+            resume_token_hash=hashlib.sha256(new_id("resume").encode()).hexdigest(),
+            provider=adapter.name,
+            model=adapter.model,
+            effort=effort,
+            workspace_id=workspace.workspace_id,
+            workspace_mode="shared",
+            agent_mode=agent_mode,
+        )
+        session, _cursor, _ready = self.store.acknowledge_session(
+            session.session_id, sequence=sequence
+        )
+        self._accept_session_environment(session, params)
+        return session
+
     async def _task_run(self, params: dict[str, Any]) -> dict[str, Any]:
         requested_path = _path(params, "path")
         repository = await self._registered_repository_for_path(requested_path)
+        # Validate request identity before allocating a one-shot session or
+        # retaining any terminal environment for it.
+        _string(params, "title")
+        _optional_string(params, "task_id")
+        fixture_values = params.get("fixture_writes", [])
+        if not isinstance(fixture_values, list) or any(
+            not isinstance(value, str) for value in fixture_values
+        ):
+            raise ValueError("fixture_writes must be a list of PATH=CONTENT strings")
+        scopes = params.get("scopes")
+        if not isinstance(scopes, list) or any(not isinstance(x, str) for x in scopes):
+            raise ValueError("scopes must be a list of strings")
+        normalize_scopes(scopes)
+        if not isinstance(params.get("interactive", False), bool):
+            raise ValueError("interactive must be a boolean")
         session_id = _optional_string(params, "session_id")
         session: SessionRecord | None = None
         execution_repository = repository
+        requested_checkout = await self._registered_checkout_for_path(
+            requested_path, repository
+        )
+        regime = self.physical_authority.regime(Path(requested_checkout.canonical_path))
+        if regime["regime"] == "transition":
+            raise LlmCoordError(
+                ErrorCode.CUTOVER_BLOCKED, "checkout conversion is awaiting recovery"
+            )
+        claim_free = regime["regime"] == "workspace"
+        one_shot = False
+        if claim_free and (params.get("claim_only") or params.get("fixture_writes")):
+            raise LlmCoordError(
+                ErrorCode.EXECUTION_CONTRACT_UNSUPPORTED,
+                "claim and fixture/ref workflows require a legacy checkout; "
+                "inspect or export retained legacy work here",
+                {"current_regime": "workspace", "required_contract": "legacy"},
+            )
+        if claim_free and session_id is None:
+            prior_task = self.store.get_task(str(params.get("task_id", "")))
+            prior_recipe = (
+                self.store.get_execution_launch(prior_task.task_id, prior_task.attempt)
+                if prior_task is not None
+                else None
+            )
+            if (
+                prior_task is not None
+                and prior_recipe is not None
+                and prior_recipe.parameters.get("one_shot_session") is True
+            ):
+                session = self.store.get_session(prior_task.session_id or "")
+                if session is None:
+                    raise ValueError("one-shot task session is missing")
+                if (
+                    prior_task.repository_id != repository.repository_id
+                    or session.checkout_id != requested_checkout.checkout_id
+                ):
+                    raise ValueError("one-shot task belongs to another checkout")
+                prior_execution = self.store.get_execution(
+                    prior_task.task_id, prior_task.attempt
+                )
+                if isinstance(
+                    prior_execution, WorkspaceExecutionRecord
+                ) and prior_execution.state in {"published", "failed"}:
+                    # An idempotent replay is observation, including after the
+                    # one-shot session and its in-memory environment close.
+                    return {
+                        "task": self._task_view(prior_task.task_id),
+                        "claim": None,
+                        "execution": prior_execution.state,
+                        "execution_contract": "workspace_v1",
+                    }
+            else:
+                if prior_task is not None:
+                    raise ValueError(
+                        "task ID is already bound to another execution contract"
+                    )
+                session = self._one_shot_session(requested_checkout, params)
+            session_id = session.session_id
+            one_shot = True
+            if "command_environment" in params:
+                self._accept_session_environment(session, params)
         if session_id is not None:
-            session = self._authenticated_session(params, require_active=True)
+            if not one_shot:
+                session = self._authenticated_session(params, require_active=True)
+            assert session is not None
             if session.session_id != session_id:
                 raise LlmCoordError(
                     ErrorCode.SESSION_AUTH_REQUIRED,
@@ -1785,13 +2048,18 @@ class DaemonService:
         if session_id is not None:
             with self.store.connection() as connection:
                 active = connection.execute(
-                    """SELECT t.task_id FROM tasks t JOIN claims c
-                        ON c.claim_id = t.current_claim_id
-                        WHERE t.session_id = ? AND t.task_id <> ?
-                        AND c.state IN (
-                            'queued','active_work','publishing','active_integration')
+                    """SELECT t.task_id FROM tasks t LEFT JOIN claims c
+                        ON c.claim_id=t.current_claim_id
+                        LEFT JOIN workspace_executions e ON e.task_id=t.task_id
+                        AND e.task_attempt=t.attempt
+                        WHERE t.session_id=? AND t.task_id<>? AND (
+                            (c.state IN ('queued','active_work','publishing',
+                                         'active_integration')
+                             AND NOT (?=1 AND c.state='queued'))
+                            OR e.state IN ('preparing','running','validated',
+                                           'publishing','operator_attention'))
                         LIMIT 1""",
-                    (session_id, task_id or ""),
+                    (session_id, task_id or "", int(claim_free)),
                 ).fetchone()
             if active is not None:
                 raise LlmCoordError(
@@ -1888,6 +2156,8 @@ class DaemonService:
                         if prior_launch is not None
                         else session.agent_mode
                     )
+        if one_shot:
+            launch_parameters["one_shot_session"] = True
         # Validate the launch before reserving the session's next task slot;
         # refused model/effort settings must leave it usable for another prompt.
         if existing_task is not None:
@@ -1903,6 +2173,7 @@ class DaemonService:
                 title=_string(params, "title")[:500],
                 coordination_mode=self.settings.coordination_mode,
                 session_id=session_id,
+                workspace_execution=claim_free,
             )
         if not claim_only:
             launch = self.store.save_execution_launch(
@@ -1916,6 +2187,72 @@ class DaemonService:
         if session is not None and not claim_only:
             self.workflow.ensure(task.task_id)
         driver = self._driver_for_launch(launch) if launch is not None else None
+        if claim_free:
+            if session is None or session.workspace_id is None or driver is None:
+                raise ValueError(
+                    "workspace execution requires a durable coding session"
+                )
+            if not self._shared_capable(driver):
+                raise LlmCoordError(
+                    ErrorCode.EXECUTION_CONTRACT_UNSUPPORTED,
+                    "driver does not support workspace execution",
+                )
+            workspace = self.store.get_workspace(session.workspace_id)
+            if workspace is None:
+                raise ValueError("session workspace is missing")
+            existing = self.store.get_execution(task.task_id, task.attempt)
+            if existing is not None and not isinstance(
+                existing, WorkspaceExecutionRecord
+            ):
+                raise LlmCoordError(
+                    ErrorCode.EXECUTION_CONTRACT_UNSUPPORTED,
+                    "legacy attempt remains inspectable or exportable",
+                )
+            source = await asyncio.to_thread(
+                inspect_repository,
+                Path(workspace.canonical_path),
+                profile_id=self.paths.profile_id,
+            )
+            execution = existing or self.store.create_workspace_execution(
+                task_id=task.task_id,
+                attempt=task.attempt,
+                session_id=session.session_id,
+                workspace_id=workspace.workspace_id,
+                scopes=normalize_scopes(
+                    scopes,
+                    case_insensitive_filesystem=requested_checkout.path_case_insensitive,
+                ),
+                physical_key=str(regime["physical_key"]),
+                regime_generation=int(regime["generation"]),
+                driver=driver.name,
+                worktree_path=workspace.canonical_path,
+                base_oid=source.base_oid,
+                boot_id=self.boot_id,
+            )
+            assert launch is not None
+            if execution.state in {"published", "failed", "operator_attention"}:
+                return {
+                    "task": self._task_view(task.task_id),
+                    "claim": None,
+                    "execution": execution.state,
+                    "execution_contract": "workspace_v1",
+                }
+            scheduled, event = self._schedule_workspace_execution(
+                repository=execution_repository,
+                task=task,
+                execution=execution,
+                driver=driver,
+                launch=launch,
+            )
+            return {
+                "task": self._task_view(task.task_id),
+                "claim": None,
+                "execution": scheduled,
+                "driver": driver.name,
+                "execution_contract": "workspace_v1",
+                "event_sequence": event.sequence,
+                "notice": "poll 'loupe task events TASK_ID' for lifecycle changes",
+            }
         prior_claim = (
             self.store.get_claim(task.current_claim_id)
             if task.current_claim_id is not None
@@ -1935,11 +2272,15 @@ class DaemonService:
         ):
             scheduling_mode = "optimistic"
             optimistic_driver = driver.name
+        claim_checkout = await self._registered_checkout_for_path(
+            Path(execution_repository.main_worktree_path), repository
+        )
         claim = self.coordinator.request_claim(
             task.task_id,
             scopes,
             scheduling_mode=scheduling_mode,
             optimistic_driver=optimistic_driver,
+            checkout_id=claim_checkout.checkout_id,
         )
         if session is None:
             with self.physical_authority.mutation(
@@ -2243,6 +2584,7 @@ class DaemonService:
             # They establish durable state but do not own an event loop that
             # could supervise work; the real daemon calls this again on boot.
             return
+        self._schedule_ready_workspace_launches()
         for launch in self.store.list_execution_launches():
             task = self.store.get_task(launch.task_id)
             if task is None or task.attempt != launch.task_attempt:
@@ -2328,7 +2670,13 @@ class DaemonService:
                 self._fail_unstarted_launch(task, claim, exc)
 
     def _driver_for_launch(self, launch: ExecutionLaunchRecord) -> AgentDriver:
-        return self.drivers.create(launch.driver, launch.parameters)
+        # Durable scheduler metadata is not part of the driver's strict recipe.
+        parameters = dict(launch.parameters)
+        if "one_shot_session" in parameters and not isinstance(
+            parameters.pop("one_shot_session"), bool
+        ):
+            raise ValueError("one-shot launch metadata is invalid")
+        return self.drivers.create(launch.driver, parameters)
 
     def _can_reconstruct_launch(self, launch: ExecutionLaunchRecord) -> bool:
         try:
@@ -2471,6 +2819,237 @@ class DaemonService:
                 raise ValueError("the fixture launch recipe is malformed")
             parsed.append(FixtureWrite(path=path, content=content))
         return FixtureWriteDriver(tuple(parsed))
+
+    def _schedule_workspace_execution(
+        self,
+        *,
+        repository: RepositoryRecord,
+        task: TaskRecord,
+        execution: WorkspaceExecutionRecord,
+        driver: AgentDriver,
+        launch: ExecutionLaunchRecord,
+    ) -> tuple[str, TaskEventRecord]:
+        key = (task.task_id, task.attempt)
+        existing = self._background_tasks.get(key)
+        observed = existing is not None and not existing.done()
+        with self._workspace_workers_lock:
+            observed = observed or key in self._workspace_workers
+        event = self.store.record_task_event(
+            task_id=task.task_id,
+            claim_id=None,
+            event_type="execution.schedule_observed"
+            if observed
+            else "execution.scheduled",
+            payload={
+                "attempt": task.attempt,
+                "driver": driver.name,
+                "execution_contract": "workspace_v1",
+            },
+        )
+        if observed:
+            return "already_scheduled", event
+        root = Path(repository.main_worktree_path)
+        pin = self.physical_authority.acquire(root)
+        started = threading.Event()
+        background = asyncio.create_task(
+            self._run_workspace_execution(
+                pin=pin,
+                started=started,
+                repository=repository,
+                task=task,
+                execution=execution,
+                driver=driver,
+                launch=launch,
+            ),
+            name=f"workspace-execution:{task.task_id}:{task.attempt}",
+        )
+        self._background_tasks[key] = background
+
+        def forget(completed: asyncio.Task[None]) -> None:
+            self._forget_background_task(key, completed)
+            if not started.is_set():
+                pin.close()
+
+        background.add_done_callback(forget)
+        return "scheduled", event
+
+    async def _run_workspace_execution(
+        self,
+        *,
+        pin: OwnershipPin,
+        started: threading.Event,
+        repository: RepositoryRecord,
+        task: TaskRecord,
+        execution: WorkspaceExecutionRecord,
+        driver: AgentDriver,
+        launch: ExecutionLaunchRecord,
+    ) -> None:
+        started.set()
+        submitted = False
+
+        def execute_pinned() -> None:
+            try:
+                pin.validate()
+                with self.physical_authority.pin(Path(repository.main_worktree_path)):
+                    self.physical_authority.assert_regime(
+                        Path(repository.main_worktree_path),
+                        allowed=("workspace",),
+                        generation=execution.regime_generation,
+                    )
+                    conversation, coordination = self._session_task_context(task)
+                    self.shared_runner.execute_workspace(
+                        repository=repository,
+                        task=task,
+                        execution=execution,
+                        driver=driver,
+                        instructions=launch.instructions,
+                        asker=functools.partial(self._ask_operator, task.task_id)
+                        if launch.interactive
+                        else None,
+                        conversation_state=conversation,
+                        coordination_context=coordination,
+                    )
+            except Exception as exc:
+                self._fail_workspace_launch(execution, exc)
+            finally:
+                # Follow the actual worker, even if its asyncio waiter was
+                # cancelled while a provider or command was still running.
+                pin.close()
+
+        key = (task.task_id, task.attempt)
+        with self._workspace_workers_lock:
+            self._workspace_workers.add(key)
+
+        def completed_worker(_completed: object) -> None:
+            with self._workspace_workers_lock:
+                self._workspace_workers.discard(key)
+            try:
+                self._close_one_shot_if_settled(task, launch)
+            finally:
+                pin.close()
+
+        try:
+            worker = self._execution_pool.submit(
+                contextvars.copy_context().run, execute_pinned
+            )
+            submitted = True
+            worker.add_done_callback(completed_worker)
+            await asyncio.wrap_future(worker)
+        except asyncio.CancelledError:
+            self.store.record_task_event(
+                task_id=task.task_id,
+                claim_id=None,
+                event_type="execution.interrupted",
+                payload={
+                    "reason": "daemon_shutdown",
+                    "execution_contract": "workspace_v1",
+                },
+            )
+            raise
+        finally:
+            if not submitted:
+                with self._workspace_workers_lock:
+                    self._workspace_workers.discard(key)
+                pin.close()
+
+    def _fail_workspace_launch(
+        self, execution: WorkspaceExecutionRecord, error: Exception
+    ) -> None:
+        code = (
+            error.code.value if isinstance(error, LlmCoordError) else "EXECUTION_FAILED"
+        )
+        with self.workspace_batches.lock:
+            fresh = self.store.get_execution_by_id(execution.execution_id)
+            batch = self.workspace_batches.get(execution.execution_id)
+            # A journaled outcome belongs to exact recovery, not this error.
+            if (
+                fresh is not None
+                and fresh.state not in {"published", "failed"}
+                and batch is None
+            ):
+                try:
+                    self.coordinator.settle_workspace_execution(
+                        execution.execution_id,
+                        outcome="failed_safe",
+                        failure_code=code,
+                    )
+                except (CoordinationError, LlmCoordError):
+                    self.store.update_execution(
+                        execution.execution_id,
+                        state="operator_attention",
+                        failure_code=code,
+                    )
+        self.store.record_task_event(
+            task_id=execution.task_id,
+            claim_id=None,
+            event_type="execution.background_failed",
+            payload={
+                "failure_code": code,
+                "error_type": type(error).__name__,
+                "execution_contract": "workspace_v1",
+            },
+        )
+
+    def _close_one_shot_if_settled(
+        self, task: TaskRecord, launch: ExecutionLaunchRecord
+    ) -> None:
+        if launch.parameters.get("one_shot_session") is not True:
+            return
+        with self._workspace_workers_lock:
+            if (task.task_id, task.attempt) in self._workspace_workers:
+                return
+        execution = self.store.get_execution(task.task_id, task.attempt)
+        if (
+            execution is not None
+            and execution.state in {"published", "failed"}
+            and task.session_id is not None
+        ):
+            self.store.close_session(task.session_id, reason="one_shot_settled")
+            self.session_environments.discard(task.session_id)
+
+    def _schedule_ready_workspace_launches(self) -> None:
+        with self.store.connection() as connection:
+            rows = connection.execute(
+                "SELECT task_id,task_attempt FROM workspace_executions "
+                "WHERE state IN ('preparing','running') "
+                "ORDER BY created_at,execution_id"
+            ).fetchall()
+        for row in rows:
+            task = self.store.get_task(str(row["task_id"]))
+            if task is None or task.attempt != int(row["task_attempt"]):
+                continue
+            execution = self.store.get_execution(task.task_id, task.attempt)
+            launch = self.store.get_execution_launch(task.task_id, task.attempt)
+            if not isinstance(execution, WorkspaceExecutionRecord) or launch is None:
+                continue
+            if execution.boot_id != self.boot_id or not self._can_reconstruct_launch(
+                launch
+            ):
+                continue
+            workflow = self.workflow.get(task.task_id)
+            session = self.store.get_session(execution.session_id)
+            if (workflow and workflow["stop_requested"]) or (
+                session is not None and session.state == "closed"
+            ):
+                self._finish_environment_waiter(task.task_id)
+                self._close_one_shot_if_settled(task, launch)
+                continue
+            if self.settings.agent_command_environment == "session":
+                try:
+                    self.session_environments.get(execution.session_id)
+                except LlmCoordError:
+                    self._environment_waiters.add(task.task_id)
+                    continue
+            repository = self.store.get_repository_by_key(task.repo_key)
+            if repository is None:
+                continue
+            self._schedule_workspace_execution(
+                repository=self._execution_repository(repository, task),
+                task=task,
+                execution=execution,
+                driver=self._driver_for_launch(launch),
+                launch=launch,
+            )
 
     def _schedule_execution(
         self,
@@ -3022,6 +3601,7 @@ class DaemonService:
             "boot_id": self.boot_id,
             "code_fingerprint": identity["fingerprint"],
             "code_path": identity["path"],
+            "capabilities": list(WORKSPACE_CAPABILITIES),
         }
         if self.startup_recovery is not None and self.startup_recovery.outcomes:
             payload["startup_recovery"] = _recovery_payload(self.startup_recovery)

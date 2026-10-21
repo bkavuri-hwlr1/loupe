@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Unpack
 
 from llm_cli.agent.driver import AgentDriver, DriverCapabilities, RunRequest, RunResult
 from llm_cli.agent.limits import DEFAULT_LIMITS, ExecutionLimits
@@ -34,6 +35,7 @@ from llm_cli.coordination.models import (
 )
 from llm_cli.coordination.scopes import ScopeValidationError, normalize_changed_path
 from llm_cli.errors import ErrorCode, LlmCoordError
+from llm_cli.execution.workspace import assert_execution_regime
 from llm_cli.git.inspect import inspect_repository
 from llm_cli.git.integrate import (
     TaskRefPublication,
@@ -48,7 +50,7 @@ from llm_cli.git.worktrees import (
     remove_managed_worktree,
     resume_managed_worktree,
 )
-from llm_cli.storage.control import ControlStore
+from llm_cli.storage.control import ControlStore, ExecutionUpdate
 from llm_cli.web.access import WebAccess
 from llm_cli.workspace.authority import managed_mutation, managed_pin
 
@@ -159,6 +161,7 @@ class TaskExecutionRunner:
         cancelled: Callable[[], bool] | None = None,
     ) -> ExecutionResult:
         with managed_pin(self.store, Path(repository.main_worktree_path)):
+            assert_execution_regime(self.store, Path(repository.main_worktree_path))
             return self._execute_owned(
                 repository=repository,
                 task=task,
@@ -280,10 +283,10 @@ class TaskExecutionRunner:
                     base_oid=base_oid,
                     worktree_path=planned_path,
                 )
-                execution = self.store.update_execution(
+                execution = self._update_execution(
                     execution.execution_id, state="worktree_ready"
                 )
-                execution = self.store.update_execution(
+                execution = self._update_execution(
                     execution.execution_id, state="running"
                 )
             checkpoint = self.store.get_execution_checkpoint(execution.execution_id)
@@ -382,7 +385,7 @@ class TaskExecutionRunner:
                 completed_execution = self.store.get_execution(
                     task.task_id, task.attempt
                 )
-                assert completed_execution is not None
+                assert isinstance(completed_execution, ExecutionRecord)
                 execution = completed_execution
             else:
                 result_commit_id = create_result_commit(
@@ -390,7 +393,7 @@ class TaskExecutionRunner:
                     validation,
                     task_id=task.task_id,
                 )
-                execution = self.store.update_execution(
+                execution = self._update_execution(
                     execution.execution_id,
                     state="validated",
                     result_tree_id=validation.result_tree,
@@ -420,9 +423,10 @@ class TaskExecutionRunner:
                         expected_old_ref=expected_old_oid,
                     )
                     publication_started = True
-                    execution = self.store.update_execution(
+                    execution = self._update_execution(
                         execution.execution_id, state="publishing"
                     )
+                    assert_execution_regime(self.store, repo_path)
                     publication = publish_task_ref(
                         repo_path,
                         task_id=task.task_id,
@@ -434,7 +438,7 @@ class TaskExecutionRunner:
                         result_commit_id=publication.commit_oid,
                         task_ref=publication.ref,
                     )
-                    execution = self.store.update_execution(
+                    execution = self._update_execution(
                         execution.execution_id,
                         state="published",
                         result_commit_id=publication.commit_oid,
@@ -463,7 +467,7 @@ class TaskExecutionRunner:
                 force=True,
             )
         except LlmCoordError as cleanup_error:
-            execution = self.store.update_execution(
+            execution = self._update_execution(
                 execution.execution_id,
                 state="cleanup_failed",
                 failure_code=cleanup_error.code.value,
@@ -490,8 +494,15 @@ class TaskExecutionRunner:
             run=run,
         )
 
+    def _update_execution(
+        self, execution_id: str, **fields: Unpack[ExecutionUpdate]
+    ) -> ExecutionRecord:
+        record = self.store.update_execution(execution_id, **fields)
+        assert isinstance(record, ExecutionRecord)
+        return record
+
     def _event_recorder(
-        self, task: TaskRecord, claim: ClaimRecord
+        self, task: TaskRecord, claim: ClaimRecord | None
     ) -> Callable[[str, dict[str, object]], None]:
         """Publish driver progress to the stream every session can read.
 
@@ -503,7 +514,7 @@ class TaskExecutionRunner:
             with suppress(sqlite3.Error, KeyError, ValueError):
                 self.store.record_task_event(
                     task_id=task.task_id,
-                    claim_id=claim.claim_id,
+                    claim_id=claim.claim_id if claim else None,
                     event_type=event_type,
                     payload=payload,
                 )

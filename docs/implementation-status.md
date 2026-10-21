@@ -1005,8 +1005,9 @@ run of the corrected test head and cross-platform CI had not completed at this
 checkpoint.
 
 [Cross-profile guide](cross-profile-authority.md) documents read-only commands,
-stable errors and recovery. G3's claim-free cutover, foreign journal import,
-global equality/history and complete restore/downgrade fencing remain deferred.
+stable errors and recovery. G3's explicit claim-free cutover is recorded below;
+foreign journal import, global equality/history and complete restore/downgrade
+fencing remain deferred.
 In-place manual restore preserving the database inode/ID is unsupported. E2 stays
 deferred; this work adds no billed live provider run, release or version change.
 
@@ -1078,13 +1079,31 @@ and 0.04868 s at 10,000. Ruff, mypy over 123 source files, source distribution
 and wheel builds passed. This establishes implementation correctness under the
 scripted contracts; the completed live comparison supports keeping indexing off.
 
+## Wave 7 G3: explicit legacy claim cutover
+
+G3 adds a read-only complete checkout conversion plan and explicit, irreversible
+`workspace cutover apply/resume`, with exact reviewed checkpoints and durable
+intent identity. Ordinary upgrades keep the legacy contract. Mapping ambiguity,
+unsettled workers and unresolved publication/integration retain their evidence
+and block the relevant transition step. Claim request and waiter activation are
+gated across the physical checkout's complete mapping set.
+
+Workspace execution is additive: coding tasks use claim-free execution records,
+while sessionless coding creates a durable one-shot shared session. Old claims,
+executions, checkpoints, history and refs remain inspectable; supported held
+apply/undo retains normal exact-base/check validation. Metadata export is an
+explicit operation. Legacy fixture/ref mutations cannot bypass a converted
+checkout's regime. Stable capability errors distinguish incompatible contracts,
+blocked cutover and stale checkpoints. See the
+[cutover guide](workspace-cutover.md) for commands, dispositions and recovery.
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
 Waves 4–7, as packages that separate sessions can run at once.
 
-1. Complete reviewed G2 validation, then implement G3's explicit claim-free legacy
-   migration under the accepted authority contract.
+1. Validate G3's explicit claim-free legacy migration under the accepted
+   authority contract; ordinary upgrades remain legacy until explicit cutover.
 2. Complete isolated-mode live validation (C6); C7 implements faster checks.
    C8 implements runtime refresh, C9 adds opt-in per-session command
    environments, and C10 adds explicit dependency rebuild adapters under

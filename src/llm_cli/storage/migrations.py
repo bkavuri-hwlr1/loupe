@@ -1110,6 +1110,214 @@ DROP TABLE isolated_workspaces;
 ALTER TABLE isolated_workspaces_rebuilding RENAME TO isolated_workspaces;
 """,
     ),
+    Migration(
+        28,
+        "explicit_checkout_regime_and_claim_free_executions",
+        """
+CREATE TABLE repository_registration_provenance (
+    registration_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+    repo_key TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    git_common_dir TEXT NOT NULL,
+    target_ref TEXT NOT NULL,
+    integration_adapter TEXT NOT NULL,
+    provenance TEXT NOT NULL CHECK(provenance IN ('legacy_snapshot','registration')),
+    recorded_at INTEGER NOT NULL
+);
+INSERT INTO repository_registration_provenance (
+    repository_id,repo_key,canonical_path,git_common_dir,target_ref,
+    integration_adapter,provenance,recorded_at
+)
+SELECT repository_id,repo_key,main_worktree_path,git_common_dir,target_ref,
+       integration_adapter,'legacy_snapshot',updated_at FROM repositories;
+CREATE INDEX repository_registration_mapping_idx
+    ON repository_registration_provenance(repo_key,canonical_path);
+CREATE TABLE legacy_claim_bindings (
+    claim_id TEXT PRIMARY KEY REFERENCES claims(claim_id) ON DELETE RESTRICT,
+    checkout_id TEXT NOT NULL REFERENCES checkouts(checkout_id) ON DELETE RESTRICT,
+    physical_key TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    target_ref TEXT NOT NULL,
+    integration_adapter TEXT NOT NULL
+);
+CREATE INDEX legacy_claim_physical_idx ON legacy_claim_bindings(physical_key);
+CREATE TRIGGER legacy_claim_binding_immutable BEFORE UPDATE ON legacy_claim_bindings
+BEGIN SELECT RAISE(ABORT,'legacy claim physical binding is immutable'); END;
+CREATE TRIGGER legacy_claim_binding_retained BEFORE DELETE ON legacy_claim_bindings
+BEGIN SELECT RAISE(ABORT,'legacy claim physical binding must be retained'); END;
+CREATE TABLE checkout_regimes (
+    physical_key TEXT PRIMARY KEY,
+    canonical_path TEXT NOT NULL,
+    regime TEXT NOT NULL CHECK(regime IN ('legacy','transition','workspace')),
+    generation INTEGER NOT NULL CHECK(generation >= 0),
+    intent_id TEXT,
+    checkpoint TEXT NOT NULL CHECK(length(checkpoint)=64),
+    updated_at INTEGER NOT NULL
+);
+CREATE TRIGGER checkout_regime_monotonic BEFORE UPDATE ON checkout_regimes
+WHEN NEW.generation < OLD.generation OR
+     CASE NEW.regime WHEN 'legacy' THEN 0 WHEN 'transition' THEN 1 ELSE 2 END <
+     CASE OLD.regime WHEN 'legacy' THEN 0 WHEN 'transition' THEN 1 ELSE 2 END
+BEGIN SELECT RAISE(ABORT,'checkout regime cannot move backwards'); END;
+CREATE TRIGGER checkout_regime_retained BEFORE DELETE ON checkout_regimes
+BEGIN SELECT RAISE(ABORT,'checkout regime history must be retained'); END;
+CREATE TABLE checkout_regime_mappings (
+    mapping_id TEXT PRIMARY KEY,
+    physical_key TEXT NOT NULL REFERENCES checkout_regimes(physical_key),
+    repo_key TEXT NOT NULL,
+    repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+    checkout_id TEXT REFERENCES checkouts(checkout_id),
+    target_ref TEXT NOT NULL,
+    integration_adapter TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    provenance_json TEXT NOT NULL
+);
+CREATE INDEX checkout_regime_repo_gate_idx
+    ON checkout_regime_mappings(repo_key,physical_key);
+CREATE TABLE cutover_intents (
+    intent_id TEXT PRIMARY KEY,
+    physical_key TEXT NOT NULL REFERENCES checkout_regimes(physical_key),
+    checkpoint TEXT NOT NULL CHECK(length(checkpoint)=64),
+    plan_json TEXT NOT NULL,
+    dispositions_json TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK(stage IN (
+        'prepared','transition','checkpointed','workspace','complete'
+    )),
+    transition_generation INTEGER NOT NULL CHECK(transition_generation > 0),
+    workspace_generation INTEGER NOT NULL CHECK(workspace_generation >
+transition_generation),
+    settled_checkpoint TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX cutover_one_pending_idx ON cutover_intents(physical_key)
+    WHERE stage <> 'complete';
+CREATE TRIGGER cutover_intent_identity BEFORE UPDATE ON cutover_intents
+WHEN NEW.physical_key <> OLD.physical_key OR NEW.checkpoint <> OLD.checkpoint
+    OR NEW.plan_json <> OLD.plan_json OR NEW.dispositions_json <> OLD.dispositions_json
+    OR NEW.transition_generation <> OLD.transition_generation
+    OR NEW.workspace_generation <> OLD.workspace_generation
+BEGIN SELECT RAISE(ABORT,'cutover intent identity is immutable'); END;
+CREATE TRIGGER cutover_stage_monotonic BEFORE UPDATE ON cutover_intents
+WHEN CASE NEW.stage WHEN 'prepared' THEN 0 WHEN 'transition' THEN 1
+        WHEN 'checkpointed' THEN 2 WHEN 'workspace' THEN 3 ELSE 4 END <
+     CASE OLD.stage WHEN 'prepared' THEN 0 WHEN 'transition' THEN 1
+        WHEN 'checkpointed' THEN 2 WHEN 'workspace' THEN 3 ELSE 4 END
+BEGIN SELECT RAISE(ABORT,'cutover stage cannot move backwards'); END;
+CREATE TRIGGER cutover_intent_retained BEFORE DELETE ON cutover_intents
+BEGIN SELECT RAISE(ABORT,'cutover evidence must be retained'); END;
+CREATE TABLE cutover_dispositions (
+    intent_id TEXT NOT NULL REFERENCES cutover_intents(intent_id),
+    kind TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    prior_state TEXT NOT NULL,
+    disposition TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    retained_json TEXT NOT NULL,
+    PRIMARY KEY(intent_id,kind,object_id)
+);
+
+CREATE TABLE workspace_executions (
+    execution_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE RESTRICT,
+    task_attempt INTEGER NOT NULL CHECK(task_attempt > 0),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+    scopes_json TEXT NOT NULL,
+    physical_key TEXT NOT NULL,
+    regime_generation INTEGER NOT NULL CHECK(regime_generation > 0),
+    driver TEXT NOT NULL CHECK(length(driver) BETWEEN 1 AND 64),
+    state TEXT NOT NULL CHECK(state IN (
+        'preparing', 'running', 'validated', 'publishing', 'published',
+        'failed', 'operator_attention'
+    )),
+    boot_id TEXT,
+    worktree_path TEXT NOT NULL,
+    base_oid TEXT NOT NULL,
+    result_tree_id TEXT,
+    result_commit_id TEXT,
+    patch_hash TEXT CHECK(patch_hash IS NULL OR length(patch_hash) = 64),
+    summary TEXT,
+    tool_calls INTEGER NOT NULL DEFAULT 0 CHECK(tool_calls >= 0),
+    usage_json TEXT,
+    failure_code TEXT,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(task_id, task_attempt)
+);
+CREATE INDEX workspace_executions_state_idx ON workspace_executions(state, updated_at);
+CREATE INDEX workspace_executions_boot_idx ON workspace_executions(boot_id, state);
+CREATE INDEX workspace_executions_workspace_idx ON workspace_executions(workspace_id,
+state);
+CREATE TABLE workspace_execution_checkpoints (
+    execution_id TEXT PRIMARY KEY REFERENCES workspace_executions(execution_id) ON
+DELETE CASCADE,
+    driver TEXT NOT NULL CHECK(length(driver) BETWEEN 1 AND 64),
+    checkpoint_json TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE workspace_execution_answers (
+    execution_id TEXT PRIMARY KEY REFERENCES workspace_executions(execution_id) ON
+DELETE CASCADE,
+    answer_id TEXT NOT NULL UNIQUE,
+    version INTEGER NOT NULL CHECK(version = 1),
+    payload_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+    first_event_sequence INTEGER NOT NULL CHECK(first_event_sequence > 0),
+    last_event_sequence INTEGER NOT NULL CHECK(last_event_sequence >=
+first_event_sequence),
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE workspace_execution_answer_revisions (
+    execution_id TEXT NOT NULL REFERENCES workspace_execution_answers(execution_id) ON
+DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK(revision >= 2),
+    answer_id TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+    first_event_sequence INTEGER NOT NULL CHECK(first_event_sequence > 0),
+    last_event_sequence INTEGER NOT NULL CHECK(last_event_sequence >=
+first_event_sequence),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(execution_id, revision)
+);
+CREATE TRIGGER workspace_execution_identity BEFORE INSERT ON workspace_executions
+WHEN EXISTS(SELECT 1 FROM task_executions WHERE execution_id = NEW.execution_id
+    OR (task_id = NEW.task_id AND task_attempt = NEW.task_attempt))
+BEGIN SELECT RAISE(ABORT, 'task attempt already has a legacy execution'); END;
+CREATE TRIGGER legacy_execution_identity BEFORE INSERT ON task_executions
+WHEN EXISTS(SELECT 1 FROM workspace_executions WHERE execution_id = NEW.execution_id
+    OR (task_id = NEW.task_id AND task_attempt = NEW.task_attempt))
+BEGIN SELECT RAISE(ABORT, 'task attempt already has a workspace execution'); END;
+CREATE VIEW all_task_executions AS
+SELECT execution_id, task_id, task_attempt, claim_id, driver, state, boot_id,
+    worktree_path, base_oid, result_tree_id, result_commit_id, patch_hash, summary,
+    tool_calls, usage_json, failure_code, created_at, started_at, finished_at,
+    updated_at, workspace_id, NULL AS session_id, NULL AS scopes_json,
+    NULL AS physical_key, NULL AS regime_generation, 'legacy' AS execution_contract
+FROM task_executions
+UNION ALL
+SELECT execution_id, task_id, task_attempt, NULL AS claim_id, driver, state, boot_id,
+    worktree_path, base_oid, result_tree_id, result_commit_id, patch_hash, summary,
+    tool_calls, usage_json, failure_code, created_at, started_at, finished_at,
+    updated_at, workspace_id, session_id, scopes_json, physical_key,
+    regime_generation, 'workspace_v1' AS execution_contract
+FROM workspace_executions;
+CREATE VIEW all_execution_checkpoints AS
+SELECT * FROM execution_checkpoints UNION ALL SELECT * FROM
+workspace_execution_checkpoints;
+CREATE VIEW all_execution_answers AS
+SELECT * FROM execution_answers UNION ALL SELECT * FROM workspace_execution_answers;
+CREATE VIEW all_execution_answer_revisions AS
+SELECT * FROM execution_answer_revisions UNION ALL SELECT * FROM
+workspace_execution_answer_revisions;
+""",
+    ),
 )
 
 

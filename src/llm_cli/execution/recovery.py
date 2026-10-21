@@ -28,6 +28,7 @@ from llm_cli.coordination.models import (
     RepositoryRecord,
 )
 from llm_cli.errors import ErrorCode, LlmCoordError
+from llm_cli.execution.workspace import assert_execution_regime
 from llm_cli.git.integrate import read_task_ref
 from llm_cli.git.worktrees import prune_managed_worktrees, remove_managed_worktree
 from llm_cli.storage.control import ControlStore
@@ -132,6 +133,9 @@ class ExecutionReconciler:
                 with managed_pin(
                     self.store, Path(repository.main_worktree_path), recovery=True
                 ):
+                    assert_execution_regime(
+                        self.store, Path(repository.main_worktree_path)
+                    )
                     if self._can_resume(execution):
                         outcomes.append(self._adopt_resumable_execution(execution))
                     else:
@@ -162,6 +166,18 @@ class ExecutionReconciler:
             if key in handled:
                 continue
             paired = self.store.get_execution(intent.task_id, intent.task_attempt)
+            if paired is not None and not isinstance(paired, ExecutionRecord):
+                outcomes.append(
+                    RecoveryOutcome(
+                        intent.task_id,
+                        intent.task_attempt,
+                        "operator_attention",
+                        "legacy intent belongs to another execution contract",
+                        paired.execution_id,
+                        intent.intent_id,
+                    )
+                )
+                continue
             if self._in_flight_here(paired):
                 continue
             handled.add(key)
@@ -176,6 +192,9 @@ class ExecutionReconciler:
                     paired.execution_id if paired else intent.intent_id,
                     recovery=True,
                 ) as operation:
+                    assert_execution_regime(
+                        self.store, Path(repository.main_worktree_path)
+                    )
                     outcome = self._resolve_intent(paired, intent, repository)
                     if not outcome.blocking and operation is not None:
                         operation.confirm()

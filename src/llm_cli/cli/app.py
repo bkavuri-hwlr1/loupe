@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -52,6 +54,19 @@ _EFFORT_HELP = (
     "reasoning effort for a new conversation, such as low, medium, high, or "
     "xhigh; 'default' lets the provider choose (use /effort to save a choice)"
 )
+
+
+_LEGACY_CLAIM_NOTICE = (
+    "Legacy claim mutations are deprecated for one compatibility release and "
+    "require a legacy checkout. Use 'loupe workspace cutover plan PATH' to "
+    "review migration to workspace execution; retained claims remain inspectable."
+)
+
+
+def _legacy_claim_result(value: Any, *, as_json: bool) -> Any:
+    if as_json:
+        return value
+    return {**value, "notice": _LEGACY_CLAIM_NOTICE}
 
 
 def _runtime_consent_argument(parser: argparse.ArgumentParser) -> None:
@@ -286,6 +301,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workspace_status = workspace_commands.add_parser("status")
     workspace_status.add_argument("path", nargs="?", default=".")
+    cutover = workspace_commands.add_parser(
+        "cutover", help="preview or explicitly migrate a checkout out of legacy claims"
+    )
+    cutover_actions = cutover.add_subparsers(dest="cutover_command", required=True)
+    for action in ("plan", "apply", "resume", "status", "export"):
+        help_text = {
+            "plan": "read the complete conversion preview without changing authority",
+            "apply": "irreversibly begin cutover from an exact reviewed checkpoint",
+            "resume": "resume the same durable cutover intent after interruption",
+            "status": "inspect the authority regime and retained cutover intent",
+            "export": "save retained legacy history to a new private JSON file",
+        }[action]
+        sub = cutover_actions.add_parser(action, help=help_text)
+        sub.add_argument("path", nargs="?", default=".")
+        if action in {"apply", "resume"}:
+            sub.add_argument("--checkpoint", required=True, metavar="TOKEN")
+            sub.add_argument("--intent", required=action == "resume", metavar="ID")
+        if action == "apply":
+            sub.add_argument(
+                "--cancel-claim",
+                action="append",
+                default=[],
+                metavar="CLAIM_ID",
+                help="cancel only this queued legacy claim; repeat for more",
+            )
+        if action == "export":
+            sub.add_argument("--out", required=True, type=Path, metavar="FILE")
     hydrate = workspace_commands.add_parser(
         "hydrate", help="preview ignored runtime hydration without copying files"
     )
@@ -409,16 +451,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    claim = commands.add_parser("claim", help="inspect and operate durable claims")
+    claim = commands.add_parser(
+        "claim",
+        help="inspect retained claims; legacy mutations are deprecated",
+        description=_LEGACY_CLAIM_NOTICE,
+    )
     claim_commands = claim.add_subparsers(dest="claim_command", required=True)
     list_claims = claim_commands.add_parser("list")
     list_claims.add_argument("--repo", default=".")
     show_claim = claim_commands.add_parser("show")
     show_claim.add_argument("claim_id")
-    release = claim_commands.add_parser("release")
+    release = claim_commands.add_parser("release", description=_LEGACY_CLAIM_NOTICE)
     release.add_argument("claim_id")
     release.add_argument("--reason", required=True)
-    renew = claim_commands.add_parser("renew")
+    renew = claim_commands.add_parser("renew", description=_LEGACY_CLAIM_NOTICE)
     renew.add_argument("claim_id")
     renew.add_argument("--task", required=True)
     renew.add_argument("--fence", type=int, required=True)
@@ -574,6 +620,115 @@ def _lexical_search_text(result: dict[str, Any]) -> str:
         lines.extend("  " + line for line in str(item["text"]).splitlines())
         lines.append("")
     return "\n".join(lines).rstrip()
+
+
+def _cutover_plan_text(value: Any) -> str:
+    """Render every actionable record without repeating the raw evidence body."""
+    if not isinstance(value, dict):
+        raise LlmCoordError(
+            ErrorCode.PROTOCOL_MISMATCH, "cutover preview response is not an object"
+        )
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for name in ("mappings", "dispositions", "blockers"):
+        items = value.get(name)
+        if not isinstance(items, list) or any(
+            not isinstance(item, dict) for item in items
+        ):
+            raise LlmCoordError(
+                ErrorCode.PROTOCOL_MISMATCH,
+                f"cutover preview has no complete {name} inventory",
+            )
+        groups[name] = items
+
+    def label(item: object) -> str:
+        if item is None:
+            return "unknown"
+        if not isinstance(item, (str, int, bool)):
+            raise LlmCoordError(
+                ErrorCode.PROTOCOL_MISMATCH, "cutover preview label is not a scalar"
+            )
+        return str(item).replace("\r", "\\r").replace("\n", "\\n")
+
+    lines = [
+        "Cutover preview (read-only; apply is irreversible)",
+        f"Regime: {label(value.get('regime'))}; "
+        f"generation: {label(value.get('generation'))}; "
+        f"ready: {label(value.get('ready'))}",
+        f"Checkpoint: {label(value.get('checkpoint'))}",
+        f"Mappings ({len(groups['mappings'])}):",
+    ]
+    for mapping in groups["mappings"]:
+        provenance = mapping.get("provenance")
+        if isinstance(provenance, list):
+            provenance_text = f"{len(provenance)} registration records"
+        else:
+            provenance_text = label(provenance)
+        lines.extend((
+            f"  {label(mapping.get('repo_key', mapping.get('repository_id')))}: "
+            f"target={label(mapping.get('target_ref'))}; "
+            f"adapter={label(mapping.get('integration_adapter'))}",
+            f"    path={label(mapping.get('canonical_path'))}; "
+            f"provenance={provenance_text}",
+        ))
+    lines.append(f"Dispositions ({len(groups['dispositions'])}):")
+    for item in groups["dispositions"]:
+        allowed = item.get("allowed", [])
+        if not isinstance(allowed, list):
+            raise LlmCoordError(
+                ErrorCode.PROTOCOL_MISMATCH, "cutover disposition has invalid actions"
+            )
+        actions = ", ".join(label(action) for action in allowed) or "none"
+        lines.append(
+            f"  {label(item.get('kind'))} {label(item.get('id'))}: "
+            f"state={label(item.get('state'))}; default={label(item.get('default'))}; "
+            f"allowed={actions}"
+        )
+    lines.append(f"Blockers ({len(groups['blockers'])}):")
+    for item in groups["blockers"]:
+        lines.append(
+            f"  {label(item.get('kind'))} {label(item.get('id'))}: "
+            f"{label(item.get('reason'))}"
+        )
+    lines.append(
+        "Use loupe --json workspace cutover plan PATH for complete evidence."
+    )
+    return "\n".join(lines)
+
+
+def _write_cutover_export(destination: Path, value: Any) -> dict[str, Any]:
+    """Publish an explicit metadata export privately, without overwriting a path."""
+    if not isinstance(value, dict):
+        raise LlmCoordError(
+            ErrorCode.PROTOCOL_MISMATCH, "cutover export response is not an object"
+        )
+    destination = destination.expanduser().absolute()
+    pending: Path | None = None
+    try:
+        body = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=".loupe-cutover-",
+            delete=False,
+        ) as handle:
+            pending = Path(handle.name)
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # link() refuses both existing files and symlinks, including a racing
+        # writer. The temporary file is private (0600) before any bytes exist.
+        os.link(pending, destination, follow_symlinks=False)
+    except (OSError, TypeError, ValueError) as exc:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            f"could not write new private cutover export: {exc}",
+        ) from exc
+    finally:
+        if pending is not None:
+            with suppress(OSError):
+                pending.unlink()
+    return {"exported_to": str(destination), "metadata_only": True}
 
 
 def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
@@ -732,6 +887,11 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 "interactive": arguments.interactive,
                 "provider": arguments.provider,
                 "model": arguments.model,
+                **(
+                    session_environment_params(client.paths)
+                    if not arguments.claim_only and not arguments.fixture_write
+                    else {}
+                ),
             },
             idempotency_key=arguments.task_id,
         )
@@ -748,6 +908,25 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             return _watch(client, task_id, 0, arguments.as_json, arguments.plain)
         return result
     if command == "workspace":
+        if arguments.workspace_command == "cutover":
+            action = arguments.cutover_command
+            cutover_params: dict[str, Any] = {
+                "path": str(Path(arguments.path).expanduser().absolute())
+            }
+            if action in {"apply", "resume"}:
+                cutover_params["checkpoint"] = arguments.checkpoint
+                if arguments.intent is not None:
+                    cutover_params["intent_id"] = arguments.intent
+            if action == "apply":
+                cutover_params["dispositions"] = {
+                    claim_id: "cancel" for claim_id in arguments.cancel_claim
+                }
+            result = client.call(f"workspace.cutover.{action}", cutover_params)
+            if action == "export":
+                return _write_cutover_export(arguments.out, result)
+            if action == "plan" and not arguments.as_json:
+                return _cutover_plan_text(result)
+            return result
         if arguments.workspace_command == "hydrate":
             from llm_cli.workspace.hydration import HydrationBudgets, plan_hydration
 
@@ -924,19 +1103,25 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
         if action == "show":
             return client.call("claim.show", {"claim_id": arguments.claim_id})
         if action == "release":
-            return client.call(
-                "claim.release",
-                {"claim_id": arguments.claim_id, "reason": arguments.reason},
+            return _legacy_claim_result(
+                client.call(
+                    "claim.release",
+                    {"claim_id": arguments.claim_id, "reason": arguments.reason},
+                ),
+                as_json=arguments.as_json,
             )
         if action == "renew":
-            return client.call(
-                "claim.renew",
-                {
-                    "task_id": arguments.task,
-                    "claim_id": arguments.claim_id,
-                    "fencing_token": arguments.fence,
-                    "attempt": arguments.attempt,
-                },
+            return _legacy_claim_result(
+                client.call(
+                    "claim.renew",
+                    {
+                        "task_id": arguments.task,
+                        "claim_id": arguments.claim_id,
+                        "fencing_token": arguments.fence,
+                        "attempt": arguments.attempt,
+                    },
+                ),
+                as_json=arguments.as_json,
             )
         if action == "reconcile":
             return client.call("claim.reconcile")

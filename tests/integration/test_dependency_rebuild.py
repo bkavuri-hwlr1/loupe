@@ -489,7 +489,7 @@ def test_schema_26_upgrade_preserves_frozen_workspace_and_runtime_receipts(
         ]
         with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
             con.execute("UPDATE isolated_workspaces SET stage='rebuilding'")
-        assert apply_migrations(con) == 27
+        assert apply_migrations(con) == CONTROL_MIGRATIONS[-1].version
         for table, rows in frozen.items():
             assert sorted(
                 tuple(row) for row in con.execute("SELECT * FROM " + table)
@@ -515,7 +515,7 @@ def test_schema_26_upgrade_preserves_frozen_workspace_and_runtime_receipts(
         )
         con.execute("UPDATE isolated_workspaces SET stage='ready'")
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert apply_migrations(con) == 27
+        assert apply_migrations(con) == CONTROL_MIGRATIONS[-1].version
     upgraded = manager(replace(env, store=legacy), tmp_path)
     state = upgraded.validate(workspace.workspace_id)
     original = isolate.validate(workspace.workspace_id)

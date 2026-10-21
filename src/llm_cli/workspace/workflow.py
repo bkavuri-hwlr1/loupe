@@ -17,8 +17,13 @@ from typing import TYPE_CHECKING, Any
 from llm_cli.agent.modes import publication_mode, validate_agent_mode
 from llm_cli.agent.source_policy import ensure_safe_content
 from llm_cli.coordination.coordinator import RepositoryCoordinator
-from llm_cli.coordination.models import SessionRecord, WorkspaceRecord
+from llm_cli.coordination.models import (
+    SessionRecord,
+    WorkspaceExecutionRecord,
+    WorkspaceRecord,
+)
 from llm_cli.errors import LlmCoordError
+from llm_cli.execution.workspace import Execution
 from llm_cli.ids import new_id
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.batches import (
@@ -144,7 +149,7 @@ class TaskWorkflow:
                     elif child and child[0] in {"failed", "cancelled"}:
                         batch = con.execute(
                             (
-                                "SELECT b.state FROM task_executions e "
+                                "SELECT b.state FROM all_task_executions e "
                                 "JOIN workspace_batches b "
                                 "ON b.batch_id=e.execution_id WHERE e.task_id=?"
                             ),
@@ -300,7 +305,13 @@ class TaskWorkflow:
             status=status,
             **({"config_json": frozen_config} if frozen_config is not None else {}),
         )
-        self.coordinator.settle_shared_execution(
+        execution = self.store.get_execution_by_id(execution_id)
+        settle = (
+            self.coordinator.settle_workspace_execution
+            if isinstance(execution, WorkspaceExecutionRecord)
+            else self.coordinator.settle_shared_execution
+        )
+        settle(
             execution_id,
             outcome="failed_safe",
             failure_code="CANCELLED" if cancelled else "REVIEW_REQUIRED",
@@ -323,7 +334,11 @@ class TaskWorkflow:
             raise KeyError("task")
         row = self.ensure(task_id)
         claim = self.store.get_claim(task.current_claim_id or "")
-        if claim and claim.state.value in {"publishing", "active_integration"}:
+        execution = self.store.get_execution(task_id, task.attempt)
+        if (claim and claim.state.value in {"publishing", "active_integration"}) or (
+            isinstance(execution, WorkspaceExecutionRecord)
+            and execution.state == "publishing"
+        ):
             return {
                 "state": "publishing",
                 "message": (
@@ -342,8 +357,10 @@ class TaskWorkflow:
                 """UPDATE task_workflows SET stop_requested=1
                 WHERE task_id=? AND attempt=? AND NOT EXISTS (
                     SELECT 1 FROM claims WHERE task_id=? AND task_attempt=?
-                        AND state IN ('publishing','active_integration'))""",
-                (task_id, task.attempt, task_id, task.attempt),
+                        AND state IN ('publishing','active_integration'))
+                    AND NOT EXISTS (SELECT 1 FROM workspace_executions
+                        WHERE task_id=? AND task_attempt=? AND state='publishing')""",
+                (task_id, task.attempt, task_id, task.attempt, task_id, task.attempt),
             ).rowcount
         if not changed:
             return {"state": "publishing"}
@@ -372,9 +389,24 @@ class TaskWorkflow:
 
             saved = self.store.get_execution_checkpoint(row["execution_id"])
             execution = self.store.get_execution(task_id, row["attempt"])
-            claim = self.store.get_claim(execution.claim_id) if execution else None
-            if saved and execution and claim:
-                broker = SharedToolBroker(Path(execution.worktree_path), claim.scopes)
+            claim = (
+                self.store.get_claim(execution.claim_id)
+                if execution and execution.claim_id
+                else None
+            )
+            if (
+                saved
+                and execution
+                and (claim or isinstance(execution, WorkspaceExecutionRecord))
+            ):
+                scopes = (
+                    execution.scopes
+                    if isinstance(execution, WorkspaceExecutionRecord)
+                    else claim.scopes
+                    if claim
+                    else ()
+                )
+                broker = SharedToolBroker(Path(execution.worktree_path), scopes)
                 usage = saved.checkpoint.get("tool_usage", {})
                 if not isinstance(usage, dict):
                     raise ValueError("Invalid saved tool state")
@@ -483,8 +515,12 @@ class TaskWorkflow:
                 "SELECT 1 FROM claims c JOIN tasks t ON t.task_id=c.task_id "
                 "JOIN sessions s ON s.session_id=t.session_id "
                 "WHERE s.workspace_id=? AND c.state IN "
-                "('active_work','publishing','active_integration') LIMIT 1",
-                (workspace.workspace_id,),
+                "('active_work','publishing','active_integration') "
+                "UNION ALL SELECT 1 FROM workspace_executions e "
+                "WHERE e.workspace_id=? AND e.state IN "
+                "('preparing','running','validated','publishing','operator_attention') "
+                "LIMIT 1",
+                (workspace.workspace_id, workspace.workspace_id),
             ).fetchone()
         if active is not None:
             raise ValueError(
@@ -748,8 +784,21 @@ class TaskWorkflow:
             identity, _ = read_identified_path(candidate_target(root, f.relative_path))
             if identity != f.base:
                 raise ValueError(f"Conflict at {f.relative_path}; no files changed.")
+        original_execution = self.store.get_execution(task.task_id, int(row["attempt"]))
         original_claim = self.store.get_claim(task.current_claim_id or "")
-        assert original_claim is not None
+        scopes = (
+            original_execution.scopes
+            if isinstance(original_execution, WorkspaceExecutionRecord)
+            else original_claim.scopes
+            if original_claim
+            else None
+        )
+        if scopes is None:
+            raise ValueError("The proposal's original path authority is unavailable.")
+        authority = self.store.authority
+        regime = authority.regime(root) if authority else {"regime": "legacy"}
+        if regime["regime"] not in {"legacy", "workspace"}:
+            raise ValueError("Checkout cutover must finish before applying a proposal.")
         # Manual actions remain usable after the conversation was closed and
         # do not replace another live conversation's provider checkpoint.
         operation_session = new_id("operation")
@@ -771,29 +820,52 @@ class TaskWorkflow:
             session_id=session.session_id,
             title=("Undo " if undo else "Apply ") + task_id,
         )
-        claim = self.coordinator.request_claim(
-            child.task_id,
-            original_claim.scopes,
-            scheduling_mode="exclusive",
-        )
-        if claim.state.value != "active_work":
-            self.coordinator.release_claim(
+        execution: Execution
+        if regime["regime"] == "workspace":
+            assert authority is not None
+            authority.assert_regime(
+                root, allowed=("workspace",), generation=int(regime["generation"])
+            )
+            execution = self.store.create_workspace_execution(
+                task_id=child.task_id,
+                attempt=child.attempt,
+                session_id=session.session_id,
+                workspace_id=workspace.workspace_id,
+                scopes=scopes,
+                physical_key=str(regime["physical_key"]),
+                regime_generation=int(regime["generation"]),
+                driver="workflow",
+                worktree_path=str(root),
+                base_oid=f"workspace:{workspace.workspace_epoch}:{workspace.workspace_revision}",
+                boot_id="workflow",
+            )
+            self.store.update_execution(execution.execution_id, state="validated")
+            claim = None
+        else:
+            if authority is not None:
+                authority.assert_regime(root, allowed=("legacy",))
+            claim = self.coordinator.request_claim(
+                child.task_id, scopes, scheduling_mode="exclusive"
+            )
+            if claim.state.value != "active_work":
+                self.coordinator.release_claim(
+                    claim_id=claim.claim_id,
+                    reason="manual action could not acquire authority",
+                )
+                raise ValueError(
+                    "Another exclusive task blocks this action; "
+                    "retry after it finishes."
+                )
+            execution = self.store.create_execution(
+                task_id=child.task_id,
+                attempt=child.attempt,
                 claim_id=claim.claim_id,
-                reason="manual action could not acquire authority",
+                driver="workflow",
+                worktree_path=str(root),
+                base_oid=f"workspace:{workspace.workspace_epoch}:{workspace.workspace_revision}",
+                boot_id="workflow",
+                workspace_id=workspace.workspace_id,
             )
-            raise ValueError(
-                "Another exclusive task blocks this action; retry after it finishes."
-            )
-        execution = self.store.create_execution(
-            task_id=child.task_id,
-            attempt=child.attempt,
-            claim_id=claim.claim_id,
-            driver="workflow",
-            worktree_path=str(root),
-            base_oid=f"workspace:{workspace.workspace_epoch}:{workspace.workspace_revision}",
-            boot_id="workflow",
-            workspace_id=workspace.workspace_id,
-        )
         self.ensure(child.task_id)
         self.retain(child.task_id, child.attempt, execution.execution_id, files)
         self.update(
@@ -804,23 +876,33 @@ class TaskWorkflow:
             # checkout bytes that the held proposal was merged onto.
             **({"proposal_json": encode_files(files)} if not undo else {}),
         )
-        assert claim.fencing_token is not None
-        self.coordinator.reserve_shared_publication(
-            execution.execution_id,
-            fencing_token=claim.fencing_token,
-            changed_paths=(f.relative_path for f in files),
-        )
+        if isinstance(execution, WorkspaceExecutionRecord):
+            self.coordinator.reserve_workspace_publication(
+                execution.execution_id,
+                regime_generation=execution.regime_generation,
+                changed_paths=(f.relative_path for f in files),
+            )
+        else:
+            assert claim is not None and claim.fencing_token is not None
+            self.coordinator.reserve_shared_publication(
+                execution.execution_id,
+                fencing_token=claim.fencing_token,
+                changed_paths=(f.relative_path for f in files),
+            )
         result = self.publisher.publish(
             execution.execution_id,
             session.session_id,
             files,
-            claim.scopes,
+            scopes,
             case_insensitive_filesystem=False,
         )
         if result.state != "operator_attention":
-            self.coordinator.settle_shared_execution(
-                execution.execution_id, outcome=result.state
+            settle = (
+                self.coordinator.settle_workspace_execution
+                if isinstance(execution, WorkspaceExecutionRecord)
+                else self.coordinator.settle_shared_execution
             )
+            settle(execution.execution_id, outcome=result.state)
         if result.state == "published":
             with self.store.connection() as con:
                 con.execute(
