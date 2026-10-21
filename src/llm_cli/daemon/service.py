@@ -740,14 +740,12 @@ class DaemonService:
             requested_checkout = await self._registered_checkout_for_path(requested)
             # Observe before choosing the task's immutable legacy checkout;
             # the final selected root is pinned below before any mutation.
-            requested_regime = self.physical_authority.regime(
-                Path(requested_checkout.canonical_path)
+            requested_regime = (
+                self.physical_authority.regime(Path(requested_checkout.canonical_path))
+                if method == "task.run" and params.get("session_id") is None
+                else None
             )
-            if (
-                method == "task.run"
-                and params.get("session_id") is None
-                and requested_regime["regime"] == "legacy"
-            ):
+            if requested_regime is not None and requested_regime["regime"] == "legacy":
                 legacy = await self._registered_repository_for_path(requested)
                 prior = self.store.get_task(str(params.get("task_id", "")))
                 if prior is not None:
@@ -756,7 +754,7 @@ class DaemonService:
                     Path(legacy.main_worktree_path), repository=legacy
                 )
             else:
-                checkout = await self._registered_checkout_for_path(requested)
+                checkout = requested_checkout
             root = Path(checkout.canonical_path)
         elif "session_id" in params:
             session = self._authenticated_session(params)
@@ -1997,9 +1995,7 @@ class DaemonService:
                     ErrorCode.SESSION_AUTH_REQUIRED,
                     "the supplied session credentials do not match the task session",
                 )
-            checkout = await self._registered_checkout_for_path(
-                requested_path, repository
-            )
+            checkout = requested_checkout
             if checkout.checkout_id != session.checkout_id:
                 raise ValueError("task path is outside the session's selected checkout")
             if session.agent_mode != "plan":

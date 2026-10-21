@@ -171,14 +171,14 @@ class RepositoryCoordinator:
             blockers = [
                 str(row["claim_id"])
                 for row in contenders
-                if self._legacy_claim_can_activate(connection, repo_key, row)
-                and self._reservations_conflict(
+                if self._reservations_conflict(
                     canonical,
                     scheduling_mode,
                     self._claim_scopes(connection, row),
                     str(row["scheduling_mode"]),
                     case_insensitive_filesystem=fold_case,
                 )
+                and self._legacy_claim_can_activate(connection, repo_key, row)
             ]
             claim_id = new_identifier("claim")
             if blockers:
@@ -1793,6 +1793,15 @@ class RepositoryCoordinator:
     def _activate_waiters(
         self, connection: sqlite3.Connection, repo_key: str, now: int
     ) -> tuple[ClaimRecord, ...]:
+        queued = connection.execute(
+            """
+            SELECT * FROM claims WHERE repo_key = ? AND state = 'queued'
+            ORDER BY queue_sequence
+            """,
+            (repo_key,),
+        ).fetchall()
+        if not queued:
+            return ()
         fold_case = self._path_case_insensitive(connection, repo_key)
         live = connection.execute(
             """
@@ -1811,13 +1820,6 @@ class RepositoryCoordinator:
             for row in live
             if self._legacy_claim_can_activate(connection, repo_key, row)
         ]
-        queued = connection.execute(
-            """
-            SELECT * FROM claims WHERE repo_key = ? AND state = 'queued'
-            ORDER BY queue_sequence
-            """,
-            (repo_key,),
-        ).fetchall()
         activated: list[ClaimRecord] = []
         for row in queued:
             if not self._legacy_claim_can_activate(connection, repo_key, row):
