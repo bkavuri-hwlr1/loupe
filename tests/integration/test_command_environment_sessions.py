@@ -818,3 +818,123 @@ def test_closed_held_apply_uses_frozen_runtime_for_environment_path_rewrite(
             live.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["check", "command"])
+def test_shared_checkout_paths_use_proposal_snapshot(
+    tmp_path: Path,
+    repository_factory: Any,
+    service_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    monkeypatch.setattr(shared, "available_sandbox", lambda: "test")
+    monkeypatch.setattr(commands, "wrap", lambda kind, policy, argv, *, cwd: list(argv))
+    module = "src/c9_proposal.py"
+    proposed = "VALUE = 'proposal'\n"
+    script = (
+        "from pathlib import Path; import c9_proposal; "
+        "print('Imported value:', c9_proposal.VALUE, flush=True); "
+        "assert c9_proposal.VALUE == 'proposal'; "
+        "assert Path(c9_proposal.__file__).resolve() == "
+        "Path.cwd() / 'src' / 'c9_proposal.py'; "
+        "print('C9 snapshot import passed')"
+    )
+    turns = [
+        _tools(
+            _call("read_file", path=module),
+            _call("write_file", path=module, content=proposed),
+        )
+    ]
+    if operation == "command":
+        turns.extend(
+            [
+                _tools(_call("run_command", argv=[sys.executable, "-B", "-c", script])),
+                _tools(_call("run_command", argv=["c9-project-probe"])),
+                _tools(_call("run_command", argv=["c9-dependency-probe"])),
+            ]
+        )
+    turns.append(_finish())
+    provider = ScriptedProvider("c9-shared-path-" + operation, turns)
+
+    async def scenario() -> None:
+        repository = repository_factory(
+            tmp_path,
+            {
+                module: "VALUE = 'checkout'\n",
+                "bin/c9-project-probe": (
+                    "#!/bin/sh\nprintf 'C9 project bin passed\\n'\n"
+                ),
+                ".gitignore": ".venv/\n__pycache__/\n",
+            },
+        )
+        (repository / "bin/c9-project-probe").chmod(0o755)
+        dependency = repository / ".venv/bin/c9-dependency-probe"
+        dependency.parent.mkdir(parents=True)
+        dependency.write_text("#!/bin/sh\nprintf 'C9 dependency bin passed\\n'\n")
+        dependency.chmod(0o755)
+        service = _session_service(service_factory(tmp_path))
+        _register(service, provider)
+        service.initialize()
+        try:
+            await service.handle(_request("repo.add", {"path": str(repository)}))
+            check_script = (
+                script if operation == "check" else "print('C9 check passed')"
+            )
+            await service.handle(
+                _request(
+                    "checks.configure",
+                    {
+                        "path": str(repository),
+                        "config": {
+                            "runtime_paths": [".venv"],
+                            "checks": {
+                                "project": {
+                                    "argv": [sys.executable, "-B", "-c", check_script]
+                                }
+                            },
+                        },
+                    },
+                )
+            )
+            credentials = await _open(
+                service,
+                repository,
+                provider.model,
+                {
+                    "PWD": str(repository),
+                    "PYTHONPATH": str(repository / "src"),
+                    "PATH": os.pathsep.join(
+                        (str(repository / "bin"), str(dependency.parent), os.defpath)
+                    ),
+                },
+            )
+            task_id = "c9-shared-path-" + operation
+            background = await _start(service, repository, credentials, task_id, ("*",))
+            await asyncio.wait_for(background, 30)
+            with service.store.connection() as con:
+                rows = con.execute(
+                    "SELECT state,output FROM check_runs WHERE task_id=?", (task_id,)
+                ).fetchall()
+            assert rows and all(row["state"] == "passed" for row in rows), rows
+            events = service.store.list_task_events(task_id, limit=500)
+            if operation == "check":
+                output = "".join(row["output"] for row in rows)
+            else:
+                output = "".join(
+                    str(event.payload["text"])
+                    for event in events
+                    if event.event_type == "command.output"
+                )
+                assert "C9 project bin passed" in output
+                assert "C9 dependency bin passed" in output
+            assert "C9 snapshot import passed" in output
+            assert "Imported value: checkout" not in output
+            _assert_completed(service, task_id)
+            assert (repository / module).read_text() == proposed
+            plan = service.session_environments.plan(provider.model)
+            assert {"PWD", "PYTHONPATH", "PATH"} <= set(plan["rewritten_names"])
+        finally:
+            service.close()
+
+    asyncio.run(scenario())

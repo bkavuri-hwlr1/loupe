@@ -31,9 +31,11 @@ and credential names registered when a provider is configured. Private
 owned by the command/check snapshot, including when a check has an `env` table.
 Hooks receive their temporary `LOUPE_HOOK_INPUT` path from the trusted launcher.
 
-Values from secret-like names, including password, token, API/private/access
-key names and common database URL names, join the existing exact-value output
-screening. Multiline values also contribute each nonempty logical line, so
+Values from secret-like names join the existing exact-value output screening.
+These include password, `PASS`/`PWD` name parts, token, DSN, webhook, `_KEY`/`_SK`
+suffixes and `DOCKER_AUTH_CONFIG`. URL userinfo credentials are extracted from
+every variable value, including package-index and broker URLs under ordinary
+names; both the original value and decoded credentials are screened. Multiline values also contribute each nonempty logical line, so
 printing them line by line keeps them private. Original and rewritten values
 are screened before command/check output, hook results, launch diagnostics or
 command metadata reach the conversation, events or stored check output. Recognized secret signatures retain their existing
@@ -66,11 +68,21 @@ A changed forwarded map invalidates successful checks for that session.
 A check finishing during reconnect cannot restore evidence from the earlier
 map. A reconnect with the same retained map leaves its evidence valid.
 
-## Isolated paths and retained apply
+## Snapshot paths and retained apply
 
-Absolute path values and path-list components inside the selected primary
-checkout are rewritten only when an exact hydrated equivalent exists in the
-private workspace and the command/check snapshot. Roots such as `PWD` can map
+In shared sessions, absolute values and path-list components inside the checkout
+are rewritten to the command or check snapshot when the corresponding path
+exists there. Imports such as `PYTHONPATH=<checkout>/src` therefore read proposed
+code. New files that exist only in the proposal can also be addressed. Missing
+paths and symlink escapes refuse launch with variable-name-only diagnostics.
+Commands keep access to dependency roots already linked read-only into their
+snapshots, such as `.venv/bin` in `PATH`; this exception requires the exact
+linked location and does not permit reading ordinary live checkout source.
+Checks use their copied runtime paths and have no live-dependency exception.
+
+In isolated sessions, absolute path values and path-list components inside the
+selected primary checkout are rewritten only when an exact hydrated equivalent
+exists in the private workspace and the command/check snapshot. Roots such as `PWD` can map
 to the private source root. A missing, unhydrated or escaping equivalent refuses
 the launch with variable-name-only diagnostics; adjust the terminal and
 reconnect. Unrelated external paths keep their original meaning.

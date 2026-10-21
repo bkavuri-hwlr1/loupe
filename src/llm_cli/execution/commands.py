@@ -222,7 +222,9 @@ class CommandRunner:
                     for name, value in env.items()
                     if name in SANDBOX_VARIABLES
                 }
-                session_values, session_secrets = environment.capture(source)
+                session_values, session_secrets = environment.capture(
+                    source, readable_roots=readable
+                )
                 env.update(session_values)
                 env.update(overrides)
                 sensitive_values += session_secrets

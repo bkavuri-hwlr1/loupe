@@ -15,11 +15,13 @@ from pathlib import Path
 from threading import RLock
 
 from llm_cli.errors import ErrorCode, LlmCoordError
+from llm_cli.workspace.runtime import url_credentials
 
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,255}\Z")
 _SECRET_NAME = re.compile(
     r"secret|password|passwd|token|api_?key|credential|authorization|private_?key|"
-    r"access_?key|(?:database|db|redis|mongo(?:db)?|postgres|mysql|amqp)_(?:url|uri|dsn)",
+    r"access_?key|(?:database|db|redis|mongo(?:db)?|postgres|mysql|amqp)_(?:url|uri|dsn)|"
+    r"(?:^|_)(?:pass|pwd|dsn|webhook)(?:_|$)|_(?:key|sk)$|^docker_auth_config$",
     re.I,
 )
 # Registered credential names are supplied by provider setup; this list also
@@ -90,6 +92,19 @@ def _screening_values(value: str) -> set[str]:
     return {part for part in (value, *value.splitlines()) if part}
 
 
+def _sensitive_values(name: str, value: str) -> set[str]:
+    credentials: set[str] = set()
+    # Extra package indexes can contain several whitespace-separated URLs.
+    for component in (value, *value.split()):
+        extracted = url_credentials(component)
+        if extracted:
+            credentials.update(extracted)
+            credentials.update(_screening_values(component))
+    if _SECRET_NAME.search(name) or credentials:
+        credentials.update(_screening_values(value))
+    return credentials
+
+
 def unavailable() -> LlmCoordError:
     return LlmCoordError(
         ErrorCode.SESSION_NOT_ACTIVE,
@@ -124,8 +139,7 @@ class CommandEnvironment:
                 {
                     protected
                     for name, body in self.values.items()
-                    if _SECRET_NAME.search(name)
-                    for protected in _screening_values(body)
+                    for protected in _sensitive_values(name, body)
                 }
             )
 
@@ -136,6 +150,7 @@ class CommandEnvironment:
         overrides: dict[str, str] | None = None,
         runtime_root: Path | None = None,
         runtime_paths: tuple[str, ...] = (),
+        readable_roots: tuple[Path, ...] = (),
     ) -> tuple[dict[str, str], tuple[str, ...]]:
         # Freeze the child map and its redaction material under the same lock.
         # An authenticated reconnect may invalidate us immediately afterward,
@@ -146,20 +161,19 @@ class CommandEnvironment:
                 overrides=overrides,
                 runtime_root=runtime_root,
                 runtime_paths=runtime_paths,
+                readable_roots=readable_roots,
             )
             protected = set(self.sensitive_values)
             if overrides:
                 protected.update(
                     protected
                     for name, body in overrides.items()
-                    if _SECRET_NAME.search(name)
-                    for protected in _screening_values(body)
+                    for protected in _sensitive_values(name, body)
                 )
             protected.update(
                 protected
                 for name, body in values.items()
-                if _SECRET_NAME.search(name)
-                for protected in _screening_values(body)
+                for protected in _sensitive_values(name, body)
             )
             return values, tuple(protected)
 
@@ -187,6 +201,7 @@ class CommandEnvironment:
         overrides: dict[str, str] | None = None,
         runtime_root: Path | None = None,
         runtime_paths: tuple[str, ...] = (),
+        readable_roots: tuple[Path, ...] = (),
     ) -> dict[str, str]:
         self.require()
         result = dict(self.values)
@@ -196,10 +211,11 @@ class CommandEnvironment:
             )
         for name in SANDBOX_VARIABLES:
             result.pop(name, None)
-        if self.hydrated_root is None or self.source_root is None:
+        if self.source_root is None:
             return result
         source = self.source_root.resolve()
-        hydrated = self.hydrated_root.resolve()
+        isolated = self.hydrated_root is not None
+        hydrated = (self.hydrated_root or source).resolve()
         target = snapshot.resolve()
         runtime = runtime_root.resolve() if runtime_root is not None else hydrated
         for name, value in result.items():
@@ -242,20 +258,38 @@ class CommandEnvironment:
                     )
                 )
                 try:
-                    safe = (
-                        known
-                        and private.exists()
-                        and destination.exists()
-                        and private.resolve(strict=True).is_relative_to(equivalent_root)
-                        and destination.resolve(strict=True).is_relative_to(target)
+                    resolved = destination.resolve(strict=True)
+                    contained = resolved.is_relative_to(target)
+                    # Shared commands link only explicitly readable dependency
+                    # roots. Preserve that exact link, never an arbitrary alias
+                    # back to live source or a different dependency location.
+                    readable = (
+                        not contained
+                        and not isolated
+                        and resolved == path.resolve(strict=True)
+                        and any(
+                            resolved.is_relative_to(root.resolve(strict=True))
+                            for root in readable_roots
+                        )
                     )
+                    safe = destination.exists() and (contained or readable)
+                    if isolated:
+                        safe = (
+                            safe
+                            and known
+                            and private.exists()
+                            and private.resolve(strict=True).is_relative_to(
+                                equivalent_root
+                            )
+                        )
                 except (OSError, RuntimeError, ValueError):
                     safe = False
                 if not safe:
                     self.unresolved.add(name)
                     raise LlmCoordError(
                         ErrorCode.CONFIG_INVALID,
-                        "Session environment path has no exact hydrated equivalent; "
+                        "Session environment path has no exact "
+                        f"{'hydrated' if isolated else 'snapshot'} equivalent; "
                         f"adjust {name} in the terminal and reconnect.",
                         {"variable": name, "state": "unresolved_environment_path"},
                     )
@@ -281,7 +315,9 @@ class CommandEnvironment:
             "removed_names": list(self.removed),
             "sandbox_override_names": sorted(set(self.values) & SANDBOX_VARIABLES),
             "screened_names": sorted(
-                name for name in self.values if _SECRET_NAME.search(name)
+                name
+                for name, body in self.values.items()
+                if _SECRET_NAME.search(name) or _sensitive_values(name, body)
             ),
             "rewritten_names": sorted(self.rewritten),
             "rewrites": [

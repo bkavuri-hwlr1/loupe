@@ -1191,11 +1191,11 @@ class DaemonService:
         assert checkout is not None
         environment = CommandEnvironment(
             values, removed,
+            source_root=Path(checkout.canonical_path),
             credential_names=self.providers.credential_environment_names,
         )
         if session.workspace_mode == "isolated":
             state = self.isolated_workspaces.validate(session.workspace_id or "")
-            environment.source_root = Path(checkout.canonical_path)
             workspace = self.store.get_workspace(session.workspace_id or "")
             assert workspace is not None
             environment.hydrated_root = Path(workspace.canonical_path)
