@@ -1827,7 +1827,7 @@ class DaemonService:
         info: RepositoryInfo = await asyncio.to_thread(
             inspect_repository, path, profile_id=self.paths.profile_id
         )
-        record = repository or await self._registered_repository_for_path(path)
+        record = repository or self._registered_repository_for_info(info)
         return self.store.ensure_checkout(
             repository=record,
             canonical_path=str(info.worktree.resolve()),
@@ -1906,7 +1906,12 @@ class DaemonService:
 
     async def _task_run(self, params: dict[str, Any]) -> dict[str, Any]:
         requested_path = _path(params, "path")
-        repository = await self._registered_repository_for_path(requested_path)
+        # This discovery is fresh after the dispatch pin. Reuse its Git facts
+        # for repository and checkout selection within this request.
+        info = await asyncio.to_thread(
+            inspect_repository, requested_path, profile_id=self.paths.profile_id
+        )
+        repository = self._registered_repository_for_info(info)
         # Validate request identity before allocating a one-shot session or
         # retaining any terminal environment for it.
         _string(params, "title")
@@ -1925,8 +1930,10 @@ class DaemonService:
         session_id = _optional_string(params, "session_id")
         session: SessionRecord | None = None
         execution_repository = repository
-        requested_checkout = await self._registered_checkout_for_path(
-            requested_path, repository
+        requested_checkout = self.store.ensure_checkout(
+            repository=repository,
+            canonical_path=str(info.worktree.resolve()),
+            git_common_dir=str(info.common_git_dir.resolve()),
         )
         regime = self.physical_authority.regime(Path(requested_checkout.canonical_path))
         if regime["regime"] == "transition":
@@ -2268,8 +2275,12 @@ class DaemonService:
         ):
             scheduling_mode = "optimistic"
             optimistic_driver = driver.name
-        claim_checkout = await self._registered_checkout_for_path(
-            Path(execution_repository.main_worktree_path), repository
+        claim_checkout = (
+            requested_checkout
+            if session is not None
+            else await self._registered_checkout_for_path(
+                Path(execution_repository.main_worktree_path), repository
+            )
         )
         claim = self.coordinator.request_claim(
             task.task_id,
@@ -3557,6 +3568,9 @@ class DaemonService:
         info: RepositoryInfo = await asyncio.to_thread(
             inspect_repository, path, profile_id=self.paths.profile_id
         )
+        return self._registered_repository_for_info(info)
+
+    def _registered_repository_for_info(self, info: RepositoryInfo) -> RepositoryRecord:
         repository = self.store.get_repository_by_key(info.repo_key)
         if repository is not None:
             return repository
