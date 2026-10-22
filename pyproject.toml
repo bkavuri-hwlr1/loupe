@@ -57,6 +57,7 @@ addopts = "-ra --strict-config --strict-markers --cov-config=pyproject.toml"
 testpaths = ["tests"]
 markers = [
   "index_scale: production index build and incremental timing, measured without coverage",
+  "admission_scale: concurrent RPC admission timing, measured without coverage",
 ]
 
 [tool.coverage.run]

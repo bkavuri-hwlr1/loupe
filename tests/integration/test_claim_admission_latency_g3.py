@@ -22,6 +22,7 @@ from llm_cli.protocol.client import DaemonClient
 from llm_cli.protocol.server import RpcServer
 
 
+@pytest.mark.admission_scale
 def test_six_claim_only_rpc_requests_fit_default_timeout_with_slow_regime_observation(
     tmp_path: Path,
     repository_factory: Callable[..., Path],
