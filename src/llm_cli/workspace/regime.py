@@ -19,6 +19,19 @@ from llm_cli.workspace.authority import Mutation, PhysicalAuthority, PhysicalChe
 if TYPE_CHECKING:
     from llm_cli.storage.control import ControlStore
 
+# Relevant retained legacy work. The reviewed checkpoint additionally binds
+# source, index, HEAD and mappings, but only at apply, before anything is durable.
+_HISTORY_KEYS = (
+    "claims",
+    "tasks",
+    "executions",
+    "publications",
+    "workflows",
+    "batches",
+    "workspace_publications",
+    "authority_receipts",
+)
+
 
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -172,6 +185,7 @@ class CutoverManager:
         regime: dict[str, Any],
         *,
         observe_source: bool = True,
+        source_checkpoint: str | None = None,
     ) -> dict[str, Any]:
         root = str(physical.root)
         repositories = [
@@ -670,6 +684,12 @@ class CutoverManager:
             if receipt["physical_key"] == physical.key
         ]
         checkpoint_evidence["blockers"] = blockers
+        # Once an intent closes legacy admission, only this retained history must
+        # stay fixed. Source, index and HEAD can keep changing under an editor.
+        history = {
+            "physical_key": physical.key,
+            **{key: checkpoint_evidence[key] for key in _HISTORY_KEYS},
+        }
         return {
             "physical_key": physical.key,
             "path": root,
@@ -679,13 +699,14 @@ class CutoverManager:
                 _digest(
                     {
                         "manifest": checkpoint_evidence,
-                        "source": _source_checkpoint(physical),
+                        "source": source_checkpoint or _source_checkpoint(physical),
                     }
                 )
                 if observe_source
                 else None
             ),
             "checkpoint_observed": observe_source,
+            "history_checkpoint": _digest(history),
             **{
                 key: value
                 for key, value in evidence.items()
@@ -819,10 +840,18 @@ class CutoverManager:
                     ErrorCode.CUTOVER_BLOCKED,
                     "checkout is already transitioning or workspace managed",
                 )
+            # Hash source before taking the write lock; this scan can take
+            # seconds, and every other daemon writer would wait behind it.
+            source = _source_checkpoint(pin.owner.physical)
             with self.store.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 try:
-                    plan = self._preview(connection, pin.owner.physical, regime)
+                    plan = self._preview(
+                        connection,
+                        pin.owner.physical,
+                        regime,
+                        source_checkpoint=source,
+                    )
                     if checkpoint != plan["checkpoint"]:
                         raise _error(
                             ErrorCode.CUTOVER_CHECKPOINT_STALE,
@@ -874,6 +903,25 @@ class CutoverManager:
                                 _json(mapping["provenance"]),
                             ),
                         )
+                    # Later ownership handoffs are ordered after these event
+                    # sequences, independent of wall-clock time.
+                    owned = sorted(
+                        {
+                            m["checkout_id"]
+                            for m in plan["mappings"]
+                            if m["checkout_id"] is not None
+                            and m["physical_key"] == plan["physical_key"]
+                        }
+                    )
+                    plan["checkout_event_sequences"] = {
+                        str(row["checkout_id"]): int(row["next_event_sequence"])
+                        for row in connection.execute(
+                            "SELECT checkout_id,next_event_sequence FROM "
+                            "checkout_heads WHERE checkout_id IN "
+                            f"({','.join('?' for _ in owned) or 'NULL'})",
+                            owned,
+                        )
+                    }
                     connection.execute(
                         (
                             "INSERT INTO cutover_intents VALUES "
@@ -960,12 +1008,33 @@ class CutoverManager:
                 ErrorCode.CUTOVER_BLOCKED,
                 "another unfinished journal requires recovery",
             )
+        # From here on only retained legacy history must stay fixed: the saved
+        # intent already closed legacy admission, while source, index and HEAD
+        # may keep changing. Intents saved before history digests existed keep
+        # their original source-inclusive checks.
+        history = json.loads(intent["plan_json"]).get("history_checkpoint")
+
+        def history_unchanged(expected: str) -> bool:
+            if history is None:
+                return bool(self.preview(physical.root)["checkpoint"] == expected)
+            return bool(self.inventory(physical.root)["history_checkpoint"] == expected)
+
         stage = intent["stage"]
         if stage == "prepared":
-            if self.preview(physical.root)["checkpoint"] != intent["checkpoint"]:
+            # Before the transition marker, other profiles still see a legacy
+            # checkout. Their work is not in this database, so refuse if one
+            # owned the checkout after the intent was saved.
+            if history is not None and self._foreign_owner_since(intent):
                 raise _error(
                     ErrorCode.CUTOVER_CHECKPOINT_STALE,
-                    "checkout changed before transition; cutover requires attention",
+                    "another profile owned this checkout after the cutover intent "
+                    "was saved; cutover requires attention",
+                )
+            if not history_unchanged(history or intent["checkpoint"]):
+                raise _error(
+                    ErrorCode.CUTOVER_CHECKPOINT_STALE,
+                    "retained legacy history changed before transition; cutover "
+                    "requires attention",
                 )
             self.authority.advance_regime(
                 pin,
@@ -982,9 +1051,16 @@ class CutoverManager:
                 connection.execute("BEGIN IMMEDIATE")
                 try:
                     observed = self._preview(
-                        connection, physical, self.authority.regime(physical.root)
+                        connection,
+                        physical,
+                        self.authority.regime(physical.root),
+                        observe_source=history is None,
                     )
-                    if observed["checkpoint"] != intent["checkpoint"]:
+                    if (
+                        observed["checkpoint"] != intent["checkpoint"]
+                        if history is None
+                        else observed["history_checkpoint"] != history
+                    ):
                         raise _error(
                             ErrorCode.CUTOVER_CHECKPOINT_STALE,
                             "legacy history changed during transition",
@@ -1049,9 +1125,17 @@ class CutoverManager:
                             },
                             now=now,
                         )
-                    settled = self._preview(
-                        connection, physical, self.authority.regime(physical.root)
-                    )["checkpoint"]
+                    settled_plan = self._preview(
+                        connection,
+                        physical,
+                        self.authority.regime(physical.root),
+                        observe_source=history is None,
+                    )
+                    settled = (
+                        settled_plan["checkpoint"]
+                        if history is None
+                        else settled_plan["history_checkpoint"]
+                    )
                     connection.execute(
                         (
                             "UPDATE checkout_regimes SET "
@@ -1080,13 +1164,10 @@ class CutoverManager:
                 "SELECT * FROM cutover_intents WHERE intent_id=?", (identity,)
             ).fetchone()
         if stage == "checkpointed":
-            if (
-                self.preview(physical.root)["checkpoint"]
-                != intent["settled_checkpoint"]
-            ):
+            if not history_unchanged(intent["settled_checkpoint"]):
                 raise _error(
                     ErrorCode.CUTOVER_CHECKPOINT_STALE,
-                    "checkout changed after disposition checkpoint",
+                    "retained legacy history changed after disposition checkpoint",
                 )
             self.authority.advance_regime(
                 pin,
@@ -1099,13 +1180,10 @@ class CutoverManager:
             stage = "workspace"
             self._fault("workspace_marked")
         if stage == "workspace":
-            if (
-                self.preview(physical.root)["checkpoint"]
-                != intent["settled_checkpoint"]
-            ):
+            if not history_unchanged(intent["settled_checkpoint"]):
                 raise _error(
                     ErrorCode.CUTOVER_CHECKPOINT_STALE,
-                    "checkout changed before final cutover confirmation",
+                    "retained legacy history changed before final cutover confirmation",
                 )
             with self.store.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -1138,6 +1216,21 @@ class CutoverManager:
         Mutation(self.authority, pin.owner, "regime_cutover", identity).confirm()
         self._fault("marker_clean")
         return self.status(physical.root)
+
+    def _foreign_owner_since(self, intent: sqlite3.Row) -> bool:
+        """Whether a clean handoff from another profile followed this intent."""
+        sequences = json.loads(intent["plan_json"])["checkout_event_sequences"]
+        with self.store.connection() as connection:
+            for checkout_id, sequence in sequences.items():
+                for row in connection.execute(
+                    "SELECT payload_json FROM checkout_events WHERE checkout_id=? "
+                    "AND sequence>? AND event_type='checkout.authority_handoff'",
+                    (checkout_id, sequence),
+                ):
+                    previous = json.loads(row["payload_json"]).get("previous_profile")
+                    if previous != self.authority.profile:
+                        return True
+        return False
 
     def _stage(self, identity: str, stage: str) -> None:
         with self.store.connection() as connection:

@@ -1097,6 +1097,15 @@ checkout's regime. Stable capability errors distinguish incompatible contracts,
 blocked cutover and stale checkpoints. See the
 [cutover guide](workspace-cutover.md) for commands, dispositions and recovery.
 
+A follow-up fixed cutovers that could stall permanently in transition. The source
+and index observation now binds only the reviewed plan to `apply`. After the
+intent is saved, later stages and `resume` compare retained legacy history
+alone, so an editor save, staging or a commit no longer strands the checkout.
+A saved intent reads as `transition` before its marker advances, so this
+profile admits no new legacy work in that window. Another profile's ownership
+after the intent still requires operator attention. `apply` now hashes source
+before taking the database write lock.
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into

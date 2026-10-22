@@ -55,6 +55,8 @@ _STORE_HELD: contextvars.ContextVar[tuple[str, int, int] | None] = (
     contextvars.ContextVar("common_git_store", default=None)
 )
 
+_REGIME_RANKS = {"legacy": 0, "transition": 1, "workspace": 2}
+
 
 def _marker_regime(marker: dict[str, Any] | None) -> dict[str, Any]:
     if marker is None or marker.get("version") == 1:
@@ -525,6 +527,10 @@ class PhysicalAuthority:
                     "WHERE a.physical_key=? OR c.canonical_path=?",
                     (physical.key, str(physical.root)),
                 ).fetchall()
+                recorded = connection.execute(
+                    "SELECT regime FROM checkout_regimes WHERE physical_key=?",
+                    (physical.key,),
+                ).fetchone()
             with self._observation_lock:
                 physical.validate()
                 owned = self._owned.get(physical.key)
@@ -568,7 +574,17 @@ class PhysicalAuthority:
                     )
                 ):
                     raise recovery_error("authority regime marker cannot be verified")
-                return {"physical_key": physical.key, **_marker_regime(marker)}
+                observed = {"physical_key": physical.key, **_marker_regime(marker)}
+                if (
+                    recorded is not None
+                    and _REGIME_RANKS[recorded["regime"]]
+                    > _REGIME_RANKS[observed["regime"]]
+                ):
+                    # A durable cutover intent closes legacy admission before
+                    # its marker advances. Until the marker catches up, every
+                    # gate treats that pending conversion as transition.
+                    observed["regime"] = "transition"
+                return observed
         finally:
             physical.close()
 
@@ -607,10 +623,9 @@ class PhysicalAuthority:
         with self._lock:
             self._validate(owner)
             current = _marker_regime(owner.marker)
-            ranks = {"legacy": 0, "transition": 1, "workspace": 2}
             if (
                 regime not in {"transition", "workspace"}
-                or ranks[regime] < ranks[current["regime"]]
+                or _REGIME_RANKS[regime] < _REGIME_RANKS[current["regime"]]
                 or generation < current["generation"]
                 or (regime != current["regime"] and generation <= current["generation"])
                 or len(checkpoint) != 64
