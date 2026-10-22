@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ import pytest
 from test_physical_authority import _marker, _owner
 
 from llm_cli.errors import ErrorCode, LlmCoordError
+from llm_cli.workspace import regime as regime_module
 from llm_cli.workspace.authority import Mutation, PhysicalAuthority
 from llm_cli.workspace.installation import private_read
 from llm_cli.workspace.regime import (
@@ -690,4 +692,123 @@ def test_source_over_checkpoint_budget_does_not_block_status_or_inventory(
         manager.preview(repository)
     assert error.value.code == ErrorCode.CUTOVER_BLOCKED
     assert not _marker(authority, repository).exists()
+    authority.close()
+
+
+def _crash_at(boundary: str) -> Callable[[str], None]:
+    def crash(stage: str) -> None:
+        if stage == boundary:
+            raise RuntimeError("crash")
+
+    return crash
+
+
+def test_editor_save_during_apply_does_not_strand_transition(
+    tmp_path: Path, repository: Path
+) -> None:
+    authority = _owner(tmp_path, repository, "a")
+    target = repository / "hello.py"
+
+    def editor_saves(stage: str) -> None:
+        if stage == "transition_marked":
+            target.write_bytes(target.read_bytes())
+
+    manager = CutoverManager(authority.store, authority, fault=editor_saves)
+    plan = manager.preview(repository)
+    result = manager.begin(repository, plan["checkpoint"], intent_id="cutover_save")
+    assert result["regime"] == "workspace" and result["generation"] == 2
+    authority.close()
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["intent_saved", "transition_marked", "checkpoint_saved", "workspace_marked"],
+)
+def test_resume_tolerates_source_index_and_head_changes_after_intent(
+    tmp_path: Path,
+    repository: Path,
+    git_run: Callable[..., str],
+    boundary: str,
+) -> None:
+    authority = _owner(tmp_path, repository, "a")
+    manager = CutoverManager(authority.store, authority, fault=_crash_at(boundary))
+    plan = manager.preview(repository)
+    with pytest.raises(RuntimeError, match="crash"):
+        manager.begin(repository, plan["checkpoint"], intent_id="cutover_edit")
+    target = repository / "hello.py"
+    target.write_bytes(target.read_bytes())
+    target.write_text("print('edited')\n")
+    git_run(repository, "add", "hello.py")
+    git_run(repository, "commit", "-q", "-m", "edited during cutover")
+    result = CutoverManager(authority.store, authority).resume(
+        repository, "cutover_edit", checkpoint=plan["checkpoint"]
+    )
+    assert result["regime"] == "workspace" and result["generation"] == 2
+    authority.close()
+
+
+def test_retained_legacy_history_change_during_transition_still_refuses(
+    tmp_path: Path, repository: Path
+) -> None:
+    authority = _owner(tmp_path, repository, "a")
+    claim_id = _claim(authority)
+    manager = CutoverManager(
+        authority.store, authority, fault=_crash_at("transition_marked")
+    )
+    plan = manager.preview(repository)
+    with pytest.raises(RuntimeError, match="crash"):
+        manager.begin(repository, plan["checkpoint"], intent_id="cutover_history")
+    with authority.store.connection() as connection:
+        connection.execute(
+            "UPDATE claims SET updated_at=updated_at+1 WHERE claim_id=?", (claim_id,)
+        )
+    with pytest.raises(LlmCoordError) as error:
+        CutoverManager(authority.store, authority).resume(
+            repository, "cutover_history", checkpoint=plan["checkpoint"]
+        )
+    assert error.value.code == ErrorCode.CUTOVER_CHECKPOINT_STALE
+    assert authority.regime(repository)["regime"] == "transition"
+    authority.close()
+
+
+def test_saved_intent_reads_as_transition_before_its_marker_advances(
+    tmp_path: Path, repository: Path
+) -> None:
+    authority = _owner(tmp_path, repository, "a")
+    manager = CutoverManager(
+        authority.store, authority, fault=_crash_at("intent_saved")
+    )
+    plan = manager.preview(repository)
+    with pytest.raises(RuntimeError, match="crash"):
+        manager.begin(repository, plan["checkpoint"], intent_id="cutover_pending")
+    marker = private_read(_marker(authority, repository))
+    assert marker is not None and marker["version"] == 1
+    observed = authority.regime(repository)
+    assert observed["regime"] == "transition" and observed["generation"] == 0
+    with pytest.raises(LlmCoordError) as error:
+        authority.assert_regime(repository, allowed=("legacy", "workspace"))
+    assert error.value.code == ErrorCode.CUTOVER_BLOCKED
+    authority.close()
+
+
+def test_apply_hashes_source_outside_the_write_transaction(
+    tmp_path: Path, repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = _owner(tmp_path, repository, "a")
+    manager = CutoverManager(authority.store, authority)
+    plan = manager.preview(repository)
+    original = regime_module._source_checkpoint
+    writable: list[bool] = []
+
+    def observed(physical: Any) -> str:
+        # Another daemon writer must not wait behind the source scan.
+        with closing(sqlite3.connect(authority.store.path, timeout=0.1)) as other:
+            other.execute("BEGIN IMMEDIATE")
+            other.rollback()
+        writable.append(True)
+        return original(physical)
+
+    monkeypatch.setattr(regime_module, "_source_checkpoint", observed)
+    manager.begin(repository, plan["checkpoint"])
+    assert writable
     authority.close()

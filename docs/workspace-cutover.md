@@ -93,6 +93,17 @@ complete mapping set. A durable intent binds the selected dispositions and
 checkpoint. The marker and database advance monotonically; a crash cannot
 restore an earlier regime or activate both execution contracts on one checkout.
 
+The source and index part of the checkpoint binds only the reviewed plan to
+`apply`. Once the intent is saved, edits, staging and commits no longer block
+completion. The remaining stages and `resume` require only the checkout's
+retained legacy history to stay unchanged: its claims, tasks, executions,
+publications, workflows, batches and ownership journals. From the moment the
+intent is saved, this profile treats the checkout as `transition`, even if a
+crash interrupted the cutover before its transition marker was written.
+`resume` refuses with `CUTOVER_CHECKPOINT_STALE` if retained legacy history
+changed, or if another profile owned the checkout after the intent was saved.
+Such a cutover needs operator attention.
+
 ## Inspect or resume the same intent
 
 ```console
