@@ -1121,7 +1121,7 @@ class IsolatedSynchronizer:
         except (ValueError, OSError, LlmCoordError):
             with self.store.connection() as con:
                 execution = con.execute(
-                    "SELECT task_id FROM task_executions WHERE execution_id=?",
+                    "SELECT task_id FROM all_task_executions WHERE execution_id=?",
                     (batch_id,),
                 ).fetchone()
             if execution is not None:

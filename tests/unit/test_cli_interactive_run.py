@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -13,8 +14,22 @@ from llm_cli.paths import AppPaths
 from llm_cli.protocol.client import DaemonClient
 
 
+@pytest.fixture
+def client_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppPaths:
+    overrides = {
+        "LLM_COORD_CONFIG_HOME": str(tmp_path / "config"),
+        "LLM_COORD_DATA_HOME": str(tmp_path / "data"),
+        "LLM_COORD_STATE_HOME": str(tmp_path / "state"),
+        "LLM_COORD_RUNTIME_DIR": str(tmp_path / "run"),
+    }
+    for name, value in overrides.items():
+        monkeypatch.setenv(name, value)
+    return AppPaths.resolve(environ=overrides, home=tmp_path)
+
+
 class _Client:
-    def __init__(self) -> None:
+    def __init__(self, paths: AppPaths) -> None:
+        self.paths = paths
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.result = {"task": {"task_id": "accepted-task"}}
 
@@ -25,9 +40,9 @@ class _Client:
 
 @pytest.mark.parametrize("explicit_follow", [False, True])
 def test_interactive_run_enables_questions_and_follows_accepted_task(
-    monkeypatch: pytest.MonkeyPatch, explicit_follow: bool
+    monkeypatch: pytest.MonkeyPatch, explicit_follow: bool, client_paths: AppPaths
 ) -> None:
-    client = _Client()
+    client = _Client(client_paths)
     followed: list[tuple[object, ...]] = []
 
     def watch(*arguments: object) -> object:
@@ -50,9 +65,9 @@ def test_interactive_run_enables_questions_and_follows_accepted_task(
 
 @pytest.mark.parametrize("follow", [False, True])
 def test_default_run_and_follow_remain_noninteractive(
-    monkeypatch: pytest.MonkeyPatch, follow: bool
+    monkeypatch: pytest.MonkeyPatch, follow: bool, client_paths: AppPaths
 ) -> None:
-    client = _Client()
+    client = _Client(client_paths)
     followed: list[tuple[object, ...]] = []
 
     def watch(*arguments: object) -> object:
@@ -75,9 +90,9 @@ def test_default_run_and_follow_remain_noninteractive(
 
 @pytest.mark.parametrize("incompatible", ["--json", "--claim-only"])
 def test_interactive_run_rejects_incompatible_flags_before_task_submission(
-    monkeypatch: pytest.MonkeyPatch, incompatible: str
+    monkeypatch: pytest.MonkeyPatch, incompatible: str, client_paths: AppPaths
 ) -> None:
-    client = _Client()
+    client = _Client(client_paths)
 
     def never_watch(*_: object) -> object:
         raise AssertionError("an invalid run must not start following a task")
@@ -95,7 +110,7 @@ def test_interactive_run_rejects_incompatible_flags_before_task_submission(
 
 
 def test_double_interrupt_at_standalone_question_exits_without_cancelling_task(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, client_paths: AppPaths
 ) -> None:
     class QuestionClient(_Client):
         paths: AppPaths
@@ -118,10 +133,10 @@ def test_double_interrupt_at_standalone_question_exits_without_cancelling_task(
                 },
             }
 
-    client = QuestionClient()
+    client = QuestionClient(client_paths)
 
     def connect(paths: AppPaths) -> QuestionClient:
-        client.paths = paths
+        assert paths == client_paths
         return client
 
     monkeypatch.setattr(app, "DaemonClient", connect)

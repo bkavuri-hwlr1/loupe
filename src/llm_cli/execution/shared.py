@@ -9,7 +9,7 @@ import itertools
 import json
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import replace
 from pathlib import Path
 
@@ -41,6 +41,7 @@ from llm_cli.coordination.models import (
     ExecutionRecord,
     RepositoryRecord,
     TaskRecord,
+    WorkspaceExecutionRecord,
 )
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.execution.checks import (
@@ -61,6 +62,7 @@ from llm_cli.execution.environment import EnvironmentProvider
 from llm_cli.execution.recovery import RecoveryOutcome
 from llm_cli.execution.runner import TaskExecutionRunner
 from llm_cli.execution.sandbox import available_sandbox
+from llm_cli.execution.workspace import Execution, assert_execution_regime
 from llm_cli.mcp.tools import McpToolset
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.workspace.batches import BatchFile, SharedBatchPublisher
@@ -192,7 +194,8 @@ class SharedTaskExecutionRunner:
             if checkout is not None:
                 primary = Path(checkout.canonical_path)
         with managed_pin(self.store, primary):
-            return self._execute_owned(
+            assert_execution_regime(self.store, primary)
+            result = self._execute_owned(
                 repository=repository,
                 task=task,
                 claim=claim,
@@ -202,19 +205,80 @@ class SharedTaskExecutionRunner:
                 coordination_context=coordination_context,
                 asker=asker,
             )
+            assert isinstance(result, ExecutionRecord)
+            return result
+
+    def execute_workspace(
+        self,
+        *,
+        repository: RepositoryRecord,
+        task: TaskRecord,
+        execution: WorkspaceExecutionRecord,
+        driver: AgentDriver,
+        instructions: str,
+        conversation_state: Mapping[str, object] | None = None,
+        coordination_context: str | None = None,
+        asker: Callable[[str], str] | None = None,
+    ) -> WorkspaceExecutionRecord:
+        from llm_cli.workspace.authority import managed_pin
+
+        session = self.store.get_session(execution.session_id)
+        checkout = self.store.get_checkout(session.checkout_id) if session else None
+        if checkout is None:
+            raise ClaimConflict("workspace execution has no selected checkout")
+        with managed_pin(self.store, Path(checkout.canonical_path)):
+            assert_execution_regime(
+                self.store, Path(checkout.canonical_path), execution
+            )
+            result = self._execute_owned(
+                repository=repository,
+                task=task,
+                claim=None,
+                workspace_execution=execution,
+                driver=driver,
+                instructions=instructions,
+                conversation_state=conversation_state,
+                coordination_context=coordination_context,
+                asker=asker,
+            )
+            assert isinstance(result, WorkspaceExecutionRecord)
+            return result
+
+    def _settle(
+        self, execution_id: str, *, outcome: str, failure_code: str | None = None
+    ) -> None:
+        execution = self.store.get_execution_by_id(execution_id)
+        if isinstance(execution, WorkspaceExecutionRecord):
+            self.coordinator.settle_workspace_execution(
+                execution_id, outcome=outcome, failure_code=failure_code
+            )
+        else:
+            self.coordinator.settle_shared_execution(
+                execution_id, outcome=outcome, failure_code=failure_code
+            )
+
+    def _lease(
+        self, task: TaskRecord, claim: ClaimRecord | None
+    ) -> AbstractContextManager[None]:
+        return (
+            self.lifecycle._renewing_lease(task=task, claim=claim)
+            if claim
+            else nullcontext()
+        )
 
     def _execute_owned(
         self,
         *,
         repository: RepositoryRecord,
         task: TaskRecord,
-        claim: ClaimRecord,
+        claim: ClaimRecord | None,
+        workspace_execution: WorkspaceExecutionRecord | None = None,
         driver: AgentDriver,
         instructions: str,
         conversation_state: Mapping[str, object] | None = None,
         coordination_context: str | None = None,
         asker: Callable[[str], str] | None = None,
-    ) -> ExecutionRecord:
+    ) -> Execution:
         if not (
             driver.capabilities.shared_workspace
             and driver.capabilities.enforces_scope
@@ -240,15 +304,32 @@ class SharedTaskExecutionRunner:
                 and workspace.canonical_path != repository.main_worktree_path
             )
             or (
-                claim.scheduling_mode == "optimistic"
+                claim is not None
+                and claim.scheduling_mode == "optimistic"
                 and claim.workspace_id != workspace.workspace_id
             )
         ):
             raise ClaimConflict("task no longer names its active shared checkout")
-        if claim.state is not ClaimState.ACTIVE_WORK or claim.fencing_token is None:
-            raise ClaimConflict("shared execution requires an active fenced claim")
-        if claim.task_id != task.task_id or claim.task_attempt != task.attempt:
-            raise ClaimConflict("claim does not belong to this task attempt")
+        if workspace_execution is not None:
+            if claim is not None or (
+                workspace_execution.task_id != task.task_id
+                or workspace_execution.task_attempt != task.attempt
+                or workspace_execution.session_id != session.session_id
+                or workspace_execution.workspace_id != workspace.workspace_id
+                or task.current_claim_id is not None
+            ):
+                raise ClaimConflict("workspace authority does not belong to this task")
+            scopes = workspace_execution.scopes
+        else:
+            if (
+                claim is None
+                or claim.state is not ClaimState.ACTIVE_WORK
+                or claim.fencing_token is None
+            ):
+                raise ClaimConflict("shared execution requires an active fenced claim")
+            if claim.task_id != task.task_id or claim.task_attempt != task.attempt:
+                raise ClaimConflict("claim does not belong to this task attempt")
+            scopes = claim.scopes
         checkout = self.store.get_checkout(session.checkout_id)
         if (
             checkout is None
@@ -266,29 +347,47 @@ class SharedTaskExecutionRunner:
             self.isolated_sync.synchronize(workspace.workspace_id, refresh_runtime=True)
             isolated_state = self.isolated.validate(workspace.workspace_id)
         existing = self.store.get_execution(task.task_id, task.attempt)
-        if existing is not None and (
-            existing.workspace_id != workspace.workspace_id
-            or existing.state != "running"
-            or existing.driver != driver.name
-        ):
-            raise ClaimConflict("shared execution requires recovery before continuing")
-        execution = self.store.create_execution(
-            task_id=task.task_id,
-            attempt=task.attempt,
-            claim_id=claim.claim_id,
-            driver=driver.name,
-            worktree_path=workspace.canonical_path,
-            base_oid=(
-                existing.base_oid
-                if existing
-                else (
-                    f"workspace:{workspace.workspace_epoch}:"
-                    f"{workspace.workspace_revision}"
+        if workspace_execution is not None:
+            if not isinstance(existing, WorkspaceExecutionRecord) or (
+                existing != workspace_execution
+                or existing.state not in {"preparing", "running"}
+                or existing.driver != driver.name
+                or existing.boot_id != self.lifecycle.boot_id
+            ):
+                raise ClaimConflict(
+                    "workspace execution requires recovery before continuing"
                 )
-            ),
-            boot_id=self.lifecycle.boot_id,
-            workspace_id=workspace.workspace_id,
-        )
+            assert_execution_regime(self.store, Path(checkout.canonical_path), existing)
+            execution: Execution = existing
+            resuming = existing.state == "running"
+        else:
+            if existing is not None and (
+                not isinstance(existing, ExecutionRecord)
+                or existing.workspace_id != workspace.workspace_id
+                or existing.state != "running"
+                or existing.driver != driver.name
+            ):
+                raise ClaimConflict(
+                    "shared execution requires recovery before continuing"
+                )
+            assert claim is not None
+            execution = self.store.create_execution(
+                task_id=task.task_id,
+                attempt=task.attempt,
+                claim_id=claim.claim_id,
+                driver=driver.name,
+                worktree_path=workspace.canonical_path,
+                base_oid=(
+                    existing.base_oid
+                    if existing
+                    else (
+                        f"workspace:{workspace.workspace_epoch}:{workspace.workspace_revision}"
+                    )
+                ),
+                boot_id=self.lifecycle.boot_id,
+                workspace_id=workspace.workspace_id,
+            )
+            resuming = existing is not None
         row = self.workflow.ensure(task.task_id)
         runtime_files = isolated_state.runtime_files if isolated_state else ()
         configured_runtime_paths = tuple(
@@ -318,18 +417,20 @@ class SharedTaskExecutionRunner:
         )
         broker: SharedToolBroker | None = None
         try:
-            self.coordinator.renew_claim(
-                task_id=task.task_id,
-                claim_id=claim.claim_id,
-                fencing_token=claim.fencing_token,
-                attempt=task.attempt,
-            )
-            if existing is None:
+            if claim is not None:
+                assert claim.fencing_token is not None
+                self.coordinator.renew_claim(
+                    task_id=task.task_id,
+                    claim_id=claim.claim_id,
+                    fencing_token=claim.fencing_token,
+                    attempt=task.attempt,
+                )
+            if not resuming:
                 execution = self.store.update_execution(
                     execution.execution_id, state="running"
                 )
             saved = self.store.get_execution_checkpoint(execution.execution_id)
-            if existing is not None and saved is None:
+            if resuming and saved is None:
                 raise ClaimConflict("shared execution has no durable checkpoint")
 
             def record_read(relative: str, identity: FileIdentity) -> None:
@@ -343,7 +444,7 @@ class SharedTaskExecutionRunner:
 
             broker = SharedToolBroker(
                 worktree=Path(workspace.canonical_path),
-                scopes=claim.scopes,
+                scopes=scopes,
                 project_search=(
                     functools.partial(
                         self.lifecycle.project_search,
@@ -466,9 +567,11 @@ class SharedTaskExecutionRunner:
                 sensitive_paths=sensitive_paths,
                 environment=(
                     functools.partial(self.command_environment, session.session_id)
-                    if self.command_environment is not None else None
+                    if self.command_environment is not None
+                    else None
                 ),
             )
+
             def check_gate() -> ToolOutcome | None:
                 with runtime_activity():
                     return checker.gate()
@@ -528,7 +631,8 @@ class SharedTaskExecutionRunner:
                     sensitive_paths=sensitive_paths,
                     environment=(
                         functools.partial(self.command_environment, session.session_id)
-                        if self.command_environment is not None else None
+                        if self.command_environment is not None
+                        else None
                     ),
                 )
 
@@ -571,7 +675,9 @@ class SharedTaskExecutionRunner:
                         environment=(
                             functools.partial(
                                 self.command_environment, session.session_id
-                            ) if self.command_environment is not None else None
+                            )
+                            if self.command_environment is not None
+                            else None
                         ),
                     )
                     command_runners.append(hook_commands)
@@ -607,7 +713,7 @@ class SharedTaskExecutionRunner:
             context = SharedCoordinationContext(
                 self.store,
                 session.session_id,
-                claim.scopes,
+                scopes,
                 scan_external=not isolated,
             )
 
@@ -728,7 +834,7 @@ class SharedTaskExecutionRunner:
                 task_id=task.task_id,
                 attempt=task.attempt,
                 instructions=instructions,
-                scopes=claim.scopes,
+                scopes=scopes,
                 worktree=broker.worktree,
                 base_oid=execution.base_oid,
                 conversation_state=conversation_state,
@@ -744,13 +850,11 @@ class SharedTaskExecutionRunner:
                 refresh_coordination=refresh_coordination,
                 # An edit task's answer stays a draft until settlement, so
                 # it can describe what was actually published or held.
-                publication_aware_finalization=isinstance(
-                    driver, SettlementFinalizer
-                ),
+                publication_aware_finalization=isinstance(driver, SettlementFinalizer),
                 review_context=review_context,
             )
             # Starting servers can take longer than a lease, so it is renewed.
-            with self.lifecycle._renewing_lease(task=task, claim=claim):
+            with self._lease(task, claim):
                 try:
                     if mcp is not None:
                         mcp.start()
@@ -789,7 +893,7 @@ class SharedTaskExecutionRunner:
                     stopped = self.workflow.stopped(task.task_id, task.attempt)
                     incomplete = run.outcome != "completed"
                     if incomplete and not files and not stopped:
-                        self.coordinator.settle_shared_execution(
+                        self._settle(
                             execution.execution_id,
                             outcome="failed_safe",
                             failure_code=(
@@ -860,11 +964,22 @@ class SharedTaskExecutionRunner:
                     outcome = "held_for_review"
                     if not hold:
                         broker.emit("workflow.verification", {"status": verification})
-                        self.coordinator.reserve_shared_publication(
-                            execution.execution_id,
-                            fencing_token=claim.fencing_token,
-                            changed_paths=(file.relative_path for file in files),
+                        assert_execution_regime(
+                            self.store, Path(checkout.canonical_path), execution
                         )
+                        if isinstance(execution, WorkspaceExecutionRecord):
+                            self.coordinator.reserve_workspace_publication(
+                                execution.execution_id,
+                                regime_generation=execution.regime_generation,
+                                changed_paths=(file.relative_path for file in files),
+                            )
+                        else:
+                            assert claim is not None and claim.fencing_token is not None
+                            self.coordinator.reserve_shared_publication(
+                                execution.execution_id,
+                                fencing_token=claim.fencing_token,
+                                changed_paths=(file.relative_path for file in files),
+                            )
                         if not files:
                             outcome = "no_changes"
                         else:
@@ -874,7 +989,7 @@ class SharedTaskExecutionRunner:
                                 execution.execution_id,
                                 session.session_id,
                                 files,
-                                claim.scopes,
+                                scopes,
                                 case_insensitive_filesystem=(
                                     repository.path_case_insensitive
                                 ),
@@ -897,9 +1012,7 @@ class SharedTaskExecutionRunner:
                     publication=outcome,
                     verification=verification,
                     completion="cancelled" if stopped else run.outcome,
-                    changed_paths=tuple(
-                        sorted(file.relative_path for file in files)
-                    ),
+                    changed_paths=tuple(sorted(file.relative_path for file in files)),
                 ),
             )
             with self.publisher.lock:
@@ -909,9 +1022,7 @@ class SharedTaskExecutionRunner:
                         task.attempt,
                         execution.execution_id,
                         cancelled=stopped,
-                        completion_outcome=(
-                            "cancelled" if stopped else run.outcome
-                        ),
+                        completion_outcome=("cancelled" if stopped else run.outcome),
                         verification=verification,
                         file_count=len(files),
                     )
@@ -923,9 +1034,7 @@ class SharedTaskExecutionRunner:
                         ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
                         "the retained shared batch needs recovery",
                     )
-                self.coordinator.settle_shared_execution(
-                    execution.execution_id, outcome=outcome
-                )
+                self._settle(execution.execution_id, outcome=outcome)
             self.workflow.update(
                 task.task_id,
                 task.attempt,
@@ -989,9 +1098,7 @@ class SharedTaskExecutionRunner:
                         execution.execution_id,
                         cancelled=self.workflow.stopped(task.task_id, task.attempt),
                         completion_outcome=(
-                            "cancelled"
-                            if isinstance(exc, TaskCancelled)
-                            else "failed"
+                            "cancelled" if isinstance(exc, TaskCancelled) else "failed"
                         ),
                         verification=verification,
                         file_count=len(files),
@@ -1007,19 +1114,15 @@ class SharedTaskExecutionRunner:
                     # A diverged batch settles without an answer, so a
                     # response that cannot be finished must not block it.
                     with suppress(ValueError, LlmCoordError):
-                        self._finish_interrupted_response(
-                            fresh, batch.state, driver
-                        )
-                    self.coordinator.settle_shared_execution(
-                        execution.execution_id, outcome=batch.state
-                    )
+                        self._finish_interrupted_response(fresh, batch.state, driver)
+                    self._settle(execution.execution_id, outcome=batch.state)
                 elif batch is None:
                     code = (
                         exc.code.value
                         if isinstance(exc, LlmCoordError)
                         else "EXECUTION_FAILED"
                     )
-                    self.coordinator.settle_shared_execution(
+                    self._settle(
                         execution.execution_id, outcome="failed_safe", failure_code=code
                     )
                 else:
@@ -1036,7 +1139,7 @@ class SharedTaskExecutionRunner:
     def _catch_up(
         self,
         task: TaskRecord,
-        claim: ClaimRecord,
+        claim: ClaimRecord | None,
         broker: SharedToolBroker,
         gate: Callable[[], ToolOutcome | None] | None,
     ) -> bool:
@@ -1047,7 +1150,7 @@ class SharedTaskExecutionRunner:
         again on the merged edits, which is all publication then needs.
         """
 
-        with self.lifecycle._renewing_lease(task=task, claim=claim):
+        with self._lease(task, claim):
             report = broker.reconcile(only_if_clean=True)
             if not report.clean:
                 return False
@@ -1060,8 +1163,8 @@ class SharedTaskExecutionRunner:
         *,
         driver: AgentDriver,
         task: TaskRecord,
-        claim: ClaimRecord,
-        execution: ExecutionRecord,
+        claim: ClaimRecord | None,
+        execution: Execution,
         broker: SharedToolBroker,
         instructions: str,
         run: RunResult,
@@ -1081,10 +1184,15 @@ class SharedTaskExecutionRunner:
             return
         saved = self.store.get_execution_checkpoint(execution.execution_id)
         state = checkpoint_finalization(saved.checkpoint) if saved else None
-        if saved is None or state is None or state.status in {
-            "completed",
-            "interrupted",
-        }:
+        if (
+            saved is None
+            or state is None
+            or state.status
+            in {
+                "completed",
+                "interrupted",
+            }
+        ):
             return
         bound = state.facts or facts
         request = FinalizationRequest(
@@ -1109,14 +1217,12 @@ class SharedTaskExecutionRunner:
                 request = replace(
                     request, resume_state=driver.prepare_finalization(request)
                 )
-            with self.lifecycle._renewing_lease(task=task, claim=claim):
+            with self._lease(task, claim):
                 finished = driver.finalize(request)
         except Exception as exc:
             # Settlement must still complete; the task keeps its files and
             # states that its answer is missing rather than inventing one.
-            broker.emit(
-                "model.finalization_failed", {"error": type(exc).__name__}
-            )
+            broker.emit("model.finalization_failed", {"error": type(exc).__name__})
             return
         # The run was recorded before settlement; a rewrite adds tokens.
         self.store.record_execution_usage(execution.execution_id, finished.usage)
@@ -1138,7 +1244,7 @@ class SharedTaskExecutionRunner:
 
         with self.store.connection() as connection:
             rows = connection.execute(
-                """SELECT * FROM task_executions e WHERE workspace_id IS NOT NULL
+                """SELECT * FROM all_task_executions e WHERE workspace_id IS NOT NULL
                     AND (state = 'operator_attention' OR (
                         state IN ('preparing','running','validated','publishing')
                         AND (boot_id IS NOT ? OR EXISTS (
@@ -1166,6 +1272,9 @@ class SharedTaskExecutionRunner:
                 from llm_cli.workspace.authority import managed_pin
 
                 with managed_pin(self.store, Path(primary_checkout.canonical_path)):
+                    assert_execution_regime(
+                        self.store, Path(primary_checkout.canonical_path), execution
+                    )
                     workspace = self.store.get_workspace(execution.workspace_id or "")
                     batch = self.publisher.get(execution.execution_id)
                     if (
@@ -1184,9 +1293,7 @@ class SharedTaskExecutionRunner:
                             batch.state,
                             self._recovery_driver(execution, driver_for),
                         )
-                        self.coordinator.settle_shared_execution(
-                            execution.execution_id, outcome=batch.state
-                        )
+                        self._settle(execution.execution_id, outcome=batch.state)
                         resolution = (
                             "confirmed" if batch.state == "published" else "failed_safe"
                         )
@@ -1245,9 +1352,7 @@ class SharedTaskExecutionRunner:
                         self._adopt(execution)
                         resolution = "resuming"
                     else:
-                        self.coordinator.settle_shared_execution(
-                            execution.execution_id, outcome="failed_safe"
-                        )
+                        self._settle(execution.execution_id, outcome="failed_safe")
                         resolution = "failed_safe"
             except (ValueError, LlmCoordError, CoordinationError) as exc:
                 if isinstance(exc, LlmCoordError) and exc.code in {
@@ -1285,7 +1390,7 @@ class SharedTaskExecutionRunner:
 
     def _recovery_driver(
         self,
-        execution: ExecutionRecord,
+        execution: Execution,
         driver_for: Callable[[ExecutionLaunchRecord], AgentDriver] | None,
     ) -> AgentDriver | None:
         launch = self.store.get_execution_launch(
@@ -1302,7 +1407,7 @@ class SharedTaskExecutionRunner:
 
     def _finish_interrupted_response(
         self,
-        execution: ExecutionRecord,
+        execution: Execution,
         publication: str,
         driver: AgentDriver | None,
     ) -> None:
@@ -1319,10 +1424,15 @@ class SharedTaskExecutionRunner:
             return
         saved = self.store.get_execution_checkpoint(execution.execution_id)
         state = checkpoint_finalization(saved.checkpoint) if saved else None
-        if saved is None or state is None or state.status in {
-            "completed",
-            "interrupted",
-        }:
+        if (
+            saved is None
+            or state is None
+            or state.status
+            in {
+                "completed",
+                "interrupted",
+            }
+        ):
             return
         workflow = self.workflow.get(execution.task_id, execution.task_attempt)
         launch = self.store.get_execution_launch(
@@ -1366,26 +1476,35 @@ class SharedTaskExecutionRunner:
         driver.finalize(request)
 
     def _checkpoint_broker(
-        self, execution: ExecutionRecord, checkpoint: Mapping[str, object]
+        self, execution: Execution, checkpoint: Mapping[str, object]
     ) -> SharedToolBroker:
         """Rebuild a task's tool state, including its edits, from a checkpoint."""
 
-        claim = self.store.get_claim(execution.claim_id)
+        claim = self.store.get_claim(execution.claim_id) if execution.claim_id else None
         task = self.store.get_task(execution.task_id)
         repository = self.store.get_repository(task.repository_id) if task else None
         usage = checkpoint.get("tool_usage")
         if (
-            claim is None
-            or repository is None
-            or claim.task_id != execution.task_id
-            or claim.task_attempt != execution.task_attempt
+            repository is None
+            or (
+                not isinstance(execution, WorkspaceExecutionRecord)
+                and (
+                    claim is None
+                    or claim.task_id != execution.task_id
+                    or claim.task_attempt != execution.task_attempt
+                )
+            )
             or not isinstance(usage, dict)
         ):
             raise ValueError("invalid shared checkpoint for this task")
         workflow = self.workflow.get(execution.task_id, execution.task_attempt)
         broker = SharedToolBroker(
             worktree=Path(execution.worktree_path),
-            scopes=claim.scopes,
+            scopes=execution.scopes
+            if isinstance(execution, WorkspaceExecutionRecord)
+            else claim.scopes
+            if claim
+            else (),
             case_insensitive_filesystem=repository.path_case_insensitive,
             limits=self.lifecycle.limits,
             publication_lock=self.publisher.lock,
@@ -1394,7 +1513,7 @@ class SharedTaskExecutionRunner:
         broker.restore_usage(usage)
         return broker
 
-    def _retain_checkpoint_candidates(self, execution: ExecutionRecord) -> None:
+    def _retain_checkpoint_candidates(self, execution: Execution) -> None:
         # Cancellation may be persisted while a provider call is in flight.
         # Preserve its last durable overlay before terminalizing the attempt,
         # since settled workflows no longer expose their running checkpoint.
@@ -1421,13 +1540,13 @@ class SharedTaskExecutionRunner:
 
     def _can_resume(
         self,
-        execution: ExecutionRecord,
+        execution: Execution,
         capabilities: Callable[[str], DriverCapabilities | None],
         can_launch: Callable[[ExecutionLaunchRecord], bool] | None,
     ) -> bool:
         capability = capabilities(execution.driver)
         saved = self.store.get_execution_checkpoint(execution.execution_id)
-        claim = self.store.get_claim(execution.claim_id)
+        claim = self.store.get_claim(execution.claim_id) if execution.claim_id else None
         launch = self.store.get_execution_launch(
             execution.task_id, execution.task_attempt
         )
@@ -1440,8 +1559,14 @@ class SharedTaskExecutionRunner:
             and capability.shared_workspace
             and capability.resumable
             and capability.enforces_scope
-            and saved
-            and saved.driver == execution.driver
+            and (
+                (saved and saved.driver == execution.driver)
+                or (
+                    isinstance(execution, WorkspaceExecutionRecord)
+                    and execution.state == "preparing"
+                    and saved is None
+                )
+            )
             and launch
             and launch.driver == execution.driver
             and (can_launch is None or can_launch(launch))
@@ -1469,38 +1594,71 @@ class SharedTaskExecutionRunner:
                 session.workspace_mode == "isolated"
                 or checkout.canonical_path == workspace.canonical_path
             )
-            and claim
-            and claim.task_id == execution.task_id
-            and claim.task_attempt == execution.task_attempt
             and (
-                claim.scheduling_mode == "exclusive"
-                or claim.workspace_id == execution.workspace_id
+                (
+                    isinstance(execution, WorkspaceExecutionRecord)
+                    and execution.session_id == session.session_id
+                    and task.current_claim_id is None
+                    and task.state
+                    not in {
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "reviewing",
+                        "operator_attention",
+                    }
+                )
+                or (
+                    claim is not None
+                    and claim.task_id == execution.task_id
+                    and claim.task_attempt == execution.task_attempt
+                    and (
+                        claim.scheduling_mode == "exclusive"
+                        or claim.workspace_id == execution.workspace_id
+                    )
+                    and claim.state in {ClaimState.ACTIVE_WORK, ClaimState.PUBLISHING}
+                )
             )
-            and claim.state in {ClaimState.ACTIVE_WORK, ClaimState.PUBLISHING}
-            and execution.state in {"running", "validated", "publishing"}
+            and (
+                execution.state in {"running", "validated", "publishing"}
+                or (
+                    isinstance(execution, WorkspaceExecutionRecord)
+                    and execution.state == "preparing"
+                )
+            )
         )
 
-    def _adopt(self, execution: ExecutionRecord) -> None:
+    def _adopt(self, execution: Execution) -> None:
         # Startup precedes lease expiry reconciliation. No successor has been
         # activated for this still-reserved claim, so its private work can be
         # resumed with the same fence even after a long daemon outage.
         with self.store.connection() as connection, immediate_transaction(connection):
             now = self.store._now(None)
-            connection.execute(
-                """UPDATE claims SET state = 'active_work', lease_expires_at = ?,
+            if isinstance(execution, ExecutionRecord):
+                connection.execute(
+                    """UPDATE claims SET state = 'active_work', lease_expires_at = ?,
                     updated_at = ? WHERE claim_id = ?
                     AND state IN ('active_work', 'publishing')""",
-                (now + self.coordinator.launch_lease_ms, now, execution.claim_id),
-            )
+                    (now + self.coordinator.launch_lease_ms, now, execution.claim_id),
+                )
             connection.execute(
                 """UPDATE tasks SET coordination_state = 'active_work', updated_at = ?
                     WHERE task_id = ? AND attempt = ?""",
                 (now, execution.task_id, execution.task_attempt),
             )
+            table = self.store.execution_table(connection, execution.execution_id)
             connection.execute(
-                """UPDATE task_executions SET state = 'running', boot_id = ?,
+                f"""UPDATE {table} SET state = ?, boot_id = ?,
                     updated_at = ? WHERE execution_id = ?""",
-                (self.lifecycle.boot_id, now, execution.execution_id),
+                (
+                    "preparing"
+                    if isinstance(execution, WorkspaceExecutionRecord)
+                    and execution.state == "preparing"
+                    else "running",
+                    self.lifecycle.boot_id,
+                    now,
+                    execution.execution_id,
+                ),
             )
         self.store.record_task_event(
             task_id=execution.task_id,

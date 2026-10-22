@@ -40,7 +40,7 @@ WHERE t.state IN ('completed','failed','cancelled')
   AND t.finished_at IS NOT NULL AND t.finished_at < ? AND t.updated_at < ?
   AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.task_id=t.task_id
       AND c.state NOT IN ('released','expired','cancelled'))
-  AND NOT EXISTS (SELECT 1 FROM task_executions e WHERE e.task_id=t.task_id
+  AND NOT EXISTS (SELECT 1 FROM all_task_executions e WHERE e.task_id=t.task_id
       AND e.state NOT IN ('published','failed'))
   AND NOT EXISTS (SELECT 1 FROM publication_intents p WHERE p.task_id=t.task_id
       AND p.operation_state NOT IN ('confirmed','failed_safe'))
@@ -49,7 +49,7 @@ WHERE t.state IN ('completed','failed','cancelled')
           AND w.status NOT IN ('published','undone','discarded'))))
   AND NOT EXISTS (SELECT 1 FROM check_runs c WHERE c.task_id=t.task_id
       AND c.state NOT IN ('passed','failed','cancelled','error','source_mutated'))
-  AND NOT EXISTS (SELECT 1 FROM task_executions e JOIN workspace_batches b
+  AND NOT EXISTS (SELECT 1 FROM all_task_executions e JOIN workspace_batches b
       ON b.batch_id=e.execution_id WHERE e.task_id=t.task_id
       AND b.state NOT IN ('published','diverged'))
 ORDER BY t.task_id
@@ -88,33 +88,43 @@ def prune_task_output(
             connection.execute(
                 "CREATE TEMP TABLE prune_tasks(task_id TEXT PRIMARY KEY)"
             )
-            slims: list[tuple[str, str, str]] = []
+            slims: list[tuple[str, str, str, str]] = []
             checkpoint_bytes = 0
             for row in connection.execute(_ELIGIBLE, (cutoff, cutoff)).fetchall():
                 task_id = str(row[0])
                 checkpoints = connection.execute(
-                    "SELECT c.execution_id,c.checkpoint_json,e.state "
-                    "FROM execution_checkpoints c "
-                    "JOIN task_executions e ON e.execution_id=c.execution_id "
-                    "WHERE e.task_id=?",
+                    "SELECT e.execution_id,c.checkpoint_json,e.state,"
+                    "e.execution_contract FROM all_task_executions e "
+                    "LEFT JOIN all_execution_checkpoints c "
+                    "ON c.execution_id=e.execution_id WHERE e.task_id=?",
                     (task_id,),
                 ).fetchall()
+                if any(
+                    raw is None or contract not in {"legacy", "workspace_v1"}
+                    for _, raw, _, contract in checkpoints
+                ):
+                    continue
                 parsed = [
-                    (str(execution_id), str(raw), str(state))
-                    for execution_id, raw, state in checkpoints
+                    (str(execution_id), str(raw), str(state), str(contract))
+                    for execution_id, raw, state, contract in checkpoints
                 ]
-                settled = [_settled(raw, state) for _, raw, state in parsed]
+                settled = [_settled(raw, state) for _, raw, state, _ in parsed]
                 if any(checkpoint is None for checkpoint in settled):
                     continue
                 connection.execute("INSERT INTO prune_tasks VALUES (?)", (task_id,))
-                for (execution_id, raw, state), checkpoint in zip(
+                for (execution_id, raw, state, contract), checkpoint in zip(
                     parsed, settled, strict=True
                 ):
                     assert checkpoint is not None
                     slim = _slim(checkpoint, state)
                     if slim is not None:
                         checkpoint_bytes += len(raw.encode()) - len(slim.encode())
-                        slims.append((task_id, execution_id, slim))
+                        table = (
+                            "workspace_execution_checkpoints"
+                            if contract == "workspace_v1"
+                            else "execution_checkpoints"
+                        )
+                        slims.append((task_id, execution_id, slim, table))
             eligible = connection.execute(
                 "SELECT COUNT(*) FROM prune_tasks"
             ).fetchone()[0]
@@ -130,7 +140,7 @@ def prune_task_output(
                 (cutoff,),
             ).fetchone()
             if apply:
-                slimmed = Counter(task_id for task_id, _, _ in slims)
+                slimmed = Counter(task_id for task_id, _, _, _ in slims)
                 # An audit marker records the removal without advancing task
                 # timestamps or changing event cursors / AUTOINCREMENT identity.
                 for row in connection.execute(
@@ -172,11 +182,18 @@ def prune_task_output(
                     "AND created_at < ? AND output <> ''",
                     (cutoff,),
                 )
-                connection.executemany(
-                    "UPDATE execution_checkpoints SET checkpoint_json=? "
-                    "WHERE execution_id=?",
-                    [(slim, execution_id) for _, execution_id, slim in slims],
-                )
+                for table in (
+                    "execution_checkpoints",
+                    "workspace_execution_checkpoints",
+                ):
+                    connection.executemany(
+                        f"UPDATE {table} SET checkpoint_json=? WHERE execution_id=?",
+                        [
+                            (slim, execution_id)
+                            for _, execution_id, slim, target in slims
+                            if target == table
+                        ],
+                    )
         if apply:
             connection.execute("VACUUM")
     return {

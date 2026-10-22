@@ -930,7 +930,8 @@ class IsolatedWorkspaceManager:
             ).fetchone():
                 return False
             if con.execute(
-                "SELECT 1 FROM task_executions e JOIN tasks t ON t.task_id=e.task_id "
+                "SELECT 1 FROM all_task_executions e "
+                "JOIN tasks t ON t.task_id=e.task_id "
                 "WHERE t.session_id=? AND "
                 "e.state NOT IN ('published','failed') LIMIT 1",
                 (session_id,),

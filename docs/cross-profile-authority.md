@@ -3,8 +3,10 @@
 Loupe allows one cooperating publisher per physical checkout under an OS account.
 Profiles keep separate credentials and histories; ownership prevents their
 publication barriers from overwriting each other's same-base changes. This is
-ADR 0010's bounded `claim_backed_v1` contract. Claims and legacy task refs remain
-in use. G3's claim-free migration is a separate, explicit operation.
+ADR 0010's bounded physical ownership contract. Ordinary upgrades retain the
+legacy claim-backed execution regime and all task refs. The explicit,
+irreversible [workspace cutover](workspace-cutover.md) advances a reviewed
+checkout through `legacy → transition → workspace`; it is never automatic.
 
 ## Inspect or observe from another profile
 

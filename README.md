@@ -197,9 +197,14 @@ loupe run "Fix the typo" --scope docs/ --mode auto --follow
 
 An explicit `run --mode` creates a durable shared conversation and prints its
 resume command. Normal-mode proposals can be published with
-`loupe task apply TASK_ID`. Without `--mode`, `run` retains its existing
-isolated-worktree behavior and publishes a task result ref, not checkout edits.
-Mode runs cannot be combined with `--claim-only` or `--fixture-write`.
+`loupe task apply TASK_ID`. On a legacy checkout, `run` without `--mode` keeps
+its isolated-worktree behavior and publishes a task result ref. Ordinary upgrades
+keep this legacy regime. After explicit workspace cutover, sessionless coding
+uses a durable one-shot shared session and publishes checked source batches to
+the checkout; it creates no legacy claim and closes after its worker settles.
+Mode runs cannot be combined with `--claim-only` or `--fixture-write`. See the
+[workspace cutover guide](docs/workspace-cutover.md) for the irreversible
+conversion preview, exact checkpoints, recovery and retained legacy history.
 
 `loupe task watch TASK_ID` replays its conversation and follows live work.
 `loupe --json task watch TASK_ID` produces the full newline-delimited event
@@ -435,8 +440,9 @@ independent of the selected provider.
 > use private worktrees with bounded runtime hydration and exchange source batches
 > with shared sessions. [Optional local lexical search](docs/lexical-search.md)
 > and the [deterministic code graph](docs/code-graph.md) are available through
-> explicit CLI commands. Agent retrieval tools and semantic search remain
-> planned. Measured live collaboration results
+> explicit CLI commands. The optional agent lexical-retrieval tool is implemented;
+> its completed live comparison keeps indexing off and semantic search gated.
+> Measured live collaboration results
 > and their limits are in the
 > [implementation status](docs/implementation-status.md).
 
@@ -445,16 +451,17 @@ product and terminal command are Loupe and `loupe`.
 
 ## What the project is intended to provide
 
-- Durable, fenced claims over repository path scopes. Eligible shared-session
-  tasks prepare concurrently; overlapping work involving an exclusive claim
-  retains FIFO scheduling.
+- Durable, fenced claims over repository path scopes in the legacy regime.
+  Eligible shared-session tasks prepare concurrently; overlapping work involving
+  an exclusive claim retains FIFO scheduling. Explicit workspace cutover uses
+  claim-free executions bound to the physical checkout and regime generation.
 - A per-user daemon that is the sole writer to coordination authority.
 - Shared chat sessions with private candidate edits and exact-base publication;
-  linked Git worktrees for background tasks and the fixture driver.
+  linked Git worktrees for legacy background tasks and the fixture driver.
 - Independent scope and base validation before shared publication, and trusted
   Git change-set validation for linked-worktree results.
 - Shared results applied to the checkout without changing HEAD, the index, or
-  refs; background results retained on internal refs for explicit integration.
+  refs; legacy background results retained on internal refs for explicit integration.
 - Local lexical retrieval, exact-vector retrieval, and a bounded relational
   knowledge graph, all able to degrade safely when optional components are
   unavailable.
@@ -473,9 +480,10 @@ The planned architecture has four deliberately separated responsibilities:
 1. `llm-coord` is a thin CLI and never mutates Git or SQLite authority directly.
 2. `llm-coordd` owns coordination state, scheduling, reconciliation, and trusted
    Git operations through a versioned local RPC protocol.
-3. Each editing task holds a durable, fenced scope claim. Shared chat tools
-   prepare a private candidate overlay; background tasks use managed linked
-   Git worktrees.
+3. Each editing task has a durable execution with independently checked scopes.
+   Legacy tasks hold fenced claims; converted workspace tasks bind to the exact
+   physical checkout and regime generation. Shared tools prepare private
+   candidates; legacy background tasks use managed linked Git worktrees.
 4. Repository knowledge is stored separately from coordination authority so
    indexing work cannot delay claim renewal or corrupt scheduling state.
 
@@ -484,7 +492,7 @@ required; knowledge and vectors are optional and are not created by default:
 
 | Database | Purpose | Authority |
 | --- | --- | --- |
-| `control.sqlite3` | tasks, claims, fences, sessions, workspaces, events, handoffs, and publication journals | authoritative |
+| `control.sqlite3` | tasks, legacy claims/fences, workspace executions, cutover intents, sessions, workspaces, events, handoffs, and publication journals | authoritative |
 | `knowledge.sqlite3` | sources, documents, chunks, FTS, user memory, and graph facts | mixed; user memory authoritative, repository projections rebuildable |
 | `vectors.sqlite3` | embedding metadata and vector projection | disposable and rebuildable |
 
@@ -580,8 +588,8 @@ records, beginning with [ADR 0001](docs/adr/0001-runtime-and-packaging.md).
 The initial safety-oriented defaults are:
 
 - plain-text parsing is always available as an ingestion fallback;
-- background task results remain on internal refs until explicitly integrated;
-  shared chat results publish into the checkout;
+- legacy background task results remain on internal refs until explicitly
+  integrated; shared chat and converted workspace results publish into the checkout;
 - clones sharing a normalized remote identity coordinate by default, with an
   explicit local-only identity override;
 - terminal task records are retained for 30 days and bounded handoff records
@@ -596,6 +604,7 @@ The initial safety-oriented defaults are:
 
 - [Detailed implementation plan](docs/llm-cli-implementation-plan.md)
 - [Implemented and deferred boundaries](docs/implementation-status.md)
+- [Explicit legacy-to-workspace cutover](docs/workspace-cutover.md)
 - [Optional local lexical search](docs/lexical-search.md)
 - [Runtime and packaging ADR](docs/adr/0001-runtime-and-packaging.md)
 - [Daemon RPC ADR](docs/adr/0002-daemon-rpc.md)
@@ -609,10 +618,12 @@ The initial safety-oriented defaults are:
 
 ## Current runnable vertical slice
 
-For development, use `uv run` after registering a Git repository. There are two
-execution paths: shared chat sessions publish into the working checkout, while
+For development, use `uv run` after registering a Git repository. Shared chat
+sessions publish into the working checkout. On an unchanged legacy checkout,
 a background `run` without a session uses a detached linked worktree and
-publishes only to `refs/llm-coord/tasks/<task-id>`.
+publishes only to `refs/llm-coord/tasks/<task-id>`. After explicit workspace
+cutover, that command uses a one-shot shared session and publishes checked
+batches into the checkout. Upgrading alone never changes the regime.
 
 ```shell
 uv run llm-coord init
@@ -700,8 +711,10 @@ Without a usable adapter or credential, the run fails with
 `PROVIDER_UNAVAILABLE` before model-directed edits. Two diagnostic paths share
 the lifecycle: `--fixture-write PATH=CONTENT` runs the deterministic fixture
 driver, and `--claim-only` acquires or queues a claim without starting the harness.
+These two diagnostic mutations require a checkout that remains in the legacy
+regime; converted checkouts retain their old records for inspection and export.
 
-On the background path, the agent may read eligible source anywhere in its
+On the legacy background path, the agent may read eligible source anywhere in its
 worktree but may only write inside the claimed scopes. Both reads and file
 mutations honor the [source exclusions](SECURITY.md#secrets-and-privacy).
 A write outside the claimed scopes returns a
@@ -710,7 +723,7 @@ writes around the tool surface is still possible, publication independently
 revalidates the real Git object graph, so
 the tool boundary is a guardrail and trusted validation is the guarantee.
 
-A task attempt is finished once its claim reaches a terminal state. Requesting
+A legacy task attempt is finished once its claim reaches a terminal state. Requesting
 another claim for it is refused rather than silently returning the dead one;
 `llm-coord task retry TASK_ID` opens a new attempt, and re-running then
 compare-and-swaps the task ref forward from its previous result. Conversation
@@ -721,7 +734,7 @@ the request open while the worker runs. Any local session can poll `task events`
 with its last sequence using `--after SEQUENCE` to see durable claim,
 worktree, validation, publication, and failure transitions.
 
-The target branch is never changed by that command. Its confirmed result keeps
+A legacy background run never changes the target branch. Its confirmed result keeps
 the claim reserved until an explicit discard or future verified integration.
 
 If the daemon is killed during a linked-worktree execution, the next boot
@@ -737,36 +750,39 @@ is kept as evidence, and `llm-coord task recover` re-decides it once an
 operator has established what the repository actually contains.
 
 Agent runs are bounded: a two-hour wall clock, a 500 tool-call cap, and 64 KiB
-per tool result. The work lease is renewed on a timer for as long as the driver
-runs, and a lease lost mid-turn is raised the moment the driver returns, so it
-can never reach publication. A model request that fails in transit (a dropped
+per tool result. In the legacy regime, the work lease is renewed on a timer
+for as long as the driver runs, and a lost lease prevents publication. Workspace
+executions instead revalidate their physical binding and regime generation. A model request that fails in transit (a dropped
 connection, a timeout, or a provider-side error) is sent again up to three
 times, and the conversation says so each time. Time the computer spends asleep does not count
 against a lease, so a laptop that sleeps mid-task resumes the task on waking.
 
 `llm-coord chat --scope docs/` opens a durable session. The model conversation
-spans prompts, but each mutation is still its own fenced task: authority is
-granted per task attempt, and a task owned by a session releases its
-reservation the moment its result is published rather than holding the path
-while you think about the next prompt. Releasing is not discarding -- the
+spans prompts, but each mutation is its own durable task. Legacy claims are
+fenced per attempt; workspace executions validate their physical binding and
+regime generation. A session task settles its execution when its result is
+published, so the next prompt can proceed. Releasing is not discarding -- the
 published result stands and the task is recorded as completed. Each session
 still accepts one live task at a time, while different shared sessions can
 prepare edits to the same files concurrently.
 
-New shared-session attempts use optimistic scheduling when their registered
-driver supports recoverable shared edits and enforces scopes. Each claim binds
+In the legacy regime, new shared-session attempts use optimistic scheduling
+when their registered driver supports recoverable shared edits and enforces scopes. Each claim binds
 to its exact shared workspace. Pre-migration attempts, sessionless runs, fixture
 tasks, and claim-only requests keep exclusive scheduling. An overlapping
 exclusive claim, including an older queued claim, remains a FIFO barrier. The
 daemon starts queued work when that barrier clears; migration never changes
-the scheduling mode of an existing attempt.
+the scheduling mode of an existing attempt. Converted workspace executions use
+advisory intents and independently validated publication without legacy claims;
+retained legacy queued claims never activate after cutover.
 
 With the built-in `coding_agent` harness, a shared session reads current source
 from the actual checkout and overlays its own unpublished edits. Full-file
 replacement requires a prior read; `apply_patch` obtains a validated read when
 needed. Tool writes remain private in the execution checkpoint until the task
-finishes. The daemon then independently checks the claim and every edited
-file's observed base before publishing the batch. A subsequent prompt keeps
+finishes. The daemon then independently checks execution authority and every
+edited file's observed base before publishing the batch, including the claim in
+the legacy regime or physical binding/generation in the workspace regime. A subsequent prompt keeps
 the saved conversation and reads the updated shared checkout.
 
 Before each model request, a shared task refreshes its checkout revision,
@@ -798,7 +814,7 @@ A batch supports at most 50 paths, 256 KiB per regular file, and 4 MiB of
 retained original and candidate bytes per task. Shared tools can replace binary
 files using strict base64 and create, retarget, or delete contained relative
 symlinks. Binary and symlink edits retain exact bases and never merge after a
-base change. Link targets must remain within the claim; absolute, escaping,
+base change. Link targets must remain within the task's scopes; absolute, escaping,
 protected, ignored, and chained targets are refused. Missing parent directories
 can be staged within scope. Ignored runtime files and nested repositories are
 excluded from shared source tools. Named checks run in private snapshots with
@@ -839,9 +855,10 @@ attention rather than overwriting that file. After resolving the discrepancy,
 `llm-coord task recover` retries recovery. Ordinary readers that do not honor
 the daemon's barrier may observe a multi-file apply in progress.
 
-The sessionless background and `--fixture-write` paths retain their linked
-worktree/internal-ref behavior, including starting new tasks at the target ref.
-They do not apply results to the shared checkout.
+On a legacy checkout, sessionless background and `--fixture-write` paths retain
+their linked-worktree/internal-ref behavior, including starting tasks at the target
+ref. Converted checkouts use shared one-shot sessions for sessionless coding and
+refuse fixture/ref mutations; existing legacy history remains inspectable.
 
 `llm-coord workspace status` reports the workspace a checkout coordinates
 through -- its mode, epoch, and revision -- along with what shared mode cannot

@@ -38,31 +38,61 @@ def inspect_repository(
             ErrorCode.REPOSITORY_NOT_FOUND,
             f"repository path does not exist: {requested}",
         )
-    top_level = _output(
-        run_git(requested, ["rev-parse", "--path-format=absolute", "--show-toplevel"])
-    )
-    worktree = Path(top_level).resolve()
-    common_git_dir = Path(
-        _output(
+    # Read the related identity/ref facts together. Every inspection remains
+    # fresh, without starting a separate Git process for each field.
+    metadata = _output(
+        run_git(
+            requested,
+            [
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+                "--show-object-format",
+                "--symbolic-full-name",
+                "--verify",
+                target or "HEAD",
+            ],
+        )
+    ).splitlines()
+    if len(metadata) in {3, 4}:
+        top_level, common_name, object_format = metadata[:3]
+        target_ref = metadata[3] if len(metadata) == 4 else ""
+    else:
+        # Git emits paths as literal lines. Preserve discovery for paths with
+        # embedded newlines by reading those fields independently.
+        top_level = _output(
             run_git(
-                worktree,
-                ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                requested, ["rev-parse", "--path-format=absolute", "--show-toplevel"]
             )
         )
-    ).resolve()
-    object_format = _output(run_git(worktree, ["rev-parse", "--show-object-format"]))
+        worktree = Path(top_level).resolve()
+        common_name = _output(
+            run_git(
+                worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"]
+            )
+        )
+        object_format = _output(
+            run_git(worktree, ["rev-parse", "--show-object-format"])
+        )
+        target_ref = _output(
+            run_git(
+                worktree,
+                ["rev-parse", "--symbolic-full-name", "--verify", target or "HEAD"],
+            )
+        )
+    worktree = Path(top_level).resolve()
+    common_git_dir = Path(common_name).resolve()
     if object_format not in {"sha1", "sha256"}:
         raise LlmCoordError(
             ErrorCode.REPOSITORY_UNSAFE,
             f"unsupported Git object format: {object_format}",
         )
-
-    target_name = target or _current_branch(worktree)
-    symbolic = run_git(
-        worktree,
-        ["rev-parse", "--symbolic-full-name", "--verify", target_name],
-    )
-    target_ref = _output(symbolic)
+    if not target and target_ref == "HEAD":
+        raise LlmCoordError(
+            ErrorCode.REPOSITORY_UNSAFE,
+            "a target ref is required when the repository HEAD is detached",
+        )
     if not target_ref.startswith("refs/"):
         raise LlmCoordError(
             ErrorCode.REPOSITORY_UNSAFE,
@@ -121,18 +151,6 @@ def _path_case_insensitive(worktree: Path) -> bool:
     if result.returncode != 0:
         return True
     return _output(result) != "false"
-
-
-def _current_branch(worktree: Path) -> str:
-    result = run_git(
-        worktree, ["symbolic-ref", "--quiet", "--short", "HEAD"], check=False
-    )
-    if result.returncode != 0:
-        raise LlmCoordError(
-            ErrorCode.REPOSITORY_UNSAFE,
-            "a target ref is required when the repository HEAD is detached",
-        )
-    return _output(result)
 
 
 def _main_worktree(worktree: Path) -> Path:

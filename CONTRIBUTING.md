@@ -54,12 +54,14 @@ Every contribution must preserve these constraints:
   Git refs directly.
 - Durable state is committed before a success response or external side effect
   is reported.
-- Claim fencing tokens increase monotonically within a repository coordination
-  key and stale holders cannot renew, publish, or integrate.
-- Earlier overlapping waiters cannot be overtaken; disjoint tasks may progress.
-- An editing task receives its own linked worktree.
-- Claimed scope is a planning and scheduling boundary, while the actual Git
-  change set is the trusted validation input.
+- Legacy claim fencing tokens increase monotonically within a repository
+  coordination key and stale holders cannot renew, publish, or integrate.
+- Legacy overlapping waiters cannot be overtaken; disjoint tasks may progress.
+- Editing tasks prepare private candidates or use a managed linked worktree.
+- Workspace executions bind to the physical checkout and regime generation;
+  converted checkouts never acquire new legacy editing claims.
+- Task scope is a planning boundary; trusted publication independently validates
+  actual candidate paths/bases or the Git change set for the execution contract.
 - Publication intent is durable before any Git ref or remote side effect.
 - A publishing or integration reservation is not released merely because a
   process lease or wall-clock deadline expired.

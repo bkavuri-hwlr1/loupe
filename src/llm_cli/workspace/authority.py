@@ -56,6 +56,39 @@ _STORE_HELD: contextvars.ContextVar[tuple[str, int, int] | None] = (
 )
 
 
+def _marker_regime(marker: dict[str, Any] | None) -> dict[str, Any]:
+    if marker is None or marker.get("version") == 1:
+        return {
+            "regime": "legacy",
+            "generation": 0,
+            "intent_id": None,
+            "checkpoint": None,
+        }
+    return {
+        "regime": marker["regime"],
+        "generation": marker["regime_generation"],
+        "intent_id": marker["regime_intent_id"],
+        "checkpoint": marker["regime_checkpoint"],
+    }
+
+
+def _supported_marker(marker: dict[str, Any]) -> bool:
+    if marker.get("version") == 1:
+        return marker.get("execution_contract") == "claim_backed_v1"
+    return (
+        marker.get("version") == 2
+        and marker.get("regime") in {"transition", "workspace"}
+        and type(marker.get("regime_generation")) is int
+        and marker["regime_generation"] > 0
+        and isinstance(marker.get("regime_checkpoint"), str)
+        and len(marker["regime_checkpoint"]) == 64
+        and isinstance(marker.get("regime_intent_id"), str)
+        and bool(marker["regime_intent_id"])
+        and marker.get("execution_contract")
+        == ("workspace_v1" if marker["regime"] == "workspace" else "transition_v1")
+    )
+
+
 def account_authority_root() -> Path:
     """Fixed account-home root, independent of HOME, profile and XDG settings."""
     return (
@@ -363,6 +396,13 @@ class Mutation:
             return
         journal = self.owner.marker["journal_id"]
         with self.authority.store.connection() as connection:
+            proof = connection.execute(
+                "SELECT 1 FROM authority_journals WHERE journal_id=? "
+                "AND physical_key=? AND kind=? AND reference_id=?",
+                (journal, self.owner.physical.key, self.kind, self.reference_id),
+            ).fetchone()
+            if proof is None or self.owner.marker.get("journal_kind") != self.kind:
+                raise recovery_error("mutation confirmation does not match its journal")
             connection.execute(
                 "UPDATE authority_journals SET state='confirmed' WHERE journal_id=? "
                 "AND physical_key=?",
@@ -392,6 +432,9 @@ class PhysicalAuthority:
         self.root = account_authority_root() if root is None else root
         self.installation = InstallationIdentity(store)
         self._lock = threading.RLock()
+        # Observers run inside SQLite writer transactions. Never access SQLite
+        # while holding this lock, or acquire the authority lock from it.
+        self._observation_lock = threading.RLock()
         self._owned: dict[str, _Owned] = {}
         self._store_locks: dict[str, threading.RLock] = {}
         self._closing = False
@@ -469,6 +512,141 @@ class PhysicalAuthority:
                 raise recovery_error("managed mutation lost its kernel ownership")
             self._validate(owner)
 
+    def regime(self, root: Path) -> dict[str, Any]:
+        """Observe the physical regime without creating ownership or a marker."""
+        physical = PhysicalCheckout.inspect(root)
+        try:
+            # Marker writes precede their SQL generation. Read SQL first so a
+            # concurrent publication cannot make a valid marker look stale.
+            with self.store.connection() as connection:
+                bindings = connection.execute(
+                    "SELECT a.* FROM authority_checkouts a "
+                    "LEFT JOIN checkouts c ON c.checkout_id=a.checkout_id "
+                    "WHERE a.physical_key=? OR c.canonical_path=?",
+                    (physical.key, str(physical.root)),
+                ).fetchall()
+            with self._observation_lock:
+                physical.validate()
+                owned = self._owned.get(physical.key)
+                if owned is not None:
+                    owned.physical.validate()
+                    held = os.fstat(owned.descriptor)
+                    named = (self._directory(physical.key) / "ownership.lock").lstat()
+                    marker = private_read(self._directory(physical.key) / "marker.json")
+                    if (
+                        marker != owned.marker
+                        or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+                        or named.st_uid != os.geteuid()
+                        or named.st_mode & 0o077
+                        or named.st_nlink != 1
+                        or not stat.S_ISREG(named.st_mode)
+                    ):
+                        raise recovery_error("authority regime ownership changed")
+                else:
+                    marker = private_read(self._directory(physical.key) / "marker.json")
+                if any(
+                    row["physical_key"] != physical.key
+                    or row["binding_json"] != encode(physical.binding).decode()
+                    for row in bindings
+                ):
+                    raise LlmCoordError(
+                        ErrorCode.CHECKOUT_IDENTITY_CHANGED,
+                        "registered physical checkout identity changed",
+                    )
+                binding = bindings[0] if bindings else None
+                if marker is None and binding is not None:
+                    raise recovery_error("authority marker is missing")
+                if marker is not None and (
+                    not _supported_marker(marker)
+                    or marker.get("physical_key") != physical.key
+                    or marker.get("binding") != physical.binding
+                    or type(marker.get("generation")) is not int
+                    or marker.get("state") not in {"clean", "dirty", "attention"}
+                    or (
+                        binding is not None
+                        and marker["generation"] < binding["marker_generation"]
+                    )
+                ):
+                    raise recovery_error("authority regime marker cannot be verified")
+                return {"physical_key": physical.key, **_marker_regime(marker)}
+        finally:
+            physical.close()
+
+    def assert_regime(
+        self,
+        root: Path,
+        *,
+        allowed: tuple[str, ...] = ("legacy",),
+        generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Final-boundary compatibility check; the caller retains its live pin."""
+        result = self.regime(root)
+        if result["regime"] not in allowed or (
+            generation is not None and generation != result["generation"]
+        ):
+            raise LlmCoordError(
+                ErrorCode.CUTOVER_BLOCKED
+                if result["regime"] == "transition"
+                else ErrorCode.EXECUTION_CONTRACT_UNSUPPORTED,
+                "execution is incompatible with the physical checkout regime",
+                {"regime": result["regime"], "generation": result["generation"]},
+            )
+        return result
+
+    def advance_regime(
+        self,
+        pin: OwnershipPin,
+        *,
+        regime: str,
+        generation: int,
+        checkpoint: str,
+        intent_id: str,
+    ) -> None:
+        """Advance one already-journaled, exclusively pinned cutover."""
+        owner = pin.owner
+        with self._lock:
+            self._validate(owner)
+            current = _marker_regime(owner.marker)
+            ranks = {"legacy": 0, "transition": 1, "workspace": 2}
+            if (
+                regime not in {"transition", "workspace"}
+                or ranks[regime] < ranks[current["regime"]]
+                or generation < current["generation"]
+                or (regime != current["regime"] and generation <= current["generation"])
+                or len(checkpoint) != 64
+                or not intent_id
+            ):
+                raise recovery_error("checkout regime cannot move backwards")
+            if (
+                owner.marker["state"] == "dirty"
+                and owner.marker.get("journal_id") != intent_id
+            ):
+                raise recovery_error(
+                    "another unfinished journal blocks regime conversion"
+                )
+            if current["intent_id"] not in {None, intent_id}:
+                raise recovery_error("another cutover owns the regime marker")
+            with self.store.connection() as connection:
+                journal = connection.execute(
+                    "SELECT 1 FROM authority_journals WHERE journal_id=? "
+                    "AND physical_key=? AND kind='regime_cutover' AND reference_id=?",
+                    (intent_id, owner.physical.key, intent_id),
+                ).fetchone()
+            if journal is None:
+                raise recovery_error("cutover journal proof is missing")
+            self._write_marker(
+                owner,
+                "dirty",
+                journal_id=intent_id,
+                journal_kind="regime_cutover",
+                regime_update={
+                    "regime": regime,
+                    "regime_generation": generation,
+                    "regime_checkpoint": checkpoint,
+                    "regime_intent_id": intent_id,
+                },
+            )
+
     def _write_marker(
         self,
         owner: _Owned,
@@ -476,15 +654,38 @@ class PhysicalAuthority:
         *,
         journal_id: str | None = None,
         journal_kind: str | None = None,
+        regime_update: dict[str, Any] | None = None,
     ) -> None:
         with self._lock:
+            regime = (
+                {
+                    key: owner.marker[key]
+                    for key in (
+                        "regime",
+                        "regime_generation",
+                        "regime_checkpoint",
+                        "regime_intent_id",
+                    )
+                }
+                if owner.marker.get("version") == 2
+                else {}
+            )
+            if regime_update is not None:
+                regime.update(regime_update)
             marker = {
-                "version": 1,
+                "version": 2 if regime else 1,
                 "physical_key": owner.physical.key,
                 "binding": owner.physical.binding,
                 "generation": int(owner.marker.get("generation", 0)) + 1,
                 "state": state,
-                "execution_contract": "claim_backed_v1",
+                "execution_contract": (
+                    "workspace_v1"
+                    if regime.get("regime") == "workspace"
+                    else "transition_v1"
+                    if regime
+                    else "claim_backed_v1"
+                ),
+                **regime,
                 "owner_profile": self.profile,
                 "database_instance_id": self.installation.instance_id,
                 "daemon_boot": self.boot_id,
@@ -492,8 +693,11 @@ class PhysicalAuthority:
                 "journal_id": journal_id,
                 "journal_kind": journal_kind,
             }
-            private_write(self._directory(owner.physical.key) / "marker.json", marker)
-            owner.marker = marker
+            with self._observation_lock:
+                private_write(
+                    self._directory(owner.physical.key) / "marker.json", marker
+                )
+                owner.marker = marker
             with self.store.connection() as connection:
                 connection.execute(
                     "UPDATE authority_checkouts SET marker_generation=? WHERE "
@@ -512,9 +716,7 @@ class PhysicalAuthority:
                 # Reinspect identity, binding and its final marker after it exits.
                 live.completed.wait()
 
-    def _acquire(
-        self, root: Path, *, recovery: bool, activity: bool
-    ) -> OwnershipPin:
+    def _acquire(self, root: Path, *, recovery: bool, activity: bool) -> OwnershipPin:
         with self._lock:
             physical = PhysicalCheckout.inspect(root)
             try:
@@ -611,8 +813,7 @@ class PhysicalAuthority:
                             "checkout"
                         )
                     if marker is not None and (
-                        marker.get("version") != 1
-                        or marker.get("execution_contract") != "claim_backed_v1"
+                        not _supported_marker(marker)
                         or marker.get("physical_key") != physical.key
                         or marker.get("binding") != physical.binding
                         or marker.get("state") not in {"clean", "dirty", "attention"}
@@ -686,7 +887,8 @@ class PhysicalAuthority:
                             self._handoff(physical, checkout_id, marker)
                         self._write_marker(owner, "clean")
                     private_write(directory / "owner.json", self._metadata(instance))
-                    self._owned[physical.key] = owner
+                    with self._observation_lock:
+                        self._owned[physical.key] = owner
                     owner.pins = 1
                     return OwnershipPin(self, owner, activity=activity)
                 except Exception:
@@ -754,7 +956,7 @@ class PhysicalAuthority:
                     "paths": [],
                     "history_gap": True,
                     "previous_profile": marker.get("owner_profile"),
-                    "execution_contract": "claim_backed_v1",
+                    "execution_contract": marker.get("execution_contract"),
                 },
                 now=self.store._now(None),
             )
@@ -846,6 +1048,8 @@ class PhysicalAuthority:
         with self.pin(root, recovery=recovery) as pin, pin.owner.mutation_lock:
             owner = pin.owner
             self._validate(owner)
+            if journal_kind.startswith("legacy_"):
+                self.assert_regime(root, allowed=("legacy", "transition"))
             if _MUTATION.get() == owner.physical.key:
                 yield Mutation(self, owner, journal_kind, reference_id)
                 return
@@ -966,6 +1170,25 @@ class PhysicalAuthority:
                             row[prefix + "_digest"],
                         )
 
+                elif journal["kind"] == "regime_cutover":
+                    intent = connection.execute(
+                        (
+                            "SELECT * FROM cutover_intents WHERE intent_id=? AND "
+                            "physical_key=?"
+                        ),
+                        (journal["reference_id"], owner.physical.key),
+                    ).fetchone()
+                    proved = bool(
+                        intent is not None
+                        and intent["stage"] == "complete"
+                        and owner.marker.get("regime") == "workspace"
+                        and owner.marker.get("regime_intent_id") == intent["intent_id"]
+                        and owner.marker.get("regime_generation")
+                        == intent["workspace_generation"]
+                        and owner.marker.get("regime_checkpoint")
+                        == intent["settled_checkpoint"]
+                        and journal["state"] == "confirmed"
+                    )
                 elif journal["kind"] == "legacy_execution":
                     row = connection.execute(
                         "SELECT state FROM task_executions WHERE execution_id=?",
@@ -1027,10 +1250,11 @@ class PhysicalAuthority:
                     self._release(owner)
 
     def _release(self, owner: _Owned) -> None:
-        fcntl.flock(owner.descriptor, fcntl.LOCK_UN)
-        os.close(owner.descriptor)
-        owner.physical.close()
-        self._owned.pop(owner.physical.key, None)
+        with self._observation_lock:
+            fcntl.flock(owner.descriptor, fcntl.LOCK_UN)
+            os.close(owner.descriptor)
+            owner.physical.close()
+            self._owned.pop(owner.physical.key, None)
 
     def close(self) -> None:
         with self._lock:
@@ -1070,7 +1294,7 @@ class PhysicalAuthority:
                     "registered physical checkout identity changed",
                 )
             if (marker is None and binding is not None) or (
-                marker is not None and marker.get("version") != 1
+                marker is not None and not _supported_marker(marker)
             ):
                 raise recovery_error("authority marker is missing or unsupported")
             owner = (
@@ -1089,7 +1313,10 @@ class PhysicalAuthority:
             return {
                 "state": state,
                 "physical_key": physical.key,
-                "execution_contract": "claim_backed_v1",
+                **_marker_regime(marker),
+                "execution_contract": marker.get("execution_contract")
+                if marker
+                else "claim_backed_v1",
                 "owner_profile": (owner or {}).get("profile"),
                 "pid": (owner or {}).get("pid"),
                 "process_start": (owner or {}).get("process_start"),

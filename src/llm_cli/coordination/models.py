@@ -316,6 +316,42 @@ class ExecutionRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceExecutionRecord:
+    """Claim-free authority and lifecycle for one durable workspace task."""
+
+    execution_id: str
+    task_id: str
+    task_attempt: int
+    session_id: str
+    workspace_id: str
+    scopes: tuple[str, ...]
+    physical_key: str
+    regime_generation: int
+    driver: str
+    state: str
+    boot_id: str | None
+    worktree_path: str
+    base_oid: str
+    result_tree_id: str | None
+    result_commit_id: str | None
+    patch_hash: str | None
+    summary: str | None
+    tool_calls: int
+    usage: dict[str, int]
+    failure_code: str | None
+    created_at: int
+    updated_at: int
+
+    @property
+    def claim_id(self) -> None:
+        return None
+
+    @property
+    def execution_contract(self) -> str:
+        return "workspace_v1"
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionLaunchRecord:
     """Durable recipe the daemon needs to start one claimed task attempt."""
 

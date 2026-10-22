@@ -1256,6 +1256,18 @@ changes; physical locking remains G2's implementation.
   or explicitly exportable. Compatibility clients receive stable capability
   errors, and feature rollback never deletes the new ledger or revives old claims.
 
+**Command contract.** `loupe workspace cutover plan [PATH]` is a complete
+read-only preview. `apply --checkpoint TOKEN` explicitly starts the irreversible
+transition; optional repeatable `--cancel-claim ID` selects only those
+queued-claim cancellations, while defaults retain queued work and drain/recover
+active work. `resume --intent ID --checkpoint TOKEN` continues the exact saved
+intent. `status` and explicit `export --out FILE` retain inspection and metadata
+export without exposing runtime, credentials, conversations or source bodies.
+See [workspace cutover](workspace-cutover.md). Ordinary upgrade remains legacy;
+new claim-free records are additive, old rows/refs stay readable, and no legacy
+flag bypasses a converted checkout. F4 remains gated by F3's recorded result;
+E2 stays deferred.
+
 ## Later
 
 These are deliberately outside Waves 4–7:

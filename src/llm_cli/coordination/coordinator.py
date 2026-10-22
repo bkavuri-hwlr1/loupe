@@ -9,6 +9,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from pathlib import Path
 from typing import cast
 
 from llm_cli.coordination.models import (
@@ -29,8 +30,10 @@ from llm_cli.coordination.scopes import (
     scope_sets_overlap,
     uncovered_paths,
 )
+from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.storage.control import ControlStore, new_identifier
+from llm_cli.workspace.regime import assert_legacy_claim, legacy_activation_allowed
 
 _TERMINAL_STATES = {"released", "expired", "cancelled"}
 # ``operator_attention`` records that an outcome could not be established, not
@@ -85,6 +88,7 @@ class RepositoryCoordinator:
         source: str = "user",
         scheduling_mode: str = "exclusive",
         optimistic_driver: str | None = None,
+        checkout_id: str | None = None,
     ) -> ClaimRecord:
         """Reserve scopes, optionally allowing concurrent private preparation.
 
@@ -100,6 +104,23 @@ class RepositoryCoordinator:
         with self._transaction() as connection:
             task = self._task_row(connection, task_id)
             repo_key = str(task["repo_key"])
+            binding = self._legacy_claim_binding(
+                connection, task, checkout_id=checkout_id
+            )
+            assert_legacy_claim(
+                connection,
+                repo_key,
+                physical_key=binding["physical_key"] if binding else None,
+            )
+            if not self._legacy_physical_mappings_available(
+                connection, repo_key, binding=binding
+            ):
+                raise LlmCoordError(
+                    ErrorCode.EXECUTION_CONTRACT_UNSUPPORTED,
+                    "legacy claims are unavailable for a converted or "
+                    "unverified checkout",
+                    {"required_contract": "legacy"},
+                )
             fold_case = self._path_case_insensitive(connection, repo_key)
             canonical = normalize_scopes(scopes, case_insensitive_filesystem=fold_case)
             effective_now = self._effective_now(connection, repo_key, timestamp)
@@ -157,6 +178,7 @@ class RepositoryCoordinator:
                     str(row["scheduling_mode"]),
                     case_insensitive_filesystem=fold_case,
                 )
+                and self._legacy_claim_can_activate(connection, repo_key, row)
             ]
             claim_id = new_identifier("claim")
             if blockers:
@@ -197,6 +219,20 @@ class RepositoryCoordinator:
                     workspace_id,
                 ),
             )
+            if binding is not None:
+                connection.execute(
+                    "INSERT INTO legacy_claim_bindings(claim_id,checkout_id,"
+                    "physical_key,canonical_path,target_ref,integration_adapter) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (
+                        claim_id,
+                        binding["checkout_id"],
+                        binding["physical_key"],
+                        binding["canonical_path"],
+                        binding["target_ref"],
+                        binding["integration_adapter"],
+                    ),
+                )
             self._insert_scopes(connection, claim_id, canonical, source)
             self._replace_blockers(
                 connection, claim_id, blockers, repo_key, effective_now
@@ -919,6 +955,246 @@ class RepositoryCoordinator:
                 now=now,
             )
 
+    def _workspace_execution_row(
+        self, connection: sqlite3.Connection, execution_id: str
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT e.*,c.canonical_path,c.path_case_insensitive,c.checkout_id,"
+            "COALESCE(w.source_workspace_id,w.workspace_id) "
+            "AS publication_workspace_id,"
+            "t.attempt "
+            "AS current_attempt,t.repo_key FROM workspace_executions e "
+            "JOIN tasks t ON t.task_id=e.task_id "
+            "JOIN sessions s ON s.session_id=e.session_id "
+            "AND t.session_id=e.session_id AND s.workspace_id=e.workspace_id "
+            "JOIN workspaces w ON w.workspace_id=e.workspace_id "
+            "AND w.checkout_id=s.checkout_id AND w.canonical_path=e.worktree_path "
+            "JOIN checkouts c ON c.checkout_id=s.checkout_id "
+            "WHERE e.execution_id=? AND t.current_claim_id IS NULL "
+            "AND t.current_fencing_token IS NULL",
+            (execution_id,),
+        ).fetchone()
+        if row is None or int(row["task_attempt"]) != int(row["current_attempt"]):
+            raise ClaimAuthorityError("workspace execution attempt is stale")
+        authority = self.store.authority
+        if authority is None:
+            raise ClaimAuthorityError("workspace execution requires physical authority")
+        regime = authority.assert_regime(
+            Path(row["canonical_path"]),
+            allowed=("workspace",),
+            generation=int(row["regime_generation"]),
+        )
+        if regime["physical_key"] != row["physical_key"]:
+            raise ClaimAuthorityError("workspace execution physical binding changed")
+        return cast(sqlite3.Row, row)
+
+    def reserve_workspace_publication(
+        self,
+        execution_id: str,
+        *,
+        regime_generation: int,
+        changed_paths: Iterable[str],
+    ) -> None:
+        """Reserve a claim-free batch using its immutable execution authority."""
+        paths = tuple(normalize_changed_path(path) for path in changed_paths)
+        with self._transaction() as connection:
+            row = self._workspace_execution_row(connection, execution_id)
+            if int(row["regime_generation"]) != regime_generation:
+                raise ClaimAuthorityError("workspace regime generation is stale")
+            if row["state"] not in {"running", "validated"}:
+                raise ClaimConflict("workspace execution is not ready to publish")
+            stopped = connection.execute(
+                "SELECT stop_requested FROM task_workflows WHERE task_id=? "
+                "AND attempt=?",
+                (row["task_id"], row["task_attempt"]),
+            ).fetchone()
+            if stopped is not None and stopped[0]:
+                raise ClaimAuthorityError("task was cancelled before publication")
+            scopes = json.loads(str(row["scopes_json"]))
+            if not isinstance(scopes, list) or any(
+                not isinstance(x, str) for x in scopes
+            ):
+                raise ClaimAuthorityError("workspace execution scopes are invalid")
+            if uncovered_paths(
+                scopes,
+                paths,
+                case_insensitive_filesystem=bool(row["path_case_insensitive"]),
+            ):
+                raise ScopeAuthorityError("workspace batch contains out-of-scope paths")
+            now = self.store._now(None)
+            connection.execute(
+                "UPDATE workspace_executions SET state='publishing',updated_at=? "
+                "WHERE execution_id=?",
+                (now, execution_id),
+            )
+            connection.execute(
+                "UPDATE tasks SET coordination_state='publishing',updated_at=? "
+                "WHERE task_id=? AND attempt=?",
+                (now, row["task_id"], row["task_attempt"]),
+            )
+            self._workspace_event(
+                connection,
+                row,
+                "execution.publishing",
+                {"execution_id": execution_id, "paths": list(paths)},
+                now,
+            )
+
+    def settle_workspace_execution(
+        self, execution_id: str, *, outcome: str, failure_code: str | None = None
+    ) -> None:
+        """Settle only exact journal/checkpoint evidence, without any claim row."""
+        if outcome not in {"published", "diverged", "no_changes", "failed_safe"}:
+            raise ValueError("unknown workspace execution outcome")
+        with self._transaction() as connection:
+            row = self._workspace_execution_row(connection, execution_id)
+            batch = connection.execute(
+                "SELECT state,session_id,workspace_id,checkout_id "
+                "FROM workspace_batches "
+                "WHERE batch_id=?",
+                (execution_id,),
+            ).fetchone()
+            if outcome in {"published", "diverged"}:
+                if batch is None or batch["state"] != outcome:
+                    raise ClaimConflict("workspace batch outcome is not established")
+                if (
+                    batch["session_id"] != row["session_id"]
+                    or batch["workspace_id"] != row["publication_workspace_id"]
+                    or batch["checkout_id"] != row["checkout_id"]
+                ):
+                    raise ClaimConflict(
+                        "workspace batch belongs to another execution binding"
+                    )
+            elif batch is not None:
+                raise ClaimConflict("a journaled batch requires its verified outcome")
+            saved = connection.execute(
+                "SELECT checkpoint_json FROM workspace_execution_checkpoints "
+                "WHERE execution_id=?",
+                (execution_id,),
+            ).fetchone()
+            checkpoint = json.loads(str(saved[0])) if saved is not None else {}
+            if not isinstance(checkpoint, dict):
+                raise ClaimConflict("workspace execution checkpoint is invalid")
+            if outcome == "no_changes":
+                tool_usage = checkpoint.get("tool_usage")
+                state = (
+                    tool_usage.get("shared_workspace_state")
+                    if isinstance(tool_usage, dict)
+                    else None
+                )
+                pending = state.get("files") if isinstance(state, dict) else None
+                if (
+                    checkpoint.get("phase") != "finished"
+                    or not isinstance(pending, list)
+                    or any(not isinstance(entry, dict) for entry in pending)
+                    or any(
+                        entry.get("pending", entry.get("content") is not None)
+                        for entry in pending
+                    )
+                ):
+                    raise ClaimConflict(
+                        "read-only completion has no finished checkpoint"
+                    )
+            success = outcome in {"published", "no_changes"}
+            if (
+                success
+                and row["driver"] != "workflow"
+                and checkpoint.get("phase") != "finished"
+            ):
+                raise ClaimConflict("completion has no finished workspace checkpoint")
+            failure = (
+                None
+                if success
+                else "PATH_BASE_MISMATCH"
+                if outcome == "diverged"
+                else failure_code or "DAEMON_INTERRUPTED"
+            )
+            terminal = "published" if success else "failed"
+            if row["state"] in {"published", "failed"}:
+                if row["state"] != terminal or row["failure_code"] != failure:
+                    raise ClaimConflict(
+                        "workspace execution already has another outcome"
+                    )
+                return
+            task_state = (
+                "completed"
+                if success
+                else "cancelled"
+                if failure == "CANCELLED"
+                else "reviewing"
+                if failure == "REVIEW_REQUIRED"
+                else "failed"
+            )
+            now = self.store._now(None)
+            if (
+                (
+                    success
+                    or failure
+                    in {"REVIEW_REQUIRED", "MODEL_BLOCKED", "RESPONSE_INCOMPLETE"}
+                )
+                and checkpoint.get("phase") == "finished"
+                and row["driver"] != "workflow"
+            ):
+                self.store.promote_workspace_conversation(
+                    connection, execution_id, now=now
+                )
+            connection.execute(
+                "UPDATE workspace_executions SET state=?,failure_code=?,finished_at=?,"
+                "updated_at=? WHERE execution_id=?",
+                (terminal, failure, now, now, execution_id),
+            )
+            connection.execute(
+                "UPDATE tasks SET state=?,coordination_state='released',"
+                "current_claim_id=NULL,current_fencing_token=NULL,failure_code=?,"
+                "finished_at=?,updated_at=? WHERE task_id=? AND attempt=?",
+                (
+                    task_state,
+                    failure if task_state == "failed" else None,
+                    now,
+                    now,
+                    row["task_id"],
+                    row["task_attempt"],
+                ),
+            )
+            self._workspace_event(
+                connection,
+                row,
+                "execution.published" if success else "execution.failed",
+                {
+                    "execution_id": execution_id,
+                    "outcome": outcome,
+                    "failure_code": failure,
+                },
+                now,
+            )
+
+    def _workspace_event(
+        self,
+        connection: sqlite3.Connection,
+        execution: sqlite3.Row,
+        event_type: str,
+        payload: Mapping[str, object],
+        now: int,
+    ) -> None:
+        body = {**payload, "execution_contract": "workspace_v1"}
+        event_id = self.store.append_task_event(
+            connection,
+            task_id=str(execution["task_id"]),
+            claim_id=None,
+            event_type=event_type,
+            payload=body,
+            now=now,
+        )
+        self.store.enqueue_outbox(
+            connection,
+            idempotency_key=f"{event_type}:{event_id}",
+            event_type=event_type,
+            aggregate_type="workspace_execution",
+            aggregate_id=str(execution["execution_id"]),
+            payload=body,
+            now=now,
+        )
+
     def settle_read_only_execution(
         self,
         execution_id: str,
@@ -1386,9 +1662,146 @@ class RepositoryCoordinator:
             expired.append((claim_id, task_id))
         return tuple(expired)
 
+    def _legacy_claim_binding(
+        self,
+        connection: sqlite3.Connection,
+        task: sqlite3.Row,
+        *,
+        claim: sqlite3.Row | None = None,
+        checkout_id: str | None = None,
+    ) -> dict[str, str] | None:
+        """Resolve trusted context or immutable legacy proof, never a latest path."""
+        authority = self.store.authority
+        if authority is None:
+            return None
+        claim_id = (
+            str(claim["claim_id"])
+            if claim is not None
+            else str(task["current_claim_id"])
+            if task["current_claim_id"]
+            else None
+        )
+        saved = (
+            connection.execute(
+                "SELECT * FROM legacy_claim_bindings WHERE claim_id=?", (claim_id,)
+            ).fetchone()
+            if claim_id
+            else None
+        )
+        session = (
+            connection.execute(
+                "SELECT checkout_id FROM sessions WHERE session_id=?",
+                (task["session_id"],),
+            ).fetchone()
+            if task["session_id"]
+            else None
+        )
+        if session is not None:
+            if checkout_id is not None and checkout_id != session["checkout_id"]:
+                raise ClaimAuthorityError("claim session checkout binding changed")
+            checkout_id = str(session["checkout_id"])
+        if checkout_id is None and saved is not None:
+            checkout_id = str(saved["checkout_id"])
+        if checkout_id is None and claim_id is not None:
+            proofs = connection.execute(
+                "SELECT DISTINCT a.physical_key,c.checkout_id,c.canonical_path "
+                "FROM authority_journals j JOIN authority_checkouts a "
+                "ON a.physical_key=j.physical_key JOIN checkouts c "
+                "ON c.checkout_id=a.checkout_id WHERE c.repo_key=? AND "
+                "((j.kind='legacy_claim' AND j.reference_id=?) OR "
+                "(j.kind='legacy_execution' AND j.reference_id IN "
+                "(SELECT execution_id FROM task_executions WHERE task_id=? "
+                "AND task_attempt=?)))",
+                (task["repo_key"], claim_id, task["task_id"], task["attempt"]),
+            ).fetchall()
+            if len(proofs) == 1:
+                checkout_id = str(proofs[0]["checkout_id"])
+                saved = proofs[0]
+        if checkout_id is None:
+            return None
+        checkout = connection.execute(
+            "SELECT c.checkout_id,c.canonical_path,r.target_ref,r.integration_adapter "
+            "FROM checkouts c JOIN repositories r ON r.repository_id=c.repository_id "
+            "WHERE c.checkout_id=? AND c.repo_key=?",
+            (checkout_id, task["repo_key"]),
+        ).fetchone()
+        if checkout is None:
+            raise ClaimAuthorityError("claim physical checkout evidence is missing")
+        regime = authority.regime(Path(checkout["canonical_path"]))
+        result = {str(key): str(value) for key, value in dict(checkout).items()}
+        result["physical_key"] = str(regime["physical_key"])
+        if saved is not None and (
+            saved["physical_key"] != result["physical_key"]
+            or str(Path(saved["canonical_path"]).resolve())
+            != str(Path(result["canonical_path"]).resolve())
+        ):
+            raise ClaimAuthorityError("claim physical checkout evidence changed")
+        if saved is not None and any(
+            key in dict(saved) and saved[key] != result[key]
+            for key in ("target_ref", "integration_adapter")
+        ):
+            raise ClaimAuthorityError("claim target or adapter evidence changed")
+        return result
+
+    def _legacy_claim_can_activate(
+        self, connection: sqlite3.Connection, repo_key: str, claim: sqlite3.Row
+    ) -> bool:
+        try:
+            task = self._task_row(connection, str(claim["task_id"]))
+            binding = self._legacy_claim_binding(connection, task, claim=claim)
+            return legacy_activation_allowed(
+                connection,
+                repo_key,
+                physical_key=binding["physical_key"] if binding else None,
+            ) and self._legacy_physical_mappings_available(
+                connection, repo_key, binding=binding
+            )
+        except (LlmCoordError, ClaimAuthorityError, OSError, ValueError):
+            return False
+
+    def _legacy_physical_mappings_available(
+        self,
+        connection: sqlite3.Connection,
+        repo_key: str,
+        *,
+        binding: dict[str, str] | None = None,
+    ) -> bool:
+        """Check global markers; unbound older clients stay conservative."""
+        authority = self.store.authority
+        if authority is None:
+            return True
+        if binding is not None:
+            regime = authority.regime(Path(binding["canonical_path"]))
+            return bool(
+                regime["physical_key"] == binding["physical_key"]
+                and regime["regime"] == "legacy"
+            )
+        rows = connection.execute(
+            "SELECT canonical_path AS path FROM checkouts WHERE repo_key=? "
+            "UNION SELECT main_worktree_path AS path FROM repositories "
+            "WHERE repo_key=?",
+            (repo_key, repo_key),
+        ).fetchall()
+        for row in rows:
+            try:
+                if authority.regime(Path(row["path"]))["regime"] != "legacy":
+                    return False
+            except (LlmCoordError, OSError, ValueError):
+                return False
+        return True
+
     def _activate_waiters(
         self, connection: sqlite3.Connection, repo_key: str, now: int
     ) -> tuple[ClaimRecord, ...]:
+        queued = connection.execute(
+            """
+            SELECT * FROM claims WHERE repo_key = ? AND state = 'queued'
+            ORDER BY queue_sequence
+            """,
+            (repo_key,),
+        ).fetchall()
+        if not queued:
+            return ()
         fold_case = self._path_case_insensitive(connection, repo_key)
         live = connection.execute(
             """
@@ -1405,16 +1818,12 @@ class RepositoryCoordinator:
                 str(row["scheduling_mode"]),
             )
             for row in live
+            if self._legacy_claim_can_activate(connection, repo_key, row)
         ]
-        queued = connection.execute(
-            """
-            SELECT * FROM claims WHERE repo_key = ? AND state = 'queued'
-            ORDER BY queue_sequence
-            """,
-            (repo_key,),
-        ).fetchall()
         activated: list[ClaimRecord] = []
         for row in queued:
+            if not self._legacy_claim_can_activate(connection, repo_key, row):
+                continue
             claim_id = str(row["claim_id"])
             scopes = self._claim_scopes(connection, row)
             scheduling_mode = str(row["scheduling_mode"])

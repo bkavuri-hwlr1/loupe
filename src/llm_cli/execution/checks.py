@@ -1293,7 +1293,7 @@ def cleanup_interrupted_checks(store: ControlStore, managed_root: Path) -> None:
         rows = connection.execute(
             "SELECT c.run_id,e.worktree_path,p.canonical_path FROM check_runs c "
             "JOIN task_workflows w ON w.task_id=c.task_id AND w.attempt=c.attempt "
-            "JOIN task_executions e ON e.execution_id=w.execution_id "
+            "JOIN all_task_executions e ON e.execution_id=w.execution_id "
             "JOIN tasks t ON t.task_id=c.task_id JOIN sessions s ON "
             "s.session_id=t.session_id "
             "JOIN checkouts p ON p.checkout_id=s.checkout_id "
