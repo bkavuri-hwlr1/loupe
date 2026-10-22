@@ -1,8 +1,9 @@
 # Parallel work plan
 
-Date: 2026-10-13, extended 2026-10-16. Waves 1–3 started from `main` after
-#38, #39 and #41 and are merged (through #56). Waves 4–7 start from `main` at
-#56.
+Date: 2026-10-13, extended 2026-10-16 and 2026-10-22. Waves 1–3 started from
+`main` after #38, #39 and #41 and are merged (through #56). Waves 4–7 started
+from `main` at #56 and are merged (through #72). Waves 8–11 start from `main` at
+#72.
 
 The remaining work, split into packages that separate sessions can run at the
 same time. Each package is sized for one session, names the files it may
@@ -48,7 +49,30 @@ experiments in [`implementation-status.md`](implementation-status.md).
   branch from that package's branch, and retarget the PR to `main` as soon as
   the base merges, before its branch is deleted.
 
-## At a glance: Waves 4–7
+## At a glance: Waves 8–11
+
+| ID | Package | Lane | Size | Depends on | Hot files | Wave |
+| --- | --- | --- | --- | --- | --- | --- |
+| D4 | Release 0.1.0a3 | Operations | S | — | — | 8 |
+| E3 | Long-running soak and scan-cost measurement | Reliability | M | — | — | 8 |
+| C11 | Git index safety and Git-operation reconciliation | Workspace | L | — | — | 8 |
+| G4 | Authority maintenance and stuck-cutover recovery | Authority | M | — | app.py, service.py (one handler) | 8 |
+| C13 | Switch a conversation between shared and isolated mode | Workspace | L | — | service.py, shared.py | 9 |
+| C15 | Export runtime files from an isolated session | Workspace | S | — | app.py, service.py (one handler) | 9 |
+| C14 | Managed background processes | Workspace | L | C13 | service.py, shared.py, shared_tools.py, app.py | 10 |
+| C12 | Native file-change watchers | Workspace | M | C11, E3's measurement | service.py | 11, only if E3 shows it is needed |
+
+**Wave 8, all at once:** D4, E3, C11, G4. Only G4 touches hot files.
+**Wave 9:** C13 and C15. C15 adds only one RPC handler to `service.py`; keep it
+self-contained and resolve the overlap with C13 at merge.
+**Wave 10:** C14. **Wave 11:** C12, only if E3's measurement shows that scans
+are too slow without watchers.
+
+D4 releases what is already on `main` (Waves 1–7), so users get that work
+before Waves 8–11 change it further. Publishing still needs you to push the
+tag. The work in [Later](#later) stays out of these waves.
+
+## At a glance: Waves 4–7 (merged)
 
 | ID | Package | Lane | Size | Depends on | Hot files | Wave |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -795,6 +819,233 @@ mypy and offline package builds passed on both frozen branches. These are prior
 frozen validation receipts; this documentation merge does not claim a new full
 suite result.
 
+### C11. Git index safety and Git-operation reconciliation
+
+**Why.** Loupe never runs Git history commands, but it does not yet look at
+what you are doing with Git (workspace plan §16).
+
+- **Mid-operation publication.** A publication can land while a rebase,
+  merge or cherry-pick is in progress, or while `.git/index.lock` exists.
+- **Staged and conflicted paths.** It can also overwrite a file whose staged
+  version differs from HEAD, or one with unresolved conflict stages.
+- **Commits and branch switches.** These reach sessions only as a burst of
+  outside file edits that the C4 scanner catches up on over several scans.
+  Nothing records that HEAD moved, and candidates prepared before a branch
+  switch are not told their bases may be from another branch.
+
+**Scope.**
+
+- **Before every publication** (batch, manual single-file broker, isolated
+  publication, held `/apply`):
+  - Return a retryable `GIT_OPERATION_ACTIVE` when `.git/index.lock` exists,
+    or when a rebase, merge, cherry-pick or revert is in progress. Never remove
+    a Git lock or abort the user's operation.
+  - Always refuse a path that has unmerged index stages.
+  - For a path whose stage-0 index entry differs from HEAD, give a notice by
+    default. A new `[core] refuse_staged_paths = true` setting turns this into
+    an `INDEX_PATH_STAGED` refusal.
+- **Around every apply:** fingerprint HEAD, the index and any in-progress
+  operation, before and after. If they changed during the apply:
+  - finish or recover the journal from exact file identities as today;
+  - record a `git.concurrent_operation_attention` event with the affected
+    paths;
+  - rescan before the next publication.
+- **Structural reconciliation** at the existing scan points:
+  - **HEAD moved, working files unchanged** (an ordinary commit): record
+    `git.commit_observed`, with no epoch change. Link known batches to the
+    commit only when the exact tree proves they are in it.
+  - **HEAD moved and files changed** (checkout, reset, merge, stash apply):
+    reconcile the file changes as the scanner does today, increment the
+    workspace epoch, and notify every session. Candidates from the old epoch
+    must revalidate before they publish.
+  - Isolated sessions keep their private HEAD. They see the primary
+    checkout's changes through incoming sync, as today.
+- Reuse the existing scan schedule; no new daemon loop.
+
+**Files.** `src/llm_cli/workspace/gitstate.py` (new),
+`src/llm_cli/workspace/batches.py`, `src/llm_cli/workspace/broker.py`,
+`src/llm_cli/workspace/external.py`, `src/llm_cli/workspace/context.py`,
+`src/llm_cli/workspace/isolated_sync.py` (publication preflight only),
+`src/llm_cli/workspace/workflow.py` (held apply preflight only),
+`src/llm_cli/storage/migrations.py`, `src/llm_cli/config/`,
+`src/llm_cli/errors.py`, docs, tests.
+
+**Done when.**
+- A publication is refused, retryably, during a rebase, a merge or with
+  `index.lock` present, and succeeds after the operation finishes.
+- An unmerged path is always refused.
+- A staged path gives a notice by default and is refused when the setting is
+  on.
+- A commit made between two publications records `git.commit_observed`,
+  with no epoch change and no duplicate file batches.
+- A branch switch increments the epoch, notifies every session, and makes an
+  old-epoch candidate revalidate.
+- A Git operation forced into the apply window (test hook) leaves the
+  attention event and a rescan.
+
+### C12. Native file-change watchers
+
+*Gated: run only if E3's measurement shows scans are too slow.* Suggested
+threshold: an isolated safe-point scan or periodic outside-edit scan above
+250 ms on the 20,000-file fixture.
+
+**Why.** Outside edits are found by periodic stat-and-hash scans (C4), and
+isolated sessions rescan the whole primary source at every safe point. On
+large repositories that cost grows with the file count. Watchers can tell
+the scanner where to look instead (workspace plan §17.1, §17.6).
+
+**Scope.**
+
+- **Wake-ups only.** FSEvents on macOS and inotify on Linux, through
+  `ctypes`, with no new dependency unless an ADR accepts one. Watcher
+  messages only mark paths dirty and schedule a scan; the scanner stays the
+  authority.
+- **Overflow and loss.** Lost, coalesced or overflowing events, and daemon
+  downtime, trigger a full resync. It pauses publication, not agent
+  reasoning, and sends sessions a `CONTEXT_RESYNC_REQUIRED` notice instead of
+  silently skipping changes.
+- **Fallback.** Unsupported platforms or filesystems keep today's periodic
+  scans.
+- **Measure** scan cost before and after on E3's fixtures.
+
+**Files.** `src/llm_cli/workspace/watchers.py` (new),
+`src/llm_cli/workspace/external.py`, `src/llm_cli/workspace/isolated_sync.py`,
+`src/llm_cli/daemon/service.py` (watcher lifecycle), docs, tests.
+
+**Done when.**
+- On the 20,000-file fixture, an outside edit is noticed with the scan cost
+  under the threshold.
+- A forced overflow produces a full resync and the notice.
+- Disabling watchers restores today's behavior exactly.
+
+### C13. Switch a conversation between shared and isolated mode
+
+**Why.** A conversation's mode is fixed when it opens. Switching means
+closing it and losing its context, even when the user realizes mid-task that
+they want a private worktree, or wants to bring finished isolated work back
+to the shared checkout (workspace plan §20).
+
+**Scope.**
+
+- **Commands.** `/workspace isolated [--approve-secret PATH …]` and
+  `/workspace shared` in the chat, plus their RPC. Switching is allowed only
+  between tasks, never while one runs.
+- **Durable switch intents.** They follow the §20.3 states (`requested` …
+  `confirmed`, with rollback and attention). They are idempotent by intent ID
+  and recover at every crash point. A retry never creates a second worktree
+  or publishes a candidate twice.
+- **Shared → isolated.** Create the private worktree through the existing C2
+  and C10 path, then rebind the session to it. Held proposals stay as they
+  are. The session receives a bootstrap context packet for the new binding,
+  and no packet or edit observation from the old binding carries over.
+- **Isolated → shared.**
+  - Classify the private state: clean; runtime changes only; held proposal;
+    unresolved incoming conflicts; unpublished private edits.
+  - Require an explicit disposition: publish (auto mode) or freeze a
+    proposal for `/apply` (normal mode), export a patch, keep the isolated
+    workspace, or discard.
+  - Unresolved conflicts block the switch until resolved. Runtime-only
+    changes may be discarded after a redacted summary. Unpublished source is
+    never silently deleted.
+- **Not included:** a `loupe session switch` CLI command. Add it later; it
+  needs `cli/app.py`.
+
+**Files.** `src/llm_cli/daemon/service.py`, `src/llm_cli/execution/shared.py`,
+`src/llm_cli/workspace/isolated.py`, `src/llm_cli/cli/shell.py` (slash command
+dispatch), `src/llm_cli/cli/composer.py` (command list),
+`src/llm_cli/cli/session.py` (RPC client, if needed),
+`src/llm_cli/storage/migrations.py`, docs, tests.
+
+**Done when.**
+- A shared conversation switches to isolated and continues with its history.
+  Its next task runs in the private worktree.
+- An isolated conversation with unpublished edits switches back only after a
+  chosen disposition, and each disposition works.
+- A crash at every switch state either resumes or rolls back without a
+  second worktree, a duplicate publication or lost source.
+- A switch during a running task is refused.
+
+### C14. Managed background processes
+
+*Depends on C13: switching and closing must stop or keep processes
+explicitly.*
+
+**Why.** Every command has a timeout and runs to completion, so an agent
+cannot start a dev server, a watch build or a test watcher and use it. The
+workspace plan (§19.4) has long-running processes register as managed
+processes, so sync and cleanup never race a live writer.
+
+**Scope.**
+
+- **Starting and stopping.**
+  - Agent tools `start_process`, `process_output` and `stop_process`, with
+    the same approval, sandbox, network policy and output screening as
+    `run_command`.
+  - Users get `loupe workspace process list|stop`.
+- **Where they run.**
+  - Isolated sessions run processes in their private worktree.
+  - Shared sessions run them in a dedicated snapshot. The docs must say
+    plainly that the snapshot does not follow later edits. Alternatively,
+    refuse processes in shared mode for now; decide in the PR.
+- **Tracking.** Record PID plus process start identity plus process group,
+  never PID alone. Output goes into a bounded, screened ring buffer. Network
+  binding to localhost ports follows the sandbox policy.
+- **Lifecycle.**
+  - Processes stop when their session closes or switches mode, or when the
+    user stops them.
+  - After a daemon restart, a process whose identity still matches is
+    stopped by process group; an unverifiable one is reported, not
+    signalled.
+  - An isolated workspace with a live process defers incoming sync, refresh
+    and cleanup, with a notice.
+
+**Files.** `src/llm_cli/execution/processes.py` (new),
+`src/llm_cli/daemon/service.py`, `src/llm_cli/execution/shared.py`,
+`src/llm_cli/agent/tools.py`, `src/llm_cli/agent/shared_tools.py`,
+`src/llm_cli/workspace/isolated_sync.py`, `src/llm_cli/cli/app.py`,
+`src/llm_cli/storage/migrations.py`, docs, tests.
+
+**Done when.**
+- An agent starts a small HTTP server in an isolated session, queries it with
+  `run_command`, reads its output and stops it.
+- `workspace process list` shows the process, and `stop` ends its whole
+  process group.
+- Closing the session stops it.
+- After a daemon restart, a matching process is stopped and a reused PID is
+  never signalled.
+- Sync and cleanup wait while it runs.
+
+### C15. Export runtime files from an isolated session
+
+**Why.** Runtime changes inside an isolated session, such as a regenerated
+`.env`, a built artifact or a lock file under an ignored path, are discarded
+when the session closes. There is no supported way to keep one (workspace plan
+§19.6).
+
+**Scope.**
+
+- **The command.** `loupe workspace runtime export PATH --session ID --to
+  DEST` copies one runtime file or directory from the session's private
+  worktree, through no-follow descriptors and within the hydration budgets.
+- **Confirmation.** Show type, size and sensitivity, then require `--yes`.
+  A likely secret also needs `--allow-secret`.
+- **Destination.** Refuse a `DEST` inside the shared checkout unless
+  `--into-checkout` is given, and never overwrite tracked source there.
+- **Privacy.** Record only a redacted disposition event. Nothing enters
+  model context, artifacts or the source ledger.
+
+**Files.** `src/llm_cli/cli/app.py`, `src/llm_cli/daemon/service.py` (one RPC
+handler), `src/llm_cli/workspace/runtime.py`, `docs/isolated-workspaces.md`,
+tests.
+
+**Done when.**
+- A changed private `.env` exports to a destination outside the checkout only
+  with both flags.
+- A non-secret build file exports with `--yes`.
+- Exporting into the checkout is refused without `--into-checkout`.
+- Symlinks and oversized trees are refused.
+- No exported bytes appear in the database or logs.
+
 ## Lane D — operations
 
 Run D1 → D2 → D3 in one session, in order: they share `cli/app.py`.
@@ -857,6 +1108,51 @@ TOML dotted/quoted keys support digit-prefixed server names and punctuated heade
 Credential-looking keys are refused, except MCP header keys whose value is an
 environment-variable name; the loader still validates the complete candidate.
 
+### D4. Release 0.1.0a3
+
+**Why.** The last release, 0.1.0a2 (2026-10-11), predates Waves 1–7. Homebrew
+users have none of this work. Their upgrade also crosses many schema
+migrations and the G2 ownership change, which needs care.
+
+**Scope.**
+
+- **Version.** Bump to `0.1.0a3` in `pyproject.toml` and
+  `src/llm_cli/__init__.py`, and refresh `uv.lock`, as
+  `docs/macos-releases.md` step 1 describes.
+- **Upgrade test.** Build a small profile database from the `v0.1.0a2`
+  source, holding sessions, tasks, a held proposal and a published batch, and
+  commit it as a test fixture. The test opens it with the current code and
+  asserts:
+  - migrations apply;
+  - the daemon starts and serves;
+  - existing history and the held proposal are inspectable;
+  - every checkout stays in the legacy regime.
+- **Release notes.** Write `docs/release-notes/0.1.0a3.md` with the
+  user-visible changes since 0.1.0a2 and these upgrade notes:
+  - **Stop old daemons first.** Stop every profile's daemon before upgrading,
+    because daemons older than G2 ignore the new cross-profile lock.
+  - **Cutover is explicit.** Checkouts stay in legacy mode until
+    `loupe workspace cutover`.
+  - **Filesystem limits.** Managed operations are refused on filesystems
+    outside the supported list.
+  - **Defaults.** Independent review and lexical indexing stay off by default.
+- **Publishing is your step.** You push the `v0.1.0a3` tag on the reviewed
+  commit. The package prepares everything up to that point.
+
+**Files.** `pyproject.toml`, `src/llm_cli/__init__.py`, `uv.lock`,
+`tests/fixtures/` (new upgrade fixture), an upgrade test under
+`tests/integration/`, `docs/release-notes/0.1.0a3.md` (new),
+`docs/macos-releases.md` (link only).
+
+**Done when.**
+- The upgrade test passes and fails if a migration is removed.
+- CI passes on the version bump.
+- You have reviewed the release notes.
+- After the tag, the tap's workflow upgrades from 0.1.0a2 on both Mac
+  architectures. Before testing a local `brew install`, set
+  `HOMEBREW_NO_INSTALL_CLEANUP=1`. Brew's automatic cleanup previously
+  removed a Python version that running daemons still used.
+
 ## Lane E — reliability
 
 ### E1. Stress test survives stalled CI runners
@@ -877,6 +1173,44 @@ in to Anthropic and to OpenAI with API keys, which only the user can provide.
 Record results in the harness plan.
 
 **On hold** (2026-10-16), at the user's request.
+
+### E3. Long-running soak and scan-cost measurement
+
+**Why.** Each package is tested in isolation, and the longest combined runs
+are the ~20-minute test suite and short live smoke tests. Nothing checks
+that hours of mixed use keep every invariant and stay within resource bounds.
+C12 also needs numbers before anyone builds watchers.
+
+**Scope.**
+
+- **The soak run.** `scripts/soak.py` drives scripted-provider sessions, so no
+  model calls are billed, against a disposable repository. It mixes shared
+  and isolated sessions, and each session edits, publishes, applies and
+  undoes. Outside edits, commits and branch switches run alongside, with a
+  daemon kill and restart every few minutes. Duration and seed are
+  configurable; the default is 30 minutes.
+- **Invariants, checked periodically and at the end:**
+  - no published change is lost;
+  - no journal is left unrecovered;
+  - no task is stuck;
+  - every ownership marker ends clean;
+  - no private worktree or runtime copy is left over.
+- **Resources to watch.** Database and candidate-directory growth, the
+  daemon's open file descriptors, threads and memory, and RPC latency
+  percentiles. Each must stay within recorded bounds.
+- **Scan-cost measurement.** Measure the outside-edit scan and the isolated
+  safe-point scan on synthetic 20,000- and 100,000-file repositories, and
+  record the results for C12's gate.
+
+**Files.** `scripts/soak.py` (new), `scripts/scan_scale.py` (new),
+`tests/unit/test_soak.py` (option and invariant checks), `docs/experiments/`,
+`docs/implementation-status.md`.
+
+**Done when.**
+- A one-hour local run passes every invariant and resource bound, with its
+  record committed.
+- The scan-cost table is recorded with a recommendation on C12.
+- A deliberately injected lost write (test hook) makes the soak fail.
 
 ## Lane F — knowledge
 
@@ -1268,15 +1602,82 @@ new claim-free records are additive, old rows/refs stay readable, and no legacy
 flag bypasses a converted checkout. F4 remains gated by F3's recorded result;
 E2 stays deferred.
 
+A follow-up (#72) let saved cutovers finish despite source edits. Later stages
+and `resume` compare retained legacy history only. A saved intent reads as
+`transition` before its marker advances. Another profile's ownership after the
+intent still needs operator attention; G4 adds tooling for that.
+
+### G4. Authority maintenance and stuck-cutover recovery
+
+**Why.** Three gaps remain from the G2 and G3 reviews.
+
+- **Ownership records pile up.** Every checkout ever owned leaves a directory
+  under `~/.llm-coord/physical-authority/v1/checkouts`, and nothing removes
+  records for checkouts that are gone. Sixteen leftover test records had to
+  be moved out by hand.
+- **Some stuck cutovers can't be recovered.**
+  - If another profile owned the checkout after a cutover intent was saved,
+    `resume` refuses and nothing else applies.
+  - The same holds if retained legacy history really changed during the
+    transition.
+  - Either way the checkout stays in `transition`, with legacy claims
+    disabled and workspace mode not active.
+- **Filesystem errors are vague.** On an unsupported filesystem, such as
+  WSL's `/mnt/c`, a devcontainer mount, exFAT or FUSE, every managed
+  operation is refused without naming the filesystem.
+
+**Scope.**
+
+- **Pruning ownership records.**
+  - Record the checkout path in `owner.json` for diagnostics only.
+  - Add `loupe workspace authority status|prune`, as a dry run unless
+    `--apply`.
+  - Prune lists a record only when all three hold: its lock is free, its
+    marker is clean, and its recorded path no longer resolves to the same
+    physical identity.
+  - Never remove a record that this profile's database binds. Records with no
+    recorded path are listed and pruned only with `--include-unrecorded`.
+- **Stuck-cutover recovery.**
+  - Amend ADR 0010 with a recovery design and get your acceptance.
+  - Candidates:
+    - `cutover abandon` for an intent whose transition marker was never
+      written, returning this profile to legacy;
+    - an operator-acknowledged `resume --accept-current-history` that records
+      the history change as a disposition before continuing.
+  - The checkout regime and intent stage can only move forward, enforced by
+    database triggers, so abandoning needs a migration.
+  - Implement only what the amendment accepts.
+- **Filesystem errors.** Name the detected filesystem and the supported list
+  in the refusal. Whether unverified filesystems may run as a single profile
+  with a warning is your decision; do not change ADR 0010's fail-closed rule
+  without it.
+
+**Files.** `src/llm_cli/workspace/authority.py`,
+`src/llm_cli/workspace/regime.py`, `src/llm_cli/cli/app.py`,
+`src/llm_cli/daemon/service.py` (one RPC handler for cutover recovery),
+`src/llm_cli/doctor.py`, `src/llm_cli/storage/migrations.py` (if recovery needs
+it), `docs/adr/0010-cross-profile-publication-authority.md`,
+`docs/workspace-cutover.md`, `docs/cross-profile-authority.md`, tests.
+
+**Done when.**
+- `authority prune` lists and removes only records that are free, clean and
+  stale, and never one bound by this profile.
+- A fixture with another profile's ownership after a saved intent can be
+  recovered through the accepted command.
+- The filesystem refusal names the filesystem.
+- The ADR amendment is accepted.
+
 ## Later
 
-These are deliberately outside Waves 4–7:
+These are deliberately outside Waves 8–11:
 
-- switching a conversation between shared and isolated mode (§20);
-- managed background processes, such as `workspace process` for dev servers
-  and watchers (§19.4);
-- runtime export (§19.6);
-- native file watchers and reconciliation of Git operations (the C4
-  follow-up);
-- the `sqlite-vec` accelerator and opt-in task memory;
-- E2.
+- **F4 embeddings, the `sqlite-vec` accelerator and opt-in task memory.**
+  F3's live comparison showed no benefit from retrieval: 90 of 102 expected
+  facts with it on, 92 with it off. Revisit only with a stronger case.
+- **E2 live provider checks**, on hold.
+- **Patch and bundle exports of candidates and batches** (§16.6).
+- **An installer cache for C10 rebuilds.** Today every isolated open downloads
+  dependencies again into an empty installer home.
+- **Review on natural work.** B6 measured the independent review only on
+  seeded bugs. Measure it on natural tasks before reconsidering its default.
+- **A `loupe session switch` CLI command**, after C13.

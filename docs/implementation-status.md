@@ -1109,20 +1109,21 @@ before taking the database write lock.
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
-Waves 4–7, as packages that separate sessions can run at once.
+Waves 8–11, as packages that separate sessions can run at once. Waves 1–7 are
+merged.
 
-1. Validate G3's explicit claim-free legacy migration under the accepted
-   authority contract; ordinary upgrades remain legacy until explicit cutover.
-2. Complete isolated-mode live validation (C6); C7 implements faster checks.
-   C8 implements runtime refresh, C9 adds opt-in per-session command
-   environments, and C10 adds explicit dependency rebuild adapters under
-   bounded creation and sandbox policies.
-3. B6 now records paired synthetic review quality and cost. Keep review disabled
-   by default; evaluate natural-work effectiveness before reconsidering it.
-4. F1 lexical discovery, F2's code graph and F3's optional agent tool are
-   implemented. F3's completed live comparison leaves indexing off and
-   exact-scoring embeddings (F4) gated.
-5. E2's live provider checks are on hold.
+1. Release 0.1.0a3 with a tested upgrade path from 0.1.0a2 (D4), and run a
+   long multi-session soak that also measures scan cost at scale (E3).
+2. Respect Git's own state. C11 refuses to publish during a Git operation or
+   onto conflicted paths, and records commits and branch switches as Git
+   events, with an epoch change for branch switches. C12 adds native watchers,
+   but only if E3's measurement shows scans are too slow.
+3. Finish the isolated-mode lifecycle: switching a conversation between modes
+   (C13), managed background processes (C14) and runtime export (C15).
+4. Maintain authority: prune stale ownership records, recover stuck cutovers
+   under an ADR 0010 amendment, and name unsupported filesystems (G4).
+5. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
+   on hold.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
