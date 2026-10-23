@@ -100,3 +100,47 @@ def test_git_refusals_have_retryable_cli_exit_code(code: ErrorCode) -> None:
     from llm_cli.cli.exit_codes import EXIT_BY_ERROR
 
     assert EXIT_BY_ERROR[code] == 75
+
+
+def test_case_alias_detects_staged_entry_and_staged_deletion(
+    tmp_path: Path,
+    repository_factory: Callable[[Path, dict[str, str]], Path],
+    git_run: Callable[..., str],
+) -> None:
+    root = repository_factory(tmp_path, {"a.txt": "base\n"})
+    (root / "a.txt").write_text("staged\n")
+    git_run(root, "add", "a.txt")
+    assert preflight(root, ("A.txt",), case_insensitive_filesystem=True)[1] == (
+        "a.txt",
+    )
+    assert preflight(root, ("A.txt",), case_insensitive_filesystem=False)[1] == ()
+    with pytest.raises(LlmCoordError) as refusal:
+        preflight(
+            root, ("A.txt",), case_insensitive_filesystem=True, refuse_staged_paths=True
+        )
+    assert refusal.value.code is ErrorCode.INDEX_PATH_STAGED
+    git_run(root, "rm", "--cached", "a.txt")
+    assert preflight(root, ("A.txt",), case_insensitive_filesystem=True)[1] == (
+        "a.txt",
+    )
+
+
+def test_case_alias_cannot_bypass_unmerged_index_stages(
+    tmp_path: Path,
+    repository_factory: Callable[[Path, dict[str, str]], Path],
+    git_run: Callable[..., str],
+) -> None:
+    import subprocess
+
+    root = repository_factory(tmp_path, {"a.txt": "base\n"})
+    oid = git_run(root, "rev-parse", "HEAD:a.txt")
+    subprocess.run(
+        ["git", "update-index", "--index-info"],
+        cwd=root,
+        check=True,
+        text=True,
+        input=(f"0 {'0' * 40}\ta.txt\n100644 {oid} 2\ta.txt\n"),
+    )
+    with pytest.raises(LlmCoordError) as refusal:
+        preflight(root, ("A.txt",), case_insensitive_filesystem=True)
+    assert refusal.value.code is ErrorCode.INDEX_PATH_UNMERGED
