@@ -119,7 +119,10 @@ read-only observation remain available to diagnose a refusal. Adding support
 for another filesystem requires an explicit change to this contract.
 
 The lock inode is held with `flock`; PID metadata, including process start time,
-is diagnostic. Loupe never unlinks a lock inode to clear a stale record.
+is diagnostic. Loupe never unlinks a lock inode to bypass live ownership or a
+dirty journal. The explicit [maintenance flow](#inspect-and-prune-ownership-records)
+may retire a verified dead, clean, unbound record only while holding both its
+ownership lock and the account-wide maintenance barrier.
 Versioned, checksummed, atomically replaced and fsynced markers contain physical
 identity and opaque journal metadata, never source/runtime bytes or secret
 content hashes. Each control database has a random instance ID bound to an
