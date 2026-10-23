@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import shutil
+import sqlite3
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -35,6 +37,9 @@ def test_default_duration_and_seed_are_reproducible(soak: ModuleType) -> None:
     assert args.seed == 20261022
     assert args.restart_interval == 120
     assert not args.inject_lost_write
+    assert not args.growing_paths
+    assert args.max_cycles is None
+    assert soak.parser().parse_args(["--growing-paths"]).growing_paths
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf"])
@@ -148,3 +153,61 @@ def test_scan_scale_growth_uses_real_post_admission_source_changes() -> None:
     assert result["accepted_manifest_entries"] >= 20
     assert result["full_safe_point_warm"]["result"]["applied"] == 0
     assert result["full_safe_point_one_change"]["result"]["applied"] == 1
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_max_cycles_must_be_positive(soak: ModuleType, value: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        soak.positive_count(value)
+
+
+@pytest.mark.parametrize("growing", [False, True])
+def test_repeated_updates_and_undo_retain_previous_accepted_bytes(
+    soak: ModuleType, tmp_path: Path, growing: bool
+) -> None:
+    args = options(
+        soak,
+        tmp_path,
+        "--keep",
+        "--max-cycles",
+        "2",
+        *(["--growing-paths"] if growing else []),
+    )
+    args.duration = 60
+    result = soak.run(args)
+    root = Path(result["root"])
+    try:
+        assert result["status"] == "passed", result
+        assert result["cycles"] == 2 and result["restarts"] == 2
+        assert result["workload"] == ("growing_paths" if growing else "bounded_paths")
+        data = root / "data/llm-coord/profiles/soak"
+        with sqlite3.connect(data / "control.sqlite3") as connection:
+            requests = [
+                json.loads(row[0])
+                for row in connection.execute(
+                    "SELECT request_json FROM workspace_batches WHERE state='published'"
+                )
+            ]
+        for mode in ("shared", "isolated"):
+            relative = f"docs/{mode}.txt"
+            if growing:
+                assert not (root / "repository" / f"docs/cycle-1-{mode}.txt").exists()
+                assert (
+                    f"cycle 0 {mode}"
+                    in (root / "repository" / f"docs/cycle-0-{mode}.txt").read_text()
+                )
+            else:
+                # The second accepted update was published, then undo restores
+                # cycle zero's accepted content, rather than deleting the file.
+                assert f"cycle 0 {mode}" in (root / "repository" / relative).read_text()
+                bodies = [
+                    (data / "candidates" / entry["content_hash"]).read_text()
+                    for request in requests
+                    for entry in request["files"]
+                    if entry["relative_path"] == relative and entry["content_hash"]
+                ]
+                assert any(f"cycle 0 {mode}" in body for body in bodies)
+                assert any(f"cycle 1 {mode}" in body for body in bodies)
+        assert result["accepted_paths"] == (4 if growing else 2)
+    finally:
+        shutil.rmtree(root)

@@ -53,6 +53,22 @@ def positive(value: str) -> float:
     return result
 
 
+def positive_count(value: str) -> int:
+    result = int(value)
+    if result < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return result
+
+
+@dataclass(frozen=True)
+class Work:
+    label: str
+    path: str
+    content: str
+    previous: str | None
+    held: bool
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
@@ -62,6 +78,16 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--restart-interval", type=positive, default=120)
     result.add_argument("--cycle-interval", type=positive, default=10)
     result.add_argument("--output", type=Path, default=Path("soak-result.json"))
+    result.add_argument(
+        "--max-cycles",
+        type=positive_count,
+        help="stop after at most this many completed cycles",
+    )
+    result.add_argument(
+        "--growing-paths",
+        action="store_true",
+        help="stress retained manifests by adding fresh paths each cycle",
+    )
     result.add_argument(
         "--keep", action="store_true", help="retain disposable evidence"
     )
@@ -224,6 +250,8 @@ class Cluster:
         (root / "signals").mkdir()
         (self.repository / "docs").mkdir()
         (self.repository / "docs/base.txt").write_text("base\n")
+        for mode in ("shared", "isolated"):
+            (self.repository / f"docs/{mode}.txt").write_text(f"base {mode}\n")
         (self.repository / ".gitignore").write_text(".env\n")
         (self.repository / ".env").write_text("SOAK_VALUE=private-soak-runtime-value\n")
         git(self.repository, "init", "-b", "main")
@@ -472,6 +500,8 @@ def run(options: argparse.Namespace) -> dict[str, Any]:
     record: dict[str, Any] = {
         "seed": options.seed,
         "requested_seconds": options.duration,
+        "max_cycles": options.max_cycles,
+        "workload": "growing_paths" if options.growing_paths else "bounded_paths",
         "bounds": asdict(bounds),
         "status": "failed",
         "root": str(root),
@@ -497,6 +527,13 @@ def run(options: argparse.Namespace) -> dict[str, Any]:
     rng = random.Random(options.seed)
     try:
         cluster = Cluster(root, bounds)
+        if not options.growing_paths:
+            expected.update(
+                {
+                    f"docs/{mode}.txt": f"base {mode}\n"
+                    for mode in ("shared", "isolated")
+                }
+            )
         credentials: dict[str, dict[str, str]] = {}
         # Open the long-lived pair before the outside writer starts. Opening a
         # new private checkout deliberately requires a stable creation snapshot;
@@ -533,14 +570,18 @@ def run(options: argparse.Namespace) -> dict[str, Any]:
             target=outside_edits, name="soak-outside-editor", daemon=True
         )
         editor.start()
-        while time.monotonic() - started < options.duration or completed == 0:
+        while (time.monotonic() - started < options.duration or completed == 0) and (
+            options.max_cycles is None or completed < options.max_cycles
+        ):
             before = time.monotonic()
-            sessions: list[tuple[dict[str, str], str, str, bool]] = []
+            sessions: list[Work] = []
             for mode in ("shared", "isolated"):
                 label = f"cycle-{completed}-{mode}"
                 creds = credentials[mode]
                 held = (completed + (mode == "isolated")) % 2 == 0
-                relative = f"docs/{label}.txt"
+                relative = (
+                    f"docs/{label}.txt" if options.growing_paths else f"docs/{mode}.txt"
+                )
                 content = (
                     f"published seed {options.seed} cycle {completed} {mode} "
                     f"nonce {rng.randrange(1 << 32)}\n"
@@ -559,10 +600,14 @@ def run(options: argparse.Namespace) -> dict[str, Any]:
                         {"label": label, "path": relative, "content": content}
                     ),
                 )
-                sessions.append((creds, label, content, held))
-            for _, label, _, _ in sessions:
+                sessions.append(
+                    Work(label, relative, content, expected.get(relative), held)
+                )
+            for work in sessions:
                 wait(
-                    lambda label=label: (root / "signals" / (label + ".ready")).exists()
+                    lambda label=work.label: (
+                        root / "signals" / (label + ".ready")
+                    ).exists()
                 )
             # Ordinary commits and same-tree branch switches run while both
             # model executions hold private edits, never overwriting their paths.
@@ -587,33 +632,38 @@ def run(options: argparse.Namespace) -> dict[str, Any]:
                 for creds in credentials.values():
                     cluster.rpc("session.resume", **creds)
                 last_restart = time.monotonic()
-                for _, label, _, _ in sessions:
+                for work in sessions:
                     wait(
-                        lambda label=label: (
+                        lambda label=work.label: (
                             (root / "signals" / (label + ".ready")).read_text()
                             == str(cluster.process.pid)
                         )
                     )
-            for _, label, _, _ in sessions:
-                (root / "signals" / (label + ".release")).touch()
-            for _, label, _, held in sessions:
-                cluster.settled(label, held)
-            for _, label, content, held in sessions:
-                if held:
-                    result = cluster.rpc("task.apply", task_id=label)
+            for work in sessions:
+                (root / "signals" / (work.label + ".release")).touch()
+            for work in sessions:
+                cluster.settled(work.label, work.held)
+                if not work.held:
+                    # Reused paths are already in the ledger. Accept the auto
+                    # publication before checking/applying the held peer.
+                    expected[work.path] = work.content
+                    verify_files(cluster.repository, expected)
+            for work in sessions:
+                if work.held:
+                    result = cluster.rpc("task.apply", task_id=work.label)
                     if result["state"] != "published":
                         raise InvariantFailure(f"apply did not publish: {result}")
-                relative = f"docs/{label}.txt"
-                expected[relative] = content
+                    expected[work.path] = work.content
                 verify_files(cluster.repository, expected)
                 if options.inject_lost_write:
-                    (cluster.repository / relative).unlink()
+                    (cluster.repository / work.path).unlink()
                     verify_files(cluster.repository, expected)
                 if completed % 3 == 1:
-                    result = cluster.rpc("task.undo", task_id=label)
+                    result = cluster.rpc("task.undo", task_id=work.label)
                     if result["state"] != "published":
                         raise InvariantFailure(f"undo did not publish: {result}")
-                    expected[relative] = None
+                    expected[work.path] = work.previous
+                    verify_files(cluster.repository, expected)
             completed += 1
             cluster.invariants(expected)
             cluster.sample()
@@ -655,6 +705,13 @@ def run(options: argparse.Namespace) -> dict[str, Any]:
             cluster.rpc("session.close", **creds)
         cluster.invariants(expected, final=True)
         cluster.sample()
+        record["accepted_paths"] = len(expected)
+        record["final_accepted_hashes"] = {
+            path: hashlib.sha256(content.encode()).hexdigest()
+            if content is not None
+            else None
+            for path, content in expected.items()
+        }
         record["status"] = "passed"
     except Exception as exc:
         record["failure"] = f"{type(exc).__name__}: {exc}"
