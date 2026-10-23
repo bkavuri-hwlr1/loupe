@@ -431,11 +431,16 @@ def test_irrelevant_external_metadata_is_validated_before_quiet_advance(
 def test_failed_outside_edit_scan_does_not_end_the_task(
     tmp_path: Path,
     ledger: tuple[ControlStore, str, str],
+    repository_factory: Callable[[Path, dict[str, str]], Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from llm_cli.workspace import external
 
-    store, _, _ = ledger
+    store, checkout_id, _ = ledger
+    # This test needs one successful real scan before the injected failure.
+    # The ledger fixture alone has no checkout on disk for Git reconciliation.
+    repository = repository_factory(tmp_path, {"docs/readme.md": "base\n"})
+    assert Path(store.get_checkout(checkout_id).canonical_path) == repository
     scan = external.ExternalWorkspaceScanner.scan_session
     scans: list[str] = []
 
@@ -457,6 +462,9 @@ def test_failed_outside_edit_scan_does_not_end_the_task(
         ToolBroker(tmp_path, ("docs/",)),
     )
     assert len(scans) == 2
+    opening = provider.calls[0]
+    assert isinstance(opening, str)
+    assert "Outside edits could not be checked" not in opening
     results = provider.calls[1]
     assert isinstance(results, tuple)
     assert "Outside edits could not be checked" in results[-1].content
