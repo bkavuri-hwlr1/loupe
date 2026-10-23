@@ -300,3 +300,69 @@ def test_retained_regime_binding_also_preserves_record(
     shutil.rmtree(repository)
     record = observer.records(prune=True, apply=True)["records"][0]
     assert record["bound_by_profile"] and not record["removed"] and directory.exists()
+
+
+def test_status_does_not_recreate_a_record_pruned_after_listing(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from collections.abc import Iterator
+    from contextlib import contextmanager
+
+    observer, repository, directory = _dead_record(tmp_path, repository_factory)
+    rival = _owner(tmp_path, repository, "rival")
+    shutil.rmtree(repository)
+    original = observer._maintenance
+    first = True
+
+    @contextmanager
+    def interleave() -> Iterator[None]:
+        nonlocal first
+        if first:
+            first = False
+            assert rival.records(prune=True, apply=True)["records"][0]["removed"]
+            assert not directory.exists()
+        with original():
+            yield
+
+    monkeypatch.setattr(observer, "_maintenance", interleave)
+    result = observer.records()
+    assert result["records"][0]["reason"] == "already_removed"
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize("unrecorded", [False, True])
+def test_moved_workspace_checkout_retains_its_irreversible_regime_fence(
+    tmp_path: Path, repository_factory: Callable[..., Path], unrecorded: bool
+) -> None:
+    from llm_cli.workspace.regime import CutoverManager
+
+    repository = repository_factory(tmp_path, {"source.py": "VALUE = 1\n"})
+    former = _owner(tmp_path, repository, "former")
+    manager = CutoverManager(former.store, former)
+    assert (
+        manager.begin(repository, manager.preview(repository)["checkpoint"])["regime"]
+        == "workspace"
+    )
+    directory = _marker(former, repository).parent
+    former.close()
+    observer = _owner(tmp_path, repository, "observer")
+    moved = tmp_path / "moved"
+    repository.rename(moved)
+    if unrecorded:
+        owner = private_read(directory / "owner.json")
+        assert owner is not None
+        owner.pop("checkout_path")
+        private_write(directory / "owner.json", owner)
+    record = observer.records(prune=True, apply=True, include_unrecorded=unrecorded)[
+        "records"
+    ][0]
+    assert record["reason"] == "regime_tombstone" and not record["removed"]
+    assert directory.exists()
+    third = _owner(tmp_path, moved, "third")
+    assert third.regime(moved)["regime"] == "workspace"
+    with third.pin(moved):
+        assert third.regime(moved)["regime"] == "workspace"
+    assert private_read(directory / "marker.json")["version"] == 2
+    third.close()

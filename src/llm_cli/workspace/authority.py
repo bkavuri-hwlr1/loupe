@@ -540,7 +540,18 @@ class PhysicalAuthority:
                 records.append(item)
                 try:
                     with self._maintenance():
-                        private_directory(directory)
+                        try:
+                            record_fd = _open_directory(directory)
+                        except FileNotFoundError:
+                            item["reason"] = "already_removed"
+                            continue
+                        try:
+                            if os.fstat(record_fd).st_mode & 0o077:
+                                raise recovery_error(
+                                    "authority record has unsafe storage"
+                                )
+                        finally:
+                            os.close(record_fd)
                         descriptor = self._record_lock(
                             directory / "ownership.lock", create=False
                         )
@@ -569,6 +580,13 @@ class PhysicalAuthority:
                                 or not isinstance(marker.get("binding"), dict)
                             ):
                                 item["reason"] = "recovery_required"
+                                continue
+                            if marker["version"] == 2:
+                                # A missing diagnostic path may only mean the
+                                # checkout moved. Its physical key can reappear;
+                                # retaining this fence prevents a fresh profile
+                                # from recreating legacy editing authority.
+                                item["reason"] = "regime_tombstone"
                                 continue
                             binding = marker["binding"]
                             if (

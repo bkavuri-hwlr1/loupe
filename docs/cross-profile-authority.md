@@ -151,7 +151,9 @@ loupe workspace authority prune --apply
 until `--apply`; it removes only an unlocked, valid clean record whose recorded
 checkout path is gone or now identifies a different physical checkout. This
 profile's database bindings always preserve a record, including a missing
-checkout. Dirty/attention markers, corrupt storage, unknown contents and uncertain
+checkout. Transition/workspace markers are permanent regime tombstones and are
+never pruned, even with `--include-unrecorded`: moving a checkout must not restore
+legacy authority for a new profile. Dirty/attention markers, corrupt storage, unknown contents and uncertain
 identity remain for diagnosis. No command clears a live ownership lock or repairs
 a journal. The diagnostic path does not select the ownership key or adopt history.
 

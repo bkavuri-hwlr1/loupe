@@ -254,8 +254,11 @@ Authority-record pruning is separate from cutover recovery. It can retire only
 an unlocked, valid clean record whose diagnostic path no longer resolves to its
 physical identity, and which this profile does not bind. A short account-wide
 maintenance lock serializes retirement with opening an ownership lock; it never
-clears an active lock or an unfinished journal. Retiring a dead identity is not
-permission to rebind a recreated checkout or inherit its history.
+clears an active lock or an unfinished journal. Version-2 transition/workspace
+markers remain permanent regime tombstones, even when their diagnostic path is
+gone or unrecorded: the physical checkout may have moved. They are never pruned.
+Retiring a legacy record is not permission to rebind a recreated checkout or
+inherit its history.
 
 Unsupported or unverified filesystems remain refused. Refusals name the detected
 filesystem and supported set; this amendment introduces no warning-only mode.
