@@ -1,0 +1,12 @@
+{
+  "source_tag": "v0.1.0a2",
+  "source_commit": "a4b37a95921505d792180468eef89e231c8843dc",
+  "schema_version": 19,
+  "database_sha256": "55e731097b4bec243b92215681c59c2f268df682c43c0a95b335318011695a6c",
+  "path_placeholder": "/loupe-upgrade-fixture",
+  "repository_files": {
+    "a.py": "value = 2\n"
+  },
+  "published_task": "upgrade-published",
+  "held_task": "upgrade-held"
+}

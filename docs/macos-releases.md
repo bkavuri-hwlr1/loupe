@@ -1,5 +1,7 @@
 # macOS releases
 
+Current release candidate: [0.1.0a3 release notes](release-notes/0.1.0a3.md).
+
 The public install command is `brew install bkavuri-hwlr1/tap/loupe`.
 Development happens in the public `bkavuri-hwlr1/loupe` repository, which holds
 the only release credential. The public `bkavuri-hwlr1/homebrew-tap` repository
