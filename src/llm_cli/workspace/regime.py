@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import shlex
 import sqlite3
 import stat
 import time
@@ -1005,6 +1006,10 @@ class CutoverManager:
         self, connection: sqlite3.Connection, intent: sqlite3.Row
     ) -> list[dict[str, Any]]:
         sequences = json.loads(intent["plan_json"])["checkout_event_sequences"]
+        instance = connection.execute(
+            "SELECT database_instance_id FROM authority_installation WHERE singleton=1"
+        ).fetchone()
+        database_instance = instance[0] if instance is not None else None
         gaps: list[dict[str, Any]] = []
         for checkout_id, sequence in sorted(sequences.items()):
             for row in connection.execute(
@@ -1018,12 +1023,18 @@ class CutoverManager:
                     raise _error(
                         ErrorCode.CUTOVER_BLOCKED, "ownership gap is malformed"
                     )
-                if payload.get("previous_profile") != self.authority.profile:
+                previous_instance = payload.get("previous_database_instance_id")
+                if (
+                    payload.get("previous_profile") != self.authority.profile
+                    or previous_instance is None
+                    or previous_instance != database_instance
+                ):
                     gaps.append(
                         {
                             "checkout_id": checkout_id,
                             "sequence": row["sequence"],
                             "previous_profile": payload.get("previous_profile"),
+                            "previous_database_instance_id": previous_instance,
                             "execution_contract": payload.get("execution_contract"),
                         }
                     )
@@ -1137,6 +1148,48 @@ class CutoverManager:
                     "reason": "unfinished_or_foreign_journal",
                 }
             )
+        pending_owner = None
+        reacquire = None
+        instance = connection.execute(
+            "SELECT database_instance_id FROM authority_installation WHERE singleton=1"
+        ).fetchone()
+        if (
+            marker is not None
+            and marker.get("state") == "clean"
+            and (
+                marker.get("owner_profile") != self.authority.profile
+                or instance is None
+                or marker.get("database_instance_id") != instance[0]
+            )
+        ):
+            pending_owner = {
+                "owner_profile": marker.get("owner_profile"),
+                "database_instance_id": marker.get("database_instance_id"),
+                "marker_generation": marker.get("generation"),
+                "execution_contract": marker.get("execution_contract"),
+            }
+            blockers.append(
+                {
+                    "kind": "authority",
+                    "id": physical.key,
+                    "reason": "foreign_ownership_gap_not_observed",
+                }
+            )
+            reacquire = shlex.join(
+                [
+                    "loupe",
+                    "--profile",
+                    self.authority.profile,
+                    "workspace",
+                    "cutover",
+                    "resume",
+                    str(physical.root),
+                    "--intent",
+                    intent["intent_id"],
+                    "--checkpoint",
+                    intent["checkpoint"],
+                ]
+            )
         gaps = self._ownership_gaps(connection, intent)
         evidence = {
             "intent_id": intent["intent_id"],
@@ -1147,6 +1200,7 @@ class CutoverManager:
             "mappings": current["mappings"],
             "selected_dispositions": selected,
             "ownership_gaps": gaps,
+            "pending_owner": pending_owner,
             "stage": intent["stage"],
             "blockers": blockers,
         }
@@ -1156,6 +1210,8 @@ class CutoverManager:
             "checkpoint": intent["checkpoint"],
             "saved_intent": dict(intent),
             "ownership_gaps": gaps,
+            "pending_owner": pending_owner,
+            "reacquire_command": reacquire,
             "selected_dispositions": selected,
             "blockers": blockers,
             "ready": not blockers,

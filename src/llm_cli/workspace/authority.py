@@ -1184,6 +1184,7 @@ class PhysicalAuthority:
                     "paths": [],
                     "history_gap": True,
                     "previous_profile": marker.get("owner_profile"),
+                    "previous_database_instance_id": marker.get("database_instance_id"),
                     "execution_contract": marker.get("execution_contract"),
                 },
                 now=self.store._now(None),

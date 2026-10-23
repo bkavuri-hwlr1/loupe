@@ -155,11 +155,23 @@ index or HEAD. The ordinary checkpoint still identifies the original intent.
 publication barrier, rechecks the token, and writes an immutable acknowledgement
 before advancing a marker or disposition. The acknowledgement retains the
 original and accepted history digests, exact mapping, selected dispositions,
-foreign handoff event sequences, complete metadata inventory, operator action
+foreign handoff event sequences and prior database-instance identities, complete
+metadata inventory, operator action
 and timestamp. It imports no foreign journals or intermediate authorship and
 never rewrites the original intent or old dispositions. A crash after that
 record resumes against the exact accepted history; repeating the same command
 does not duplicate the acknowledgement.
+
+A shared profile name does not prove a shared installation. Handoffs from a
+different database instance count as foreign ownership even when the profile
+names match. Older handoff receipts without database identity remain unknown
+gaps that require explicit acknowledgement; the profile name cannot excuse them.
+
+If the current clean marker still belongs to another profile/installation, the preview is
+not ready: it shows that owner/generation/contract as pending evidence and gives
+the exact ordinary `resume` command needed to reacquire after the owner releases.
+Run that command without the acknowledgement flag. It stops for attention after
+recording the foreign gap; then obtain and review a fresh recovery preview.
 
 If reacquisition itself reveals a new foreign handoff, or history changes after
 the preview/acknowledgement, the old token refuses with
@@ -209,6 +221,7 @@ exits with 65. JSON errors retain the stable code and diagnostic details. Existi
 physical-owner, foreign-recovery and changed-identity errors keep their meanings.
 
 The daemon advertises additive `workspace.cutover.v1`,
+`workspace.cutover.recovery.v1`, `workspace.authority.maintenance.v1`,
 `workspace.execution.claim_free.v1` and `legacy.history.read.v1` capabilities.
 The versioned RPC envelope remains compatible; capability support never bypasses
 the checkout's final regime/ownership validation. Restoring an old binary cannot

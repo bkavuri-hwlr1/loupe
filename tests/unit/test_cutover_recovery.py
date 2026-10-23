@@ -484,6 +484,11 @@ def test_service_recovery_rpc_is_read_only_until_the_explicit_resume_ack(
         root = repository_factory(tmp_path, {"source.py": "VALUE = 1\n"})
         service = service_factory(tmp_path)
         service.initialize()
+        ping = await service.handle(request_factory("system.ping", {}))
+        assert {
+            "workspace.authority.maintenance.v1",
+            "workspace.cutover.recovery.v1",
+        } <= set(ping["capabilities"])
         await service.handle(request_factory("repo.add", {"path": str(root)}))
         manager = CutoverManager(
             service.store, service.physical_authority, fault=_crash_at("intent_saved")
@@ -578,3 +583,122 @@ def test_plain_recovery_preview_names_the_observed_foreign_gap(tmp_path: Path) -
     assert "Cutover recovery preview" in result
     assert "Recovery checkpoint: recovery-token" in result
     assert 'checkout event 7; previous profile="peer"' in result
+
+
+def test_direct_recovery_preview_discloses_pending_foreign_owner_and_is_not_ready(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+) -> None:
+    root, owner, _, plan = _prepared(tmp_path, repository_factory)
+    owner.close()
+    peer = _owner(tmp_path, root, "peer")
+    with peer.pin(root):
+        pass
+    peer.close()
+    owner = _owner(tmp_path, root, "owner")
+    manager = CutoverManager(owner.store, owner)
+    marker = private_read(_marker(owner, root))
+    recovery = _preview(manager, root, plan)
+    assert not recovery["ready"]
+    assert recovery["ownership_gaps"] == []
+    assert recovery["pending_owner"]["owner_profile"] == "peer"
+    assert recovery["pending_owner"]["marker_generation"] == marker["generation"]
+    assert "--profile owner workspace cutover resume" in recovery["reacquire_command"]
+    assert "--accept-current-history" not in recovery["reacquire_command"]
+    assert any(
+        b["reason"] == "foreign_ownership_gap_not_observed"
+        for b in recovery["blockers"]
+    )
+    assert private_read(_marker(owner, root)) == marker and _acks(owner) == []
+    with pytest.raises(LlmCoordError) as caught:
+        manager.resume(root, "cutover-recovery", checkpoint=plan["checkpoint"])
+    assert caught.value.code == ErrorCode.CUTOVER_CHECKPOINT_STALE
+    fresh = _preview(manager, root, plan)
+    assert fresh["ready"] and fresh["pending_owner"] is None
+    assert fresh["reacquire_command"] is None
+    assert fresh["ownership_gaps"][0]["previous_profile"] == "peer"
+    assert (
+        manager.resume(
+            root,
+            "cutover-recovery",
+            checkpoint=plan["checkpoint"],
+            accept_current_history=fresh["recovery_checkpoint"],
+        )["regime"]
+        == "workspace"
+    )
+    assert len(_acks(owner)) == 1
+    owner.close()
+
+
+def test_same_profile_name_in_another_database_is_a_foreign_ownership_gap(
+    tmp_path: Path, repository_factory: Callable[..., Path]
+) -> None:
+    root, owner, _, plan = _prepared(tmp_path, repository_factory)
+    owner.close()
+    another_installation = tmp_path / "another-installation"
+    another_installation.mkdir(mode=0o700)
+    peer = _owner(another_installation, root, "owner")
+    # Two configured data roots still share the real account's authority domain.
+    peer.root = owner.root
+    with peer.pin(root):
+        peer_instance = peer.installation.instance_id
+    peer.close()
+    owner = _owner(tmp_path, root, "owner")
+    manager = CutoverManager(owner.store, owner)
+    recovery = _preview(manager, root, plan)
+    assert not recovery["ready"]
+    assert recovery["pending_owner"]["owner_profile"] == "owner"
+    assert recovery["pending_owner"]["database_instance_id"] == peer_instance
+    with pytest.raises(LlmCoordError) as caught:
+        manager.resume(root, "cutover-recovery", checkpoint=plan["checkpoint"])
+    assert caught.value.code == ErrorCode.CUTOVER_CHECKPOINT_STALE
+    recovery = _preview(manager, root, plan)
+    (gap,) = recovery["ownership_gaps"]
+    assert gap["previous_profile"] == "owner"
+    assert gap["previous_database_instance_id"] == peer_instance
+    assert recovery["ready"]
+    assert (
+        manager.resume(
+            root,
+            "cutover-recovery",
+            checkpoint=plan["checkpoint"],
+            accept_current_history=recovery["recovery_checkpoint"],
+        )["regime"]
+        == "workspace"
+    )
+    assert json.loads(_acks(owner)[0]["ownership_gaps_json"]) == [gap]
+    owner.close()
+
+
+def test_legacy_handoff_without_database_identity_needs_explicit_acknowledgement(
+    tmp_path: Path, repository_factory: Callable[..., Path]
+) -> None:
+    root, owner, manager, plan = _prepared(tmp_path, repository_factory)
+    with owner.store.connection() as connection:
+        checkout = connection.execute("SELECT checkout_id FROM checkouts").fetchone()[0]
+        owner.store.append_checkout_event(
+            connection,
+            checkout_id=checkout,
+            event_type="checkout.authority_handoff",
+            caused_by_session_id=None,
+            payload={"previous_profile": "owner", "history_gap": True, "paths": []},
+            now=owner.store._now(None),
+        )
+    with pytest.raises(LlmCoordError) as caught:
+        manager.resume(root, "cutover-recovery", checkpoint=plan["checkpoint"])
+    assert caught.value.code == ErrorCode.CUTOVER_CHECKPOINT_STALE
+    recovery = _preview(manager, root, plan)
+    (gap,) = recovery["ownership_gaps"]
+    assert gap["previous_profile"] == "owner"
+    assert gap["previous_database_instance_id"] is None
+    assert recovery["ready"]
+    assert (
+        manager.resume(
+            root,
+            "cutover-recovery",
+            checkpoint=plan["checkpoint"],
+            accept_current_history=recovery["recovery_checkpoint"],
+        )["regime"]
+        == "workspace"
+    )
+    owner.close()

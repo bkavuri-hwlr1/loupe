@@ -166,3 +166,9 @@ the detected filesystem and this supported set in text and JSON details. `9p`
 and `drvfs` (including WSL `/mnt/c`), `virtiofs`, exFAT, eCryptfs and FUSE remain
 unsupported. Move the checkout and authority storage to a supported local
 filesystem; warning-only operation is not enabled.
+
+
+The daemon advertises `workspace.authority.maintenance.v1` for status/prune and
+`workspace.cutover.recovery.v1` for the explicit forward-only recovery flow.
+Clients can inspect `system.ping` capabilities before offering these commands;
+capability discovery does not bypass physical ownership or journal validation.

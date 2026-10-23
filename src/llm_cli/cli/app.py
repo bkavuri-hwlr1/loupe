@@ -987,6 +987,18 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                             + " event " + str(gap["sequence"])
                             + "; previous profile="
                             + json.dumps(gap["previous_profile"])
+                            + "; previous database="
+                            + str(gap.get("previous_database_instance_id") or "unknown")
+                        )
+                    if result.get("pending_owner") is not None:
+                        text += (
+                            "\nCurrent foreign owner: "
+                            + json.dumps(result["pending_owner"])
+                            + "\nAfter that owner releases, run this without an "
+                            "acknowledgement to record the ownership gap:\n  "
+                            + result["reacquire_command"]
+                            + "\nIt will stop for attention; then review a fresh "
+                            "recovery preview before acknowledging its token."
                         )
                 return text
             return result
