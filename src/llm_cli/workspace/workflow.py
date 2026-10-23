@@ -784,6 +784,16 @@ class TaskWorkflow:
             identity, _ = read_identified_path(candidate_target(root, f.relative_path))
             if identity != f.base:
                 raise ValueError(f"Conflict at {f.relative_path}; no files changed.")
+        from llm_cli.workspace.gitstate import preflight, reconcile
+
+        # Refuse before creating the action task/session, so the held proposal
+        # remains directly retryable after the user's Git operation finishes.
+        reconcile(self.store, root, candidate_dir=self.publisher.candidate_dir)
+        preflight(
+            root,
+            tuple(f.relative_path for f in files),
+            refuse_staged_paths=self.publisher.refuse_staged_paths,
+        )
         original_execution = self.store.get_execution(task.task_id, int(row["attempt"]))
         original_claim = self.store.get_claim(task.current_claim_id or "")
         scopes = (

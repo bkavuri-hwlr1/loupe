@@ -8,6 +8,7 @@ import os
 import sqlite3
 import subprocess
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -593,3 +594,38 @@ def test_pinned_batch_cannot_hide_outside_changes(
     )
     assert all("outside edit" in outcome.content for outcome in outcomes)
     assert scanner.scan_session("reader") == 0
+
+
+def test_observed_outside_edit_then_commit_does_not_change_epoch(
+    checkout: tuple[ControlStore, Path, str], git_run: Callable[..., str]
+) -> None:
+    store, root, workspace = checkout
+    git_run(root, "config", "user.name", "Fixture")
+    git_run(root, "config", "user.email", "fixture@example.invalid")
+    (root / "a.py").write_text("before\n")
+    git_run(root, "add", "a.py")
+    git_run(root, "commit", "-m", "base")
+    _read(store, root, "a.py")
+    scanner = external.ExternalWorkspaceScanner(store)
+    assert scanner.scan_session("reader") == 0
+    (root / "a.py").write_text("outside edit\n")
+    assert scanner.scan_session("reader") == 1
+    git_run(root, "add", "a.py")
+    git_run(root, "commit", "-m", "save outside edit")
+    assert scanner.scan_session("reader") == 0
+    with store.connection() as con:
+        assert (
+            con.execute(
+                "SELECT workspace_epoch FROM workspaces WHERE workspace_id=?",
+                (workspace,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            con.execute(
+                "SELECT count(*) FROM checkout_events "
+                "WHERE event_type='git.commit_observed'"
+            ).fetchone()[0]
+            == 1
+        )
+        assert con.execute("SELECT count(*) FROM workspace_batches").fetchone()[0] == 0

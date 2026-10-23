@@ -242,6 +242,7 @@ class DaemonService:
         self.workspace_batches = SharedBatchPublisher(
             self.store, paths.candidate_dir, threading.RLock()
         )
+        self.workspace_batches.refuse_staged_paths = settings.refuse_staged_paths
         self.shared_runner = SharedTaskExecutionRunner(
             self.runner, self.workspace_batches
         )
@@ -1737,9 +1738,20 @@ class DaemonService:
                 ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
                 "candidate content no longer matches its durable identity",
             )
-        with self.physical_authority.mutation(
-            Path(workspace.canonical_path), "manual", candidate_id
-        ) as operation:
+        from llm_cli.workspace.gitstate import publication as git_publication
+
+        with (
+            git_publication(
+                self.store,
+                Path(workspace.canonical_path),
+                (candidate.relative_path,),
+                refuse_staged_paths=self.settings.refuse_staged_paths,
+                candidate_dir=self.paths.candidate_dir,
+            ),
+            self.physical_authority.mutation(
+                Path(workspace.canonical_path), "manual", candidate_id
+            ) as operation,
+        ):
             candidate, publication, workspace = self.store.begin_workspace_publication(
                 candidate_id=candidate_id, session_id=session.session_id
             )

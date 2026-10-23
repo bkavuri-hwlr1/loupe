@@ -267,3 +267,71 @@ def test_startup_confirms_a_rename_that_crashed_before_sqlite_commit(
         restarted.close()
 
     asyncio.run(scenario())
+
+
+def test_manual_publication_refuses_git_operation_without_preparing_journal(
+    tmp_path: Path,
+    repository_factory: Callable[[Path, dict[str, str]], Path],
+    service_factory: Callable[[Path], DaemonService],
+    request_factory: Callable[[str, dict[str, Any]], Request],
+) -> None:
+    import pytest
+
+    from llm_cli.errors import ErrorCode, LlmCoordError
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.txt": "base\n"})
+        service = service_factory(tmp_path)
+        service.initialize()
+        creds = _credentials("manual-git", _FIRST_SECRET)
+        await service.handle(request_factory("repo.add", {"path": str(root)}))
+        try:
+            await _open_session(
+                service,
+                request_factory,
+                root,
+                session_id="manual-git",
+                secret=_FIRST_SECRET,
+            )
+            read = await service.handle(
+                request_factory(
+                    "workspace.read_file", {**creds, "relative_path": "a.txt"}
+                )
+            )
+            await service.handle(
+                request_factory(
+                    "workspace.stage_file",
+                    {
+                        **creds,
+                        "candidate_id": "manual-candidate",
+                        "relative_path": "a.txt",
+                        "base": read["identity"],
+                        "content": "proposal\n",
+                    },
+                )
+            )
+            marker = root / ".git" / "index.lock"
+            marker.touch()
+            with pytest.raises(LlmCoordError) as refused:
+                await service.handle(
+                    request_factory(
+                        "workspace.publish_candidate",
+                        {**creds, "candidate_id": "manual-candidate"},
+                    )
+                )
+            assert refused.value.code is ErrorCode.GIT_OPERATION_ACTIVE
+            assert service.store.get_workspace_publication("manual-candidate") is None
+            candidate = service.store.get_workspace_candidate("manual-candidate")
+            assert candidate and candidate.state == "staged"
+            marker.unlink()
+            result = await service.handle(
+                request_factory(
+                    "workspace.publish_candidate",
+                    {**creds, "candidate_id": "manual-candidate"},
+                )
+            )
+            assert result["outcome"] == "published"
+        finally:
+            service.close()
+
+    asyncio.run(scenario())

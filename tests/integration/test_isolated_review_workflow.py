@@ -205,3 +205,37 @@ def test_closed_held_proposal_applies_cleans_private_runtime_and_can_undo(
             service.close()
 
     asyncio.run(scenario())
+
+
+def test_held_isolated_apply_git_refusal_keeps_proposal_retryable(
+    tmp_path: Path, repository_factory: Any, service_factory: Any
+) -> None:
+    from llm_cli.errors import ErrorCode
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.py": BASE, ".gitignore": ".env\n"})
+        (root / ".env").write_text(SECRET)
+        service = service_factory(tmp_path)
+        try:
+            _, private = await prepare(service, root)
+            private_head = (private / ".git").read_bytes()
+            marker = root / ".git" / "index.lock"
+            marker.touch()
+            with pytest.raises(LlmCoordError) as refused:
+                await service.handle(_request("task.apply", {"task_id": "held"}))
+            assert refused.value.code is ErrorCode.GIT_OPERATION_ACTIVE
+            row = service.workflow.get("held")
+            assert (
+                row
+                and row["status"] == "awaiting_review"
+                and row["action_task_id"] is None
+            )
+            assert (root / "a.py").read_text() == BASE
+            marker.unlink()
+            result = await service.handle(_request("task.apply", {"task_id": "held"}))
+            assert result["state"] == "published"
+            assert (private / ".git").read_bytes() == private_head
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
