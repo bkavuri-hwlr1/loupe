@@ -1,0 +1,158 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "python": "3.14.8 (main, Sep 30 2026, 17:55:09) [Clang 21.0.0 (clang-2100.3.34.2)]",
+  "results": [
+    {
+      "files": 20000,
+      "file_bytes": 35,
+      "repeats": 5,
+      "outside_path_cap": 1000,
+      "isolated_path_cap": 20000,
+      "fixture_seconds": 1.885618667001836,
+      "outside_cold": {
+        "samples_ms": [
+          140.08099993225187
+        ],
+        "median_ms": 140.08099993225187,
+        "result": 0
+      },
+      "outside_warm": {
+        "samples_ms": [
+          83.0769999884069,
+          84.63891700375825,
+          82.58554106578231,
+          87.25337509531528,
+          88.48233392927796
+        ],
+        "median_ms": 84.63891700375825,
+        "result": 0
+      },
+      "outside_observed_paths": 1000,
+      "outside_one_change": {
+        "samples_ms": [
+          84.15929204784334
+        ],
+        "median_ms": 84.15929204784334,
+        "result": 1
+      },
+      "isolated_capture_cold": {
+        "samples_ms": [
+          2673.78358298447
+        ],
+        "median_ms": 2673.78358298447,
+        "result": {
+          "captured_paths": 20000,
+          "deferred_paths": 0
+        }
+      },
+      "isolated_capture_warm": {
+        "samples_ms": [
+          1180.267499992624,
+          1169.6834999602288,
+          1172.8945840150118,
+          1189.265749999322,
+          1141.1332089919597
+        ],
+        "median_ms": 1172.8945840150118,
+        "result": {
+          "captured_paths": 20000,
+          "deferred_paths": 0
+        }
+      },
+      "isolated": {
+        "status": "unsupported",
+        "error": "isolated hydration inventory is incomplete: metadata_budget_exceeded",
+        "open_seconds": 6.711120707914233,
+        "scanned_paths": 0
+      }
+    },
+    {
+      "files": 100000,
+      "file_bytes": 35,
+      "repeats": 5,
+      "outside_path_cap": 1000,
+      "isolated_path_cap": 20000,
+      "fixture_seconds": 12.561899207998067,
+      "outside_cold": {
+        "samples_ms": [
+          182.90070910006762
+        ],
+        "median_ms": 182.90070910006762,
+        "result": 0
+      },
+      "outside_warm": {
+        "samples_ms": [
+          139.61474993266165,
+          137.56316690705717,
+          138.82154203020036,
+          139.5495409378782,
+          140.59379103127867
+        ],
+        "median_ms": 139.5495409378782,
+        "result": 0
+      },
+      "outside_observed_paths": 1000,
+      "outside_one_change": {
+        "samples_ms": [
+          147.72433298639953
+        ],
+        "median_ms": 147.72433298639953,
+        "result": 1
+      },
+      "isolated_capture": {
+        "status": "unsupported",
+        "error": "isolated source exceeds its 20,000-path budget",
+        "scanned_paths": 0
+      },
+      "isolated": {
+        "status": "unsupported",
+        "error": "isolated source exceeds its 20,000-path budget",
+        "open_seconds": 10.385661166976206,
+        "scanned_paths": 0
+      }
+    }
+  ],
+  "base_commit": "7a525080c701d774cbdf8192de642e4fc47ac235",
+  "script_sha256": "ca291c0347333f72f19e0595c6e6fc1e90eb3393d01ee84a600dcacbfd2a419d",
+  "command": "PYTHONPATH=src python scripts/scan_scale.py --files 20000 100000 --repeats 5 --output /tmp/scan-scale.json",
+  "growth_20000": {
+    "initial_files": 7000,
+    "target_files": 20000,
+    "growth_step_files": 45,
+    "status": "complete",
+    "growth_seconds": 520.8134749169694,
+    "growth_steps": 289,
+    "accepted_manifest_paths": 20000,
+    "accepted_manifest_entries": 20014,
+    "full_safe_point_warm": {
+      "samples_ms": [
+        1966.9529169332236,
+        1891.4760830812156,
+        1911.2681250553578,
+        1948.8159590400755,
+        1944.3040830083191
+      ],
+      "median_ms": 1944.3040830083191,
+      "result": {
+        "applied": 0,
+        "deferred": 0,
+        "conflicted": 0
+      }
+    },
+    "full_safe_point_one_change": {
+      "samples_ms": [
+        2381.8728330079466
+      ],
+      "median_ms": 2381.8728330079466,
+      "result": {
+        "applied": 1,
+        "deferred": 0,
+        "conflicted": 0
+      }
+    },
+    "database_bytes": 981360640,
+    "script_sha256": "8deef6c60d01d610940c7e3d8120b4470e796a1ca0a5754b1b856a2305bd65cb"
+  },
+  "committed_script_sha256": "e167cccebb61532fc74731c045a313d10f7275aa4957b6eada3c0f4d5df2eba5",
+  "growth_harness_difference": "After measurement started, main() was changed to exit nonzero for a failed growth result; the measurement functions are byte-identical. Removing that exact exit-status clause reproduces growth_20000.script_sha256."
+}

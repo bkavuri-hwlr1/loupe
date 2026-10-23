@@ -1,0 +1,63 @@
+{
+  "base_source_commit": "7a525080c701d774cbdf8192de642e4fc47ac235",
+  "frozen_harness_code_commit": "675a173f5fffe6ee838ff9846017085e7f8a5361",
+  "bounded_harness_sha256": "c4af9ea63fab31c77b467383cd4547074a3088eecfc990c71f74e94962a2a9f6",
+  "source_hash_count": 128,
+  "source_hashes_independently_verified_before_merge": true,
+  "bounded_command": "PYTHONPATH=src python scripts/soak.py --duration 3600 --seed 20261022 --restart-interval 120 --cycle-interval 12 --output /private/tmp/loupe-wave8-e3/soak-3600-bounded.json",
+  "command_interpreter_note": "python denotes the recorded Python 3.14.8 all-extras interpreter; its account-specific executable path is omitted",
+  "bounded_result": {
+    "cycles": 300,
+    "restarts": 27,
+    "active_seconds": 3600.2644973749993,
+    "wall_seconds": 3824.14695,
+    "sample_count": 301,
+    "highwater": {
+      "database_bytes": 28124920,
+      "candidate_bytes": 60887,
+      "open_files": 15,
+      "threads": 6,
+      "memory_bytes": 55050240,
+      "rpc_p99_ms": 1870.3575839754194
+    },
+    "disposable_root_removed": true
+  },
+  "receipts_sha256": {
+    "scan-scale-e3-2026-10-22.json": "fb175946669b7af08df6d6f1fc9719b0aa397370cad8e064b1ccf26f5d2d5cf8",
+    "soak-bounded-e3-2026-10-22.json": "97cae92b42097d7648393e323eaf45fc5244d2b28bc86651df810272c6a0794d",
+    "soak-growing-e3-2026-10-22.json": "ad9bb916be7d115ed22dd9b0fa4284b1b4806f4959c6148e16876df84c1d9e1b",
+    "soak-initial-failure-e3-2026-10-22.json": "b0d77abcad0a6cd05342c9875323f2a4f1288e2dad7f69bb8d17ca722e94a515",
+    "soak-interrupted-e3-2026-10-22.json": "a557a768c5874b582d92a6b0ddfbebb72e7946bc0d206cacbaa52360cbf50066"
+  },
+  "harness_verification": {
+    "correctness_passed": 3398,
+    "expected_skips": 2,
+    "separate_scale_gates_passed": 2,
+    "correctness_seconds": 1439.78,
+    "focused_e3_tests_passed": 22,
+    "ruff": "passed",
+    "mypy_source_files": 128,
+    "normalized_coverage_percent": 87.40975230478729,
+    "coverage_alias_byte_identity_verified": true
+  },
+  "cleanup_followup": {
+    "commit": "2a158a32644204ae762888ec8e7c501954ed51c1",
+    "independent_regressions_passed": 15,
+    "source_in_frozen_hour": false
+  },
+  "combined_local_verification": {
+    "commit": "10e0e6d",
+    "passed": 3494,
+    "expected_skips": 2,
+    "separate_scale_gates_passed": 2,
+    "coverage_percent": 88,
+    "correctness_seconds": 1486.24,
+    "ruff_mypy_package_builds": "passed",
+    "unchanged_tracked_hashes": 499
+  },
+  "ci_snapshot_2026_10_23_02_27_UTC": {
+    "pr74": "7/7 green; unmerged; tag/tap maintainer gated",
+    "pr75": "5/7 green, others running; no failures",
+    "pr76": "4/7 green, others running; no failures"
+  }
+}

@@ -72,6 +72,33 @@ D4 releases what is already on `main` (Waves 1–7), so users get that work
 before Waves 8–11 change it further. Publishing still needs you to push the
 tag. The work in [Later](#later) stays out of these waves.
 
+### Wave 8 implementation record (October 22, 2026)
+
+D4 is prepared in [PR #74](https://github.com/bkavuri-hwlr1/loupe/pull/74);
+all seven CI checks passed on `e02c2d11` (October 23, 01:41 UTC). The release
+PR is not recorded as merged here, and the maintainer still publishes the tag
+and verifies the tap upgrade on both Mac architectures. C11 is implemented in
+[PR #75](https://github.com/bkavuri-hwlr1/loupe/pull/75), with accepted G4 in
+[PR #76](https://github.com/bkavuri-hwlr1/loupe/pull/76), stacked on #75. The
+October 23, 02:27 UTC CI snapshot had five of seven checks green for #75 and four
+of seven for #76, with the rest running and no failures.
+The combined local candidate `10e0e6d` passed 3,494 tests, two expected skips,
+88% coverage, both separate scale gates, Ruff, mypy and package builds. All
+499 tracked-file hashes remained unchanged. Local verification and PR checks
+are tracked separately from merge status.
+
+E3's [report and raw receipts](experiments/soak-and-scan-e3-2026-10-22.md)
+preserve the growing-path stress failure at the original 128 MiB database bound
+and the separately frozen steady-path pass: 3,600 active seconds, 300 cycles,
+27 daemon restarts, all invariant/resource checks and complete cleanup. A
+lid-close sleep extended wall time; no active duration was shortened. Its real
+20,000-file isolated safe point takes 1.94 seconds median, clearing C12's
+250 ms design gate. The outside scanner covers only its latest 1,000 read
+paths; 20,000-file hydration admission and 100,000-file isolated source capture
+remain explicitly unsupported in the tested fixtures. Retained whole-manifest
+journal growth also needs follow-up; faster invalidation alone does not fix
+that storage cost. E2 remains held and F4 remains gated.
+
 ## At a glance: Waves 4–7 (merged)
 
 | ID | Package | Lane | Size | Depends on | Hot files | Wave |
@@ -1671,6 +1698,12 @@ it), `docs/adr/0010-cross-profile-publication-authority.md`,
 
 These are deliberately outside Waves 8–11:
 
+- **Synchronization-journal retention.** E3's growing-path stress exceeded
+  128 MiB of SQLite files after 52 minutes; growing an admitted checkout from
+  7,000 to 20,000 files retained 981 MB. Review whole-manifest journal storage
+  and a safe retirement policy separately from C12's invalidation hints. Keep
+  the [original failed stress receipt](experiments/soak-growing-e3-2026-10-22.json)
+  as a regression workload rather than raising its bound.
 - **F4 embeddings, the `sqlite-vec` accelerator and opt-in task memory.**
   F3's live comparison showed no benefit from retrieval: 90 of 102 expected
   facts with it on, 92 with it off. Revisit only with a stronger case.

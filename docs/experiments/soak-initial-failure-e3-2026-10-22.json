@@ -1,0 +1,181 @@
+{
+  "seed": 20261022,
+  "requested_seconds": 3600.0,
+  "bounds": {
+    "database_bytes": 134217728,
+    "candidate_bytes": 134217728,
+    "open_files": 256,
+    "threads": 48,
+    "memory_bytes": 805306368,
+    "rpc_p99_ms": 5000
+  },
+  "status": "failed",
+  "root": "/private/tmp/loupe-soak-9uclr2xg",
+  "python": "3.14.8 (main, Sep 30 2026, 17:55:09) [Clang 21.0.0 (clang-2100.3.34.2)]",
+  "platform": "darwin",
+  "cycles": 19,
+  "restarts": 1,
+  "elapsed_seconds": 229.13352458400186,
+  "failure": "LlmCoordError: source or ignore/attribute/config policy changed during isolated creation",
+  "samples": [
+    {
+      "database_bytes": 2466896,
+      "candidate_bytes": 164,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49266688,
+      "rpc_p99_ms": 137.5743750249967
+    },
+    {
+      "database_bytes": 5053920,
+      "candidate_bytes": 377,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49545216,
+      "rpc_p99_ms": 895.6484580412507
+    },
+    {
+      "database_bytes": 5168776,
+      "candidate_bytes": 544,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49561600,
+      "rpc_p99_ms": 895.6484580412507
+    },
+    {
+      "database_bytes": 2222448,
+      "candidate_bytes": 744,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49790976,
+      "rpc_p99_ms": 1357.487375033088
+    },
+    {
+      "database_bytes": 5373624,
+      "candidate_bytes": 923,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49872896,
+      "rpc_p99_ms": 1357.487375033088
+    },
+    {
+      "database_bytes": 5467832,
+      "candidate_bytes": 1124,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50020352,
+      "rpc_p99_ms": 1357.487375033088
+    },
+    {
+      "database_bytes": 5578424,
+      "candidate_bytes": 1297,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50167808,
+      "rpc_p99_ms": 1357.487375033088
+    },
+    {
+      "database_bytes": 5701448,
+      "candidate_bytes": 1531,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50364416,
+      "rpc_p99_ms": 1542.9989580297843
+    },
+    {
+      "database_bytes": 5803848,
+      "candidate_bytes": 1704,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50380800,
+      "rpc_p99_ms": 1542.9989580297843
+    },
+    {
+      "database_bytes": 5893960,
+      "candidate_bytes": 1912,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50413568,
+      "rpc_p99_ms": 1542.9989580297843
+    },
+    {
+      "database_bytes": 6012744,
+      "candidate_bytes": 2147,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 47890432,
+      "rpc_p99_ms": 1449.2440409958363
+    },
+    {
+      "database_bytes": 6102952,
+      "candidate_bytes": 2358,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 48250880,
+      "rpc_p99_ms": 1485.264457995072
+    },
+    {
+      "database_bytes": 6193064,
+      "candidate_bytes": 2531,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 48283648,
+      "rpc_p99_ms": 1485.264457995072
+    },
+    {
+      "database_bytes": 6438824,
+      "candidate_bytes": 2767,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 48709632,
+      "rpc_p99_ms": 1542.9989580297843
+    },
+    {
+      "database_bytes": 6549416,
+      "candidate_bytes": 2943,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 48873472,
+      "rpc_p99_ms": 1542.9989580297843
+    },
+    {
+      "database_bytes": 6655912,
+      "candidate_bytes": 3179,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49119232,
+      "rpc_p99_ms": 1660.6697500683367
+    },
+    {
+      "database_bytes": 6782888,
+      "candidate_bytes": 3391,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49364992,
+      "rpc_p99_ms": 1660.6697500683367
+    },
+    {
+      "database_bytes": 6885288,
+      "candidate_bytes": 3615,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49414144,
+      "rpc_p99_ms": 1665.0106250308454
+    },
+    {
+      "database_bytes": 7143336,
+      "candidate_bytes": 3802,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49479680,
+      "rpc_p99_ms": 1660.6697500683367
+    }
+  ],
+  "rpc_latency_ms": {
+    "count": 208,
+    "p50": 112.23066702950746,
+    "p95": 1060.3530840016901,
+    "p99": 1660.6697500683367,
+    "max": 1718.339666025713
+  }
+}

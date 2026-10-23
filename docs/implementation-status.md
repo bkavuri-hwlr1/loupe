@@ -1106,23 +1106,65 @@ profile admits no new legacy work in that window. Another profile's ownership
 after the intent still requires operator attention. `apply` now hashes source
 before taking the database write lock.
 
+## Wave 8 validation (October 22, 2026)
+
+Wave 8 is implemented in review branches; these packages are not recorded as
+merged here. D4 prepares 0.1.0a3 and its real 0.1.0a2 upgrade fixture in
+[PR #74](https://github.com/bkavuri-hwlr1/loupe/pull/74). Its seven CI checks
+passed on `e02c2d11` (verified October 23, 01:41 UTC). Publishing the tag and
+verifying the tap upgrade on both Mac architectures remain maintainer steps.
+C11's Git-operation/index safeguards are in
+[PR #75](https://github.com/bkavuri-hwlr1/loupe/pull/75); G4's accepted ADR 0010
+recovery and authority maintenance are in
+[PR #76](https://github.com/bkavuri-hwlr1/loupe/pull/76), stacked on #75.
+At the last CI snapshot (October 23, 02:27 UTC), #75 had five of seven checks
+green and #76 had four of seven; the remaining checks were running, with no
+failures.
+
+The final combined local candidate `10e0e6d` includes C11, G4, the final E3
+harness and its orphan-runtime cleanup follow-up. It passed **3,494 tests**,
+with two expected environment skips and **88% coverage** in 1,486.24 seconds.
+Both separate scale gates passed (13.38 seconds; 10,000-file index build
+7.06 seconds). Ruff, mypy, package builds and all 499 tracked-file hashes passed
+verification. These local results do not stand in for each PR's CI result.
+
+E3's [experiment report](experiments/soak-and-scan-e3-2026-10-22.md) records
+scripted-provider mixed shared/isolated sessions, concurrent outside writes and
+Git changes, daemon crashes, resource bounds and the deliberately failing
+lost-write control. The frozen steady-path run passed its full 3,600 active
+seconds: 300 cycles,
+27 daemon restarts, every invariant and original resource bound, and complete
+disposable-root cleanup. A lid-close sleep extended wall time by about four
+minutes; the active duration was not shortened.
+A separate growing-path stress **failed** the original 128 MiB database bound
+at 52 minutes; that failed receipt and earlier incomplete attempts are retained.
+The creation-race attempt also exposed orphaned runtime copies; the separate
+cleanup fix has 15 independently passing lifecycle regressions. Neither hour
+run changes its frozen baseline source to include that later fix.
+
+At 20,000 source files, a real isolated safe point after admitted checkout
+growth takes 1.94 seconds median, exceeding C12's 250 ms gate. The report
+recommends watcher invalidation hints while preserving exact identity checks
+and loss recovery. It explicitly records the latest-1,000-read outside-scan
+window, the 20,000-file hydration metadata refusal, the 100,000-source-path
+refusal and retained sync-journal storage growth. None of these unsupported
+cases is presented as completed coverage.
+
 ## Next executable slice
 
-[`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
-Waves 8–11, as packages that separate sessions can run at once. Waves 1–7 are
-merged.
+[`parallel-work-plan.md`](parallel-work-plan.md) splits the remaining work into
+Waves 9–11. Waves 1–7 are merged; Wave 8 review and validation are described
+above.
 
-1. Release 0.1.0a3 with a tested upgrade path from 0.1.0a2 (D4), and run a
-   long multi-session soak that also measures scan cost at scale (E3).
-2. Respect Git's own state. C11 refuses to publish during a Git operation or
-   onto conflicted paths, and records commits and branch switches as Git
-   events, with an epoch change for branch switches. C12 adds native watchers,
-   but only if E3's measurement shows scans are too slow.
-3. Finish the isolated-mode lifecycle: switching a conversation between modes
-   (C13), managed background processes (C14) and runtime export (C15).
-4. Maintain authority: prune stale ownership records, recover stuck cutovers
-   under an ADR 0010 amendment, and name unsupported filesystems (G4).
-5. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
+1. Finish the isolated-mode lifecycle: switching a conversation between modes
+   (C13) and runtime export (C15), followed by managed background processes
+   (C14).
+2. Proceed with C12's watcher design using E3's measured scan cost. Treat
+   hydration admission, scan coverage and synchronization-journal retention as
+   explicit constraints and separate follow-ups.
+3. Complete D4's maintainer-gated release tag and both-architecture tap upgrade
+   after the release PR is reviewed and merged.
+4. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
    on hold.
 
 The full phased design remains in
