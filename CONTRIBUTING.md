@@ -38,8 +38,9 @@ Install the locked development environment, then run the same checks as CI:
 
 ```sh
 uv sync --locked --all-groups --all-extras
-uv run pytest --cov=llm_cli -m 'not index_scale'
+uv run pytest --cov=llm_cli -m 'not index_scale and not admission_scale'
 uv run pytest -m index_scale -s
+uv run pytest --no-cov -m admission_scale -s
 uv run ruff check .
 uv run mypy
 uv build --no-sources
@@ -111,12 +112,14 @@ Prefer deterministic clocks, seeded identifiers, temporary local repositories,
 and explicit time bounds. A mocked SQLite transaction or mocked Git diff is not
 enough to establish cross-process or repository safety.
 
-CI runs the `index_scale` test separately without coverage instrumentation on
-every supported OS/Python matrix entry. It retains the 10,000-file,
+CI runs `index_scale` and `admission_scale` separately without coverage
+instrumentation on every supported OS/Python matrix entry. The index test
+retains the 10,000-file,
 400,000-function fixture, strict 30-second build limit, and the 1,000-versus-
 10,000-file incremental publication checks. Coverage applies to the ordinary
 correctness suite; production runtime limits are measured without tracing
-overhead. The scale test prints build phase wall/CPU times before asserting.
+overhead. The index test prints build phase wall/CPU times before asserting.
+The admission test retains the real clients' default five-second RPC timeout.
 
 Concurrency barriers test overlapping preparation and publication correctness.
 All CLI participants share a 120-second readiness deadline, and isolated-session
