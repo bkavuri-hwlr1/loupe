@@ -789,10 +789,13 @@ class TaskWorkflow:
         # Refuse before creating the action task/session, so the held proposal
         # remains directly retryable after the user's Git operation finishes.
         reconcile(self.store, root, candidate_dir=self.publisher.candidate_dir)
+        checkout = self.store.get_checkout(session.checkout_id)
+        assert checkout is not None
         preflight(
             root,
             tuple(f.relative_path for f in files),
             refuse_staged_paths=self.publisher.refuse_staged_paths,
+            case_insensitive_filesystem=checkout.path_case_insensitive,
         )
         original_execution = self.store.get_execution(task.task_id, int(row["attempt"]))
         original_claim = self.store.get_claim(task.current_claim_id or "")

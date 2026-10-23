@@ -992,3 +992,22 @@ def test_git_postflight_failure_cannot_fail_confirmed_publication(
     )
     assert scans == 1
     assert env.repository not in gitstate._FAILED.get(env.store, set())
+
+
+def test_publisher_uses_durable_case_policy_for_staged_alias(
+    batch_env: BatchEnvironment, git_run: Callable[..., str]
+) -> None:
+    from llm_cli.errors import ErrorCode, LlmCoordError
+
+    env = batch_env
+    (env.repository / "a.txt").write_text("staged\n")
+    git_run(env.repository, "add", "a.txt")
+    with env.store.connection() as con:
+        con.execute("UPDATE checkouts SET path_case_insensitive=1")
+    env.publisher.refuse_staged_paths = True
+    files = env.files()
+    alias = (replace(files[0], relative_path="A.txt"), *files[1:])
+    with pytest.raises(LlmCoordError) as refusal:
+        env.publisher.publish("staged-alias", "first", alias, ("*",))
+    assert refusal.value.code is ErrorCode.INDEX_PATH_STAGED
+    assert env.publisher.get("staged-alias") is None

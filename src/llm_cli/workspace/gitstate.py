@@ -124,10 +124,16 @@ def fingerprint(root: Path) -> GitFingerprint:
 
 
 def preflight(
-    root: Path, paths: Sequence[str], *, refuse_staged_paths: bool = False
+    root: Path,
+    paths: Sequence[str],
+    *,
+    refuse_staged_paths: bool = False,
+    case_insensitive_filesystem: bool = False,
 ) -> tuple[GitFingerprint, tuple[str, ...]]:
     """Check the real worktree index, including linked-worktree administration."""
     normalized = tuple(normalize_changed_path(path) for path in paths)
+    prefix = ":(literal,icase)" if case_insensitive_filesystem else ":(literal)"
+    pathspecs = tuple(prefix + path for path in normalized)
     before = fingerprint(root)
     if before.operations:
         raise LlmCoordError(
@@ -143,7 +149,7 @@ def preflight(
         "--stage",
         "-z",
         "--",
-        *(":(literal)" + path for path in normalized),
+        *pathspecs,
     ).split(b"\0"):
         if not entry:
             continue
@@ -160,28 +166,28 @@ def preflight(
             "publication paths have unresolved Git index stages",
             {"retryable": True, "paths": sorted(set(unmerged))},
         )
-    committed: dict[str, tuple[str, str]] = {}
     if before.head:
-        for entry in _git(
-            root,
-            "ls-tree",
-            "-r",
-            "-z",
-            before.head,
-            "--",
-            *(":(literal)" + path for path in normalized),
-        ).split(b"\0"):
-            if entry:
-                header, path_bytes = entry.split(b"\t", 1)
-                mode, _, oid = header.decode().split()
-                committed[os.fsdecode(path_bytes)] = (mode, oid)
-    changed = tuple(
-        sorted(
-            path
-            for path in staged.keys() | committed.keys()
-            if staged.get(path) != committed.get(path)
+        # diff-index supports icase pathspecs; ls-tree does not. This also finds
+        # staged deletions, whose canonical name no longer exists in the index.
+        changed = tuple(
+            sorted(
+                os.fsdecode(path)
+                for path in _git(
+                    root,
+                    "diff-index",
+                    "--cached",
+                    "--name-only",
+                    "--no-renames",
+                    "-z",
+                    before.head,
+                    "--",
+                    *pathspecs,
+                ).split(b"\0")
+                if path
+            )
         )
-    )
+    else:
+        changed = tuple(sorted(staged))
     if changed and refuse_staged_paths:
         raise LlmCoordError(
             ErrorCode.INDEX_PATH_STAGED,
@@ -227,8 +233,8 @@ def _binding(store: ControlStore, root: Path) -> sqlite3.Row | None:
     with store.connection() as con:
         row = con.execute(
             "SELECT w.workspace_id,w.checkout_id,w.workspace_epoch,"
-            "w.workspace_revision "
-            "FROM workspaces w "
+            "w.workspace_revision,c.path_case_insensitive "
+            "FROM workspaces w JOIN checkouts c ON c.checkout_id=w.checkout_id "
             "WHERE w.canonical_path=? AND w.kind='shared_checkout' AND "
             "w.mode='shared' AND w.state='active'",
             (str(root),),
@@ -472,8 +478,15 @@ def publication(
 ) -> Iterator[None]:
     """Guard a new apply; recovery callers continue to use exact journals alone."""
     reconcile(store, root, candidate_dir=candidate_dir)
-    before, staged = preflight(root, paths, refuse_staged_paths=refuse_staged_paths)
     binding = _binding(store, root)
+    before, staged = preflight(
+        root,
+        paths,
+        refuse_staged_paths=refuse_staged_paths,
+        case_insensitive_filesystem=bool(binding["path_case_insensitive"])
+        if binding is not None
+        else False,
+    )
     if binding is not None:
         with store.connection() as con:
             state = con.execute(
