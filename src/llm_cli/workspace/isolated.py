@@ -958,6 +958,68 @@ class IsolatedWorkspaceManager:
                 is None
             )
 
+    def _orphaned_creation(self, state: IsolatedState) -> bool:
+        """An unregistered creation must have no durable runtime/source users."""
+        workspace_id = state.workspace_id
+        with self.store.connection() as con:
+            references = (
+                (
+                    "SELECT 1 FROM sessions WHERE session_id=? OR workspace_id=? "
+                    "LIMIT 1",
+                    (state.session_id, workspace_id),
+                ),
+                (
+                    "SELECT 1 FROM tasks WHERE session_id=? LIMIT 1",
+                    (state.session_id,),
+                ),
+                (
+                    "SELECT 1 FROM all_task_executions WHERE workspace_id=? LIMIT 1",
+                    (workspace_id,),
+                ),
+                (
+                    "SELECT 1 FROM isolated_runtime_holds WHERE workspace_id=? LIMIT 1",
+                    (workspace_id,),
+                ),
+                (
+                    "SELECT 1 FROM workspace_candidates WHERE workspace_id=? LIMIT 1",
+                    (workspace_id,),
+                ),
+                (
+                    "SELECT 1 FROM workspace_batches WHERE workspace_id=? LIMIT 1",
+                    (workspace_id,),
+                ),
+                (
+                    "SELECT 1 FROM workspace_publications WHERE workspace_id=? LIMIT 1",
+                    (workspace_id,),
+                ),
+                (
+                    "SELECT 1 FROM isolated_sync_journal WHERE workspace_id=? "
+                    "AND state='prepared' LIMIT 1",
+                    (workspace_id,),
+                ),
+                (
+                    "SELECT 1 FROM isolated_runtime_journal WHERE workspace_id=? "
+                    "AND state='prepared' LIMIT 1",
+                    (workspace_id,),
+                ),
+            )
+            return not any(
+                con.execute(sql, parameters).fetchone()
+                for sql, parameters in references
+            )
+
+    def _retire_failed_creation(self, workspace_id: str) -> bool:
+        # Preserve the caller's original error if cleanup itself fails. Git and
+        # token verification must precede every private-file removal; unknown
+        # ordinary source stays available in the quarantined tree or archive.
+        try:
+            state = self.get(workspace_id)
+            if state is not None and self._orphaned_creation(state):
+                return self._clean_incomplete_owned(workspace_id)
+        except Exception:
+            pass
+        return False
+
     def cleanup_closed(self, session_id: str | None = None) -> None:
         """Retire closed sessions only after proposals and live actions release them."""
         with self.lock:
@@ -1092,6 +1154,10 @@ class IsolatedWorkspaceManager:
                 ):
                     return False
             self._scrub_private(path, state)
+            if not closed and self._orphaned_creation(state):
+                # Known runtime generations are disposable too, even when an
+                # unknown source edit prevents retiring the worktree itself.
+                self.runtime.cleanup(workspace_id)
             known = set(state.source_manifest) | set(state.runtime_files)
             if closed:
                 with self.store.connection() as con:
@@ -1270,8 +1336,6 @@ class IsolatedWorkspaceManager:
                 ).fetchall()
         for row in rows:
             workspace_id = str(row["workspace_id"])
-            if row["stage"] == "attention":
-                continue
             try:
                 workspace = self.store.get_workspace(workspace_id)
                 checkout = (
@@ -1284,6 +1348,11 @@ class IsolatedWorkspaceManager:
                 with self.lock:
                     state = self.get(workspace_id)
                     if state is None or state.session_id in self._opening_sessions:
+                        continue
+                    if (
+                        state.stage == "attention"
+                        and not self._orphaned_creation(state)
+                    ):
                         continue
                 from llm_cli.workspace.authority import managed_pin
 
@@ -1433,7 +1502,8 @@ class IsolatedWorkspaceManager:
                 self.store, primary, "isolated_create", state.session_id,
                 recovery=True,
             ) as operation:
-                self._quarantine(workspace_id)
+                if not self._retire_failed_creation(workspace_id):
+                    self._quarantine(workspace_id)
                 if operation is not None:
                     operation.confirm()
             raise
@@ -1801,7 +1871,8 @@ class IsolatedWorkspaceManager:
                 self.runtime.initialize(workspace_id, approved_secrets)
                 self._activate(workspace_id)
             except Exception:
-                self._quarantine(workspace_id)
+                if not self._retire_failed_creation(workspace_id):
+                    self._quarantine(workspace_id)
                 raise
             workspace = self.store.get_workspace(workspace_id)
             assert workspace is not None
