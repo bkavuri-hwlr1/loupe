@@ -601,7 +601,7 @@ def test_real_g2_schema_upgrade_preserves_all_legacy_states_and_ref_dispositions
                 )
     before = _legacy_rows(store)
     refs = git_run(repository, "show-ref")
-    assert store.initialize() == 28
+    assert store.initialize() == CONTROL_MIGRATIONS[-1].version
     assert _legacy_rows(store) == before
     with store.connection() as connection:
         assert (
