@@ -61,6 +61,7 @@ class RebuildConfig:
 class Settings:
     profile_id: str = "default"
     coordination_mode: str = "enforce"
+    refuse_staged_paths: bool = False
     workspace_mode: str = "shared"
     knowledge_index: str = "off"
     agent_provider: str = "anthropic"

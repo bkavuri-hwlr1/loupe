@@ -34,6 +34,9 @@ _CHANGE_TYPES = frozenset(
         "workspace.change_published",
         "workspace.candidate_diverged",
         "workspace.external_changed",
+        "git.checkout_changed",
+        "git.staged_paths_notice",
+        "git.concurrent_operation_attention",
     }
 )
 _GUIDANCE = (
@@ -157,7 +160,9 @@ class SharedCoordinationContext:
                 SELECT sequence, event_type, caused_by_session_id,
                     CASE WHEN event_type IN (
                         'workspace.batch_published', 'workspace.change_published',
-                        'workspace.candidate_diverged', 'workspace.external_changed'
+                        'workspace.candidate_diverged', 'workspace.external_changed',
+                        'git.checkout_changed', 'git.staged_paths_notice',
+                        'git.concurrent_operation_attention'
                     ) THEN CASE WHEN length(CAST(payload_json AS BLOB)) <= ?
                         THEN payload_json ELSE NULL END
                     ELSE '{}' END AS payload_json
@@ -196,7 +201,10 @@ class SharedCoordinationContext:
                     # Validate even another session's event before asserting
                     # that the complete replay leaves our facts unchanged.
                     change = self._change(row, case_insensitive)
-                    if event_type == "workspace.external_changed":
+                    if event_type in {
+                        "workspace.external_changed",
+                        "git.checkout_changed",
+                    }:
                         try:
                             payload = json.loads(str(row["payload_json"]))
                         except (ValueError, TypeError) as exc:
@@ -362,7 +370,13 @@ class SharedCoordinationContext:
             raise _invalid_metadata()
         paths = (
             payload.get("paths")
-            if row["event_type"] == "workspace.batch_published"
+            if row["event_type"]
+            in {
+                "workspace.batch_published",
+                "git.checkout_changed",
+                "git.staged_paths_notice",
+                "git.concurrent_operation_attention",
+            }
             else [payload.get("path")]
         )
         if not isinstance(paths, list) or not paths:
@@ -384,7 +398,15 @@ class SharedCoordinationContext:
             "own_session": row["caused_by_session_id"] == self.session_id,
             "paths": [self._path(path, case_insensitive) for path in paths],
         }
+        if row["event_type"] == "git.checkout_changed":
+            result["revalidation"] = (
+                "Re-read files and validate exact proposal bases after the checkout"
+                " changed."
+            )
         if row["event_type"] not in {
+            "git.checkout_changed",
+            "git.staged_paths_notice",
+            "git.concurrent_operation_attention",
             "workspace.candidate_diverged",
             "workspace.external_changed",
         }:

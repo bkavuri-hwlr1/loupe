@@ -821,6 +821,12 @@ suite result.
 
 ### C11. Git index safety and Git-operation reconciliation
 
+**Implementation:** adds read-only preflight checks to batch and manual
+publication, and checks held apply before allocating an action. Git observations
+run on the existing scan schedule; terminal/model notices contain paths and fixed
+guidance. See [Git publication safety](git-publication-safety.md). Validation
+receipts are recorded with the package PR.
+
 **Why.** Loupe never runs Git history commands, but it does not yet look at
 what you are doing with Git (workspace plan §16).
 

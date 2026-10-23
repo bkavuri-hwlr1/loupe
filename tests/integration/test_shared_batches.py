@@ -736,3 +736,259 @@ def test_delete_refuses_to_publish_over_an_edit_after_model_read(
     assert identify_path(target) == current
     assert target.read_text() == "user saved a newer version\n"
     assert _events(env) == 0
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "index.lock",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+    ],
+)
+def test_git_operation_refuses_publication_retryably(
+    batch_env: BatchEnvironment, operation: str
+) -> None:
+    from llm_cli.errors import ErrorCode, LlmCoordError
+
+    marker = batch_env.repository / ".git" / operation
+    if operation.startswith("rebase-"):
+        marker.mkdir()
+    else:
+        marker.write_text("active\n")
+    with pytest.raises(LlmCoordError) as refusal:
+        batch_env.publisher.publish("git-guard", "first", batch_env.files(), ("*",))
+    assert refusal.value.code is ErrorCode.GIT_OPERATION_ACTIVE
+    assert refusal.value.details and refusal.value.details["retryable"] is True
+    assert (batch_env.repository / "a.txt").read_text() == "old a\n"
+    assert batch_env.publisher.get("git-guard") is None
+    if marker.is_dir():
+        marker.rmdir()
+    else:
+        marker.unlink()
+    assert (
+        batch_env.publisher.publish(
+            "git-guard", "first", batch_env.files(), ("*",)
+        ).state
+        == "published"
+    )
+
+
+def test_staged_path_notice_and_strict_refusal(
+    batch_env: BatchEnvironment, git_run: Callable[..., str]
+) -> None:
+    from llm_cli.errors import ErrorCode, LlmCoordError
+
+    env = batch_env
+    (env.repository / "a.txt").write_text("user staged\n")
+    git_run(env.repository, "add", "a.txt")
+    index = git_run(env.repository, "write-tree")
+    env.publisher.refuse_staged_paths = True
+    with pytest.raises(LlmCoordError) as refused:
+        env.publisher.publish("strict", "first", env.files(), ("*",))
+    assert refused.value.code is ErrorCode.INDEX_PATH_STAGED
+    assert env.publisher.get("strict") is None
+    env.publisher.refuse_staged_paths = False
+    assert (
+        env.publisher.publish("advisory", "first", env.files(), ("*",)).state
+        == "published"
+    )
+    assert git_run(env.repository, "write-tree") == index
+    with env.store.connection() as con:
+        notice = con.execute(
+            "SELECT payload_json FROM checkout_events WHERE "
+            "event_type='git.staged_paths_notice'"
+        ).fetchone()
+    assert notice is not None and json.loads(notice[0])["paths"] == ["a.txt"]
+
+
+def test_unmerged_path_is_always_refused(
+    batch_env: BatchEnvironment, git_run: Callable[..., str]
+) -> None:
+    import subprocess
+
+    from llm_cli.errors import ErrorCode, LlmCoordError
+
+    env = batch_env
+    oid = git_run(env.repository, "rev-parse", "HEAD:a.txt")
+    subprocess.run(
+        ["git", "update-index", "--index-info"],
+        cwd=env.repository,
+        input=(
+            f"0 {'0' * 40}\ta.txt\n"
+            f"100644 {oid} 1\ta.txt\n100644 {oid} 2\ta.txt\n"
+            f"100644 {oid} 3\ta.txt\n"
+        ),
+        text=True,
+        check=True,
+    )
+    with pytest.raises(LlmCoordError) as refused:
+        env.publisher.publish("conflicted", "first", env.files(), ("*",))
+    assert refused.value.code is ErrorCode.INDEX_PATH_UNMERGED
+    assert env.publisher.get("conflicted") is None
+    assert (env.repository / "a.txt").read_text() == "old a\n"
+
+
+def test_plain_commit_observed_without_epoch_or_duplicate_batches(
+    batch_env: BatchEnvironment, git_run: Callable[..., str]
+) -> None:
+    from llm_cli.workspace.gitstate import reconcile
+
+    env = batch_env
+    env.publisher.publish("committed", "first", env.files(), ("*",))
+    git_run(env.repository, "add", "-A")
+    git_run(env.repository, "commit", "-m", "publish changes")
+    head = git_run(env.repository, "rev-parse", "HEAD")
+    reconcile(env.store, env.repository, candidate_dir=env.publisher.candidate_dir)
+    reconcile(env.store, env.repository, candidate_dir=env.publisher.candidate_dir)
+    with env.store.connection() as con:
+        assert (
+            con.execute(
+                "SELECT workspace_epoch FROM workspaces WHERE workspace_id=?",
+                (env.workspace_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        events = con.execute(
+            "SELECT payload_json FROM checkout_events WHERE "
+            "event_type='git.commit_observed'"
+        ).fetchall()
+        assert len(events) == 1
+        assert json.loads(events[0][0])["batch_ids"] == ["committed"]
+        assert con.execute("SELECT count(*) FROM workspace_batches").fetchone()[0] == 1
+        assert tuple(
+            con.execute(
+                "SELECT batch_id,commit_oid FROM workspace_git_batch_commits"
+            ).fetchone()
+        ) == ("committed", head)
+
+
+def test_branch_switch_notifies_all_sessions_and_revalidates_old_base(
+    batch_env: BatchEnvironment, git_run: Callable[..., str]
+) -> None:
+    from llm_cli.workspace.context import SharedCoordinationContext
+    from llm_cli.workspace.external import ExternalWorkspaceScanner
+    from llm_cli.workspace.gitstate import reconcile
+
+    env = batch_env
+    old = env.files()
+    git_run(env.repository, "checkout", "-b", "other")
+    (env.repository / "a.txt").write_text("other branch\n")
+    git_run(env.repository, "add", "a.txt")
+    git_run(env.repository, "commit", "-m", "other")
+    git_run(env.repository, "checkout", "main")
+    reconcile(env.store, env.repository)
+    git_run(env.repository, "checkout", "other")
+    ExternalWorkspaceScanner(env.store).scan_session("first")
+    with env.store.connection() as con:
+        assert (
+            con.execute(
+                "SELECT workspace_epoch FROM workspaces WHERE workspace_id=?",
+                (env.workspace_id,),
+            ).fetchone()[0]
+            == 2
+        )
+        rows = con.execute(
+            "SELECT payload_json FROM checkout_events WHERE "
+            "event_type='git.checkout_changed'"
+        ).fetchall()
+        assert {json.loads(row[0])["affected_session_id"] for row in rows} == {
+            "first",
+            "second",
+        }
+    for session in ("first", "second"):
+        update = SharedCoordinationContext(env.store, session, ("*",))(None)
+        assert update.text and "git.checkout_changed" in update.text
+        assert "Re-read files" in update.text
+    assert env.publisher.publish("old-epoch", "first", old, ("*",)).state == "diverged"
+    assert (env.repository / "a.txt").read_text() == "other branch\n"
+
+
+def test_git_change_during_apply_records_attention_and_forces_rescan(
+    batch_env: BatchEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.errors import ErrorCode, LlmCoordError
+
+    env = batch_env
+    original = batches.atomic_replace_regular_file
+    marker = env.repository / ".git" / "index.lock"
+
+    def during(**kwargs: Any) -> None:
+        original(**kwargs)
+        marker.write_text("Git started during publication\n")
+
+    monkeypatch.setattr(batches, "atomic_replace_regular_file", during)
+    assert (
+        env.publisher.publish("racing", "first", env.files(), ("*",)).state
+        == "published"
+    )
+    with env.store.connection() as con:
+        assert (
+            con.execute("SELECT rescan_required FROM workspace_git_state").fetchone()[0]
+            == 1
+        )
+        attention = con.execute(
+            "SELECT payload_json FROM checkout_events WHERE "
+            "event_type='git.concurrent_operation_attention'"
+        ).fetchone()
+        assert attention and json.loads(attention[0])["paths"] == [
+            "a.txt",
+            "docs/b.txt",
+        ]
+    with pytest.raises(LlmCoordError) as refused:
+        env.publisher.publish("next", "second", env.files(), ("*",))
+    assert refused.value.code is ErrorCode.GIT_OPERATION_ACTIVE
+    marker.unlink()
+    monkeypatch.setattr(batches, "atomic_replace_regular_file", original)
+    assert (
+        env.publisher.publish("next", "second", env.files(), ("*",)).state
+        == "published"
+    )
+    with env.store.connection() as con:
+        assert (
+            con.execute("SELECT rescan_required FROM workspace_git_state").fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError, ValueError, __import__("sqlite3").OperationalError]
+)
+def test_git_postflight_failure_cannot_fail_confirmed_publication(
+    batch_env: BatchEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: type[Exception],
+) -> None:
+    from llm_cli.workspace import gitstate
+
+    env = batch_env
+    original = gitstate._postflight
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise failure("injected advisory observation failure")
+
+    monkeypatch.setattr(gitstate, "_postflight", fail)
+    assert (
+        env.publisher.publish("confirmed", "first", env.files(), ("*",)).state
+        == "published"
+    )
+    assert env.repository in gitstate._FAILED[env.store]
+    monkeypatch.setattr(gitstate, "_postflight", original)
+    scans = 0
+    files = gitstate._files
+
+    def scan(root: Path) -> dict[str, list[int] | None]:
+        nonlocal scans
+        scans += 1
+        return files(root)
+
+    monkeypatch.setattr(gitstate, "_files", scan)
+    assert (
+        env.publisher.publish("retry", "first", env.files(), ("*",)).state
+        == "published"
+    )
+    assert scans == 1
+    assert env.repository not in gitstate._FAILED.get(env.store, set())

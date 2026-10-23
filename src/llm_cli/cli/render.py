@@ -643,6 +643,26 @@ def checkout_event_text(event: dict[str, Any], *, own_session_id: str) -> str | 
         return None
     payload = event.get("payload")
     payload = payload if isinstance(payload, dict) else {}
+    if kind == "git.checkout_changed":
+        if payload.get("affected_session_id") != own_session_id:
+            return None
+        return (
+            "  Git changed this checkout; re-read files and revalidate pending edits."
+        )
+    if kind in {"git.staged_paths_notice", "git.concurrent_operation_attention"}:
+        paths = payload.get("paths")
+        paths = paths if isinstance(paths, list) else []
+        rendered = ", ".join(_clip(path) for path in paths[:4] if isinstance(path, str))
+        suffix = " …" if len(paths) > 4 else ""
+        if kind == "git.staged_paths_notice":
+            return (
+                f"  Staged Git changes at {rendered}{suffix}; "
+                "staged versions are retained."
+            )
+        return (
+            f"  Git changed during publication at {rendered}{suffix}; "
+            "attention and rescan required."
+        )
     if kind == "checkout.authority_handoff":
         return (
             "  Checkout ownership changed; earlier history is incomplete. "

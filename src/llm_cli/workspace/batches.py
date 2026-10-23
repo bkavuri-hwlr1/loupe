@@ -407,6 +407,7 @@ class SharedBatchPublisher:
         self.store = store
         self.candidate_dir = candidate_dir
         self.lock = lock
+        self.refuse_staged_paths = False
 
     def get(self, batch_id: str) -> BatchPublication | None:
         with self.store.connection() as connection:
@@ -488,6 +489,39 @@ class SharedBatchPublisher:
             return result
 
     def _publish(
+        self,
+        batch_id: str,
+        session_id: str,
+        files: Sequence[BatchFile],
+        scopes: tuple[str, ...],
+        case_insensitive_filesystem: bool = False,
+    ) -> BatchPublication:
+        from llm_cli.workspace.gitstate import publication
+
+        if not isinstance(batch_id, str) or not batch_id or len(batch_id) > 256:
+            raise WorkspaceBrokerError("batch ID must contain 1 to 256 characters")
+        _request(session_id, files, scopes, case_insensitive_filesystem)
+        with self.lock:
+            # Idempotent reads and interrupted journals retain their original
+            # recovery semantics, even while the operator is using Git.
+            if self.get(batch_id) is not None:
+                return self._publish_inner(
+                    batch_id, session_id, files, scopes, case_insensitive_filesystem
+                )
+            with self.store.connection() as connection:
+                binding = self._binding(connection, session_id, require_active=True)
+            with publication(
+                self.store,
+                Path(binding["canonical_path"]),
+                tuple(item.relative_path for item in files),
+                refuse_staged_paths=self.refuse_staged_paths,
+                candidate_dir=self.candidate_dir,
+            ):
+                return self._publish_inner(
+                    batch_id, session_id, files, scopes, case_insensitive_filesystem
+                )
+
+    def _publish_inner(
         self,
         batch_id: str,
         session_id: str,
