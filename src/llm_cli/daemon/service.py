@@ -783,6 +783,14 @@ class DaemonService:
     async def _dispatch_owned(self, request: Request) -> Any:
         method = request.method
         params = request.params
+        if method == "workspace.authority.maintenance":
+            values = {
+                name: params.get(name, False)
+                for name in ("prune", "apply", "include_unrecorded")
+            }
+            if any(type(value) is not bool for value in values.values()):
+                raise ValueError("authority maintenance options must be booleans")
+            return await asyncio.to_thread(self.physical_authority.records, **values)
         if method.startswith("workspace.cutover."):
             return await asyncio.to_thread(self._cutover_request, method, params)
         if method == "system.init":
@@ -1162,6 +1170,12 @@ class DaemonService:
             return self.cutovers.preview(root)
         if method == "workspace.cutover.status":
             return self.cutovers.status(root)
+        if method == "workspace.cutover.recovery":
+            return self.cutovers.recovery(
+                root,
+                _string(params, "intent_id"),
+                checkpoint=_string(params, "checkpoint"),
+            )
         if method == "workspace.cutover.apply":
             dispositions = params.get("dispositions", {})
             if not isinstance(dispositions, dict) or any(
@@ -1182,6 +1196,9 @@ class DaemonService:
                     root,
                     intent_id=_string(params, "intent_id"),
                     checkpoint=_string(params, "checkpoint"),
+                    accept_current_history=_optional_string(
+                        params, "accept_current_history"
+                    ),
                 )
         if method == "workspace.cutover.export":
             return self._cutover_export(root)

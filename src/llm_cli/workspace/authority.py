@@ -232,8 +232,10 @@ class PhysicalCheckout:
                 if filesystem not in SUPPORTED_FILESYSTEMS:
                     raise recovery_error(
                         "checkout and Git administration require a supported local "
-                        f"filesystem; detected {filesystem!r}",
+                        f"filesystem; detected {filesystem!r}; supported: "
+                        + ", ".join(sorted(SUPPORTED_FILESYSTEMS)),
                         filesystem=filesystem,
+                        supported_filesystems=sorted(SUPPORTED_FILESYSTEMS),
                     )
             if admin != root / ".git" and not (root / ".git").is_file():
                 raise ValueError("Git administration pointer is not a regular file")
@@ -451,8 +453,10 @@ class PhysicalAuthority:
         if filesystem not in SUPPORTED_FILESYSTEMS:
             raise recovery_error(
                 "authority requires a verified supported local filesystem; "
-                f"detected {filesystem!r}",
+                f"detected {filesystem!r}; supported: "
+                + ", ".join(sorted(SUPPORTED_FILESYSTEMS)),
                 filesystem=filesystem,
+                supported_filesystems=sorted(SUPPORTED_FILESYSTEMS),
             )
         for ancestor in (
             *(
@@ -465,7 +469,218 @@ class PhysicalAuthority:
         ):
             private_directory(ancestor)
 
-    def _metadata(self, instance: str) -> dict[str, Any]:
+    @staticmethod
+    def _record_lock(path: Path, *, create: bool = True) -> int:
+        descriptor = os.open(
+            path, os.O_RDWR | os.O_NOFOLLOW | (os.O_CREAT if create else 0), 0o600
+        )
+        try:
+            held = os.fstat(descriptor)
+            named = path.lstat()
+            if (
+                held.st_uid != os.geteuid()
+                or held.st_mode & 0o077
+                or held.st_nlink != 1
+                or not stat.S_ISREG(held.st_mode)
+                or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+            ):
+                raise recovery_error("authority lock has unsafe storage")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor
+
+    @contextmanager
+    def _maintenance(self) -> Iterator[None]:
+        descriptor = self._record_lock(self.root / "maintenance.lock")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+    def records(
+        self,
+        *,
+        prune: bool = False,
+        apply: bool = False,
+        include_unrecorded: bool = False,
+    ) -> dict[str, Any]:
+        """Inspect or explicitly retire dead, clean, unbound physical records.
+
+        The path is diagnostic evidence of staleness, never an authority key.
+        Unsafe/ambiguous records are reported and preserved. Maintenance never
+        validates an installation, creates a checkout binding or adopts history.
+        """
+        if apply and not prune:
+            raise ValueError("only authority prune accepts --apply")
+        with self._lock:
+            if not self.root.exists():
+                return {"root": str(self.root), "applied": apply, "records": []}
+            self._prepare_root()
+            with self.store.connection() as connection:
+                bound = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT physical_key FROM authority_checkouts "
+                        "UNION SELECT physical_key FROM checkout_regimes "
+                        "UNION SELECT physical_key FROM legacy_claim_bindings "
+                        "UNION SELECT physical_key FROM authority_journals"
+                    )
+                }
+            records = []
+            for directory in sorted((self.root / "checkouts").iterdir()):
+                item: dict[str, Any] = {
+                    "physical_key": directory.name,
+                    "eligible": False,
+                    "removed": False,
+                    "bound_by_profile": directory.name in bound,
+                }
+                records.append(item)
+                try:
+                    with self._maintenance():
+                        private_directory(directory)
+                        descriptor = self._record_lock(
+                            directory / "ownership.lock", create=False
+                        )
+                        try:
+                            try:
+                                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            except BlockingIOError:
+                                item["reason"] = "owned"
+                                continue
+                            marker = private_read(directory / "marker.json")
+                            owner = private_read(directory / "owner.json") or {}
+                            item["checkout_path"] = owner.get("checkout_path")
+                            item["owner_profile"] = owner.get("profile")
+                            if item["bound_by_profile"]:
+                                item["reason"] = "bound_by_profile"
+                                continue
+                            if (
+                                marker is None
+                                or not _supported_marker(marker)
+                                or marker.get("physical_key") != directory.name
+                                or marker.get("state") != "clean"
+                                or type(marker.get("generation")) is not int
+                                or marker["generation"] < 1
+                                or marker.get("journal_id") is not None
+                                or marker.get("journal_kind") is not None
+                                or not isinstance(marker.get("binding"), dict)
+                            ):
+                                item["reason"] = "recovery_required"
+                                continue
+                            binding = marker["binding"]
+                            if (
+                                binding.get("version") != 1
+                                or binding.get("object_format")
+                                not in {"sha1", "sha256"}
+                                or any(
+                                    not isinstance(binding.get(name), dict)
+                                    or any(
+                                        type(binding[name].get(field)) is not int
+                                        or binding[name][field] < 0
+                                        for field in (
+                                            "dev",
+                                            "ino",
+                                            "birth_ns",
+                                            "generation",
+                                        )
+                                    )
+                                    for name in ("root", "admin", "common")
+                                )
+                            ):
+                                item["reason"] = "unverified_binding"
+                                continue
+                            try:
+                                binding_key = hashlib.sha256(
+                                    encode(
+                                        {
+                                            key: marker["binding"][key]
+                                            for key in (
+                                                "version",
+                                                "root",
+                                                "admin",
+                                                "object_format",
+                                            )
+                                        }
+                                    )
+                                ).hexdigest()
+                            except (KeyError, TypeError):
+                                item["reason"] = "unverified_binding"
+                                continue
+                            if binding_key != directory.name:
+                                item["reason"] = "unverified_binding"
+                                continue
+                            recorded = owner.get("checkout_path")
+                            if recorded is None:
+                                item["reason"] = "unrecorded_path"
+                                if not include_unrecorded:
+                                    continue
+                            elif (
+                                not isinstance(recorded, str)
+                                or not Path(recorded).is_absolute()
+                            ):
+                                item["reason"] = "invalid_path"
+                                continue
+                            else:
+                                try:
+                                    physical = PhysicalCheckout.inspect(Path(recorded))
+                                except LlmCoordError as exc:
+                                    # Only absence or a provable changed identity
+                                    # is stale. Unsupported filesystems, unsafe
+                                    # metadata and permission errors aren't proof.
+                                    if not isinstance(exc.__cause__, FileNotFoundError):
+                                        item["reason"] = "identity_unverified"
+                                        continue
+                                else:
+                                    try:
+                                        if physical.key == directory.name:
+                                            item["reason"] = "checkout_present"
+                                            continue
+                                    finally:
+                                        physical.close()
+                            if not set(p.name for p in directory.iterdir()) <= {
+                                "ownership.lock",
+                                "marker.json",
+                                "owner.json",
+                            }:
+                                item["reason"] = "unexpected_contents"
+                                continue
+                            item["eligible"] = True
+                            item["reason"] = (
+                                "unrecorded_path"
+                                if recorded is None
+                                else "stale_checkout"
+                            )
+                            if prune and apply:
+                                # The maintenance barrier prevents a contender
+                                # opening this inode while it is retired. Never
+                                # unlink a live/dirty lock to regain ownership.
+                                for name in (
+                                    "owner.json",
+                                    "marker.json",
+                                    "ownership.lock",
+                                ):
+                                    (directory / name).unlink(missing_ok=True)
+                                directory.rmdir()
+                                parent = os.open(
+                                    directory.parent, os.O_RDONLY | os.O_DIRECTORY
+                                )
+                                try:
+                                    os.fsync(parent)
+                                finally:
+                                    os.close(parent)
+                                item["removed"] = True
+                        finally:
+                            fcntl.flock(descriptor, fcntl.LOCK_UN)
+                            os.close(descriptor)
+                except (OSError, LlmCoordError) as exc:
+                    item["reason"] = "unsafe_record"
+                    item["error"] = str(exc)
+            return {"root": str(self.root), "applied": apply, "records": records}
+
+    def _metadata(self, instance: str, physical: PhysicalCheckout) -> dict[str, Any]:
         return {
             "version": 1,
             "profile": self.profile,
@@ -475,6 +690,7 @@ class PhysicalAuthority:
             "process_start": self._start,
             "socket": str(self.socket),
             "acquired_at": time.time_ns() // 1_000_000,
+            "checkout_path": str(physical.root),
         }
 
     def _validate(self, owner: _Owned) -> None:
@@ -759,24 +975,19 @@ class PhysicalAuthority:
                     prior.pins += 1
                     return OwnershipPin(self, prior, activity=activity)
                 directory = self._directory(physical.key)
-                private_directory(directory)
-                path = directory / "ownership.lock"
-                descriptor = os.open(
-                    path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
-                )
-                status = os.fstat(descriptor)
-                if (
-                    status.st_uid != os.geteuid()
-                    or status.st_mode & 0o077
-                    or status.st_nlink != 1
-                    or not stat.S_ISREG(status.st_mode)
-                ):
-                    os.close(descriptor)
-                    raise recovery_error("authority lock has unsafe storage")
                 try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    # Serialize opening the inode with retirement. Once flock is
+                    # held, pruning cannot retire this record even after this
+                    # short directory-maintenance barrier has been released.
+                    with self._maintenance():
+                        private_directory(directory)
+                        descriptor = self._record_lock(directory / "ownership.lock")
+                        try:
+                            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BaseException:
+                            os.close(descriptor)
+                            raise
                 except BlockingIOError as exc:
-                    os.close(descriptor)
                     owner_record = private_read(directory / "owner.json") or {}
                     marker = private_read(directory / "marker.json")
                     code = (
@@ -901,7 +1112,9 @@ class PhysicalAuthority:
                         if marker is not None:
                             self._handoff(physical, checkout_id, marker)
                         self._write_marker(owner, "clean")
-                    private_write(directory / "owner.json", self._metadata(instance))
+                    private_write(
+                        directory / "owner.json", self._metadata(instance, physical)
+                    )
                     with self._observation_lock:
                         self._owned[physical.key] = owner
                     owner.pins = 1
@@ -1352,6 +1565,8 @@ class PhysicalAuthority:
                 if code is ErrorCode.CHECKOUT_IDENTITY_CHANGED
                 else "foreign_recovery",
                 "error": str(code),
+                "detail": str(exc),
+                **(exc.details or {} if isinstance(exc, LlmCoordError) else {}),
                 "execution_contract": "claim_backed_v1",
                 "cooperative_read_barrier": False,
             }

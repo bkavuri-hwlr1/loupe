@@ -10,11 +10,12 @@ import stat
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
 from llm_cli.workspace.authority import Mutation, PhysicalAuthority, PhysicalCheckout
+from llm_cli.workspace.installation import private_read
 
 if TYPE_CHECKING:
     from llm_cli.storage.control import ControlStore
@@ -964,12 +965,276 @@ class CutoverManager:
             self._fault("intent_saved")
             return self._resume_owned(pin, identity, checkpoint)
 
+    def recovery(
+        self, path: Path | str, intent_id: str, *, checkpoint: str
+    ) -> dict[str, Any]:
+        """A metadata-only preview; no ownership, source checkpoint or transition."""
+        physical = PhysicalCheckout.inspect(Path(path))
+        try:
+            regime = self.authority.regime(physical.root)
+            with self.store.connection() as connection:
+                connection.execute("BEGIN")
+                intent = self._intent(connection, physical.key, intent_id, checkpoint)
+                return self._recovery_plan(connection, physical, regime, intent)
+        finally:
+            physical.close()
+
+    @staticmethod
+    def _intent(
+        connection: sqlite3.Connection,
+        physical_key: str,
+        identity: str,
+        checkpoint: str | None,
+    ) -> sqlite3.Row:
+        intent = connection.execute(
+            "SELECT * FROM cutover_intents WHERE intent_id=? AND physical_key=?",
+            (identity, physical_key),
+        ).fetchone()
+        if intent is None:
+            raise _error(
+                ErrorCode.CUTOVER_BLOCKED, "cutover intent does not match this checkout"
+            )
+        if checkpoint is not None and checkpoint != intent["checkpoint"]:
+            raise _error(
+                ErrorCode.CUTOVER_CHECKPOINT_STALE,
+                "resume requires the original preview checkpoint",
+            )
+        return cast(sqlite3.Row, intent)
+
+    def _ownership_gaps(
+        self, connection: sqlite3.Connection, intent: sqlite3.Row
+    ) -> list[dict[str, Any]]:
+        sequences = json.loads(intent["plan_json"])["checkout_event_sequences"]
+        gaps: list[dict[str, Any]] = []
+        for checkout_id, sequence in sorted(sequences.items()):
+            for row in connection.execute(
+                "SELECT sequence,payload_json FROM checkout_events WHERE checkout_id=? "
+                "AND sequence>? AND event_type='checkout.authority_handoff' "
+                "ORDER BY sequence",
+                (checkout_id, sequence),
+            ):
+                payload = json.loads(row["payload_json"])
+                if not isinstance(payload, dict):
+                    raise _error(
+                        ErrorCode.CUTOVER_BLOCKED, "ownership gap is malformed"
+                    )
+                if payload.get("previous_profile") != self.authority.profile:
+                    gaps.append(
+                        {
+                            "checkout_id": checkout_id,
+                            "sequence": row["sequence"],
+                            "previous_profile": payload.get("previous_profile"),
+                            "execution_contract": payload.get("execution_contract"),
+                        }
+                    )
+        return gaps
+
+    def _recovery_plan(
+        self,
+        connection: sqlite3.Connection,
+        physical: PhysicalCheckout,
+        regime: dict[str, Any],
+        intent: sqlite3.Row,
+    ) -> dict[str, Any]:
+        current = self._preview(connection, physical, regime, observe_source=False)
+        frozen = json.loads(intent["plan_json"])
+        selected = json.loads(intent["dispositions_json"])
+        blockers = list(current["blockers"])
+        if intent["stage"] not in {"prepared", "transition"}:
+            blockers.append(
+                {
+                    "kind": "intent",
+                    "id": intent["intent_id"],
+                    "reason": "dispositions_already_checkpointed",
+                }
+            )
+        if frozen.get("history_checkpoint") is None:
+            blockers.append(
+                {
+                    "kind": "intent",
+                    "id": intent["intent_id"],
+                    "reason": "legacy_checkpoint_without_history",
+                }
+            )
+        if current["mappings"] != frozen["mappings"]:
+            blockers.append(
+                {
+                    "kind": "mapping",
+                    "id": physical.key,
+                    "reason": "original_mapping_changed",
+                }
+            )
+        expected = sorted(
+            (
+                d["kind"],
+                d["id"],
+                d["state"],
+                selected.get(d["id"], d["default"]),
+                _json(d["retained_evidence"]),
+            )
+            for d in frozen["dispositions"]
+        )
+        retained = [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT kind,object_id,prior_state,disposition,retained_json "
+                "FROM cutover_dispositions WHERE intent_id=? ORDER BY kind,object_id",
+                (intent["intent_id"],),
+            )
+        ]
+        if retained != expected:
+            blockers.append(
+                {
+                    "kind": "intent",
+                    "id": intent["intent_id"],
+                    "reason": "saved_dispositions_changed",
+                }
+            )
+        original_claims = {c["claim_id"]: c for c in frozen["claims"]}
+        current_claims = {c["claim_id"]: c for c in current["claims"]}
+        for identity, action in selected.items():
+            original = original_claims.get(identity)
+            claim = current_claims.get(identity)
+            if (
+                action != "cancel"
+                or original is None
+                or claim is None
+                or claim["state"] != "queued"
+                or any(
+                    claim[key] != original[key]
+                    for key in (
+                        "task_id",
+                        "task_attempt",
+                        "repo_key",
+                        "fencing_token",
+                        "physical_keys",
+                    )
+                )
+            ):
+                blockers.append(
+                    {
+                        "kind": "claim",
+                        "id": identity,
+                        "reason": "selected_disposition_changed",
+                    }
+                )
+        marker = private_read(
+            self.authority.root / "checkouts" / physical.key / "marker.json"
+        )
+        if (
+            marker is not None
+            and marker.get("state") != "clean"
+            and (
+                marker.get("owner_profile") != self.authority.profile
+                or marker.get("journal_id") != intent["intent_id"]
+                or marker.get("journal_kind") != "regime_cutover"
+            )
+        ):
+            blockers.append(
+                {
+                    "kind": "authority",
+                    "id": physical.key,
+                    "reason": "unfinished_or_foreign_journal",
+                }
+            )
+        gaps = self._ownership_gaps(connection, intent)
+        evidence = {
+            "intent_id": intent["intent_id"],
+            "original_checkpoint": intent["checkpoint"],
+            "original_history_checkpoint": frozen.get("history_checkpoint"),
+            "accepted_history_checkpoint": current["history_checkpoint"],
+            "physical_key": physical.key,
+            "mappings": current["mappings"],
+            "selected_dispositions": selected,
+            "ownership_gaps": gaps,
+            "stage": intent["stage"],
+            "blockers": blockers,
+        }
+        return {
+            **current,
+            "intent_id": intent["intent_id"],
+            "checkpoint": intent["checkpoint"],
+            "saved_intent": dict(intent),
+            "ownership_gaps": gaps,
+            "selected_dispositions": selected,
+            "blockers": blockers,
+            "ready": not blockers,
+            "metadata_only": True,
+            "recovery_evidence": evidence,
+            "recovery_checkpoint": _digest(evidence),
+        }
+
+    def _accept_recovery(self, pin: Any, intent: sqlite3.Row, token: str) -> None:
+        physical = pin.owner.physical
+        regime = self.authority.regime(physical.root)
+        with self.store.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                current = self._intent(
+                    connection, physical.key, intent["intent_id"], intent["checkpoint"]
+                )
+                old_ack = connection.execute(
+                    "SELECT recovery_checkpoint FROM cutover_recovery_acknowledgements "
+                    "WHERE intent_id=? ORDER BY acknowledgement_id DESC LIMIT 1",
+                    (intent["intent_id"],),
+                ).fetchone()
+                if old_ack is not None and old_ack[0] == token:
+                    connection.rollback()
+                    # Exact replay below revalidates accepted history and gaps.
+                    return
+                if current["stage"] not in {"prepared", "transition"}:
+                    raise _error(
+                        ErrorCode.CUTOVER_BLOCKED,
+                        "recovery cannot replace a disposition checkpoint",
+                    )
+                plan = self._recovery_plan(connection, physical, regime, current)
+                if plan["recovery_checkpoint"] != token:
+                    raise _error(
+                        ErrorCode.CUTOVER_CHECKPOINT_STALE,
+                        "recovery inventory changed; preview recovery again",
+                    )
+                if not plan["ready"]:
+                    raise _error(
+                        ErrorCode.CUTOVER_BLOCKED,
+                        "live work, changed mappings or unresolved journals "
+                        "block recovery",
+                    )
+                physical.validate()
+                evidence = plan["recovery_evidence"]
+                if old_ack is None or old_ack[0] != token:
+                    connection.execute(
+                        "INSERT INTO cutover_recovery_acknowledgements("
+                        "intent_id,original_checkpoint,original_history_checkpoint,"
+                        "accepted_history_checkpoint,recovery_checkpoint,mappings_json,"
+                        "dispositions_json,ownership_gaps_json,inventory_json,operator_action,"
+                        "created_at) VALUES (?,?,?,?,?,?,?,?,?,"
+                        "'accept_current_history',?)",
+                        (
+                            intent["intent_id"],
+                            intent["checkpoint"],
+                            evidence["original_history_checkpoint"],
+                            evidence["accepted_history_checkpoint"],
+                            token,
+                            _json(evidence["mappings"]),
+                            _json(evidence["selected_dispositions"]),
+                            _json(evidence["ownership_gaps"]),
+                            _json(plan),
+                            self.store._now(None),
+                        ),
+                    )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        self._fault("ack_saved")
+
     def resume(
         self,
         path: Path | str,
         intent_id: str,
         *,
         checkpoint: str | None = None,
+        accept_current_history: str | None = None,
     ) -> dict[str, Any]:
         with (
             self.authority.pin(Path(path), recovery=True) as pin,
@@ -980,27 +1245,25 @@ class CutoverManager:
                     ErrorCode.CUTOVER_BLOCKED,
                     "live checkout workers must drain before cutover",
                 )
-            return self._resume_owned(pin, intent_id, checkpoint)
+            return self._resume_owned(
+                pin,
+                intent_id,
+                checkpoint,
+                accept_current_history=accept_current_history,
+            )
 
     def _resume_owned(
-        self, pin: Any, identity: str, checkpoint: str | None
+        self,
+        pin: Any,
+        identity: str,
+        checkpoint: str | None,
+        *,
+        accept_current_history: str | None = None,
     ) -> dict[str, Any]:
         physical = pin.owner.physical
         with self.store.connection() as connection:
-            intent = connection.execute(
-                "SELECT * FROM cutover_intents WHERE intent_id=? AND physical_key=?",
-                (identity, physical.key),
-            ).fetchone()
-        if intent is None:
-            raise _error(
-                ErrorCode.CUTOVER_BLOCKED, "cutover intent does not match this checkout"
-            )
-        if checkpoint is not None and checkpoint != intent["checkpoint"]:
-            raise _error(
-                ErrorCode.CUTOVER_CHECKPOINT_STALE,
-                "resume requires the original preview checkpoint",
-            )
-        if pin.owner.marker["state"] == "dirty" and (
+            intent = self._intent(connection, physical.key, identity, checkpoint)
+        if pin.owner.marker["state"] != "clean" and (
             pin.owner.marker.get("journal_id") != identity
             or pin.owner.marker.get("journal_kind") != "regime_cutover"
         ):
@@ -1012,7 +1275,44 @@ class CutoverManager:
         # intent already closed legacy admission, while source, index and HEAD
         # may keep changing. Intents saved before history digests existed keep
         # their original source-inclusive checks.
-        history = json.loads(intent["plan_json"]).get("history_checkpoint")
+        if accept_current_history is not None:
+            self._accept_recovery(pin, intent, accept_current_history)
+        with self.store.connection() as connection:
+            acknowledgement = connection.execute(
+                "SELECT * FROM cutover_recovery_acknowledgements WHERE intent_id=? "
+                "ORDER BY acknowledgement_id DESC LIMIT 1",
+                (identity,),
+            ).fetchone()
+            if acknowledgement is not None and intent["stage"] in {
+                "prepared",
+                "transition",
+            }:
+                accepted_plan = self._recovery_plan(
+                    connection, physical, self.authority.regime(physical.root), intent
+                )
+                if not accepted_plan["ready"]:
+                    raise _error(
+                        ErrorCode.CUTOVER_BLOCKED,
+                        "accepted recovery mappings, dispositions or blockers changed",
+                    )
+            accepted_gaps = (
+                json.loads(acknowledgement["ownership_gaps_json"])
+                if acknowledgement is not None
+                else None
+            )
+            if (
+                accepted_gaps is not None
+                and self._ownership_gaps(connection, intent) != accepted_gaps
+            ):
+                raise _error(
+                    ErrorCode.CUTOVER_CHECKPOINT_STALE,
+                    "ownership history changed after recovery acknowledgement",
+                )
+        history = (
+            acknowledgement["accepted_history_checkpoint"]
+            if acknowledgement is not None
+            else json.loads(intent["plan_json"]).get("history_checkpoint")
+        )
 
         def history_unchanged(expected: str) -> bool:
             if history is None:
@@ -1024,7 +1324,11 @@ class CutoverManager:
             # Before the transition marker, other profiles still see a legacy
             # checkout. Their work is not in this database, so refuse if one
             # owned the checkout after the intent was saved.
-            if history is not None and self._foreign_owner_since(intent):
+            if (
+                history is not None
+                and acknowledgement is None
+                and self._foreign_owner_since(intent)
+            ):
                 raise _error(
                     ErrorCode.CUTOVER_CHECKPOINT_STALE,
                     "another profile owned this checkout after the cutover intent "
@@ -1056,6 +1360,18 @@ class CutoverManager:
                         self.authority.regime(physical.root),
                         observe_source=history is None,
                     )
+                    if acknowledgement is not None:
+                        observed = self._recovery_plan(
+                            connection,
+                            physical,
+                            self.authority.regime(physical.root),
+                            intent,
+                        )
+                        if not observed["ready"]:
+                            raise _error(
+                                ErrorCode.CUTOVER_BLOCKED,
+                                "accepted recovery inventory is no longer safe",
+                            )
                     if (
                         observed["checkpoint"] != intent["checkpoint"]
                         if history is None
@@ -1219,18 +1535,8 @@ class CutoverManager:
 
     def _foreign_owner_since(self, intent: sqlite3.Row) -> bool:
         """Whether a clean handoff from another profile followed this intent."""
-        sequences = json.loads(intent["plan_json"])["checkout_event_sequences"]
         with self.store.connection() as connection:
-            for checkout_id, sequence in sequences.items():
-                for row in connection.execute(
-                    "SELECT payload_json FROM checkout_events WHERE checkout_id=? "
-                    "AND sequence>? AND event_type='checkout.authority_handoff'",
-                    (checkout_id, sequence),
-                ):
-                    previous = json.loads(row["payload_json"]).get("previous_profile")
-                    if previous != self.authority.profile:
-                        return True
-        return False
+            return bool(self._ownership_gaps(connection, intent))
 
     def _stage(self, identity: str, stage: str) -> None:
         with self.store.connection() as connection:
