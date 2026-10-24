@@ -92,3 +92,15 @@ def test_explore_effort_defaults_to_low_and_accepts_task_or_a_level(
         config.write_text(f"[agent]\nexplore_effort = {value}\n", encoding="utf-8")
         with pytest.raises(LlmCoordError, match="or an effort level"):
             load_settings(config)
+
+
+def test_refuse_staged_paths_is_explicit_boolean(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    assert load_settings(config).refuse_staged_paths is False
+    config.write_text("[core]\nrefuse_staged_paths = true\n")
+    assert load_settings(config).refuse_staged_paths is True
+    config.write_text('[core]\nrefuse_staged_paths = "true"\n')
+    with pytest.raises(
+        LlmCoordError, match="refuse_staged_paths must be true or false"
+    ):
+        load_settings(config)

@@ -46,7 +46,7 @@ _MCP_RESERVED_HEADERS = {
 _MCP_SERVER_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]|_(?!_)){0,23}")
 _MCP_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _MAX_MCP_SERVERS = 16
-_CORE_KEYS = {"coordination_mode"}
+_CORE_KEYS = {"coordination_mode", "refuse_staged_paths"}
 _AGENT_KEYS = {
     "provider",
     "model",
@@ -112,6 +112,11 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         raise LlmCoordError(
             ErrorCode.CONFIG_INVALID,
             "core.coordination_mode must be off, observe, or enforce",
+        )
+    refuse_staged_paths = core.get("refuse_staged_paths", settings.refuse_staged_paths)
+    if not isinstance(refuse_staged_paths, bool):
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID, "core.refuse_staged_paths must be true or false"
         )
     provider = _bounded_text(
         agent.get("provider", settings.agent_provider),
@@ -199,6 +204,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
             raise LlmCoordError(ErrorCode.CONFIG_INVALID, str(exc)) from None
     updates: dict[str, Any] = {
         "coordination_mode": mode,
+        "refuse_staged_paths": refuse_staged_paths,
         "knowledge_index": knowledge_index,
         "agent_provider": provider,
         "agent_model": model,

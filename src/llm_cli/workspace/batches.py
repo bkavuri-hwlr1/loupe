@@ -407,6 +407,7 @@ class SharedBatchPublisher:
         self.store = store
         self.candidate_dir = candidate_dir
         self.lock = lock
+        self.refuse_staged_paths = False
 
     def get(self, batch_id: str) -> BatchPublication | None:
         with self.store.connection() as connection:
@@ -436,6 +437,20 @@ class SharedBatchPublisher:
     def blocks_workspace(self, workspace_id: str) -> bool:
         with self.store.connection() as connection:
             return self._blocked(connection, workspace_id)
+
+    @classmethod
+    def _require_settled(
+        cls, connection: sqlite3.Connection, workspace_id: str
+    ) -> None:
+        if cls._blocked(connection, workspace_id):
+            raise WorkspaceBrokerError("workspace has an unresolved batch journal")
+        manual = connection.execute(
+            "SELECT 1 FROM workspace_publications WHERE workspace_id = ? "
+            "AND operation_state IN ('prepared', 'operator_attention') LIMIT 1",
+            (workspace_id,),
+        ).fetchone()
+        if manual is not None:
+            raise WorkspaceBrokerError("workspace has an unresolved file publication")
 
     @staticmethod
     def _blocked(connection: sqlite3.Connection, workspace_id: str) -> bool:
@@ -495,6 +510,42 @@ class SharedBatchPublisher:
         scopes: tuple[str, ...],
         case_insensitive_filesystem: bool = False,
     ) -> BatchPublication:
+        from llm_cli.workspace.gitstate import publication
+
+        if not isinstance(batch_id, str) or not batch_id or len(batch_id) > 256:
+            raise WorkspaceBrokerError("batch ID must contain 1 to 256 characters")
+        _request(session_id, files, scopes, case_insensitive_filesystem)
+        with self.lock:
+            # Idempotent reads and interrupted journals retain their original
+            # recovery semantics, even while the operator is using Git.
+            if self.get(batch_id) is not None:
+                return self._publish_inner(
+                    batch_id, session_id, files, scopes, case_insensitive_filesystem
+                )
+            with self.store.connection() as connection:
+                binding = self._binding(connection, session_id, require_active=True)
+                # Name an unresolved journal before Git reconciliation, which
+                # waits for it and would otherwise only ask for a retry.
+                self._require_settled(connection, str(binding["workspace_id"]))
+            with publication(
+                self.store,
+                Path(binding["canonical_path"]),
+                tuple(item.relative_path for item in files),
+                refuse_staged_paths=self.refuse_staged_paths,
+                candidate_dir=self.candidate_dir,
+            ):
+                return self._publish_inner(
+                    batch_id, session_id, files, scopes, case_insensitive_filesystem
+                )
+
+    def _publish_inner(
+        self,
+        batch_id: str,
+        session_id: str,
+        files: Sequence[BatchFile],
+        scopes: tuple[str, ...],
+        case_insensitive_filesystem: bool = False,
+    ) -> BatchPublication:
         if not isinstance(batch_id, str) or not batch_id or len(batch_id) > 256:
             raise WorkspaceBrokerError("batch ID must contain 1 to 256 characters")
         request_json = _request(session_id, files, scopes, case_insensitive_filesystem)
@@ -521,19 +572,7 @@ class SharedBatchPublisher:
             ):
                 binding = self._binding(connection, session_id, require_active=True)
                 workspace_id = str(binding["workspace_id"])
-                if self._blocked(connection, workspace_id):
-                    raise WorkspaceBrokerError(
-                        "workspace has an unresolved batch journal"
-                    )
-                manual = connection.execute(
-                    "SELECT 1 FROM workspace_publications WHERE workspace_id = ? "
-                    "AND operation_state IN ('prepared', 'operator_attention') LIMIT 1",
-                    (workspace_id,),
-                ).fetchone()
-                if manual is not None:
-                    raise WorkspaceBrokerError(
-                        "workspace has an unresolved file publication"
-                    )
+                self._require_settled(connection, workspace_id)
                 root = Path(str(binding["canonical_path"]))
                 for item in files:
                     if item.base.kind is ObjectKind.SYMLINK:

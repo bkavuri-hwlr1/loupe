@@ -1106,6 +1106,24 @@ profile admits no new legacy work in that window. Another profile's ownership
 after the intent still requires operator attention. `apply` now hashes source
 before taking the database write lock.
 
+## C11 Git publication safety
+
+C11 adds checkout-local Git preflight checks to shared batches, isolated
+publication, held apply/undo and the manual single-file broker. Git operation
+markers and unresolved index stages return retryable refusals (CLI exit 75).
+Staged paths produce notices by default; `[core] refuse_staged_paths = true`
+enables refusal. Git state changes during apply retain the existing exact-file
+journal and record attention; postflight observation failures cannot fail an
+already confirmed publication.
+
+Existing scan points record ordinary commits without changing the epoch, and
+working-file changes accompanying other HEAD movement increment it and notify all
+sessions. HEAD's reflog identifies `git commit` moves, so committing the user's
+own edits is not misreported as a branch switch; without a reflog, changed files
+stay structural. Exact raw Git blob/mode matches link each known batch once, to
+the commit that introduced it; ambiguous transformations and directory markers
+remain unlinked. See [Git publication safety](git-publication-safety.md).
+
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits this list into

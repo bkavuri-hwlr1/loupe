@@ -28,6 +28,7 @@ _REDACTED = "[redacted]"
 _ALIASES = {
     "profile_id": "profile",
     "coordination_mode": "core.coordination_mode",
+    "refuse_staged_paths": "core.refuse_staged_paths",
     "knowledge_index": "knowledge.index",
     "isolated_rebuild": "isolated.rebuild",
     "launch_lease_ms": "leases.launch_ms",

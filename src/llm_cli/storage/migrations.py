@@ -1318,6 +1318,24 @@ SELECT * FROM execution_answer_revisions UNION ALL SELECT * FROM
 workspace_execution_answer_revisions;
 """,
     ),
+    Migration(
+        29,
+        "workspace_git_safety_observations",
+        """
+CREATE TABLE workspace_git_state (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+    head_oid TEXT NOT NULL,
+    index_digest TEXT NOT NULL,
+    files_json TEXT NOT NULL,
+    rescan_required INTEGER NOT NULL DEFAULT 0 CHECK (rescan_required IN (0,1))
+);
+CREATE TABLE workspace_git_batch_commits (
+    batch_id TEXT NOT NULL REFERENCES workspace_batches(batch_id) ON DELETE CASCADE,
+    commit_oid TEXT NOT NULL,
+    PRIMARY KEY (batch_id,commit_oid)
+);
+""",
+    ),
 )
 
 

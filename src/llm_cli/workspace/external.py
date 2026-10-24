@@ -201,7 +201,6 @@ class ExternalWorkspaceScanner:
         with self.store.connection() as connection:
             sessions = connection.execute(
                 "SELECT DISTINCT s.session_id FROM sessions s "
-                "JOIN workspace_read_observations r ON r.session_id=s.session_id "
                 "WHERE s.state IN ('active','disconnected') AND s.session_id>? "
                 "ORDER BY s.session_id LIMIT 8",
                 (self._last_session,),
@@ -240,6 +239,11 @@ class ExternalWorkspaceScanner:
         ):
             return 0
         with managed_pin(self.store, root, activity=not background):
+            from llm_cli.workspace.gitstate import reconcile
+
+            reconcile(
+                self.store, root, candidate_dir=self.store.path.parent / "candidates"
+            )
             return self._scan_session_owned(session_id)
 
     def _scan_session_owned(self, session_id: str) -> int:
@@ -365,6 +369,7 @@ class ExternalWorkspaceScanner:
             # Opaque stamps get a non-digest sentinel to enable the cheap path.
             results.append((row, stamp, identity or "opaque", changed))
         emitted = 0
+        git_samples: list[tuple[str, str]] = []
         with self.store.connection() as connection, immediate_transaction(connection):
             current = connection.execute(
                 "SELECT workspace_revision FROM workspaces WHERE workspace_id=?",
@@ -428,6 +433,17 @@ class ExternalWorkspaceScanner:
                     "identity_json=excluded.identity_json, sequence=excluded.sequence",
                     (session_id, row["relative_path"], stamp, identity, sequence),
                 )
+                if changed or stamp != row["stamp"] or row["identity_json"] is None:
+                    git_samples.append((str(row["relative_path"]), stamp))
+        from llm_cli.workspace.gitstate import observe_paths
+
+        # Only advance stable observations actually processed by this pass.
+        # No additional full-tree traversal or source-body reads are needed.
+        observe_paths(
+            self.store,
+            root,
+            git_samples,
+        )
         return emitted
 
     @staticmethod
