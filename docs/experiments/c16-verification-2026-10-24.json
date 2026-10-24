@@ -1,0 +1,68 @@
+{
+  "verified_at": "2026-10-24T05:33:08.034305+00:00",
+  "measured_source_commit": "e915693935a47c369d473a76f51fb53827705b97",
+  "migration31_name": "bounded_isolated_sync_journals",
+  "migration31_checksum": "4d1a7425550a67cd314e1a329174982727718e163c28e1c061a29c1ea1a7e130",
+  "source_immutable_during_hour": true,
+  "source_hashes_match_after_hour": true,
+  "harness_hash_matches_after_hour": true,
+  "harness_sha256": "c4af9ea63fab31c77b467383cd4547074a3088eecfc990c71f74e94962a2a9f6",
+  "scan_harness_sha256": "e167cccebb61532fc74731c045a313d10f7275aa4957b6eada3c0f4d5df2eba5",
+  "original_failed_receipt_preserved": true,
+  "soak_command": ".venv/bin/python scripts/soak.py --duration 3600 --growing-paths --output /private/tmp/loupe-wave9-c16/soak-growing-3600.json",
+  "growth_command": ".venv/bin/python scripts/scan_scale.py --files 20000 --repeats 5 --output /private/tmp/loupe-wave9-c16/scan-scale-20000.json",
+  "correctness_command": ".venv/bin/python -m pytest -m 'not index_scale and not admission_scale' --cov=llm_cli --cov-report=term-missing",
+  "correctness_result": {
+    "passed": 3535,
+    "skipped": 1,
+    "deselected": 2,
+    "seconds": 1758.9,
+    "skip_reason": "requires a case-sensitive filesystem"
+  },
+  "coverage_totals": {
+    "covered_lines": 24378,
+    "num_statements": 26948,
+    "percent_covered": 87.53865350187165,
+    "percent_covered_display": "88",
+    "missing_lines": 2570,
+    "excluded_lines": 56,
+    "percent_statements_covered": 90.4631141457622,
+    "percent_statements_covered_display": "90",
+    "num_branches": 9918,
+    "num_partial_branches": 1716,
+    "covered_branches": 7894,
+    "missing_branches": 2024,
+    "percent_branches_covered": 79.59265981044565,
+    "percent_branches_covered_display": "80"
+  },
+  "scale_command": ".venv/bin/python -m pytest -m 'index_scale or admission_scale' -q",
+  "scale_result": {
+    "passed": 2,
+    "deselected": 3536,
+    "seconds": 13.93,
+    "coverage": false
+  },
+  "lint_source_and_tests": "passed",
+  "format_source_and_tests": "passed",
+  "mypy_changed_source_modules": "passed: storage/migrations.py and workspace/isolated_sync.py",
+  "actual_soak_max_cycles": null,
+  "soak_peak_resources": {
+    "database_bytes": 25395976,
+    "candidate_bytes": 75138,
+    "open_files": 15,
+    "threads": 6,
+    "memory_bytes": 54067200,
+    "rpc_p99_ms": 2263.2574579911307
+  },
+  "source_comparison_monitor_note": "One supplementary hash comparison accidentally used the C13 review worktree; that sample is explicitly annotated with its comparison root and immediately followed by an absolute-C16-root verification. The original soak and source files remained unchanged.",
+  "receipt_sha256": {
+    "soak-growing-c16-2026-10-24.json": "fc376492f14a091a3b675b599d9dd150275eb068c3ca85ed903a137ed8f6a2d7",
+    "scan-scale-c16-2026-10-24.json": "2cbb3f133698a84f48862e82b709f50ffcb48f924a9a370a468ed93d65a19df5",
+    "sync-journal-legacy-pages-c16-2026-10-24.json": "fea57c2bb82be93056d968d0f5300817b03b0de9fc299a9871f425854990ec76",
+    "sync-journal-samples-c16-2026-10-24.json": "c2dd92e2a9a098ce6005fe1a9ee6667c7e618689aad7b7fb77f5e214bf7a427a"
+  },
+  "local_test_log_sha256": {
+    "pytest-correctness-coverage.log": "d93f9c4fb6ce5088dff01717f6c25e4b58ab8e3f699ef747e658c66e76d8d090",
+    "pytest-production-scale.log": "498b2051313f8f2d1106869579751d0424a862927186f4f2c10e6d4020ca6b83"
+  }
+}
