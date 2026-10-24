@@ -169,6 +169,7 @@ class SessionRecord:
     updated_at: int
     effort: str | None = None
     agent_mode: str = "auto"
+    workspace_binding_generation: int = 1
 
 
 @dataclass(frozen=True, slots=True)

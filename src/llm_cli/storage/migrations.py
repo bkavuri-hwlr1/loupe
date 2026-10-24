@@ -1366,6 +1366,219 @@ BEFORE DELETE ON cutover_recovery_acknowledgements
 BEGIN SELECT RAISE(ABORT,'cutover recovery evidence must be retained'); END;
 """,
     ),
+    Migration(
+        31,
+        "bounded_isolated_sync_journals",
+        """
+-- Reject unreadable evidence before deleting any history. A missing field must
+-- fail the NOT NULL guard, rather than disappear through SQL NULL filtering.
+CREATE TEMP TABLE isolated_sync_compaction_guard (
+    valid INTEGER NOT NULL CHECK(valid=1)
+);
+INSERT INTO isolated_sync_compaction_guard
+SELECT json_valid(steps_json) AND json_type(steps_json)='array'
+FROM isolated_sync_journal WHERE state='applied';
+INSERT INTO isolated_sync_compaction_guard
+SELECT json_type(step.value)='object'
+    AND (SELECT count(*)=count(DISTINCT field.key)
+        FROM json_each(step.value) field)
+    AND json_type(step.value,'$.path')='text'
+    AND length(json_extract(step.value,'$.path')) BETWEEN 1 AND 1000
+    AND json_type(step.value,'$.disposition')='text'
+    AND json_extract(step.value,'$.disposition') IN
+        ('applied','merged','already_current','divergence_preserved')
+    AND json_extract(step.value,'$.path')=trim(json_extract(step.value,'$.path'))
+    AND json_extract(step.value,'$.path') NOT IN ('*','.')
+    AND json_extract(step.value,'$.path') NOT GLOB '[A-Za-z]:*'
+    AND json_extract(step.value,'$.path') NOT LIKE '/%'
+    AND json_extract(step.value,'$.path') NOT LIKE '~%'
+    AND json_extract(step.value,'$.path') NOT LIKE '%/'
+    AND instr(json_extract(step.value,'$.path'),char(92))=0
+    AND instr(json_extract(step.value,'$.path'),char(0))=0
+    AND instr('/'||json_extract(step.value,'$.path')||'/','//')=0
+    AND instr('/'||json_extract(step.value,'$.path')||'/','/./')=0
+    AND instr('/'||json_extract(step.value,'$.path')||'/','/../')=0
+    AND instr('/'||lower(json_extract(step.value,'$.path'))||'/','/.git/')=0
+    AND json_type(step.value,'$.before')='object'
+    AND json_type(step.value,'$.after')='object'
+    AND json_type(step.value,'$.incoming')='object'
+FROM isolated_sync_journal journal, json_each(journal.steps_json) step
+WHERE journal.state='applied';
+INSERT INTO isolated_sync_compaction_guard
+SELECT (SELECT count(*)=count(DISTINCT field.key)
+        FROM json_each(identity.value) field)
+    AND (identity.key='incoming' OR NOT EXISTS (
+        SELECT 1 FROM json_each(identity.value) field
+        WHERE field.key NOT IN ('kind','mode','digest','size','permissions')
+    ))
+    AND json_type(identity.value,'$.kind')='text'
+    AND json_type(identity.value,'$.mode')='text'
+    AND (
+        (json_extract(identity.value,'$.kind')='absent'
+            AND json_extract(identity.value,'$.mode')='')
+        OR (json_extract(identity.value,'$.kind')='regular'
+            AND json_extract(identity.value,'$.mode') IN ('100644','100755'))
+        OR (json_extract(identity.value,'$.kind')='symlink'
+            AND json_extract(identity.value,'$.mode')='120000')
+        OR (json_extract(identity.value,'$.kind')='directory_marker'
+            AND json_extract(identity.value,'$.mode')='040000')
+    )
+    AND json_type(identity.value,'$.digest')='text'
+    AND length(json_extract(identity.value,'$.digest'))=64
+    AND json_extract(identity.value,'$.digest') NOT GLOB '*[^0-9a-f]*'
+    AND json_type(identity.value,'$.size')='integer'
+    AND json_extract(identity.value,'$.size') BETWEEN 0 AND 262144
+    AND (json_extract(identity.value,'$.kind') NOT IN ('absent','directory_marker')
+        OR (json_extract(identity.value,'$.size')=0 AND (
+            (json_extract(identity.value,'$.kind')='absent'
+                AND json_extract(identity.value,'$.digest')=
+                    '8d91d29bdf7308efce0c9e5b9b721a5d69af0bb054e82a08d199a17b11a54ebc')
+            OR (json_extract(identity.value,'$.kind')='directory_marker'
+                AND json_extract(identity.value,'$.digest')=
+                    'de6be190fd818de4d20b4e8eddcac58a2f5498a18037f05f1425ed4c19dac743')
+        )))
+    AND (json_type(identity.value,'$.permissions') IS NULL
+        OR json_type(identity.value,'$.permissions')='null'
+        OR (json_extract(identity.value,'$.kind')='regular'
+            AND json_type(identity.value,'$.permissions')='integer'
+            AND json_extract(identity.value,'$.permissions') BETWEEN 0 AND 511))
+FROM isolated_sync_journal journal, json_each(journal.steps_json) step,
+    json_each(step.value) identity
+WHERE journal.state='applied' AND identity.key IN ('before','after','incoming');
+CREATE TABLE isolated_sync_conflicts (
+    workspace_id TEXT NOT NULL
+        REFERENCES isolated_sync_state(workspace_id) ON DELETE RESTRICT,
+    path TEXT NOT NULL,
+    step_json TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,path)
+);
+-- Replay exactly: the last step wins, including duplicate paths in one row.
+-- A later ordinary step clears a prior divergence instead of resurrecting it.
+WITH latest AS (
+    SELECT journal.workspace_id,step.value AS step_json,
+        json_extract(step.value,'$.path') AS path,
+        row_number() OVER (
+            PARTITION BY journal.workspace_id,json_extract(step.value,'$.path')
+            ORDER BY journal.generation DESC,CAST(step.key AS INTEGER) DESC
+        ) AS ordinal
+    FROM isolated_sync_journal journal,json_each(journal.steps_json) step
+    WHERE journal.state='applied'
+)
+INSERT INTO isolated_sync_conflicts(workspace_id,path,step_json)
+SELECT workspace_id,path,step_json FROM latest WHERE ordinal=1
+    AND json_extract(step_json,'$.disposition')='divergence_preserved';
+-- Keep eight diagnostic rows per workspace; prepared recovery rows are untouched.
+WITH applied AS (
+    SELECT workspace_id,generation,row_number() OVER (
+        PARTITION BY workspace_id ORDER BY generation DESC
+    ) AS ordinal FROM isolated_sync_journal WHERE state='applied'
+)
+DELETE FROM isolated_sync_journal WHERE (workspace_id,generation) IN (
+    SELECT workspace_id,generation FROM applied WHERE ordinal>8
+);
+UPDATE isolated_sync_journal SET manifest_json='{}' WHERE state='applied';
+DROP TABLE isolated_sync_compaction_guard;
+""",
+    ),
+    Migration(
+        32,
+        "durable_workspace_mode_switches",
+        """
+ALTER TABLE sessions ADD COLUMN workspace_binding_generation INTEGER NOT NULL
+    DEFAULT 1 CHECK(workspace_binding_generation > 0);
+CREATE TABLE isolated_workspaces_switchable (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(workspace_id),
+    session_id TEXT NOT NULL,
+    base_oid TEXT NOT NULL,
+    source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0),
+    source_manifest_json TEXT NOT NULL,
+    runtime_paths_json TEXT NOT NULL,
+    runtime_files_json TEXT NOT NULL,
+    notices_json TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    creation_token TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK(stage IN (
+        'planned','registered','materialized','rebuilding','hydrated','ready','attention'
+    )),
+    creation_key TEXT NOT NULL UNIQUE
+);
+INSERT INTO isolated_workspaces_switchable
+SELECT *, 'session:' || session_id FROM isolated_workspaces;
+DROP TABLE isolated_workspaces;
+ALTER TABLE isolated_workspaces_switchable RENAME TO isolated_workspaces;
+CREATE INDEX isolated_workspaces_session_idx ON isolated_workspaces(session_id);
+CREATE TABLE mode_switch_intents (
+    switch_intent_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    source_workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    target_workspace_id TEXT REFERENCES workspaces(workspace_id),
+    source_mode TEXT NOT NULL CHECK(source_mode IN ('shared','isolated')),
+    target_mode TEXT NOT NULL CHECK(target_mode IN ('shared','isolated')),
+    source_binding_generation INTEGER NOT NULL CHECK(source_binding_generation>0),
+    source_scope_json TEXT NOT NULL,
+    source_confirmation_scope_json TEXT,
+    target_scope_json TEXT,
+    request_json TEXT NOT NULL,
+    disposition TEXT CHECK(disposition IN (
+        'publish','hold','export','retain','discard')),
+    classification TEXT NOT NULL,
+    files_json TEXT NOT NULL,
+    held_json TEXT NOT NULL,
+    runtime_summary TEXT NOT NULL DEFAULT '',
+    notices_json TEXT NOT NULL DEFAULT '[]',
+    proposal_task_id TEXT,
+    export_path TEXT,
+    bootstrap_sequence INTEGER,
+    state TEXT NOT NULL CHECK(state IN (
+        'requested','prepared','target_creating','transferring','confirming',
+        'confirmed','rollback_pending','rolled_back','attention_required'
+    )),
+    state_version INTEGER NOT NULL DEFAULT 1 CHECK(state_version>0),
+    result_json TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    terminal_at INTEGER,
+    CHECK(source_mode <> target_mode),
+    CHECK((state NOT IN ('confirming','confirmed')) OR
+        (target_workspace_id IS NOT NULL AND target_scope_json IS NOT NULL
+         AND bootstrap_sequence IS NOT NULL))
+);
+CREATE UNIQUE INDEX mode_switch_one_pending_idx ON mode_switch_intents(session_id)
+    WHERE state NOT IN ('confirmed','rolled_back');
+CREATE INDEX mode_switch_source_idx ON mode_switch_intents(source_workspace_id,state);
+CREATE TABLE retained_switch_workspaces (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(workspace_id),
+    switch_intent_id TEXT NOT NULL REFERENCES mode_switch_intents(switch_intent_id),
+    disposition TEXT NOT NULL,
+    retained_at INTEGER NOT NULL
+);
+CREATE TABLE switch_proposal_bindings (
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    attempt INTEGER NOT NULL,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    scopes_json TEXT NOT NULL,
+    PRIMARY KEY(task_id,attempt)
+);
+-- Allocate no new task or retry while an intent freezes this conversation.
+-- The exact synthetic proposal identity is the only allowed insertion.
+CREATE TRIGGER mode_switch_blocks_task_insert BEFORE INSERT ON tasks
+WHEN EXISTS(SELECT 1 FROM mode_switch_intents i WHERE i.session_id=NEW.session_id
+    AND i.state NOT IN ('confirmed','rolled_back')
+    AND NEW.task_id <> COALESCE(i.proposal_task_id,''))
+BEGIN SELECT RAISE(ABORT,'workspace switch requires confirmation or recovery'); END;
+CREATE TRIGGER mode_switch_blocks_task_retry BEFORE UPDATE OF attempt ON tasks
+WHEN NEW.attempt <> OLD.attempt AND EXISTS(
+    SELECT 1 FROM mode_switch_intents i WHERE i.session_id=NEW.session_id
+    AND i.state NOT IN ('confirmed','rolled_back'))
+BEGIN SELECT RAISE(ABORT,'workspace switch requires confirmation or recovery'); END;
+CREATE TRIGGER mode_switch_request_immutable BEFORE UPDATE OF
+    session_id,source_workspace_id,source_mode,target_mode,
+    source_binding_generation,source_scope_json,request_json,disposition,files_json,held_json
+ON mode_switch_intents
+BEGIN SELECT RAISE(ABORT,'workspace switch request is immutable'); END;
+""",
+    ),
 )
 
 

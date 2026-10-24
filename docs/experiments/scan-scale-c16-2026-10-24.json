@@ -1,0 +1,107 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.12.13 (main, Jul 18 2026, 16:55:18) [Clang 22.1.3 ]",
+  "results": [
+    {
+      "files": 20000,
+      "file_bytes": 35,
+      "repeats": 5,
+      "outside_path_cap": 1000,
+      "isolated_path_cap": 20000,
+      "fixture_seconds": 1.6634908340638503,
+      "outside_cold": {
+        "samples_ms": [
+          287.46812499593943
+        ],
+        "median_ms": 287.46812499593943,
+        "result": 0
+      },
+      "outside_warm": {
+        "samples_ms": [
+          94.50454206671566,
+          92.41662500426173,
+          94.28674995433539,
+          92.48183306772262,
+          90.71345801930875
+        ],
+        "median_ms": 92.48183306772262,
+        "result": 0
+      },
+      "outside_observed_paths": 1000,
+      "outside_one_change": {
+        "samples_ms": [
+          114.58004207815975
+        ],
+        "median_ms": 114.58004207815975,
+        "result": 1
+      },
+      "isolated_capture_cold": {
+        "samples_ms": [
+          2730.2439160412177
+        ],
+        "median_ms": 2730.2439160412177,
+        "result": {
+          "captured_paths": 20000,
+          "deferred_paths": 0
+        }
+      },
+      "isolated_capture_warm": {
+        "samples_ms": [
+          1245.7638329360634,
+          1269.0707920119166,
+          1264.8549169534817,
+          1277.1563329733908,
+          1258.8460419792682
+        ],
+        "median_ms": 1264.8549169534817,
+        "result": {
+          "captured_paths": 20000,
+          "deferred_paths": 0
+        }
+      },
+      "isolated": {
+        "status": "unsupported",
+        "error": "isolated hydration inventory is incomplete: metadata_budget_exceeded",
+        "open_seconds": 7.259904208010994,
+        "scanned_paths": 0
+      }
+    }
+  ],
+  "growth_20000": {
+    "initial_files": 7000,
+    "target_files": 20000,
+    "growth_step_files": 45,
+    "status": "complete",
+    "growth_seconds": 496.92330333404243,
+    "growth_steps": 289,
+    "accepted_manifest_paths": 20000,
+    "accepted_manifest_entries": 20014,
+    "full_safe_point_warm": {
+      "samples_ms": [
+        1851.7734999768436,
+        1855.4368340410292,
+        1847.316125058569,
+        1906.153415911831,
+        1866.643667104654
+      ],
+      "median_ms": 1855.4368340410292,
+      "result": {
+        "applied": 0,
+        "deferred": 0,
+        "conflicted": 0
+      }
+    },
+    "full_safe_point_one_change": {
+      "samples_ms": [
+        2052.9983328888193
+      ],
+      "median_ms": 2052.9983328888193,
+      "result": {
+        "applied": 1,
+        "deferred": 0,
+        "conflicted": 0
+      }
+    },
+    "database_bytes": 17575936
+  }
+}

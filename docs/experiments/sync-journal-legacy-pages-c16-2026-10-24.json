@@ -1,0 +1,49 @@
+{
+  "measured_commit": "e915693935a47c369d473a76f51fb53827705b97",
+  "migration31_checksum": "4d1a7425550a67cd314e1a329174982727718e163c28e1c061a29c1ea1a7e130",
+  "workload": "100 legacy applied journals, 1500-entry manifests; subsequent 512KiB reuse probe",
+  "vacuum": false,
+  "manual_checkpoint": false,
+  "before": {
+    "page_size": 4096,
+    "page_count": 6108,
+    "freelist_count": 0,
+    "database_and_sidecars_bytes": 28426992,
+    "files": {
+      "control.sqlite3": 24051712,
+      "control.sqlite3-shm": 32768,
+      "control.sqlite3-wal": 4342512
+    },
+    "journal_rows": 100,
+    "journal_manifest_bytes": 23889000
+  },
+  "after_migration": {
+    "page_size": 4096,
+    "page_count": 6110,
+    "freelist_count": 5892,
+    "database_and_sidecars_bytes": 28426992,
+    "files": {
+      "control.sqlite3": 24051712,
+      "control.sqlite3-shm": 32768,
+      "control.sqlite3-wal": 4342512
+    },
+    "journal_rows": 8,
+    "journal_manifest_bytes": 16
+  },
+  "after_reuse_probe": {
+    "page_size": 4096,
+    "page_count": 6110,
+    "freelist_count": 5763,
+    "database_and_sidecars_bytes": 28426992,
+    "files": {
+      "control.sqlite3": 24051712,
+      "control.sqlite3-shm": 32768,
+      "control.sqlite3-wal": 4342512
+    },
+    "journal_rows": 8,
+    "journal_manifest_bytes": 16
+  },
+  "after_close_files": {
+    "control.sqlite3": 25026560
+  }
+}

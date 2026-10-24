@@ -76,6 +76,47 @@ paths are never rewritten. Runtime bytes do not enter ordinary model file tools,
 source artifacts, source manifests, or proposals. Closing a conversation does
 not copy runtime changes back to the primary checkout.
 
+To keep one runtime file or directory before closing the session, preview an
+explicit local export:
+
+```sh
+loupe workspace runtime export .env --session SESSION_ID --to /absolute/new.env
+loupe workspace runtime export .env --session SESSION_ID --to /absolute/new.env --yes --allow-secret
+loupe workspace runtime export build --session SESSION_ID --to /absolute/new-build --yes
+```
+
+The preview shows type, byte size, entry count and sensitivity. Nothing is copied
+without `--yes`; likely secrets additionally require `--allow-secret`, even when
+hydration was approved earlier. Sensitivity combines path names with bounded
+local content screening for recognized credentials, including secrets late in
+a file. Every invocation screens current bytes again. Export reads the live private runtime, including
+regenerated files, while the session is idle. The destination's parent must
+already exist and the destination must be new. Export publishes a complete file
+or tree atomically and never replaces an existing destination. Files and
+directories have owner-only permissions. Failed copies remove their staging
+entries and leave the destination absent.
+
+Export into any linked shared checkout requires `--into-checkout`; tracked
+source paths and their parent directories remain protected. A new destination
+there must be ignored, so the source scanner cannot ingest exported runtime
+bytes. Coordinator state,
+Git administration and private workspaces cannot be destinations. Symlinks,
+special files, source paths, changing trees and entries over the hydration
+budgets are refused. Runtime contents never enter model context, source artifacts
+or the source ledger. Only type, byte size, entry count, sensitivity and the
+export disposition enter a redacted checkout event; source and destination names
+are not recorded.
+
+For checkout destinations, staging stays in the source session's verified
+private Git directory. That directory and the destination must be on the same
+filesystem; a cross-filesystem checkout export is refused before copying bytes.
+This keeps in-progress copies out of source scans. Interrupted staging remains
+private and is removed when the owning isolated workspace closes, including
+after a daemon restart. For other destinations, staging uses their parent.
+
+To make an exported file project source, first export outside the checkout, then
+manually change ignore/tracking policy and place the reviewed file yourself.
+
 ## Explicit dependency rebuilds
 
 When a dependency tree is too large to copy, contains an escaping store link,
@@ -282,6 +323,23 @@ before continuing. An unrelated third state is preserved for inspection instead
 of being overwritten. The accepted source manifest and local transition journal
 remain separate from the private worktree's detached Git HEAD.
 
+Prepared source journals retain their complete replay manifest. Confirmation
+advances the accepted manifest and generation, records each unresolved path's
+complete conflict step, and clears the journal manifest in one SQLite
+transaction. Only the latest eight applied rows per workspace remain for
+diagnosis. Earlier conflicts keep their exact incoming and local artifact hashes
+and private staging tokens independently of that window. A later step for the
+same path replaces or clears its conflict using the existing resolution rules.
+
+The schema upgrade validates and replays existing applied steps before retiring
+them, including repeated paths and later resolutions. Unreadable evidence aborts
+the whole upgrade; prepared rows stay unchanged. SQLite reuses the freed pages;
+this upgrade does not vacuum or shrink an existing database's physical file.
+Candidate artifacts and proposal references keep their existing lifetime.
+Screened incoming staging belongs to the private Git registration and is removed
+with that registration when its owned workspace is retired, including staging
+left after a crash between confirmation and unlink.
+
 A confirmed primary publication remains successful if private catch-up cannot
 complete. The task records that private synchronization needs recovery; later
 recovery confirms the published batch independently of the private error.
@@ -387,3 +445,54 @@ Runtime contents never enter source batches, the source artifact store or
 knowledge indexes. Frozen runtime copies remain only while their workspace and
 retained proposals need them; closing a conversation removes the owned runtime
 generation directory after those proposals have settled.
+
+## Change a conversation's workspace
+
+Between tasks, `/workspace isolated` creates a fresh private worktree through
+Loupe's normal exact-source hydration and optional rebuild path. Use repeated
+`--approve-secret PATH` options for exact ignored runtime files that need consent.
+The same conversation, provider history, agent mode, and held proposals continue.
+
+`/workspace shared` returns to the selected checkout. Unpublished source or held
+proposals require one explicit choice:
+
+- `--publish` in auto mode freezes a proposal, checks it with its private runtime
+  and the session's command environment, and publishes through the normal fenced
+  workflow. Failed or stale checks block the switch.
+- `--hold` freezes private source as a proposal for `/apply TASK_ID`. Existing
+  held proposals keep their original source workspace and protected runtime.
+- `--export` creates an owner-only Git binary `.patch` and a self-contained `.patch.json`
+  sidecar with exact before/result
+  identities, modes, symlinks, binary bodies, and retained proposals. Runtime and
+  screened source bytes are excluded.
+- `--retain` keeps the old private worktree, including after the conversation
+  closes. A later isolated switch creates a new worktree.
+- `--discard` explicitly retires the candidate from the active conversation.
+  Ordinary source is preserved by the existing safe cleanup/archive path.
+
+Changed runtime alone requires `--retain` or `--discard` after a summary that
+contains no runtime contents. Changed private source excluded by secret screening
+also requires `--retain` or `--discard`. Unresolved incoming conflicts block every
+choice.
+Running tasks, ambiguous recovery, pending launches, active exports, commands,
+refreshes, and workers that have not actually exited also block switching.
+
+The RPC uses `workspace.switch_mode` with an owner-supplied `switch_intent_id`,
+then `workspace.confirm_switch` with the returned exact bootstrap sequence.
+Until confirmation, the source binding remains current and durable fences block
+new tasks, retries, and edits. Confirmation increments the workspace binding
+generation, revokes old read observations and context cursors, and preserves
+conversation history. No task attempt changes mode: only later tasks use the new
+binding. Clients must refresh the generation before launching them.
+
+Intents persist requested, prepared, target_creating, transferring, confirming,
+confirmed, rollback_pending, rolled_back, and attention_required states. Retrying
+an intent returns its recorded target and never allocates a second worktree or
+publishes its proposal twice. Resume returns the pending target bootstrap after
+a lost response. An ownership handoff or changed physical/source/runtime scope
+requires attention rather than accepting a stale bootstrap. Use
+`/workspace rollback SWITCH_INTENT_ID` to keep the source binding and retain an
+abandoned target for inspection. Confirmed switches cannot reopen their source
+binding; make a new switch instead. Clean and disposed workspaces remain eligible
+for safe close-time cleanup; only deliberately retained or still-needed proposal
+runtime stays pinned.

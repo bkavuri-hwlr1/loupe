@@ -68,6 +68,7 @@ _COMMANDS = {
     "/apply": "Publish a retained task proposal",
     "/undo": "Undo a published task if its files are unchanged",
     "/stop": "Stop a task and retain its pending edits",
+    "/workspace": "Switch this conversation between shared and isolated workspaces",
 }
 
 
