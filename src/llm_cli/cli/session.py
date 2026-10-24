@@ -195,21 +195,31 @@ def open_or_resume_session(
         pending = resumed.get("workspace_switch")
         if isinstance(pending, dict):
             state = pending.get("state")
-            if state == "attention_required":
-                raise LlmCoordError(
-                    ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
-                    "Workspace switch needs attention. Roll it back with "
-                    f"/workspace rollback {pending.get('switch_intent_id')}",
-                )
-            request = json.loads(pending["request_json"])
-            credentials, _ = switch_workspace(
-                client,
-                credentials,
-                request["target"],
-                disposition=request["disposition"],
-                approved_runtime_files=tuple(request["approved"]),
-                switch_intent_id=pending["switch_intent_id"],
+            recovery_notice = (
+                f"Workspace switch {pending.get('switch_intent_id')} needs attention. "
+                "The source workspace remains bound. Use /workspace rollback "
+                f"{pending.get('switch_intent_id')} before starting another task."
             )
+            if state == "attention_required":
+                return replace(credentials, workspace_notices=(recovery_notice,))
+            request = json.loads(pending["request_json"])
+            try:
+                credentials, _ = switch_workspace(
+                    client,
+                    credentials,
+                    request["target"],
+                    disposition=request["disposition"],
+                    approved_runtime_files=tuple(request["approved"]),
+                    switch_intent_id=pending["switch_intent_id"],
+                )
+            except LlmCoordError as exc:
+                if exc.code not in {
+                    ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
+                    ErrorCode.CONFIG_INVALID,
+                    ErrorCode.REPOSITORY_UNSAFE,
+                }:
+                    raise
+                return replace(credentials, workspace_notices=(recovery_notice,))
         if agent_mode is not None or publication_mode is not None:
             selected = resolve_agent_mode(agent_mode, publication_mode)
             if selected != credentials.agent_mode:

@@ -1670,11 +1670,31 @@ class IsolatedWorkspaceManager:
                 ).fetchone()
             if prior is not None:
                 state = self.validate(str(prior[0]))
+                if state.session_id != session_id:
+                    raise _error("isolated creation key belongs to another session")
                 if set(approved_secrets) - set(state.runtime_files):
                     raise _error("existing isolated session cannot add runtime consent")
                 workspace = self.store.get_workspace(state.workspace_id)
                 assert workspace is not None
                 return workspace, state.notices
+            if creation_key is None:
+                session = self.store.get_session(session_id)
+                if (
+                    session
+                    and session.workspace_mode == "isolated"
+                    and session.workspace_id
+                ):
+                    state = self.validate(session.workspace_id)
+                    workspace = self.store.get_workspace(state.workspace_id)
+                    if (
+                        state.session_id != session_id
+                        or workspace is None
+                        or workspace.checkout_id != checkout.checkout_id
+                    ):
+                        raise _error(
+                            "isolated session binding belongs to another workspace"
+                        )
+                    return workspace, state.notices
             shared = self.store.ensure_shared_workspace(checkout)
             self.ensure_available(shared.workspace_id)
             scanner = ExternalWorkspaceScanner(self.store)

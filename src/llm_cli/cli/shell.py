@@ -129,6 +129,8 @@ class ChatShell:
             )
             self.effort = self.credentials.effort
             self.workspace_mode = self.credentials.workspace_mode
+            for notice in self.credentials.workspace_notices:
+                self.ui.notice(notice)
             self.agent_mode = self.credentials.agent_mode
             session._set_intent(client, self.credentials, scopes)
             tasks = self._tasks()

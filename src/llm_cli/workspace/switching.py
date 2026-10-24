@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -52,6 +53,8 @@ class WorkspaceModeSwitcher:
         self.workflow.isolated_sync = sync
         self.fault: Callable[[str], None] = lambda state: None
         self.worker_busy: Callable[[str], bool] = lambda session_id: False
+        self._operation_lock = threading.Lock()
+        self._operations: set[str] = set()
 
     def get(self, intent_id: str) -> dict[str, Any] | None:
         with self.store.connection() as con:
@@ -71,6 +74,14 @@ class WorkspaceModeSwitcher:
                 (session_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def pending_response(self, session_id: str) -> dict[str, Any] | None:
+        row = self.pending(session_id)
+        if row is None:
+            return None
+        response = self._response(row)
+        response["request_json"] = row["request_json"]
+        return response
 
     def require_idle(self, session: SessionRecord) -> None:
         # Deliberately stricter than advisory session_has_active_task: ambiguous
@@ -201,6 +212,10 @@ class WorkspaceModeSwitcher:
             raise ValueError(
                 "disposition must be publish, hold, export, retain, or discard"
             )
+        if target_mode == "isolated" and disposition is not None:
+            raise ValueError(
+                "source disposition applies only when returning to shared mode"
+            )
         if target_mode == "shared" and approved_secrets:
             raise ValueError("runtime consent applies only to isolated mode")
         request = _json(
@@ -278,9 +293,42 @@ class WorkspaceModeSwitcher:
                                 "apply overlapping held proposals before switching"
                             )
                         files = self.sync.publication_files(state.workspace_id, overlay)
+                    local_workspace = self.store.get_workspace(state.workspace_id)
+                    assert local_workspace is not None
+                    current_source = self.sync.capture(
+                        Path(local_workspace.canonical_path),
+                        state.runtime_paths,
+                    )
+                    with self.store.connection() as con:
+                        accepted = json.loads(
+                            con.execute(
+                                "SELECT manifest_json FROM isolated_sync_state "
+                                "WHERE workspace_id=?",
+                                (state.workspace_id,),
+                            ).fetchone()[0]
+                        )
+                    screened_dirty = any(
+                        (
+                            (accepted.get(path) or {}).get("screened")
+                            or (current_source.get(path) or {}).get("screened")
+                        )
+                        and any(
+                            (accepted.get(path) or {}).get(key)
+                            != (current_source.get(path) or {}).get(key)
+                            for key in ("kind", "mode", "digest", "permissions")
+                        )
+                        for path in accepted.keys() | current_source.keys()
+                    )
+                    if screened_dirty and disposition not in {"retain", "discard"}:
+                        raise ValueError(
+                            "changed screened private source requires an explicit "
+                            "retain or discard disposition"
+                        )
                     files_json = encode_files(files)
                     classification = (
-                        "unpublished_source"
+                        "unpublished_screened_source"
+                        if screened_dirty
+                        else "unpublished_source"
                         if files
                         else "held_proposal"
                         if held
@@ -383,7 +431,25 @@ class WorkspaceModeSwitcher:
             )
         self.fault(state)
 
+    def busy(self, session_id: str) -> bool:
+        with self._operation_lock:
+            return session_id in self._operations
+
     def _advance(self, intent_id: str) -> dict[str, Any]:
+        row = self.get(intent_id)
+        assert row
+        owner = str(row["session_id"])
+        with self._operation_lock:
+            if owner in self._operations:
+                raise ValueError("workspace switch setup is still running")
+            self._operations.add(owner)
+        try:
+            return self._advance_owned(intent_id)
+        finally:
+            with self._operation_lock:
+                self._operations.discard(owner)
+
+    def _advance_owned(self, intent_id: str) -> dict[str, Any]:
         row = self.get(intent_id)
         assert row
         if row["state"] in TERMINAL or row["state"] in {
@@ -668,6 +734,8 @@ class WorkspaceModeSwitcher:
 
     def confirm(self, session_id: str, intent_id: str, sequence: int) -> dict[str, Any]:
         with self.publisher.lock:
+            if self.busy(session_id):
+                raise ValueError("workspace switch setup is still running")
             row = self.get(intent_id)
             if row is None or row["session_id"] != session_id:
                 raise ValueError("switch intent does not belong to this conversation")
@@ -852,6 +920,8 @@ class WorkspaceModeSwitcher:
 
     def rollback(self, session_id: str, intent_id: str) -> dict[str, Any]:
         with self.publisher.lock:
+            if self.busy(session_id):
+                raise ValueError("workspace switch setup is still running")
             row = self.get(intent_id)
             if (
                 row is None

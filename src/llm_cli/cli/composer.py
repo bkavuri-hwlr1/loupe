@@ -48,7 +48,6 @@ _COMMANDS = {
     "/cd": "Choose a project folder",
     "/help": "Show commands and keyboard shortcuts",
     "/status": "Show this session and its workspace",
-    "/workspace": "Switch this conversation between shared and isolated workspaces",
     "/mode": "Choose plan, normal review, or auto mode",
     "/scope": "View or change editable paths",
     "/changes": "Show new changes from other sessions",
@@ -69,6 +68,7 @@ _COMMANDS = {
     "/apply": "Publish a retained task proposal",
     "/undo": "Undo a published task if its files are unchanged",
     "/stop": "Stop a task and retain its pending edits",
+    "/workspace": "Switch this conversation between shared and isolated workspaces",
 }
 
 

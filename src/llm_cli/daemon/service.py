@@ -989,7 +989,9 @@ class DaemonService:
             self._schedule_ready_launches()
             return {
                 "session": asdict(resumed),
-                "workspace_switch": self.workspace_switches.pending(resumed.session_id),
+                "workspace_switch": self.workspace_switches.pending_response(
+                    resumed.session_id
+                ),
                 "command_environment": self._environment_plan(session.session_id),
                 "event": asdict(event) if event is not None else None,
                 "cursor": _asdict_or_none(
@@ -1325,7 +1327,11 @@ class DaemonService:
                         payload={
                             key: result[key]
                             for key in (
-                                "kind", "bytes", "entries", "sensitivity", "state"
+                                "kind",
+                                "bytes",
+                                "entries",
+                                "sensitivity",
+                                "state",
                             )
                         },
                         now=int(time.time() * 1000),
