@@ -15,10 +15,22 @@ The reviewed upgrade preserves old isolated rows, runtime holds, compact conflic
 steps and foreign keys, gives existing sessions binding generation 1, and allows
 multiple isolated workspaces while creation keys remain unique.
 
+The first covered full run was interrupted after two obsolete `SELECT *`
+upgrade fixtures failed: the G2/schema-27 inventory compared a newly added
+session binding column, and the schema-26 rebuild fixture copied 12 current
+isolated-workspace values into an 11-column legacy table. The accompanying
+validation-only correction captures each legacy schema's original column
+projection, compares **all** those columns after upgrade/recovery, and separately
+checks the new creation-key and binding-generation defaults. Both corrected
+fixtures plus migration checks passed **32 tests**. No production, harness,
+configuration or script bytes changed from `c2d2b0b`; exactly these two test
+objects intentionally differ from the original 454-object manifest. The
+interrupted diagnostic log remains preserved separately.
+
 The source is frozen for the final combined covered correctness run, excluding
 `index_scale` and `admission_scale`. Those unchanged production gates run
-separately without coverage. Full-run and scale results will be added when the
-active verification completes; no final readiness claim depends on a partial run.
+separately without coverage. Full-run and scale results are recorded in [PR #81](https://github.com/bkavuri-hwlr1/loupe/pull/81)
+when verification completes; no final readiness claim depends on a partial run.
 
 ## Focused evidence
 
