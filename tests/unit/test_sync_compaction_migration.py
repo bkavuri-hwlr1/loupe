@@ -10,6 +10,7 @@ import pytest
 
 from llm_cli.storage.connection import connect_control
 from llm_cli.storage.migrations import CONTROL_MIGRATIONS, apply_migrations
+from llm_cli.workspace.broker import MAX_SHARED_TEXT_BYTES
 from llm_cli.workspace.identity import ABSENT
 from llm_cli.workspace.isolated_sync import _entry
 
@@ -148,6 +149,23 @@ def test_legacy_conflicts_replay_exactly_and_prepared_rows_are_unchanged(
         json.dumps([step("bad") | {"disposition": "unknown"}]),
         json.dumps([step("bad") | {"after": {"kind": "unknown"}}]),
         json.dumps([step("bad") | {"path": None}]),
+        json.dumps(
+            [
+                step("bad")
+                | {
+                    "after": {
+                        "kind": "regular",
+                        "mode": "100644",
+                        "digest": "a" * 64,
+                        "size": MAX_SHARED_TEXT_BYTES + 1,
+                    }
+                }
+            ]
+        ),
+        json.dumps([step("bad") | {"after": dict(step("bad")["after"], unknown=True)}]),
+        json.dumps([step("bad")]).replace(
+            '"path": "bad"', '"path": "bad", "path": "other"'
+        ),
     ],
 )
 def test_corrupt_applied_evidence_aborts_the_whole_migration(
@@ -161,6 +179,52 @@ def test_corrupt_applied_evidence_aborts_the_whole_migration(
         (corrupt,),
     )
     before = journals(con)
+    with pytest.raises(sqlite3.DatabaseError):
+        apply_migrations(con)
+    assert journals(con) == before
+    assert con.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 30
+    assert (
+        con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='isolated_sync_conflicts'"
+        ).fetchone()
+        is None
+    )
+    con.close()
+
+
+@pytest.mark.parametrize("boundary", range(10))
+def test_interrupted_migration_rolls_back_every_compaction_statement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: int,
+) -> None:
+    from llm_cli.storage import migrations
+
+    con = legacy(tmp_path / "legacy.sqlite3")
+    for generation in range(12):
+        con.execute(
+            "INSERT INTO isolated_sync_journal VALUES('one',?,?,?,?,'applied')",
+            (generation, generation, '{"evidence":true}', json.dumps([step("old")])),
+        )
+    before = journals(con)
+    original = migrations._iter_statements
+
+    def interrupted(sql: str) -> tuple[str, ...]:
+        if sql != CONTROL_MIGRATIONS[30].sql:
+            return original(sql)
+        statements = original(sql)
+        # Raise through a connection-local SQL function at each statement boundary.
+        return (
+            *statements[:boundary],
+            "SELECT c16_injected_crash();",
+            *statements[boundary:],
+        )
+
+    def crash() -> None:
+        raise RuntimeError("interrupted migration")
+
+    con.create_function("c16_injected_crash", 0, crash)
+    monkeypatch.setattr(migrations, "_iter_statements", interrupted)
     with pytest.raises(sqlite3.DatabaseError):
         apply_migrations(con)
     assert journals(con) == before

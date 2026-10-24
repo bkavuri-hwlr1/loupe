@@ -282,6 +282,23 @@ before continuing. An unrelated third state is preserved for inspection instead
 of being overwritten. The accepted source manifest and local transition journal
 remain separate from the private worktree's detached Git HEAD.
 
+Prepared source journals retain their complete replay manifest. Confirmation
+advances the accepted manifest and generation, records each unresolved path's
+complete conflict step, and clears the journal manifest in one SQLite
+transaction. Only the latest eight applied rows per workspace remain for
+diagnosis. Earlier conflicts keep their exact incoming and local artifact hashes
+and private staging tokens independently of that window. A later step for the
+same path replaces or clears its conflict using the existing resolution rules.
+
+The schema upgrade validates and replays existing applied steps before retiring
+them, including repeated paths and later resolutions. Unreadable evidence aborts
+the whole upgrade; prepared rows stay unchanged. SQLite reuses the freed pages;
+this upgrade does not vacuum or shrink an existing database's physical file.
+Candidate artifacts and proposal references keep their existing lifetime.
+Screened incoming staging belongs to the private Git registration and is removed
+with that registration when its owned workspace is retired, including staging
+left after a crash between confirmation and unlink.
+
 A confirmed primary publication remains successful if private catch-up cannot
 complete. The task records that private synchronization needs recovery; later
 recovery confirms the published batch independently of the private error.

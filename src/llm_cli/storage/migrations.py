@@ -1380,6 +1380,8 @@ SELECT json_valid(steps_json) AND json_type(steps_json)='array'
 FROM isolated_sync_journal WHERE state='applied';
 INSERT INTO isolated_sync_compaction_guard
 SELECT json_type(step.value)='object'
+    AND (SELECT count(*)=count(DISTINCT field.key)
+        FROM json_each(step.value) field)
     AND json_type(step.value,'$.path')='text'
     AND length(json_extract(step.value,'$.path')) BETWEEN 1 AND 1000
     AND json_type(step.value,'$.disposition')='text'
@@ -1403,7 +1405,13 @@ SELECT json_type(step.value)='object'
 FROM isolated_sync_journal journal, json_each(journal.steps_json) step
 WHERE journal.state='applied';
 INSERT INTO isolated_sync_compaction_guard
-SELECT json_type(identity.value,'$.kind')='text'
+SELECT (SELECT count(*)=count(DISTINCT field.key)
+        FROM json_each(identity.value) field)
+    AND (identity.key='incoming' OR NOT EXISTS (
+        SELECT 1 FROM json_each(identity.value) field
+        WHERE field.key NOT IN ('kind','mode','digest','size','permissions')
+    ))
+    AND json_type(identity.value,'$.kind')='text'
     AND json_type(identity.value,'$.mode')='text'
     AND (
         (json_extract(identity.value,'$.kind')='absent'
@@ -1419,7 +1427,7 @@ SELECT json_type(identity.value,'$.kind')='text'
     AND length(json_extract(identity.value,'$.digest'))=64
     AND json_extract(identity.value,'$.digest') NOT GLOB '*[^0-9a-f]*'
     AND json_type(identity.value,'$.size')='integer'
-    AND json_extract(identity.value,'$.size') BETWEEN 0 AND 268435456
+    AND json_extract(identity.value,'$.size') BETWEEN 0 AND 262144
     AND (json_extract(identity.value,'$.kind') NOT IN ('absent','directory_marker')
         OR (json_extract(identity.value,'$.size')=0 AND (
             (json_extract(identity.value,'$.kind')='absent'
