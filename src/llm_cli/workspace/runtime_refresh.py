@@ -97,6 +97,12 @@ class RuntimeRefresher:
     def _key(self, workspace_id: str) -> tuple[Path, str]:
         return self.store.path.resolve(), workspace_id
 
+    def busy(self, workspace_id: str) -> bool:
+        """Call under the publication lock before retiring a runtime binding."""
+        with self._activity_lock:
+            key = self._key(workspace_id)
+            return bool(_ACTIVITIES.get(key, 0) or key in _REFRESHING)
+
     @contextmanager
     def activity(self, workspace_id: str) -> Iterator[None]:
         key = self._key(workspace_id)
