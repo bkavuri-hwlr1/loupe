@@ -52,6 +52,48 @@ the remaining planned capabilities are listed below.
   Incoming journals recognize exact before/after states, and a private catch-up
   failure cannot turn confirmed primary publication into a failed task.
 
+- Conversation workspace switching (Wave 9 C13): `/workspace isolated` and
+  `/workspace shared` preserve the durable conversation and native provider
+  history between tasks. A fresh target bootstrap and binding generation replace
+  old coordination cursors and read observations. Pending intents fence tasks,
+  retries and edits; real worker and runtime activity lifetimes block unsafe
+  moves. Unpublished source needs explicit checked publication, a retained
+  proposal, portable Git binary patch plus exact artifact sidecar, retained
+  worktree, or discard disposition. Changed runtime and screened private source
+  require explicit retain/discard choices. Conflicts block switching. Old held
+  proposals retain their original workspace, private runtime and C9 environment
+  path rewriting across later switches. Durable intent CAS, cancellation and
+  exact target creation keys recover crashes without a second target or duplicate
+  publication. Failed owned targets scrub private inputs while preserving unknown
+  source and restoring source authority; foreign targets remain blocked. See
+  [the guide](isolated-workspaces.md#change-a-conversations-workspace) and
+  [verification](experiments/wave9-c13-workspace-switching-2026-10-24.md).
+
+- Private runtime export (Wave 9 C15): `loupe workspace runtime export PATH
+  --session ID --to DEST` previews bounded file/tree metadata and requires
+  `--yes`, plus `--allow-secret` for sensitive names or recognized credential
+  contents. Descriptor receipts, no-follow traversal, private Git staging and
+  atomic no-replace publication protect source and existing destinations.
+  Explicit checkout exports must be ignored and cannot overlap tracked source.
+  Exported names, bytes and content identities stay out of model coordination
+  packets and audit storage; the disposition event carries fixed metadata only.
+  Large copies retain ownership/runtime activity without the global RPC barrier.
+  See [the guide](isolated-workspaces.md) and
+  [final verification](experiments/wave9-c15-runtime-export-2026-10-24.md).
+
+- Bounded isolated synchronization journals (Wave 9 C16): migration 31 retains
+  complete current per-path conflict evidence, leaves prepared replay manifests
+  intact, and clears/prunes applied manifests in the same confirmation
+  transaction. Eight applied diagnostic rows remain per workspace. Legacy
+  corruption fails migration atomically. Artifact and private screened-staging
+  lifetimes remain pinned through resolution and owned retirement. The unchanged
+  growing-path hour passed **3603.14 seconds, 355 cycles and 27 restarts**, with
+  successful final cleanup and a **25,395,976-byte** database/sidecar peak under
+  the original 128 MiB bound. A real 7,000-to-20,000-file growth run used
+  **17,575,936 bytes**, down from 981,360,640; unchanged safe-point median remains
+  **1855.44 ms**, so C12 watchers are still needed. SQLite reuses freed legacy
+  pages without vacuum. See [full evidence](experiments/bounded-sync-journals-c16-2026-10-24.md).
+
 - Faster isolated checks and incoming private fixtures (Wave 4 C7): fresh
   writable runtime copies use bounded verified COW and descriptor identity scans.
   Repeated full checks on this checkout's 6,576-target `.venv` took
@@ -1131,18 +1173,19 @@ Waves 9–11. Wave 8 delivers the 0.1.0a3 release preparation (D4), the soak and
 scan-cost measurement (E3), Git publication safety (C11) and authority
 maintenance (G4).
 
-1. Finish the isolated-mode lifecycle: switching a conversation between modes
-   (C13) and runtime export (C15), followed by managed background processes
-   (C14).
-2. Bound isolated synchronization-journal storage (C16). E3's growing-path
-   soak exceeded its 128 MiB database bound because every sync keeps a whole
-   manifest.
-3. Add native watchers (C12). E3 measured a 1.94-second safe point at 20,000
-   files, above the 250 ms gate. Hydration admission and outside-scan coverage
-   limits stay explicit constraints.
-4. Push the `v0.1.0a3` tag on D4's merge commit and confirm the tap upgrade on
+Wave 9 implementation is complete: C13 preserves conversation/binding history,
+C15 exports private runtime explicitly, and C16 keeps the growing-path journal
+bounded. C15 and C16 final verification is recorded above; the final combined C13
+candidate is frozen for covered correctness and separate unchanged-limit scales.
+
+1. Add managed background processes (C14), including explicit stop/keep
+   decisions at conversation close and mode switches.
+2. Add native watchers (C12). E3 measured a 1.94-second safe point at 20,000
+   files, above the 250 ms gate; C16 removes journal growth rather than that
+   scan cost. Hydration admission and outside-scan coverage limits remain.
+3. Push the `v0.1.0a3` tag on D4's merge commit and confirm the tap upgrade on
    both architectures.
-5. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
+4. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
    on hold.
 
 The full phased design remains in

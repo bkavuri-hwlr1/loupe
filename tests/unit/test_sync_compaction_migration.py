@@ -106,7 +106,7 @@ def test_legacy_conflicts_replay_exactly_and_prepared_rows_are_unchanged(
             "SELECT * FROM isolated_sync_journal WHERE state='prepared'"
         ).fetchone()
     )
-    assert apply_migrations(con) == 31
+    assert apply_migrations(con, CONTROL_MIGRATIONS[:31]) == 31
     actual = {
         row["path"]: json.loads(row["step_json"])
         for row in con.execute(
