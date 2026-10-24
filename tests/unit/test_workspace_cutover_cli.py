@@ -203,6 +203,8 @@ def test_export_refuses_a_nonobject_response_without_creating_a_file(
 
 def test_cutover_capabilities_and_errors_are_additive() -> None:
     assert set(WORKSPACE_CAPABILITIES) == {
+        "workspace.authority.maintenance.v1",
+        "workspace.cutover.recovery.v1",
         "workspace.cutover.v1",
         "workspace.execution.claim_free.v1",
         "legacy.history.read.v1",

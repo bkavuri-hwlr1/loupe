@@ -216,6 +216,56 @@ workspace session; fixture/ref workflows require explicit legacy mode or export.
 `loupe claim` mutation remains available in legacy mode with deprecation guidance
 for one compatibility release; inspection remains available in both modes.
 
+## Accepted G4 amendment: explicit forward recovery
+
+**Status: accepted** by explicit user acceptance on 2026-10-22. This amendment
+authorizes G4 implementation; the accepted G2/G3 decisions above still apply.
+
+A saved intent may be stranded before its transition marker when a different
+profile subsequently owned the checkout, or before the disposition checkpoint
+when retained legacy history changed. Add an explicit, forward-only recovery:
+
+1. `loupe workspace cutover recovery PATH --intent ID --checkpoint ORIGINAL`
+   shows the complete current metadata inventory, blockers, the saved intent,
+   observed foreign-ownership gaps and a new `recovery_checkpoint`. It reads no
+   source bodies and changes no regime or intent.
+2. `loupe workspace cutover resume PATH --intent ID --checkpoint ORIGINAL
+   --accept-current-history RECOVERY_CHECKPOINT` acknowledges exactly that
+   inventory and ownership gap. Under physical ownership and the publication
+   barrier, compare the token again, require the original physical mapping and
+   unchanged selected dispositions, and reject every live worker, ambiguous
+   mapping, outstanding publication and foreign dirty/attention journal.
+3. Before continuing, append an immutable recovery acknowledgement containing
+   the intent, original and accepted history digests, current mapping and
+   ownership-gap evidence, operator action and timestamp. Never rewrite the
+   original intent, erase previous dispositions, fabricate foreign history or
+   import another profile's journals. Persist that acknowledgement before a
+   marker or disposition advances; replay validates its exact accepted history.
+4. Recovery is available only at `prepared` or `transition`, before dispositions
+   have been checkpointed. Normal exact replay remains mandatory afterwards.
+   Changed history after a disposition checkpoint still requires attention;
+   the acknowledgement does not bypass an already applicable journal.
+5. Regimes and generations remain monotonic. A saved intent never returns to
+   legacy, including an intent whose transition marker has not yet been written.
+   No `abandon` command is introduced. Supporting rollback would require a
+   separate accepted protocol and migration rather than weakening the triggers.
+
+Authority-record pruning is separate from cutover recovery. It can retire only
+an unlocked, valid clean record whose diagnostic path no longer resolves to its
+physical identity, and which this profile does not bind. A profile cannot see
+another profile's bindings, so a record last owned by another profile or
+database instance also requires explicit operator inclusion: that profile would
+refuse its checkout once a bound record is gone. A short account-wide
+maintenance lock serializes retirement with opening an ownership lock; it never
+clears an active lock or an unfinished journal. Version-2 transition/workspace
+markers remain permanent regime tombstones, even when their diagnostic path is
+gone or unrecorded: the physical checkout may have moved. They are never pruned.
+Retiring a legacy record is not permission to rebind a recreated checkout or
+inherit its history.
+
+Unsupported or unverified filesystems remain refused. Refusals name the detected
+filesystem and supported set; this amendment introduces no warning-only mode.
+
 ## Deferred, dropped and deliberately retained boundaries
 
 | Larger-plan mechanism | Decision for G2/G3 |

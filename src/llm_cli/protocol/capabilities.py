@@ -5,6 +5,8 @@ contract; the physical checkout's current regime still gates every mutation.
 """
 
 WORKSPACE_CAPABILITIES = (
+    "workspace.authority.maintenance.v1",
+    "workspace.cutover.recovery.v1",
     "workspace.cutover.v1",
     "workspace.execution.claim_free.v1",
     "legacy.history.read.v1",
