@@ -866,6 +866,124 @@ def test_plain_commit_observed_without_epoch_or_duplicate_batches(
         ) == ("committed", head)
 
 
+def _git_events(env: BatchEnvironment, kind: str) -> list[dict[str, Any]]:
+    with env.store.connection() as con:
+        return [
+            json.loads(row[0])
+            for row in con.execute(
+                "SELECT payload_json FROM checkout_events WHERE event_type=? "
+                "ORDER BY sequence",
+                (kind,),
+            )
+        ]
+
+
+def test_later_commit_does_not_relink_an_earlier_batch(
+    batch_env: BatchEnvironment, git_run: Callable[..., str]
+) -> None:
+    from llm_cli.workspace.gitstate import reconcile
+
+    env = batch_env
+    env.publisher.publish("one", "first", env.files(), ("*",))
+    git_run(env.repository, "add", "-A")
+    git_run(env.repository, "commit", "-m", "first")
+    first = git_run(env.repository, "rev-parse", "HEAD")
+    reconcile(env.store, env.repository, candidate_dir=env.publisher.candidate_dir)
+    added = BatchFile(
+        "c.txt", identify_path(env.repository / "c.txt"), b"c\n", REGULAR_MODE
+    )
+    env.publisher.publish("two", "first", (added,), ("*",))
+    git_run(env.repository, "add", "-A")
+    git_run(env.repository, "commit", "-m", "second")
+    second = git_run(env.repository, "rev-parse", "HEAD")
+    reconcile(env.store, env.repository, candidate_dir=env.publisher.candidate_dir)
+    with env.store.connection() as con:
+        links = set(
+            con.execute("SELECT batch_id,commit_oid FROM workspace_git_batch_commits")
+        )
+    assert {tuple(link) for link in links} == {("one", first), ("two", second)}
+    assert [e["batch_ids"] for e in _git_events(env, "git.commit_observed")] == [
+        ["one"],
+        ["two"],
+    ]
+
+
+def test_batch_already_in_the_previous_commit_is_not_linked_again(
+    batch_env: BatchEnvironment, git_run: Callable[..., str]
+) -> None:
+    from llm_cli.workspace.gitstate import reconcile
+
+    env = batch_env
+    # The result equals the committed bytes, so a later commit doesn't add it.
+    same = BatchFile(
+        "a.txt", identify_path(env.repository / "a.txt"), b"old a\n", REGULAR_MODE
+    )
+    env.publisher.publish("unchanged", "first", (same,), ("*",))
+    git_run(env.repository, "commit", "--allow-empty", "-m", "empty")
+    reconcile(env.store, env.repository, candidate_dir=env.publisher.candidate_dir)
+    assert _git_events(env, "git.commit_observed")[0]["batch_ids"] == []
+
+
+@pytest.mark.parametrize("move", ["commit", "amend", "no_reflog"])
+def test_committing_the_users_own_edits_is_not_a_checkout_change(
+    batch_env: BatchEnvironment, git_run: Callable[..., str], move: str
+) -> None:
+    from llm_cli.workspace.gitstate import reconcile
+
+    env = batch_env
+    env.publisher.publish("one", "first", env.files(), ("*",))
+    (env.repository / "user.txt").write_text("user work\n")
+    (env.repository / "a.txt").write_text("user edit\n")
+    git_run(env.repository, "add", "-A")
+    if move == "amend":
+        git_run(env.repository, "commit", "--amend", "-m", "amended")
+    else:
+        git_run(env.repository, "commit", "-m", "user work")
+    if move == "no_reflog":
+        (env.repository / ".git" / "logs" / "HEAD").unlink()
+    reconcile(env.store, env.repository, candidate_dir=env.publisher.candidate_dir)
+    with env.store.connection() as con:
+        epoch = con.execute(
+            "SELECT workspace_epoch FROM workspaces WHERE workspace_id=?",
+            (env.workspace_id,),
+        ).fetchone()[0]
+    if move == "no_reflog":
+        # Without the reflog, changed files stay conservatively structural.
+        assert epoch == 2
+        assert len(_git_events(env, "git.checkout_changed")) == 2
+    else:
+        assert epoch == 1
+        assert _git_events(env, "git.checkout_changed") == []
+        assert len(_git_events(env, "git.commit_observed")) == 1
+
+
+def test_head_move_behind_an_unresolved_journal_names_the_journal(
+    batch_env: BatchEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+    git_run: Callable[..., str],
+) -> None:
+    env = batch_env
+    original = batches.atomic_replace_regular_file
+    calls = 0
+
+    def interrupted(**kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("crash")
+        original(**kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(batches, "atomic_replace_regular_file", interrupted)
+        with pytest.raises(RuntimeError):
+            env.publisher.publish("crash", "first", env.files(), ("*",))
+    (env.repository / "docs/b.txt").write_bytes(b"external edit")
+    assert env.publisher.recover()[0].state == "operator_attention"
+    git_run(env.repository, "commit", "--allow-empty", "-m", "moved")
+    with pytest.raises(WorkspaceBrokerError, match="unresolved batch"):
+        env.publisher.publish("blocked", "second", env.files(), ("*",))
+
+
 def test_branch_switch_notifies_all_sessions_and_revalidates_old_base(
     batch_env: BatchEnvironment, git_run: Callable[..., str]
 ) -> None:
