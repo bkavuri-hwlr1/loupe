@@ -1136,6 +1136,10 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 "base": observed["identity"],
                 "content": content,
             }
+            if "workspace_binding_generation" in observed:
+                stage_params["workspace_binding_generation"] = observed[
+                    "workspace_binding_generation"
+                ]
             if arguments.executable:
                 stage_params["executable"] = True
             return client.call(

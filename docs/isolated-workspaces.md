@@ -445,3 +445,54 @@ Runtime contents never enter source batches, the source artifact store or
 knowledge indexes. Frozen runtime copies remain only while their workspace and
 retained proposals need them; closing a conversation removes the owned runtime
 generation directory after those proposals have settled.
+
+## Change a conversation's workspace
+
+Between tasks, `/workspace isolated` creates a fresh private worktree through
+Loupe's normal exact-source hydration and optional rebuild path. Use repeated
+`--approve-secret PATH` options for exact ignored runtime files that need consent.
+The same conversation, provider history, agent mode, and held proposals continue.
+
+`/workspace shared` returns to the selected checkout. Unpublished source or held
+proposals require one explicit choice:
+
+- `--publish` in auto mode freezes a proposal, checks it with its private runtime
+  and the session's command environment, and publishes through the normal fenced
+  workflow. Failed or stale checks block the switch.
+- `--hold` freezes private source as a proposal for `/apply TASK_ID`. Existing
+  held proposals keep their original source workspace and protected runtime.
+- `--export` creates an owner-only Git binary `.patch` and a self-contained `.patch.json`
+  sidecar with exact before/result
+  identities, modes, symlinks, binary bodies, and retained proposals. Runtime and
+  screened source bytes are excluded.
+- `--retain` keeps the old private worktree, including after the conversation
+  closes. A later isolated switch creates a new worktree.
+- `--discard` explicitly retires the candidate from the active conversation.
+  Ordinary source is preserved by the existing safe cleanup/archive path.
+
+Changed runtime alone requires `--retain` or `--discard` after a summary that
+contains no runtime contents. Changed private source excluded by secret screening
+also requires `--retain` or `--discard`. Unresolved incoming conflicts block every
+choice.
+Running tasks, ambiguous recovery, pending launches, active exports, commands,
+refreshes, and workers that have not actually exited also block switching.
+
+The RPC uses `workspace.switch_mode` with an owner-supplied `switch_intent_id`,
+then `workspace.confirm_switch` with the returned exact bootstrap sequence.
+Until confirmation, the source binding remains current and durable fences block
+new tasks, retries, and edits. Confirmation increments the workspace binding
+generation, revokes old read observations and context cursors, and preserves
+conversation history. No task attempt changes mode: only later tasks use the new
+binding. Clients must refresh the generation before launching them.
+
+Intents persist requested, prepared, target_creating, transferring, confirming,
+confirmed, rollback_pending, rolled_back, and attention_required states. Retrying
+an intent returns its recorded target and never allocates a second worktree or
+publishes its proposal twice. Resume returns the pending target bootstrap after
+a lost response. An ownership handoff or changed physical/source/runtime scope
+requires attention rather than accepting a stale bootstrap. Use
+`/workspace rollback SWITCH_INTENT_ID` to keep the source binding and retain an
+abandoned target for inspection. Confirmed switches cannot reopen their source
+binding; make a new switch instead. Clean and disposed workspaces remain eligible
+for safe close-time cleanup; only deliberately retained or still-needed proposal
+runtime stays pinned.

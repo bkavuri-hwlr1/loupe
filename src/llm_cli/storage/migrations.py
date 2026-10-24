@@ -1480,6 +1480,105 @@ UPDATE isolated_sync_journal SET manifest_json='{}' WHERE state='applied';
 DROP TABLE isolated_sync_compaction_guard;
 """,
     ),
+    Migration(
+        32,
+        "durable_workspace_mode_switches",
+        """
+ALTER TABLE sessions ADD COLUMN workspace_binding_generation INTEGER NOT NULL
+    DEFAULT 1 CHECK(workspace_binding_generation > 0);
+CREATE TABLE isolated_workspaces_switchable (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(workspace_id),
+    session_id TEXT NOT NULL,
+    base_oid TEXT NOT NULL,
+    source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0),
+    source_manifest_json TEXT NOT NULL,
+    runtime_paths_json TEXT NOT NULL,
+    runtime_files_json TEXT NOT NULL,
+    notices_json TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    creation_token TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK(stage IN (
+        'planned','registered','materialized','rebuilding','hydrated','ready','attention'
+    )),
+    creation_key TEXT NOT NULL UNIQUE
+);
+INSERT INTO isolated_workspaces_switchable
+SELECT *, 'session:' || session_id FROM isolated_workspaces;
+DROP TABLE isolated_workspaces;
+ALTER TABLE isolated_workspaces_switchable RENAME TO isolated_workspaces;
+CREATE INDEX isolated_workspaces_session_idx ON isolated_workspaces(session_id);
+CREATE TABLE mode_switch_intents (
+    switch_intent_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    source_workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    target_workspace_id TEXT REFERENCES workspaces(workspace_id),
+    source_mode TEXT NOT NULL CHECK(source_mode IN ('shared','isolated')),
+    target_mode TEXT NOT NULL CHECK(target_mode IN ('shared','isolated')),
+    source_binding_generation INTEGER NOT NULL CHECK(source_binding_generation>0),
+    source_scope_json TEXT NOT NULL,
+    source_confirmation_scope_json TEXT,
+    target_scope_json TEXT,
+    request_json TEXT NOT NULL,
+    disposition TEXT CHECK(disposition IN (
+        'publish','hold','export','retain','discard')),
+    classification TEXT NOT NULL,
+    files_json TEXT NOT NULL,
+    held_json TEXT NOT NULL,
+    runtime_summary TEXT NOT NULL DEFAULT '',
+    notices_json TEXT NOT NULL DEFAULT '[]',
+    proposal_task_id TEXT,
+    export_path TEXT,
+    bootstrap_sequence INTEGER,
+    state TEXT NOT NULL CHECK(state IN (
+        'requested','prepared','target_creating','transferring','confirming',
+        'confirmed','rollback_pending','rolled_back','attention_required'
+    )),
+    state_version INTEGER NOT NULL DEFAULT 1 CHECK(state_version>0),
+    result_json TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    terminal_at INTEGER,
+    CHECK(source_mode <> target_mode),
+    CHECK((state NOT IN ('confirming','confirmed')) OR
+        (target_workspace_id IS NOT NULL AND target_scope_json IS NOT NULL
+         AND bootstrap_sequence IS NOT NULL))
+);
+CREATE UNIQUE INDEX mode_switch_one_pending_idx ON mode_switch_intents(session_id)
+    WHERE state NOT IN ('confirmed','rolled_back');
+CREATE INDEX mode_switch_source_idx ON mode_switch_intents(source_workspace_id,state);
+CREATE TABLE retained_switch_workspaces (
+    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(workspace_id),
+    switch_intent_id TEXT NOT NULL REFERENCES mode_switch_intents(switch_intent_id),
+    disposition TEXT NOT NULL,
+    retained_at INTEGER NOT NULL
+);
+CREATE TABLE switch_proposal_bindings (
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    attempt INTEGER NOT NULL,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    scopes_json TEXT NOT NULL,
+    PRIMARY KEY(task_id,attempt)
+);
+-- Allocate no new task or retry while an intent freezes this conversation.
+-- The exact synthetic proposal identity is the only allowed insertion.
+CREATE TRIGGER mode_switch_blocks_task_insert BEFORE INSERT ON tasks
+WHEN EXISTS(SELECT 1 FROM mode_switch_intents i WHERE i.session_id=NEW.session_id
+    AND i.state NOT IN ('confirmed','rolled_back')
+    AND NEW.task_id <> COALESCE(i.proposal_task_id,''))
+BEGIN SELECT RAISE(ABORT,'workspace switch requires confirmation or recovery'); END;
+CREATE TRIGGER mode_switch_blocks_task_retry BEFORE UPDATE OF attempt ON tasks
+WHEN NEW.attempt <> OLD.attempt AND EXISTS(
+    SELECT 1 FROM mode_switch_intents i WHERE i.session_id=NEW.session_id
+    AND i.state NOT IN ('confirmed','rolled_back'))
+BEGIN SELECT RAISE(ABORT,'workspace switch requires confirmation or recovery'); END;
+CREATE TRIGGER mode_switch_request_immutable BEFORE UPDATE OF
+    session_id,source_workspace_id,source_mode,target_mode,
+    source_binding_generation,source_scope_json,request_json,disposition,files_json,held_json
+ON mode_switch_intents
+BEGIN SELECT RAISE(ABORT,'workspace switch request is immutable'); END;
+""",
+    ),
 )
 
 

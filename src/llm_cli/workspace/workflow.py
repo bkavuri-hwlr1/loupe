@@ -11,6 +11,8 @@ import difflib
 import functools
 import hashlib
 import json
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -125,6 +127,19 @@ class TaskWorkflow:
                         "SELECT state FROM tasks WHERE task_id=?", (row[key],)
                     ).fetchone()
                     if child and child[0] == "completed":
+                        if key == "action_task_id":
+                            publication = con.execute(
+                                "SELECT e.execution_id FROM all_task_executions e "
+                                "JOIN tasks t ON t.task_id=e.task_id "
+                                "AND t.attempt=e.task_attempt WHERE t.task_id=?",
+                                (row[key],),
+                            ).fetchone()
+                            if publication:
+                                con.execute(
+                                    "UPDATE task_workflows SET publication_id=? "
+                                    "WHERE task_id=? AND attempt=?",
+                                    (publication[0], row["task_id"], row["attempt"]),
+                                )
                         con.execute(
                             (
                                 "UPDATE task_workflows SET status=?, "
@@ -487,6 +502,31 @@ class TaskWorkflow:
             )
         return {"state": "discarded", "task_id": task_id}
 
+    def _task_session(
+        self, session: SessionRecord, task_id: str, attempt: int
+    ) -> SessionRecord:
+        """Retained proposals keep the workspace/runtime of their original turn."""
+        execution = self.store.get_execution(task_id, attempt)
+        workspace_id = execution.workspace_id if execution else None
+        if workspace_id is None:
+            with self.store.connection() as con:
+                binding = con.execute(
+                    "SELECT workspace_id FROM switch_proposal_bindings "
+                    "WHERE task_id=? AND attempt=?",
+                    (task_id, attempt),
+                ).fetchone()
+            workspace_id = str(binding[0]) if binding else None
+        workspace = self.store.get_workspace(workspace_id or "")
+        return (
+            replace(
+                session,
+                workspace_id=workspace.workspace_id,
+                workspace_mode=workspace.mode,
+            )
+            if workspace
+            else session
+        )
+
     def _publication_workspace(
         self,
         session: SessionRecord,
@@ -564,6 +604,7 @@ class TaskWorkflow:
         undo: bool = False,
         allow_unverified: bool = False,
         environment: EnvironmentSupplier | None = None,
+        before_publish: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         with self.publisher.lock:
             self.reconcile()
@@ -586,6 +627,7 @@ class TaskWorkflow:
             session = self.store.get_session(task.session_id or "")
             if session is None:
                 raise ValueError("Apply currently requires a shared-session task.")
+            session = self._task_session(session, task_id, int(row["attempt"]))
             workspace, runtime_root, _ = self._publication_workspace(
                 session, task_id=task_id, attempt=int(row["attempt"])
             )
@@ -630,6 +672,8 @@ class TaskWorkflow:
             current = self.get(task_id)
             if current is None or current["proposal_json"] != row["proposal_json"]:
                 raise ValueError("Proposal changed during checks; retry apply.")
+            if before_publish is not None:
+                before_publish()
             return self._apply(
                 task_id, undo=False, allow_unverified=allow_unverified, prepared=files
             )
@@ -706,8 +750,16 @@ class TaskWorkflow:
         if row[action_key]:
             child = self.store.get_task(row[action_key])
             if child and child.state == "completed":
+                publication = self.store.get_execution(child.task_id, child.attempt)
                 self.update(
-                    task_id, row["attempt"], status="undone" if undo else "published"
+                    task_id,
+                    row["attempt"],
+                    status="undone" if undo else "published",
+                    **(
+                        {"publication_id": publication.execution_id}
+                        if not undo and publication
+                        else {}
+                    ),
                 )
                 return {
                     "state": "undone" if undo else "published",
@@ -728,6 +780,7 @@ class TaskWorkflow:
         session = self.store.get_session(task.session_id or "")
         if session is None:
             raise ValueError("Apply and undo currently require a shared-session task.")
+        session = self._task_session(session, task_id, int(row["attempt"]))
         workspace, runtime_root, isolated_workspace_id = self._publication_workspace(
             session,
             allow_removed=undo,
@@ -806,6 +859,14 @@ class TaskWorkflow:
             if original_claim
             else None
         )
+        if scopes is None:
+            with self.store.connection() as con:
+                binding = con.execute(
+                    "SELECT scopes_json FROM switch_proposal_bindings "
+                    "WHERE task_id=? AND attempt=?",
+                    (task_id, int(row["attempt"])),
+                ).fetchone()
+            scopes = tuple(json.loads(binding[0])) if binding else None
         if scopes is None:
             raise ValueError("The proposal's original path authority is unavailable.")
         authority = self.store.authority
@@ -935,7 +996,10 @@ class TaskWorkflow:
                 publication_id=execution.execution_id,
             )
             self.update(
-                task_id, row["attempt"], status="undone" if undo else "published"
+                task_id,
+                row["attempt"],
+                status="undone" if undo else "published",
+                **({"publication_id": execution.execution_id} if not undo else {}),
             )
             if isolated_workspace_id is not None:
                 assert self.isolated_sync is not None
