@@ -438,6 +438,20 @@ class SharedBatchPublisher:
         with self.store.connection() as connection:
             return self._blocked(connection, workspace_id)
 
+    @classmethod
+    def _require_settled(
+        cls, connection: sqlite3.Connection, workspace_id: str
+    ) -> None:
+        if cls._blocked(connection, workspace_id):
+            raise WorkspaceBrokerError("workspace has an unresolved batch journal")
+        manual = connection.execute(
+            "SELECT 1 FROM workspace_publications WHERE workspace_id = ? "
+            "AND operation_state IN ('prepared', 'operator_attention') LIMIT 1",
+            (workspace_id,),
+        ).fetchone()
+        if manual is not None:
+            raise WorkspaceBrokerError("workspace has an unresolved file publication")
+
     @staticmethod
     def _blocked(connection: sqlite3.Connection, workspace_id: str) -> bool:
         return (
@@ -510,6 +524,9 @@ class SharedBatchPublisher:
                 )
             with self.store.connection() as connection:
                 binding = self._binding(connection, session_id, require_active=True)
+                # Name an unresolved journal before Git reconciliation, which
+                # waits for it and would otherwise only ask for a retry.
+                self._require_settled(connection, str(binding["workspace_id"]))
             with publication(
                 self.store,
                 Path(binding["canonical_path"]),
@@ -555,19 +572,7 @@ class SharedBatchPublisher:
             ):
                 binding = self._binding(connection, session_id, require_active=True)
                 workspace_id = str(binding["workspace_id"])
-                if self._blocked(connection, workspace_id):
-                    raise WorkspaceBrokerError(
-                        "workspace has an unresolved batch journal"
-                    )
-                manual = connection.execute(
-                    "SELECT 1 FROM workspace_publications WHERE workspace_id = ? "
-                    "AND operation_state IN ('prepared', 'operator_attention') LIMIT 1",
-                    (workspace_id,),
-                ).fetchone()
-                if manual is not None:
-                    raise WorkspaceBrokerError(
-                        "workspace has an unresolved file publication"
-                    )
+                self._require_settled(connection, workspace_id)
                 root = Path(str(binding["canonical_path"]))
                 for item in files:
                     if item.base.kind is ObjectKind.SYMLINK:

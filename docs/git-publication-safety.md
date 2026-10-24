@@ -27,19 +27,29 @@ markers before and after apply; the existing durable journal still decides the
 result from exact file identities. A changed Git fingerprint records
 `git.concurrent_operation_attention` with affected paths and requires a scan
 before the next publication. A failed advisory postflight preserves confirmed
-publication success and forces the next preflight to rescan.
+publication success and forces the next preflight to rescan. Reconciliation waits
+while the checkout has an unresolved publication journal; publication then reports
+that journal (`CHECKOUT_RECOVERY_REQUIRED` or the batch error) rather than asking
+for a retry.
 
-At existing scan boundaries, a HEAD change with unchanged observed working files
-records `git.commit_observed`, without changing the workspace epoch or creating
-another file batch. Stable outside-edit observations advance that baseline before
-a later commit. Recent published batches can be linked to a commit only when all
-resulting modes and raw Git blobs match its tree exactly. Directory-marker batches
-and transformed content that cannot be proven from those exact bytes stay
-unlinked.
+At existing scan boundaries, an ordinary commit records `git.commit_observed`,
+without changing the workspace epoch or creating another file batch. A HEAD
+change is ordinary when its observed working files are unchanged, or when HEAD's
+reflog shows only `commit`, `commit (amend)` or `commit (initial)` moves since the
+last observation. The reflog matters because the metadata baseline covers only
+paths that sessions read or published: committing your own edits to other files
+is still a commit. Stable outside-edit observations also advance that baseline.
 
-When HEAD movement accompanies changed working files, Loupe increments the shared
-workspace epoch and sends a checkout-change notice to every active or disconnected
-session. Pending candidates keep their original bases and must pass exact-base
+A published batch is linked once, to the first observed commit whose tree contains
+every resulting mode and raw Git blob while the previous HEAD's tree did not.
+Later commits that still contain it, and results that were already committed, are
+not linked again. Directory-marker batches and transformed content that cannot be
+proven from those exact bytes stay unlinked.
+
+When any other HEAD movement (checkout, reset, merge, pull, rebase, cherry-pick)
+accompanies changed working files, or the reflog is unavailable, Loupe increments
+the shared workspace epoch and sends a checkout-change notice to every active or
+disconnected session. Pending candidates keep their original bases and must pass exact-base
 validation before publication. Isolated sessions retain their private HEAD and
 receive primary checkout changes through their existing incoming sync.
 

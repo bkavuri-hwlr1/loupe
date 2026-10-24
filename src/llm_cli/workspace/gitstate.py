@@ -39,6 +39,8 @@ _OPERATIONS = (
 )
 _MAX_INDEX = 64 * 1024 * 1024
 _MAX_PATHS = 100_000
+_MAX_REFLOG = 256 * 1024
+_COMMIT_REFLOG = ("commit: ", "commit (amend): ", "commit (initial): ")
 _FAILED: weakref.WeakKeyDictionary[ControlStore, set[Path]] = (
     weakref.WeakKeyDictionary()
 )
@@ -229,6 +231,49 @@ def _files(root: Path) -> dict[str, list[int] | None]:
     }
 
 
+def _ordinary_commits(root: Path, before: str, after: str) -> bool:
+    """Whether HEAD's reflog shows only `git commit` moves from before to after.
+
+    A commit leaves working files alone, so the user's own edits that it records
+    must not look like a checkout. Any other move (checkout, reset, merge, pull,
+    rebase, cherry-pick) or an unreadable reflog falls back to file metadata.
+    """
+    try:
+        with (_admin(root) / "logs" / "HEAD").open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - _MAX_REFLOG))
+            tail = handle.read()
+    except (OSError, LlmCoordError):
+        return False
+    moves: list[tuple[str, str, str]] = []
+    for line in tail.splitlines():
+        header, _, raw_message = line.partition(b"\t")
+        fields = header.split(b" ", 2)
+        if len(fields) == 3:
+            # A truncated first line can be arbitrary bytes; the chain check
+            # below rejects it rather than trusting its fields.
+            moves.append(
+                (
+                    fields[0].decode(errors="replace"),
+                    fields[1].decode(errors="replace"),
+                    raw_message.decode(errors="replace"),
+                )
+            )
+    # An unborn HEAD is recorded as the all-zero object name.
+    start = before or "0" * len(after)
+    for index in range(len(moves) - 1, -1, -1):
+        if moves[index][1] == start:
+            break
+    else:
+        return False
+    position = start
+    for old, new, message in moves[index + 1 :]:
+        if old != position or not message.startswith(_COMMIT_REFLOG):
+            return False
+        position = new
+    return position == after and position != start
+
+
 def _binding(store: ControlStore, root: Path) -> sqlite3.Row | None:
     with store.connection() as con:
         row = con.execute(
@@ -310,11 +355,23 @@ def reconcile(
         if previous_files.get(path) != files.get(path)
     )
     head_changed = previous is not None and previous["head_oid"] != current.head
+    # Metadata only covers paths agents read or published, so a commit of the
+    # user's own edits also shows changed files. The reflog tells them apart.
+    structural = (
+        head_changed
+        and bool(changed)
+        and not _ordinary_commits(root, previous["head_oid"], current.head)
+    )
     links = (
         _proven_batches(
-            store, root, str(binding["workspace_id"]), current.head, candidate_dir
+            store,
+            root,
+            str(binding["workspace_id"]),
+            previous["head_oid"],
+            current.head,
+            candidate_dir,
         )
-        if head_changed and not changed
+        if head_changed and not structural
         else []
     )
     with store.connection() as con, immediate_transaction(con):
@@ -349,7 +406,7 @@ def reconcile(
         if previous is None and live is not None:
             return
         if head_changed:
-            if changed:
+            if structural:
                 con.execute(
                     "UPDATE workspaces SET workspace_epoch=workspace_epoch+1 WHERE "
                     "workspace_id=?",
@@ -413,57 +470,84 @@ def reconcile(
     _SEEN.setdefault(store, set()).add(root)
 
 
-def _proven_batches(
-    store: ControlStore,
-    root: Path,
-    workspace: str,
-    head: str,
-    candidate_dir: Path | None,
-) -> list[str]:
-    if not head or candidate_dir is None:
-        return []
-    from llm_cli.workspace.broker import load_candidate_content
-
+def _tree(
+    root: Path, head: str, *, allow_missing: bool = False
+) -> dict[str, tuple[str, str]]:
     tree: dict[str, tuple[str, str]] = {}
-    for entry in _git(root, "ls-tree", "-r", "-z", head).split(b"\0"):
+    if not head:
+        return tree
+    for entry in _git(
+        root, "ls-tree", "-r", "-z", head, allow_missing=allow_missing
+    ).split(b"\0"):
         if entry:
             header, raw_path = entry.split(b"\t", 1)
             mode, _, oid = header.decode().split()
             tree[os.fsdecode(raw_path)] = (mode, oid)
+    return tree
+
+
+def _proven_batches(
+    store: ControlStore,
+    root: Path,
+    workspace: str,
+    before: str,
+    head: str,
+    candidate_dir: Path | None,
+) -> list[str]:
+    """Batches whose exact results this commit introduced.
+
+    A batch links once, to the first observed commit whose tree contains every
+    result while the previous HEAD's tree did not. Later commits that merely
+    still contain it, and results already committed earlier, are not proof.
+    """
+    if not head or candidate_dir is None:
+        return []
+    from llm_cli.workspace.broker import load_candidate_content
+
+    directory = candidate_dir
+    tree = _tree(root, head)
+    # The previous commit may since have been pruned; an empty tree then
+    # proves nothing was already committed.
+    old_tree = _tree(root, before, allow_missing=True)
+    digest = hashlib.sha256 if len(head) == 64 else hashlib.sha1
+    blobs: dict[str, str] = {}
+
+    def contains(snapshot: dict[str, tuple[str, str]], item: dict[str, Any]) -> bool:
+        path = item["relative_path"]
+        result = item["result"]
+        if result["kind"] == "absent":
+            return path not in snapshot
+        if result["kind"] == "directory_marker":
+            # Empty directory creation has no Git tree representation.
+            # Do not infer proof from an unrelated descendant.
+            return False
+        content_hash = item["content_hash"]
+        if content_hash not in blobs:
+            body = load_candidate_content(directory, content_hash)
+            blobs[content_hash] = digest(
+                b"blob " + str(len(body)).encode() + b"\0" + body
+            ).hexdigest()
+        return snapshot.get(path) == (result["mode"], blobs[content_hash])
+
     with store.connection() as con:
         rows = con.execute(
             "SELECT batch_id,request_json FROM workspace_batches WHERE "
             "workspace_id=? AND state='published' AND NOT EXISTS (SELECT 1 FROM "
             "workspace_git_batch_commits l WHERE "
-            "l.batch_id=workspace_batches.batch_id AND l.commit_oid=?) ORDER BY "
+            "l.batch_id=workspace_batches.batch_id) ORDER BY "
             "created_at DESC LIMIT 1000",
-            (workspace, head),
+            (workspace,),
         ).fetchall()
     proven = []
     for row in rows:
-        for item in json.loads(row["request_json"])["files"]:
-            path = item["relative_path"]
-            result = item["result"]
-            if result["kind"] == "absent":
-                matches = path not in tree
-            elif result["kind"] == "directory_marker":
-                # Empty directory creation has no Git tree representation.
-                # Do not infer proof from an unrelated descendant.
-                matches = False
-            else:
-                try:
-                    body = load_candidate_content(candidate_dir, item["content_hash"])
-                except (OSError, ValueError):
-                    break
-                digest = hashlib.sha256 if len(head) == 64 else hashlib.sha1
-                blob = digest(
-                    b"blob " + str(len(body)).encode() + b"\0" + body
-                ).hexdigest()
-                matches = tree.get(path) == (result["mode"], blob)
-            if not matches:
-                break
-        else:
-            proven.append(str(row["batch_id"]))
+        files = json.loads(row["request_json"])["files"]
+        try:
+            if all(contains(tree, item) for item in files) and not all(
+                contains(old_tree, item) for item in files
+            ):
+                proven.append(str(row["batch_id"]))
+        except (OSError, ValueError):
+            continue
     return proven
 
 
@@ -494,12 +578,20 @@ def publication(
                 "WHERE workspace_id=?",
                 (binding["workspace_id"],),
             ).fetchone()
+            pending = _pending(con, str(binding["workspace_id"]))
         if (
             state is None
             or state["head_oid"] != before.head
             or state["rescan_required"]
             or root in _FAILED.get(store, set())
         ):
+            if pending:
+                # Reconciliation waits for the journal; retrying alone won't help.
+                raise LlmCoordError(
+                    ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
+                    "Git reconciliation waits for an unresolved publication "
+                    "journal in this checkout; recover it first",
+                )
             raise LlmCoordError(
                 ErrorCode.GIT_OPERATION_ACTIVE,
                 "Git reconciliation is incomplete; retry publication",

@@ -1117,11 +1117,12 @@ journal and record attention; postflight observation failures cannot fail an
 already confirmed publication.
 
 Existing scan points record ordinary commits without changing the epoch, and
-working-file changes accompanying HEAD movement increment it and notify all
-sessions. Stable outside-edit observations update the metadata baseline so a
-later commit is not misreported as a branch switch. Exact raw Git blob/mode
-matches can link recent known batches; ambiguous transformations and directory
-markers remain unlinked. See [Git publication safety](git-publication-safety.md).
+working-file changes accompanying other HEAD movement increment it and notify all
+sessions. HEAD's reflog identifies `git commit` moves, so committing the user's
+own edits is not misreported as a branch switch; without a reflog, changed files
+stay structural. Exact raw Git blob/mode matches link each known batch once, to
+the commit that introduced it; ambiguous transformations and directory markers
+remain unlinked. See [Git publication safety](git-publication-safety.md).
 
 ## Next executable slice
 
