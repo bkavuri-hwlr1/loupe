@@ -94,10 +94,15 @@ Open a new terminal after installing. For checkout-only development,
 `uv sync --all-extras` followed by `uv run loupe` works too. `loupe demo`
 previews the conversation display without a model connection.
 
-After upgrading a checkout that already has a daemon running, let its active
-tasks finish and run `loupe daemon restart` to load the new code. Loupe warns
-when the daemon is running different code: older code from before an update,
-or code from another installation that shares the same profile.
+Before upgrading, let active tasks finish, exit Loupe terminals, and stop every
+profile's daemon with `loupe daemon stop` and `loupe --profile NAME daemon stop`.
+Old daemons predating cross-profile authority ignore the new checkout lock.
+Upgrade only after they stop; the next conversation starts the new daemon.
+For Homebrew, set `HOMEBREW_NO_INSTALL_CLEANUP=1` during upgrade so cleanup does
+not remove an interpreter still in use. See the
+[0.1.0a3 upgrade notes](docs/release-notes/0.1.0a3.md).
+Loupe warns when the daemon is running different code: older code from before
+an update, or code from another installation that shares the same profile.
 `loupe daemon status` reports `matches_this_cli`. Subsequent in-app logins are
 loaded on each new task without restarting the daemon.
 Earlier events that stored only character counts cannot recover old text.
