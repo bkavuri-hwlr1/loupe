@@ -480,8 +480,8 @@ def _isolate(harness: Harness, task_id: str) -> str:
         )
         connection.execute(
             "INSERT INTO isolated_workspaces VALUES "
-            "(?,?,'base',0,'{}','[]','[]','[]','fingerprint','owner','ready')",
-            (workspace_id, f"session-{task_id}"),
+            "(?,?,'base',0,'{}','[]','[]','[]','fingerprint','owner','ready',?)",
+            (workspace_id, f"session-{task_id}", f"session:session-{task_id}"),
         )
         connection.execute(
             "UPDATE sessions SET workspace_id=?,workspace_mode='isolated' "

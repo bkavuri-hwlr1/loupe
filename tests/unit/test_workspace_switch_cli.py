@@ -128,3 +128,25 @@ def test_old_daemon_cannot_skip_the_target_binding_confirmation(client: Client) 
     with pytest.raises(LlmCoordError) as caught:
         session.switch_workspace(cast(DaemonClient, daemon), credentials, "isolated")
     assert caught.value.code is ErrorCode.PROTOCOL_MISMATCH
+
+
+@pytest.mark.parametrize("disposition", [None, "retain", "publish"])
+def test_publish_switch_uses_existing_long_apply_timeout_only_for_checks(
+    client: Client,
+    monkeypatch: pytest.MonkeyPatch,
+    disposition: str | None,
+) -> None:
+    daemon = SwitchClient(client.paths)
+    waits: list[float] = []
+
+    def patient(value: Any, timeout: float) -> Any:
+        waits.append(timeout)
+        return value
+
+    monkeypatch.setattr(session, "_patient", patient)
+    credentials = session._SessionCredentials("existing", "secret", "test", "first", 1)
+    session.switch_workspace(
+        cast(DaemonClient, daemon), credentials, "shared", disposition=disposition
+    )
+    assert waits[0] == session.SESSION_SETUP_TIMEOUT_SECONDS
+    assert (session.APPLY_TIMEOUT_SECONDS in waits) == (disposition == "publish")

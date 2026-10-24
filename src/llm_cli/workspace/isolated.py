@@ -81,6 +81,15 @@ class IsolatedState:
     source_fingerprint: str
     creation_token: str
     stage: str
+    creation_key: str = ""
+
+    @property
+    def creation_reference(self) -> str:
+        return (
+            self.creation_key
+            if self.creation_key.startswith("switch:")
+            else self.session_id
+        )
 
 
 def _error(message: str) -> LlmCoordError:
@@ -650,6 +659,7 @@ class IsolatedWorkspaceManager:
             str(row["source_fingerprint"]),
             str(row["creation_token"]),
             str(row["stage"]),
+            str(row["creation_key"]),
         )
 
     def _stage(self, workspace_id: str, stage: str) -> None:
@@ -1038,14 +1048,85 @@ class IsolatedWorkspaceManager:
                 for sql, parameters in references
             )
 
+    def _unbound_switch_target(self, workspace_id: str) -> bool:
+        if self.runtime.busy(workspace_id):
+            return False
+        with self.store.connection() as con:
+            row = con.execute(
+                "SELECT 1 FROM mode_switch_intents m JOIN isolated_workspaces i "
+                "ON i.workspace_id=m.target_workspace_id "
+                "JOIN sessions s ON s.session_id=m.session_id "
+                "WHERE m.target_workspace_id=? AND m.target_mode='isolated' "
+                "AND i.session_id=m.session_id "
+                "AND i.creation_key='switch:'||m.switch_intent_id "
+                "AND i.stage<>'ready' AND m.state<>'confirmed' "
+                "AND s.workspace_id=m.source_workspace_id "
+                "AND s.workspace_binding_generation=m.source_binding_generation "
+                "AND NOT EXISTS (SELECT 1 FROM sessions b "
+                "WHERE b.workspace_id=i.workspace_id) "
+                "AND NOT EXISTS (SELECT 1 FROM all_task_executions e "
+                "WHERE e.workspace_id=i.workspace_id) "
+                "AND NOT EXISTS (SELECT 1 FROM isolated_runtime_holds h "
+                "WHERE h.workspace_id=i.workspace_id)",
+                (workspace_id,),
+            ).fetchone()
+        return row is not None
+
+    def _quarantine_failed_target(self, workspace_id: str) -> bool:
+        """Settle only a verified unbound target after preserving unknown source."""
+        try:
+            if not self._unbound_switch_target(workspace_id):
+                return False
+            state = self.get(workspace_id)
+            workspace = self.store.get_workspace(workspace_id)
+            checkout = (
+                self.store.get_checkout(workspace.checkout_id) if workspace else None
+            )
+            if state is None or workspace is None or checkout is None:
+                return False
+            managed = resume_managed_worktree(
+                Path(checkout.canonical_path),
+                managed_root=self.managed_root,
+                registered_path=Path(workspace.canonical_path),
+                task_id=workspace_id,
+                base_oid=state.base_oid,
+            )
+            with _source(managed.git_dir, "loupe-isolated-owner") as descriptor:
+                if _read(descriptor, 1024).decode() != state.creation_token:
+                    return False
+            self._scrub_private(managed.path, state)
+            self.runtime.cleanup(workspace_id)
+            self._quarantine(workspace_id)
+            return True
+        except (LlmCoordError, OSError, ValueError):
+            return False
+
+    def retire_switch_target(self, workspace_id: str) -> bool:
+        """Scrub only the exact unbound failed target; unknown source survives."""
+        with self.lock:
+            if not self._unbound_switch_target(workspace_id):
+                return False
+            try:
+                return self._clean_incomplete(workspace_id)
+            except (LlmCoordError, OSError, ValueError):
+                self._quarantine(workspace_id)
+                return False
+            finally:
+                self.runtime.cleanup(workspace_id)
+
     def _retire_failed_creation(self, workspace_id: str) -> bool:
         # Preserve the caller's original error if cleanup itself fails. Git and
         # token verification must precede every private-file removal; unknown
         # ordinary source stays available in the quarantined tree or archive.
         try:
             state = self.get(workspace_id)
-            if state is not None and self._orphaned_creation(state):
-                return self._clean_incomplete_owned(workspace_id)
+            unbound = self._unbound_switch_target(workspace_id)
+            if state is not None and (unbound or self._orphaned_creation(state)):
+                try:
+                    return self._clean_incomplete_owned(workspace_id)
+                finally:
+                    if unbound:
+                        self.runtime.cleanup(workspace_id)
         except Exception:
             _LOG.warning(
                 "failed isolated creation could not be cleaned; "
@@ -1102,14 +1183,19 @@ class IsolatedWorkspaceManager:
                     ).fetchone()
                 if journal is not None and tuple(journal) == (
                     "isolated_create",
-                    state.session_id,
+                    state.creation_reference,
                 ):
-                    kind, reference = "isolated_create", state.session_id
+                    kind, reference = "isolated_create", state.creation_reference
             with authority.mutation(
                 primary, kind, reference, recovery=True
             ) as operation:
-                result = self._clean_incomplete_owned(workspace_id, closed=closed)
-                if result:
+                try:
+                    result = self._clean_incomplete_owned(workspace_id, closed=closed)
+                except (LlmCoordError, OSError, ValueError):
+                    if self._quarantine_failed_target(workspace_id):
+                        operation.confirm()
+                    raise
+                if result or self._quarantine_failed_target(workspace_id):
                     operation.confirm()
                 return result
 
@@ -1478,7 +1564,7 @@ class IsolatedWorkspaceManager:
                     self.store,
                     primary,
                     "isolated_create",
-                    state.session_id,
+                    state.creation_reference,
                     recovery=recovery,
                 ) as operation,
             ):
@@ -1520,7 +1606,7 @@ class IsolatedWorkspaceManager:
                     self.store,
                     primary,
                     "isolated_create",
-                    state.session_id,
+                    state.creation_reference,
                     recovery=recovery,
                 ) as operation,
             ):
@@ -1565,7 +1651,7 @@ class IsolatedWorkspaceManager:
                     self.store,
                     primary,
                     "isolated_create",
-                    state.session_id,
+                    state.creation_reference,
                     recovery=True,
                 ) as operation,
             ):
@@ -1618,7 +1704,7 @@ class IsolatedWorkspaceManager:
             with (
                 self.lock,
                 managed_mutation(
-                    self.store, primary, "isolated_create", session_id
+                    self.store, primary, "isolated_create", creation_key or session_id
                 ) as operation,
             ):
                 try:
@@ -1631,10 +1717,17 @@ class IsolatedWorkspaceManager:
                 except Exception:
                     with self.store.connection() as con:
                         planned = con.execute(
-                            "SELECT 1 FROM isolated_workspaces WHERE session_id=?",
-                            (session_id,),
+                            "SELECT workspace_id FROM isolated_workspaces "
+                            "WHERE creation_key=?",
+                            (creation_key or "session:" + session_id,),
                         ).fetchone()
-                    if planned is None and operation is not None:
+                    if operation is not None and (
+                        planned is None
+                        or (
+                            creation_key is not None
+                            and self._quarantine_failed_target(str(planned[0]))
+                        )
+                    ):
                         operation.confirm()
                     raise
                 if operation is not None:
@@ -1663,20 +1756,6 @@ class IsolatedWorkspaceManager:
         creation_key: str | None = None,
     ) -> tuple[WorkspaceRecord, tuple[str, ...]]:
         with self.lock:
-            with self.store.connection() as con:
-                prior = con.execute(
-                    "SELECT workspace_id FROM isolated_workspaces WHERE creation_key=?",
-                    (creation_key or "session:" + session_id,),
-                ).fetchone()
-            if prior is not None:
-                state = self.validate(str(prior[0]))
-                if state.session_id != session_id:
-                    raise _error("isolated creation key belongs to another session")
-                if set(approved_secrets) - set(state.runtime_files):
-                    raise _error("existing isolated session cannot add runtime consent")
-                workspace = self.store.get_workspace(state.workspace_id)
-                assert workspace is not None
-                return workspace, state.notices
             if creation_key is None:
                 session = self.store.get_session(session_id)
                 if (
@@ -1695,6 +1774,20 @@ class IsolatedWorkspaceManager:
                             "isolated session binding belongs to another workspace"
                         )
                     return workspace, state.notices
+            with self.store.connection() as con:
+                prior = con.execute(
+                    "SELECT workspace_id FROM isolated_workspaces WHERE creation_key=?",
+                    (creation_key or "session:" + session_id,),
+                ).fetchone()
+            if prior is not None:
+                state = self.validate(str(prior[0]))
+                if state.session_id != session_id:
+                    raise _error("isolated creation key belongs to another session")
+                if set(approved_secrets) - set(state.runtime_files):
+                    raise _error("existing isolated session cannot add runtime consent")
+                workspace = self.store.get_workspace(state.workspace_id)
+                assert workspace is not None
+                return workspace, state.notices
             shared = self.store.ensure_shared_workspace(checkout)
             self.ensure_available(shared.workspace_id)
             scanner = ExternalWorkspaceScanner(self.store)
@@ -1834,6 +1927,16 @@ class IsolatedWorkspaceManager:
                         creation_key or "session:" + session_id,
                     ),
                 )
+                if creation_key and creation_key.startswith("switch:"):
+                    changed = con.execute(
+                        "UPDATE mode_switch_intents SET target_workspace_id=? "
+                        "WHERE switch_intent_id=? AND session_id=? "
+                        "AND target_mode='isolated' AND state='target_creating' "
+                        "AND target_workspace_id IS NULL",
+                        (workspace_id, creation_key[len("switch:") :], session_id),
+                    ).rowcount
+                    if changed != 1:
+                        raise _error("isolated switch target identity is already bound")
             self.fault("planned")
             try:
                 managed = create_managed_worktree(

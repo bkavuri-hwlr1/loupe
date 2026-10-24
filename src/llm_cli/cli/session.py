@@ -516,6 +516,8 @@ def switch_workspace(
 ) -> tuple[_SessionCredentials, dict[str, Any]]:
     intent_id = switch_intent_id or new_id("switch")
     setup = _runtime_open_client(client, workspace, resume=True)
+    if disposition == "publish":
+        setup = _patient(setup, APPLY_TIMEOUT_SECONDS)
     prepared = setup.call(
         "workspace.switch_mode",
         {

@@ -665,3 +665,574 @@ def test_exported_git_patch_roundtrips_text_binary_symlink_and_mode(
         batch_env.repository / "asset.bin"
     ).read_bytes() == b"\0\xffbinary export\x80"
     assert os.readlink(batch_env.repository / "source-link") == "a.txt"
+
+
+def test_held_apply_after_switch_uses_original_runtime_and_session_path_environment(
+    tmp_path: Path,
+    repository_factory: Any,
+    service_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import hashlib
+    import sys
+
+    from test_command_environment_sessions import _session_service
+    from test_shared_agent_execution import (
+        ScriptedProvider,
+        _call,
+        _finish,
+        _register,
+        _request,
+        _start,
+        _tools,
+    )
+
+    monkeypatch.setenv("PROJECT_MODE", "wrong-daemon-terminal")
+
+    async def scenario() -> None:
+        root = repository_factory(
+            tmp_path, {"a.txt": "base\n", ".gitignore": ".env\nruntime/\n"}
+        )
+        (root / ".env").write_text("original-runtime-input")
+        (root / "runtime").mkdir()
+        (root / "runtime/data").write_text("original-dependency-input")
+        provider = ScriptedProvider(
+            "held-switch-runtime",
+            [
+                _tools(
+                    _call("read_file", path="a.txt"),
+                    _call("write_file", path="a.txt", content="candidate\n"),
+                ),
+                _finish(),
+            ],
+        )
+        service = _session_service(service_factory(tmp_path))
+        _register(service, provider)
+        service.initialize()
+        credentials = {
+            "session_id": provider.model,
+            "resume_secret": "switch-held-secret",
+        }
+        environment = {
+            "PROJECT_INPUT": str(root / ".env"),
+            "PROJECT_DEP": str(root / "runtime/data"),
+            "PROJECT_MODE": "origin-terminal",
+        }
+        try:
+            await service.handle(_request("repo.add", {"path": str(root)}))
+            opened = await service.handle(
+                _request(
+                    "session.open",
+                    {
+                        "session_id": provider.model,
+                        "path": str(root),
+                        "resume_token_hash": hashlib.sha256(
+                            credentials["resume_secret"].encode()
+                        ).hexdigest(),
+                        "provider": "scripted",
+                        "model": provider.model,
+                        "workspace": "isolated",
+                        "mode": "normal",
+                        "approved_runtime_files": [".env"],
+                        "command_environment": environment,
+                    },
+                )
+            )
+            await service.handle(
+                _request(
+                    "session.ack",
+                    {**credentials, "sequence": opened["bootstrap_sequence"]},
+                )
+            )
+            await service.handle(
+                _request(
+                    "checks.configure",
+                    {
+                        "path": str(root),
+                        "config": {
+                            "checks": {
+                                "exact-runtime": {
+                                    "argv": [
+                                        sys.executable,
+                                        "-c",
+                                        "import os; from pathlib import Path; "
+                                        "assert Path('a.txt').read_text()=="
+                                        "'candidate\\n'; "
+                                        "assert Path(os.environ['PROJECT_INPUT'])"
+                                        ".read_text()=="
+                                        "'original-runtime-input'; "
+                                        "assert Path(os.environ['PROJECT_DEP'])"
+                                        ".read_text()=="
+                                        "'original-dependency-input'; "
+                                        "assert os.environ['PROJECT_MODE']=="
+                                        "'origin-terminal'; "
+                                        "print('verified original runtime')",
+                                    ]
+                                }
+                            },
+                        },
+                    },
+                )
+            )
+            await asyncio.wait_for(
+                await _start(service, root, credentials, "held-before-switch", ("*",)),
+                20,
+            )
+            assert (
+                service.workflow.get("held-before-switch")["status"]
+                == "awaiting_review"
+            )
+            old_workspace = opened["workspace"]["workspace_id"]
+            private = Path(opened["workspace"]["canonical_path"])
+            prepared = await service.handle(
+                _request(
+                    "workspace.switch_mode",
+                    {
+                        **credentials,
+                        "workspace": "shared",
+                        "switch_intent_id": "held-back",
+                        "disposition": "hold",
+                    },
+                )
+            )
+            await service.handle(
+                _request(
+                    "workspace.confirm_switch",
+                    {
+                        **credentials,
+                        "switch_intent_id": "held-back",
+                        "sequence": prepared["bootstrap_sequence"],
+                        "command_environment": environment,
+                    },
+                )
+            )
+            (root / ".env").write_text("later-shared-input")
+            (root / "runtime/data").write_text("later-shared-dependency")
+            (root / "outside.txt").write_text("force fresh source/check evidence\n")
+            applied = await service.handle(
+                _request("task.apply", {"task_id": "held-before-switch"})
+            )
+            assert applied["state"] == "published"
+            assert (root / "a.txt").read_text() == "candidate\n"
+            assert (private / ".env").read_text() == "original-runtime-input"
+            with service.store.connection() as con:
+                hold = con.execute(
+                    "SELECT workspace_id FROM isolated_runtime_holds "
+                    "WHERE task_id='held-before-switch'"
+                ).fetchone()
+                checks = con.execute(
+                    "SELECT state,output FROM check_runs "
+                    "WHERE task_id='held-before-switch' ORDER BY created_at"
+                ).fetchall()
+            assert hold[0] == old_workspace
+            assert len(checks) >= 2 and checks[-1]["state"] == "passed"
+            assert "verified original runtime" in checks[-1]["output"]
+            row = service.workflow.get("held-before-switch")
+            action = service.store.get_task(applied["task_id"])
+            execution = service.store.get_execution(action.task_id, action.attempt)
+            assert row["publication_id"] == execution.execution_id
+            undo = await service.handle(
+                _request("task.undo", {"task_id": "held-before-switch"})
+            )
+            assert undo["state"] == "published"
+            assert (root / "a.txt").read_text() == "base\n"
+        finally:
+            await service.drain()
+            service.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cancel", ["rollback", "close"])
+def test_slow_switch_checks_cannot_publish_after_cancel_or_owner_close(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel: str,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from llm_cli.execution import checks
+
+    manager = switcher(batch_env, tmp_path)
+    private = Path(
+        finish(manager, "private", "isolated")["workspace"]["canonical_path"]
+    )
+    (private / "a.txt").write_text("pending publication\n")
+    entered, release = threading.Event(), threading.Event()
+    actual = checks.check_retained_proposal
+
+    def waiting(*args: Any, **kwargs: Any) -> str | None:
+        entered.set()
+        assert release.wait(10)
+        return actual(*args, **kwargs)
+
+    monkeypatch.setattr(checks, "check_retained_proposal", waiting)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        worker = pool.submit(
+            manager.request, "first", "cancelled", "shared", disposition="publish"
+        )
+        try:
+            assert entered.wait(10)
+            # The checker is outside the publication barrier.
+            assert batch_env.publisher.lock.acquire(timeout=2)
+            batch_env.publisher.lock.release()
+            if cancel == "rollback":
+                pending = manager.rollback("first", "cancelled")
+                assert pending["state"] == "rollback_pending"
+            else:
+                batch_env.store.close_session("first", reason="test cancellation")
+        finally:
+            release.set()
+        if cancel == "rollback":
+            assert worker.result(timeout=10)["state"] == "rolled_back"
+        else:
+            with pytest.raises(ValueError, match="closed or disconnected"):
+                worker.result(timeout=10)
+    assert manager.get("cancelled")["state"] == (
+        "rolled_back" if cancel == "rollback" else "attention_required"
+    )
+    assert (batch_env.repository / "a.txt").read_text() == "old a\n"
+    assert (private / "a.txt").read_text() == "pending publication\n"
+    with batch_env.store.connection() as con:
+        assert (
+            con.execute(
+                "SELECT count(*) FROM workspace_batches WHERE state='published'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_disconnected_publish_recovery_waits_for_owner_before_creating_proposal(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+) -> None:
+    manager = switcher(batch_env, tmp_path)
+    private = Path(
+        finish(manager, "private", "isolated")["workspace"]["canonical_path"]
+    )
+    (private / "a.txt").write_text("private publish\n")
+
+    class Crash(BaseException):
+        pass
+
+    manager.fault = lambda state: (
+        (_ for _ in ()).throw(Crash()) if state == "requested" else None
+    )
+    with pytest.raises(Crash):
+        manager.request("first", "reconnect", "shared", disposition="publish")
+    batch_env.store.disconnect_active_sessions()
+    manager = switcher(batch_env, tmp_path)
+    manager.recover()
+    assert manager.get("reconnect")["state"] == "requested"
+    assert manager.get("reconnect")["proposal_task_id"] is None
+    batch_env.store.resume_session("first")
+    result = finish(manager, "reconnect", "shared", disposition="publish")
+    assert result["state"] == "confirmed"
+    assert (batch_env.repository / "a.txt").read_text() == "private publish\n"
+
+
+def test_export_partial_write_crash_cannot_poison_final_artifact_names(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    git_run: Any,
+) -> None:
+    import multiprocessing
+    import os
+
+    manager = switcher(batch_env, tmp_path)
+    private = Path(
+        finish(manager, "private", "isolated")["workspace"]["canonical_path"]
+    )
+    (private / "a.txt").write_text("recoverable export\n")
+
+    def child() -> None:
+        isolated = switcher(batch_env, tmp_path)
+        isolated.fault = lambda phase: (
+            os._exit(73) if phase == "export_partial" else None
+        )
+        isolated.request("first", "export-crash", "shared", disposition="export")
+        os._exit(99)
+
+    process = multiprocessing.get_context("fork").Process(target=child)
+    process.start()
+    process.join(20)
+    assert process.exitcode == 73
+    exports = batch_env.publisher.candidate_dir / "switch-exports"
+    assert not list(exports.glob("*.patch"))
+    assert not list(exports.glob("*.patch.json"))
+    manager = switcher(batch_env, tmp_path)
+    manager.recover()
+    result = finish(manager, "export-crash", "shared", disposition="export")
+    assert len(list(exports.glob("*.patch"))) == 1
+    assert len(list(exports.glob("*.patch.json"))) == 1
+    git_run(batch_env.repository, "apply", "--check", result["export_path"])
+    git_run(batch_env.repository, "apply", result["export_path"])
+    assert (batch_env.repository / "a.txt").read_text() == "recoverable export\n"
+
+
+def test_export_preserves_an_unknown_existing_artifact(tmp_path: Path) -> None:
+    from llm_cli.workspace.patches import write_export_artifact
+
+    root = tmp_path / "exports"
+    root.mkdir(mode=0o700)
+    name = "0" * 64 + ".patch"
+    target = root / name
+    target.write_bytes(b"operator evidence")
+    target.chmod(0o600)
+    with pytest.raises(ValueError, match="identity changed"):
+        write_export_artifact(root, name, b"different candidate", lambda phase: None)
+    assert target.read_bytes() == b"operator evidence"
+
+
+def test_later_workspace_never_sweeps_old_held_source_into_its_publication(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+) -> None:
+    manager = switcher(batch_env, tmp_path)
+    first_open = finish(manager, "first-private", "isolated")
+    first = Path(first_open["workspace"]["canonical_path"])
+    (first / "a.txt").write_text("first workspace held source\n")
+    held = finish(manager, "hold-first", "shared", disposition="hold")
+    second = Path(
+        finish(manager, "second-private", "isolated")["workspace"]["canonical_path"]
+    )
+    (second / "docs/b.txt").write_text("second workspace source\n")
+    finish(manager, "publish-second", "shared", disposition="publish")
+    assert (batch_env.repository / "a.txt").read_text() == "old a\n"
+    assert (
+        batch_env.repository / "docs/b.txt"
+    ).read_text() == "second workspace source\n"
+    proposal = manager.workflow.get(held["proposal_task_id"])
+    assert (
+        proposal["status"] == "awaiting_review" and proposal["publication_id"] is None
+    )
+    owner = manager.workflow._task_session(
+        batch_env.store.get_session("first"), held["proposal_task_id"], 1
+    )
+    assert owner.workspace_id == first_open["workspace"]["workspace_id"]
+    assert owner.workspace_id != batch_env.store.get_session("first").workspace_id
+
+
+@pytest.mark.parametrize(
+    "phase", ["rollback_pending", "rolled_back", "attention_required"]
+)
+def test_real_process_death_in_rollback_and_attention_preserves_source(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    import multiprocessing
+    import os
+
+    def child() -> None:
+        manager = switcher(batch_env, tmp_path)
+        manager.fault = lambda state: os._exit(73) if state == phase else None
+        result = manager.request("first", "recovery", "isolated")
+        if phase == "attention_required":
+            (batch_env.repository / "a.txt").write_text("later source\n")
+            manager.confirm("first", "recovery", result["bootstrap_sequence"])
+        else:
+            manager.rollback("first", "recovery")
+        os._exit(99)
+
+    process = multiprocessing.get_context("fork").Process(target=child)
+    process.start()
+    process.join(20)
+    assert process.exitcode == 73
+    manager = switcher(batch_env, tmp_path)
+    manager.recover()
+    if phase == "attention_required":
+        assert manager.get("recovery")["state"] == "attention_required"
+        manager.rollback("first", "recovery")
+    assert manager.get("recovery")["state"] == "rolled_back"
+    assert batch_env.store.get_session("first").workspace_mode == "shared"
+    expected = "later source\n" if phase == "attention_required" else "old a\n"
+    assert (batch_env.repository / "a.txt").read_text() == expected
+    with batch_env.store.connection() as con:
+        assert (
+            con.execute("SELECT count(*) FROM isolated_workspaces").fetchone()[0] == 1
+        )
+
+
+@pytest.mark.parametrize(
+    "physical,tampered", [(False, False), (True, False), (True, True)]
+)
+def test_failed_switch_target_scrubs_runtime_but_preserves_unknown_source(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    physical: bool,
+    tampered: bool,
+) -> None:
+    from contextlib import ExitStack
+
+    from llm_cli.errors import LlmCoordError
+    from llm_cli.workspace.authority import PhysicalAuthority
+
+    with ExitStack() as resources:
+        (batch_env.repository / ".gitignore").write_text(".env\n")
+        (batch_env.repository / ".env").write_text("copied-private-runtime")
+        authority = None
+        if physical:
+            authority = PhysicalAuthority(
+                batch_env.store,
+                "test",
+                "target-failure-boot",
+                tmp_path / "socket",
+                root=tmp_path / "physical-authority" / "v1",
+            )
+            batch_env.store.authority = authority
+            resources.callback(authority.close)
+        manager = switcher(batch_env, tmp_path)
+
+        def fail(workspace_id: str, *args: Any, **kwargs: Any) -> None:
+            private = Path(batch_env.store.get_workspace(workspace_id).canonical_path)
+            assert (private / ".env").read_text() == "copied-private-runtime"
+            (private / "unknown-source.txt").write_text("preserve this source\n")
+            if tampered:
+                state = batch_env.store.get_workspace(workspace_id)
+                Path(state.git_dir, "loupe-isolated-owner").write_text("foreign-owner")
+            raise RuntimeError("fixture runtime initialization failed")
+
+        monkeypatch.setattr(manager.isolated.runtime, "initialize", fail)
+        with pytest.raises(RuntimeError, match="initialization failed"):
+            manager.request(
+                "first", "failed-target", "isolated", approved_secrets=(".env",)
+            )
+        row = manager.get("failed-target")
+        assert row["target_workspace_id"] is not None
+        private = Path(
+            batch_env.store.get_workspace(row["target_workspace_id"]).canonical_path
+        )
+        assert (private / ".env").exists() == tampered
+        assert (private / "unknown-source.txt").read_text() == "preserve this source\n"
+        manager.rollback("first", "failed-target")
+        batch_env.store.close_session("first", reason="test")
+        manager.isolated.cleanup_closed("first")
+        manager.isolated.recover()
+        assert (private / ".env").exists() == tampered
+        assert (private / "unknown-source.txt").read_text() == "preserve this source\n"
+
+        if authority is not None:
+            if tampered:
+                with pytest.raises(LlmCoordError), authority.pin(batch_env.repository):
+                    pass
+            else:
+                with authority.pin(batch_env.repository):
+                    pass
+
+
+@pytest.mark.parametrize(
+    "phase", ["planned", "registered", "materialized", "hydrated", "ready"]
+)
+def test_inner_target_creation_crash_never_allocates_a_second_target(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    manager = switcher(batch_env, tmp_path)
+
+    class Crash(BaseException):
+        pass
+
+    def fault(stage: str) -> None:
+        if stage == phase:
+            raise Crash()
+
+    manager.isolated.fault = fault
+    with pytest.raises(Crash):
+        manager.request("first", "inner-crash", "isolated")
+    row = manager.get("inner-crash")
+    target_id = row["target_workspace_id"]
+    assert target_id is not None
+    manager = switcher(batch_env, tmp_path)
+    manager.isolated.recover()
+    manager.recover()
+    result = manager.request("first", "inner-crash", "isolated")
+    if result["state"] == "confirming":
+        manager.confirm("first", "inner-crash", result["bootstrap_sequence"])
+    else:
+        assert result["state"] == "attention_required"
+        manager.rollback("first", "inner-crash")
+    assert manager.get("inner-crash")["target_workspace_id"] == target_id
+    with batch_env.store.connection() as con:
+        assert (
+            con.execute(
+                "SELECT count(*) FROM workspaces WHERE mode='isolated'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_cancelled_switch_waiter_keeps_physical_pin_until_worker_returns(
+    tmp_path: Path,
+    repository_factory: Any,
+    service_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import threading
+
+    from test_shared_agent_execution import (
+        ScriptedProvider,
+        _open_session,
+        _register,
+        _request,
+    )
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.txt": "base\n"})
+        service = service_factory(tmp_path)
+        provider = ScriptedProvider("switch-pin-lifetime", [])
+        _register(service, provider)
+        service.initialize()
+        entered, release, finished = (
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+        )
+
+        def waiting(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            entered.set()
+            try:
+                assert release.wait(10)
+                return {}
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(service.workspace_switches, "request", waiting)
+        try:
+            await service.handle(_request("repo.add", {"path": str(root)}))
+            credentials = await _open_session(service, root, provider)
+            operation = asyncio.create_task(
+                service.handle(
+                    _request(
+                        "workspace.switch_mode",
+                        {
+                            **credentials,
+                            "switch_intent_id": "cancelled-waiter",
+                            "workspace": "isolated",
+                        },
+                    )
+                )
+            )
+            assert await asyncio.to_thread(entered.wait, 5)
+            operation.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+            service.physical_authority.release_idle(force=True)
+            assert service.physical_authority.status(root)["state"] == "owned"
+        finally:
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 10)
+            for _ in range(100):
+                service.physical_authority.release_idle(force=True)
+                if service.physical_authority.status(root)["state"] != "owned":
+                    break
+                await asyncio.sleep(0.01)
+            service.close()
+
+    asyncio.run(scenario())

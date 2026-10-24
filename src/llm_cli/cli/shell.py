@@ -367,7 +367,7 @@ class ChatShell:
         if args[0] == "rollback":
             if len(args) != 2 or self.credentials is None:
                 raise ValueError("Usage: /workspace rollback SWITCH_INTENT_ID")
-            self.client.call(
+            result = self.client.call(
                 "workspace.rollback_switch",
                 {
                     "session_id": self.credentials.session_id,
@@ -375,7 +375,11 @@ class ChatShell:
                     "switch_intent_id": args[1],
                 },
             )
-            self.ui.notice("Workspace switch rolled back; retained source is safe.")
+            self.ui.notice(
+                "Workspace switch cancellation requested; waiting for the active check."
+                if result.get("state") == "rollback_pending"
+                else "Workspace switch rolled back; retained source is safe."
+            )
             return
         target, disposition, approved = args[0], None, []
         if target not in {"shared", "isolated"}:

@@ -127,6 +127,19 @@ class TaskWorkflow:
                         "SELECT state FROM tasks WHERE task_id=?", (row[key],)
                     ).fetchone()
                     if child and child[0] == "completed":
+                        if key == "action_task_id":
+                            publication = con.execute(
+                                "SELECT e.execution_id FROM all_task_executions e "
+                                "JOIN tasks t ON t.task_id=e.task_id "
+                                "AND t.attempt=e.task_attempt WHERE t.task_id=?",
+                                (row[key],),
+                            ).fetchone()
+                            if publication:
+                                con.execute(
+                                    "UPDATE task_workflows SET publication_id=? "
+                                    "WHERE task_id=? AND attempt=?",
+                                    (publication[0], row["task_id"], row["attempt"]),
+                                )
                         con.execute(
                             (
                                 "UPDATE task_workflows SET status=?, "
@@ -737,8 +750,16 @@ class TaskWorkflow:
         if row[action_key]:
             child = self.store.get_task(row[action_key])
             if child and child.state == "completed":
+                publication = self.store.get_execution(child.task_id, child.attempt)
                 self.update(
-                    task_id, row["attempt"], status="undone" if undo else "published"
+                    task_id,
+                    row["attempt"],
+                    status="undone" if undo else "published",
+                    **(
+                        {"publication_id": publication.execution_id}
+                        if not undo and publication
+                        else {}
+                    ),
                 )
                 return {
                     "state": "undone" if undo else "published",
@@ -975,7 +996,10 @@ class TaskWorkflow:
                 publication_id=execution.execution_id,
             )
             self.update(
-                task_id, row["attempt"], status="undone" if undo else "published"
+                task_id,
+                row["attempt"],
+                status="undone" if undo else "published",
+                **({"publication_id": execution.execution_id} if not undo else {}),
             )
             if isolated_workspace_id is not None:
                 assert self.isolated_sync is not None

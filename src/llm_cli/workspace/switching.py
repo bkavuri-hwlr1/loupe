@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import threading
 from collections.abc import Callable
 from dataclasses import asdict
@@ -23,7 +22,7 @@ from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.isolated import IsolatedWorkspaceManager, capture_source
 from llm_cli.workspace.isolated_sync import IsolatedSynchronizer
-from llm_cli.workspace.patches import portable_patch
+from llm_cli.workspace.patches import portable_patch, write_export_artifact
 from llm_cli.workspace.runtime_refresh import _signature
 from llm_cli.workspace.workflow import TaskWorkflow, decode_files, encode_files
 
@@ -272,9 +271,24 @@ class WorkspaceModeSwitcher:
                                     "t.session_id=? "
                                     "AND w.proposal_json IS NOT NULL "
                                     "AND w.status "
-                                    "IN ('awaiting_review','cancelled')"
+                                    "IN ('awaiting_review','cancelled') AND ("
+                                    "EXISTS (SELECT 1 FROM all_task_executions e "
+                                    "WHERE e.task_id=w.task_id AND "
+                                    "e.task_attempt=w.attempt AND e.workspace_id=?) "
+                                    "OR EXISTS (SELECT 1 FROM "
+                                    "switch_proposal_bindings b "
+                                    "WHERE b.task_id=w.task_id AND b.attempt=w.attempt "
+                                    "AND b.workspace_id=?) OR EXISTS (SELECT 1 FROM "
+                                    "isolated_runtime_holds h "
+                                    "WHERE h.task_id=w.task_id "
+                                    "AND h.attempt=w.attempt AND h.workspace_id=?))"
                                 ),
-                                (session_id,),
+                                (
+                                    session_id,
+                                    state.workspace_id,
+                                    state.workspace_id,
+                                    state.workspace_id,
+                                ),
                             ).fetchall()
                         ]
                     # publication_files refuses unresolved incoming divergence and
@@ -420,15 +434,55 @@ class WorkspaceModeSwitcher:
         return self._advance(intent_id)
 
     def _set(self, intent_id: str, state: str, **fields: Any) -> None:
+        transitions = {
+            "requested": {"prepared", "rollback_pending", "attention_required"},
+            "prepared": {"target_creating", "rollback_pending", "attention_required"},
+            "target_creating": {
+                "target_creating",
+                "transferring",
+                "attention_required",
+            },
+            "transferring": {"transferring", "rollback_pending", "attention_required"},
+            "confirming": {"rollback_pending", "attention_required"},
+            "attention_required": {"rollback_pending"},
+            "rollback_pending": {"rolled_back"},
+        }
         with self.store.connection() as con, immediate_transaction(con):
+            previous = con.execute(
+                "SELECT state,state_version,target_workspace_id "
+                "FROM mode_switch_intents "
+                "WHERE switch_intent_id=?",
+                (intent_id,),
+            ).fetchone()
+            if previous is None or state not in transitions.get(
+                previous["state"], set()
+            ):
+                raise ValueError(
+                    "workspace switch stage changed; retry its recorded state"
+                )
+            if (
+                fields.get("target_workspace_id")
+                and previous["target_workspace_id"]
+                and fields["target_workspace_id"] != previous["target_workspace_id"]
+            ):
+                raise ValueError("recorded switch target cannot be replaced")
             assignments = ["state=?", "state_version=state_version+1", "updated_at=?"]
             assignments.extend(f"{name}=?" for name in fields)
-            con.execute(
+            changed = con.execute(
                 "UPDATE mode_switch_intents SET "
                 + ",".join(assignments)
-                + " WHERE switch_intent_id=?",
-                (state, self.store._now(None), *fields.values(), intent_id),
-            )
+                + " WHERE switch_intent_id=? AND state=? AND state_version=?",
+                (
+                    state,
+                    self.store._now(None),
+                    *fields.values(),
+                    intent_id,
+                    previous["state"],
+                    previous["state_version"],
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("workspace switch stage changed during transition")
         self.fault(state)
 
     def busy(self, session_id: str) -> bool:
@@ -504,6 +558,17 @@ class WorkspaceModeSwitcher:
                     raise ValueError("recorded switch target changed during recovery")
                 notices = tuple(json.loads(row["notices_json"]))
             elif row["target_mode"] == "isolated":
+                if row["target_workspace_id"]:
+                    with self.store.connection() as con:
+                        recorded = con.execute(
+                            "SELECT workspace_id FROM isolated_workspaces "
+                            "WHERE creation_key=?",
+                            ("switch:" + intent_id,),
+                        ).fetchone()
+                    if recorded is None or recorded[0] != row["target_workspace_id"]:
+                        raise ValueError(
+                            "recorded switch target was abandoned; rollback required"
+                        )
                 target, notices = self.isolated.open(
                     checkout,
                     session.session_id,
@@ -534,14 +599,37 @@ class WorkspaceModeSwitcher:
                     notices_json=_json(notices),
                 )
             # Required commands run without the publication or daemon barrier.
-            self._transfer(self.get(intent_id))
+            transfer = self.get(intent_id)
+            assert transfer is not None
+            self._transfer(transfer)
             with self.publisher.lock:
-                self._binding(row)
+                current = self.get(intent_id)
+                if (
+                    current is None
+                    or current["state"] != "transferring"
+                    or current["state_version"] != transfer["state_version"]
+                ):
+                    raise ValueError("workspace switch was cancelled during transfer")
+                owner = self._binding(row)
+                if owner.state not in {"active", "disconnected"}:
+                    raise ValueError("source conversation closed during switch")
                 # Publication can legitimately advance sync generations; freeze
                 # the post-transfer tuple before issuing the target packet.
                 source_scope = self._scope(row["source_workspace_id"])
                 target_scope = self._scope(target.workspace_id)
                 with self.store.connection() as con, immediate_transaction(con):
+                    frozen = con.execute(
+                        "SELECT state,state_version FROM mode_switch_intents "
+                        "WHERE switch_intent_id=?",
+                        (intent_id,),
+                    ).fetchone()
+                    if (
+                        frozen["state"] != "transferring"
+                        or frozen["state_version"] != transfer["state_version"]
+                    ):
+                        raise ValueError(
+                            "workspace switch stage changed before bootstrap"
+                        )
                     event = self.store.append_checkout_event(
                         con,
                         checkout_id=session.checkout_id,
@@ -573,6 +661,11 @@ class WorkspaceModeSwitcher:
                     )
                 self.fault("confirming")
         except Exception as exc:
+            current = self.get(intent_id)
+            if current and current["state"] == "rollback_pending":
+                return self._finish_rollback(current)
+            if current and current["state"] in TERMINAL:
+                return self._response(current)
             self._set(
                 intent_id,
                 "attention_required",
@@ -586,10 +679,34 @@ class WorkspaceModeSwitcher:
         files = decode_files(row["files_json"])
         disposition = row["disposition"]
         if disposition == "publish" and files:
-            self._hold(row)
+            existing = (
+                self.workflow.get(row["proposal_task_id"])
+                if row["proposal_task_id"]
+                else None
+            )
+            if existing is None or existing["status"] != "published":
+                self._hold(row)
             frozen = self._scope(row["source_workspace_id"])
 
             def unchanged() -> None:
+                current = self.get(row["switch_intent_id"])
+                if (
+                    current is None
+                    or current["state"] != "transferring"
+                    or current["state_version"] != row["state_version"]
+                    or current["target_workspace_id"] != row["target_workspace_id"]
+                    or current["target_scope_json"] != row["target_scope_json"]
+                ):
+                    raise ValueError("workspace switch was cancelled during checks")
+                owner = self._binding(current)
+                if owner.state != "active":
+                    raise ValueError(
+                        "source conversation closed or disconnected during checks"
+                    )
+                if self._scope(row["target_workspace_id"]) != json.loads(
+                    row["target_scope_json"]
+                ):
+                    raise ValueError("switch target changed during checks")
                 if self._scope(row["source_workspace_id"]) != frozen:
                     raise ValueError(
                         "private source or runtime changed during switch checks"
@@ -689,43 +806,9 @@ class WorkspaceModeSwitcher:
             }
         )
         digest = hashlib.sha256(bundle.encode()).hexdigest()
-        path = root / (digest + ".patch.json")
-        try:
-            descriptor = os.open(
-                path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-            )
-        except FileExistsError:
-            if path.is_symlink() or path.read_text() != bundle:
-                raise ValueError("switch export artifact identity changed") from None
-        else:
-            with os.fdopen(descriptor, "w") as handle:
-                handle.write(bundle)
-                handle.flush()
-                os.fsync(handle.fileno())
-            directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+        write_export_artifact(root, digest + ".patch.json", bundle.encode(), self.fault)
         patch = portable_patch(decode_files(row["files_json"]))
-        patch_path = root / (digest + ".patch")
-        try:
-            descriptor = os.open(
-                patch_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-            )
-        except FileExistsError:
-            if patch_path.is_symlink() or patch_path.read_bytes() != patch:
-                raise ValueError("switch patch artifact identity changed") from None
-        else:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(patch)
-                handle.flush()
-                os.fsync(handle.fileno())
-            directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+        patch_path = write_export_artifact(root, digest + ".patch", patch, self.fault)
         with self.store.connection() as con:
             con.execute(
                 "UPDATE mode_switch_intents SET export_path=? WHERE switch_intent_id=?",
@@ -760,6 +843,18 @@ class WorkspaceModeSwitcher:
                 raise ValueError("workspace scope changed before confirmation")
             now = self.store._now(None)
             with self.store.connection() as con, immediate_transaction(con):
+                frozen = con.execute(
+                    "SELECT state,state_version FROM mode_switch_intents "
+                    "WHERE switch_intent_id=?",
+                    (intent_id,),
+                ).fetchone()
+                if (
+                    frozen["state"] != "confirming"
+                    or frozen["state_version"] != row["state_version"]
+                ):
+                    raise ValueError(
+                        "workspace switch stage changed before confirmation"
+                    )
                 changed = con.execute(
                     (
                         "UPDATE sessions SET "
@@ -904,24 +999,55 @@ class WorkspaceModeSwitcher:
                 session = (
                     self.store.get_session(intent["session_id"]) if intent else None
                 )
+                if intent and intent["state"] == "rollback_pending":
+                    self.rollback(intent["session_id"], str(row[0]))
+                    continue
                 if (
                     intent
-                    and intent["disposition"] == "hold"
+                    and intent["disposition"] in {"hold", "publish"}
                     and session
                     and session.state != "active"
                 ):
                     continue
-                if intent and intent["state"] == "rollback_pending":
-                    self.rollback(intent["session_id"], str(row[0]))
-                else:
-                    self._advance(str(row[0]))
+                self._advance(str(row[0]))
             except (ValueError, OSError, LlmCoordError):
                 pass
 
+    def _finish_rollback(self, row: dict[str, Any] | None) -> dict[str, Any]:
+        assert row is not None
+        with self.publisher.lock:
+            if row["target_mode"] == "isolated" and row["target_workspace_id"]:
+                target_state = self.isolated.get(row["target_workspace_id"])
+                if target_state is not None and target_state.stage != "ready":
+                    self.isolated.retire_switch_target(row["target_workspace_id"])
+                target = self.store.get_workspace(row["target_workspace_id"])
+                if target is not None and target.state == "removed":
+                    self._set(
+                        row["switch_intent_id"],
+                        "rolled_back",
+                        terminal_at=self.store._now(None),
+                    )
+                    return self._response(self.get(row["switch_intent_id"]))
+                with self.store.connection() as con:
+                    con.execute(
+                        "INSERT OR IGNORE INTO retained_switch_workspaces "
+                        "VALUES (?,?,?,?)",
+                        (
+                            row["target_workspace_id"],
+                            row["switch_intent_id"],
+                            "rollback",
+                            self.store._now(None),
+                        ),
+                    )
+            self._set(
+                row["switch_intent_id"],
+                "rolled_back",
+                terminal_at=self.store._now(None),
+            )
+            return self._response(self.get(row["switch_intent_id"]))
+
     def rollback(self, session_id: str, intent_id: str) -> dict[str, Any]:
         with self.publisher.lock:
-            if self.busy(session_id):
-                raise ValueError("workspace switch setup is still running")
             row = self.get(intent_id)
             if (
                 row is None
@@ -929,22 +1055,14 @@ class WorkspaceModeSwitcher:
                 or row["state"] == "confirmed"
             ):
                 raise ValueError("confirmed switches cannot reopen their old binding")
+            if row["state"] == "rolled_back":
+                return self._response(row)
             self._binding(row)
-            self._set(intent_id, "rollback_pending")
-            # Target worktrees and every candidate remain retained for inspection.
-            if row["target_mode"] == "isolated" and row["target_workspace_id"]:
-                with self.store.connection() as con:
-                    con.execute(
-                        (
-                            "INSERT OR IGNORE INTO retained_switch_workspaces VALUES "
-                            "(?,?,?,?)"
-                        ),
-                        (
-                            row["target_workspace_id"],
-                            intent_id,
-                            "rollback",
-                            self.store._now(None),
-                        ),
-                    )
-            self._set(intent_id, "rolled_back", terminal_at=self.store._now(None))
-            return self._response(self.get(intent_id))
+            busy = self.busy(session_id)
+            if busy and row["state"] not in {"transferring", "rollback_pending"}:
+                raise ValueError("workspace switch setup is still running")
+            if row["state"] != "rollback_pending":
+                self._set(intent_id, "rollback_pending")
+            if busy:
+                return self._response(self.get(intent_id))
+            return self._finish_rollback(self.get(intent_id))

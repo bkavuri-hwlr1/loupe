@@ -1769,15 +1769,19 @@ class DaemonService:
                 or any(not isinstance(path, str) for path in approved)
             ):
                 raise ValueError("runtime consent must name exact relative paths")
-            with self.physical_authority.pin(Path(checkout.canonical_path)):
-                return await asyncio.to_thread(
-                    self.workspace_switches.request,
-                    session.session_id,
-                    _string(params, "switch_intent_id"),
-                    _string(params, "workspace"),
-                    disposition=_optional_string(params, "disposition"),
-                    approved_secrets=tuple(approved),
-                )
+            def switch_pinned() -> dict[str, Any]:
+                # The actual worker owns this lifetime even if its RPC waiter
+                # is cancelled while hydration or required checks still run.
+                with self.physical_authority.pin(Path(checkout.canonical_path)):
+                    return self.workspace_switches.request(
+                        session.session_id,
+                        _string(params, "switch_intent_id"),
+                        _string(params, "workspace"),
+                        disposition=_optional_string(params, "disposition"),
+                        approved_secrets=tuple(approved),
+                    )
+
+            return await asyncio.to_thread(switch_pinned)
         finally:
             self._pending_session_switches.discard(session.session_id)
 

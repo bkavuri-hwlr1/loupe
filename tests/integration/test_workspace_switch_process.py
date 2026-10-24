@@ -211,6 +211,55 @@ def test_killed_daemon_replays_exact_switch_and_target_bootstrap(
                     ).fetchone()[0]
                     == 1
                 )
+            if phase == "confirmed":
+                back = client.call(
+                    "workspace.switch_mode",
+                    {
+                        **credentials,
+                        "switch_intent_id": "back-shared",
+                        "workspace": "shared",
+                    },
+                    autostart=False,
+                )
+                client.call(
+                    "workspace.confirm_switch",
+                    {
+                        **credentials,
+                        "switch_intent_id": "back-shared",
+                        "sequence": back["bootstrap_sequence"],
+                    },
+                    autostart=False,
+                )
+                from llm_cli.cli.session import _write_secret
+
+                _write_secret(
+                    paths, credentials["session_id"], credentials["resume_secret"]
+                )
+                content = tmp_path / "candidate.txt"
+                content.write_text("staged after switch\n")
+                staged = subprocess.run(
+                    [
+                        sys.executable,
+                        "-I",
+                        str(helper),
+                        "--test-cli",
+                        "--profile",
+                        "test",
+                        "workspace",
+                        "stage",
+                        credentials["session_id"],
+                        "a.txt",
+                        "--content-file",
+                        str(content),
+                    ],
+                    env=environment,
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                assert staged.returncode == 0, staged.stderr
+                assert "candidate" in staged.stdout
             client.call("system.shutdown", autostart=False)
             assert restarted.wait(timeout=10) == 0
         finally:

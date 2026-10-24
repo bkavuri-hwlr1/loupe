@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from llm_cli.coordination.scopes import normalize_changed_path
@@ -62,3 +62,77 @@ def portable_patch(files: Sequence[BatchFile]) -> bytes:
         if result.returncode not in {0, 1} or not isinstance(result.stdout, bytes):
             raise ValueError("could not create the exact source patch")
         return result.stdout
+
+
+def write_export_artifact(
+    root: Path,
+    name: str,
+    body: bytes,
+    fault: Callable[[str], None],
+) -> Path:
+    """Publish fsynced bytes without exposing partial finals or replacing files."""
+    import stat
+
+    from llm_cli.ids import new_id
+
+    if Path(name).name != name or name in {".", ".."}:
+        raise ValueError("export artifact name must be one safe basename")
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = "." + new_id("switch_export") + ".tmp"
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=directory,
+    )
+    created = os.fstat(descriptor)
+
+    def verify_existing() -> None:
+        existing = os.open(
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+        )
+        try:
+            status = os.fstat(existing)
+            if not stat.S_ISREG(status.st_mode) or status.st_mode & 0o077:
+                raise ValueError("switch export artifact identity changed")
+            if status.st_size != len(body):
+                raise ValueError("switch export artifact identity changed")
+            chunks, total = [], 0
+            while chunk := os.read(existing, min(1024 * 1024, len(body) + 1 - total)):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > len(body):
+                    raise ValueError("switch export artifact identity changed")
+            if b"".join(chunks) != body:
+                raise ValueError("switch export artifact identity changed")
+        finally:
+            os.close(existing)
+
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            split = max(1, len(body) // 2)
+            handle.write(body[:split])
+            handle.flush()
+            fault("export_partial")
+            handle.write(body[split:])
+            handle.flush()
+            os.fsync(handle.fileno())
+            try:
+                os.link(
+                    temporary,
+                    name,
+                    src_dir_fd=directory,
+                    dst_dir_fd=directory,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                verify_existing()
+            os.fsync(directory)
+        return root / name
+    finally:
+        try:
+            current = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                os.unlink(temporary, dir_fd=directory)
+        finally:
+            os.close(directory)
