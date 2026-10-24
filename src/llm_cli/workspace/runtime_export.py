@@ -16,7 +16,7 @@ import sys
 import time
 import unicodedata
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -168,13 +168,18 @@ def _secret_contents(
 @contextmanager
 def _destination_parent(
     destination: Path,
+    *,
+    administrative: bool = False,
 ) -> Iterator[tuple[int, str, Callable[[], None], dict[tuple[int, int], int]]]:
     """Keep every named destination ancestor pinned, including its parent link."""
     if (
         not destination.is_absolute()
         or destination.name in {"", ".", ".."}
         or any(part in {".", ".."} for part in destination.parts)
-        or any(part.casefold() in _ADMIN for part in destination.parts)
+        or (
+            not administrative
+            and any(part.casefold() in _ADMIN for part in destination.parts)
+        )
     ):
         raise _unsafe("runtime export destination must be a safe absolute path")
     chain: list[tuple[int, str, int]] = []
@@ -224,7 +229,64 @@ def _relative_within(
     return None
 
 
-def _rename_new(parent: int, source: str, destination: str) -> None:
+@contextmanager
+def _staging_parent(
+    destination_parent: int,
+    private_admin: Path | None,
+) -> Iterator[tuple[int, Callable[[], None]]]:
+    if private_admin is None:
+        yield destination_parent, lambda: None
+        return
+    # This is the source session's already ownership-verified Git directory,
+    # never a Git directory inferred from an arbitrary export destination.
+    name = "loupe-runtime-export-" + secrets.token_hex(16)
+    with _destination_parent(private_admin / name, administrative=True) as (
+        parent,
+        leaf,
+        verify,
+        _,
+    ):
+        if os.fstat(parent).st_dev != os.fstat(destination_parent).st_dev:
+            raise _unsafe(
+                "checkout runtime export requires the same filesystem "
+                "as private staging"
+            )
+        os.mkdir(leaf, 0o700, dir_fd=parent)
+        descriptor = os.open(
+            leaf,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent,
+        )
+        identity = _identity(os.fstat(descriptor))
+
+        def verify_stage() -> None:
+            verify()
+            if (
+                _identity(os.stat(leaf, dir_fd=parent, follow_symlinks=False))
+                != identity
+            ):
+                raise _unsafe("runtime export private staging changed")
+
+        try:
+            verify_stage()
+            yield descriptor, verify_stage
+        finally:
+            os.close(descriptor)
+            if (
+                _identity(os.stat(leaf, dir_fd=parent, follow_symlinks=False))
+                == identity
+            ):
+                _remove(parent, leaf)
+                os.fsync(parent)
+
+
+def _rename_new(
+    parent: int,
+    source: str,
+    destination: str,
+    *,
+    source_parent: int | None = None,
+) -> None:
     """Atomically publish a file or tree without replacing a raced destination."""
     library = ctypes.CDLL(None, use_errno=True)
     if sys.platform == "darwin" and hasattr(library, "renameatx_np"):
@@ -243,7 +305,13 @@ def _rename_new(parent: int, source: str, destination: str) -> None:
         ctypes.c_uint,
     ]
     rename.restype = ctypes.c_int
-    if rename(parent, os.fsencode(source), parent, os.fsencode(destination), flag):
+    if rename(
+        parent if source_parent is None else source_parent,
+        os.fsencode(source),
+        parent,
+        os.fsencode(destination),
+        flag,
+    ):
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code))
 
@@ -364,6 +432,7 @@ def export_runtime(
     source_paths: Sequence[str],
     shared_checkouts: Sequence[Path] = (),
     protected_roots: Sequence[Path] = (),
+    staging_root: Path | None = None,
     yes: bool = False,
     allow_secret: bool = False,
     into_checkout: bool = False,
@@ -373,7 +442,6 @@ def export_runtime(
     budgets = budgets or HydrationBudgets()
     deadline = time.monotonic() + budgets.max_seconds
     source = -1
-    stage: str | None = None
     try:
         if normalize_changed_path(relative) != relative or any(
             part.casefold() in _ADMIN for part in Path(relative).parts
@@ -412,7 +480,8 @@ def export_runtime(
             "requires_allow_secret": sensitive and not allow_secret,
         }
 
-        def validate_policy(ancestry: dict[tuple[int, int], int]) -> None:
+        def validate_policy(ancestry: dict[tuple[int, int], int]) -> bool:
+            in_checkout = False
             for protected in (root, *protected_roots):
                 if _relative_within(destination, protected, ancestry) is not None:
                     raise _unsafe("runtime export destination is coordinator storage")
@@ -423,6 +492,7 @@ def export_runtime(
                 tail = _relative_within(destination, shared, ancestry)
                 if tail is None:
                     continue
+                in_checkout = True
                 if not into_checkout:
                     raise _unsafe(
                         "runtime export into a checkout requires --into-checkout"
@@ -451,9 +521,10 @@ def export_runtime(
                     raise _unsafe(
                         "runtime export into a checkout requires an ignored destination"
                     )
+            return in_checkout
 
         with _destination_parent(destination) as (parent, leaf, verify, ancestry):
-            validate_policy(ancestry)
+            in_checkout = validate_policy(ancestry)
             try:
                 os.stat(leaf, dir_fd=parent, follow_symlinks=False)
             except FileNotFoundError:
@@ -462,54 +533,30 @@ def export_runtime(
                 raise _unsafe("runtime export destination already exists")
             if not yes or result["requires_allow_secret"]:
                 return result
-            stage = ".loupe-runtime-export-" + secrets.token_hex(16)
-            published_identity: tuple[int, int] | None = None
-            try:
-                if kind == "directory":
-                    _copy_tree(source, relative, entries, parent, stage, deadline)
-                else:
-                    _copy_file(
-                        source, relative, parent, stage, entries[relative], deadline
-                    )
-                if not _same(entries, _inventory(source, relative, budgets, deadline)):
-                    raise _unsafe("runtime export source changed before publication")
-                if _identity(os.stat(root, follow_symlinks=False)) != root_identity:
-                    raise _unsafe(
-                        "runtime export source root changed before publication"
-                    )
-                validate_policy(ancestry)
-                verify()
-                staged_identity = _identity(
-                    os.stat(stage, dir_fd=parent, follow_symlinks=False)
+            if in_checkout and staging_root is None:
+                raise _unsafe("checkout runtime export needs verified private staging")
+            with ExitStack() as staging:
+                stage_parent, verify_stage = staging.enter_context(
+                    _staging_parent(parent, staging_root if in_checkout else None)
                 )
-                _rename_new(parent, stage, leaf)
-                stage = None
-                published_identity = staged_identity
-                verify()
-                validate_policy(ancestry)
-                if _identity(os.stat(leaf, dir_fd=parent, follow_symlinks=False)) != (
-                    staged_identity
-                ):
-                    raise _unsafe(
-                        "runtime export destination changed during publication"
-                    )
-                os.fsync(parent)
-                published_identity = None
-            finally:
-                if published_identity is not None:
-                    # Roll back only our own inode after failed final checks.
-                    with suppress(FileNotFoundError):
-                        if (
-                            _identity(
-                                os.stat(leaf, dir_fd=parent, follow_symlinks=False)
-                            )
-                            == published_identity
-                        ):
-                            _remove(parent, leaf)
-                if stage is not None:
-                    with suppress(FileNotFoundError):
-                        _remove(parent, stage)
-            return {**result, "state": "exported"}
+                return _publish_export(
+                    source,
+                    root,
+                    root_identity,
+                    relative,
+                    entries,
+                    budgets,
+                    deadline,
+                    kind,
+                    result,
+                    parent,
+                    leaf,
+                    stage_parent,
+                    verify_stage,
+                    verify,
+                    lambda: validate_policy(ancestry),
+                    staging,
+                )
     except _BudgetExceeded as exc:
         raise _unsafe("runtime export exceeds its metadata or time budget") from exc
     except (OSError, ValueError) as exc:
@@ -523,3 +570,73 @@ def export_runtime(
     finally:
         if source >= 0:
             os.close(source)
+
+
+def _publish_export(
+    source: int,
+    root: Path,
+    root_identity: tuple[int, int],
+    relative: str,
+    entries: dict[str, os.stat_result],
+    budgets: HydrationBudgets,
+    deadline: float,
+    kind: str,
+    result: dict[str, Any],
+    parent: int,
+    leaf: str,
+    stage_parent: int,
+    verify_stage: Callable[[], None],
+    verify: Callable[[], None],
+    validate_policy: Callable[[], bool],
+    staging: ExitStack,
+) -> dict[str, Any]:
+    stage = ".loupe-runtime-export-" + secrets.token_hex(16)
+    stage_present = True
+    published_identity: tuple[int, int] | None = None
+    try:
+        if kind == "directory":
+            _copy_tree(source, relative, entries, stage_parent, stage, deadline)
+        else:
+            _copy_file(
+                source, relative, stage_parent, stage, entries[relative], deadline
+            )
+        if not _same(entries, _inventory(source, relative, budgets, deadline)):
+            raise _unsafe("runtime export source changed before publication")
+        if _identity(os.stat(root, follow_symlinks=False)) != root_identity:
+            raise _unsafe("runtime export source root changed before publication")
+        validate_policy()
+        verify()
+        verify_stage()
+        staged_identity = _identity(
+            os.stat(stage, dir_fd=stage_parent, follow_symlinks=False)
+        )
+        if stage_parent == parent:
+            _rename_new(parent, stage, leaf)
+        else:
+            _rename_new(parent, stage, leaf, source_parent=stage_parent)
+        stage_present = False
+        published_identity = staged_identity
+        verify()
+        validate_policy()
+        if _identity(os.stat(leaf, dir_fd=parent, follow_symlinks=False)) != (
+            staged_identity
+        ):
+            raise _unsafe("runtime export destination changed during publication")
+        os.fsync(parent)
+        if stage_parent != parent:
+            os.fsync(stage_parent)
+        staging.close()
+        published_identity = None
+    finally:
+        if published_identity is not None:
+            # Roll back only our own inode after failed final checks.
+            with suppress(FileNotFoundError):
+                if (
+                    _identity(os.stat(leaf, dir_fd=parent, follow_symlinks=False))
+                    == published_identity
+                ):
+                    _remove(parent, leaf)
+        if stage_present:
+            with suppress(FileNotFoundError):
+                _remove(stage_parent, stage)
+    return {**result, "state": "exported"}

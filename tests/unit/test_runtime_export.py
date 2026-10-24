@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from llm_cli.errors import LlmCoordError
 from llm_cli.workspace import runtime_export as export
 from llm_cli.workspace.hydration import HydrationBudgets
+from llm_cli.workspace.isolated import capture_source
 
 
 @pytest.fixture
@@ -34,6 +36,7 @@ def runtime(tmp_path: Path, repository_factory: Any, git_run: Any) -> dict[str, 
         "root": private,
         "checkout": checkout,
         "runtime_paths": (".env", "build"),
+        "staging_root": Path(git_run(private, "rev-parse", "--absolute-git-dir")),
         "source_paths": ("a.txt", "tracked/child", ".gitignore"),
     }
 
@@ -474,6 +477,61 @@ def test_checkout_ignore_policy_is_rechecked_before_publication(
         )
     assert not destination.exists()
     assert not list(runtime["checkout"].glob(".loupe-runtime-export-*"))
+
+
+def test_checkout_staging_is_invisible_to_real_source_capture(
+    runtime: Any,
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    original = export._rename_new
+    canary = (runtime["root"] / ".env").read_bytes()
+    captured = tmp_path / "captured-source"
+    captured.mkdir(mode=0o700)
+
+    def capture_during_stage(*args: Any, **kwargs: Any) -> None:
+        manifest = capture_source(runtime["checkout"], captured)
+        assert all("loupe-runtime-export" not in path for path in manifest)
+        assert all(canary not in path.read_bytes() for path in captured.iterdir())
+        original(*args, **kwargs)
+
+    monkeypatch.setattr(export, "_rename_new", capture_during_stage)
+    assert (
+        export.export_runtime(
+            relative=".env",
+            destination=runtime["checkout"] / "kept.local",
+            **runtime,
+            yes=True,
+            allow_secret=True,
+            into_checkout=True,
+        )["state"]
+        == "exported"
+    )
+
+
+def test_checkout_staging_refuses_cross_filesystem_before_creating_bytes(
+    runtime: Any,
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    original = export.os.fstat
+
+    def other_device(fd: int) -> Any:
+        if fd == descriptor:
+            return SimpleNamespace(st_dev=-1)
+        return original(fd)
+
+    monkeypatch.setattr(export.os, "fstat", other_device)
+    try:
+        with (
+            pytest.raises(LlmCoordError, match="same filesystem"),
+            export._staging_parent(descriptor, runtime["staging_root"]),
+        ):
+            pytest.fail("cross-filesystem staging must not open")
+    finally:
+        os.close(descriptor)
+    assert not list(runtime["staging_root"].glob("loupe-runtime-export-*"))
 
 
 def test_fsync_failure_after_publication_rolls_back_complete_export(

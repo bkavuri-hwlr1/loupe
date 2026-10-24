@@ -107,6 +107,13 @@ or the source ledger. Only type, byte size, entry count, sensitivity and the
 export disposition enter a redacted checkout event; source and destination names
 are not recorded.
 
+For checkout destinations, staging stays in the source session's verified
+private Git directory. That directory and the destination must be on the same
+filesystem; a cross-filesystem checkout export is refused before copying bytes.
+This keeps in-progress copies out of source scans. Interrupted staging remains
+private and is removed when the owning isolated workspace closes, including
+after a daemon restart. For other destinations, staging uses their parent.
+
 To make an exported file project source, first export outside the checkout, then
 manually change ignore/tracking policy and place the reviewed file yourself.
 

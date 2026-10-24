@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sqlite3
 import threading
+import time
 from contextlib import closing
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pytest
@@ -19,6 +22,35 @@ from test_shared_agent_execution import ScriptedProvider, _register, _request
 from llm_cli.agent.source_policy import contains_secret_material
 from llm_cli.errors import LlmCoordError
 from llm_cli.workspace import runtime_export
+from llm_cli.workspace.isolated import capture_source
+
+
+def _paused_runtime_export_daemon_entry() -> None:
+    from test_cli_process_orchestration import _daemon_entry
+
+    original = runtime_export._rename_new
+
+    def paused(*args: Any, **kwargs: Any) -> None:
+        signals = Path(os.environ["ORCHESTRATION_SIGNALS"])
+        (signals / "export-stage-ready").touch()
+        while not (signals / "export-stage-release").exists():
+            time.sleep(0.01)
+        original(*args, **kwargs)
+
+    runtime_export._rename_new = paused
+    _daemon_entry()
+
+
+class _PausedExportCluster(_Cluster):
+    def _spawn(self, name: str, args: list[str]) -> Any:
+        if name == "daemon":
+            args = [
+                "-c",
+                "from test_runtime_export_cli import "
+                "_paused_runtime_export_daemon_entry; "
+                "_paused_runtime_export_daemon_entry()",
+            ]
+        return super()._spawn(name, args)
 
 
 def _cli(cluster: _Cluster, name: str, arguments: list[str]) -> dict[str, Any]:
@@ -180,6 +212,134 @@ def test_actual_daemon_cli_changed_env_requires_both_flags_and_persists_only_met
         "likely_secret",
     ):
         assert private_value not in evidence
+
+
+def test_private_staging_survives_kill_until_owned_restart_close_cleanup(
+    tmp_path: Path,
+    repository_factory: Any,
+) -> None:
+    root = repository_factory(
+        tmp_path,
+        {
+            "docs/a.md": "ordinary source\n",
+            ".gitignore": ".env\nkept.env\n",
+        },
+    )
+    (root / ".env").write_text("MARKER=opening-runtime\n")
+    with TemporaryDirectory(prefix="c15-stage-", dir="/tmp") as runtime:
+        group = _PausedExportCluster(tmp_path, root, runtime)
+        try:
+            session_id, secret = "paused-export", "paused-export-secret"
+            credentials = {"session_id": session_id, "resume_secret": secret}
+            group.rpc("repo.add", path=str(root))
+            opened = group.rpc(
+                "session.open",
+                path=str(root),
+                session_id=session_id,
+                resume_token_hash=hashlib.sha256(secret.encode()).hexdigest(),
+                provider="process-test",
+                model="paused-export-model",
+                workspace="isolated",
+                approved_runtime_files=[".env"],
+            )
+            group.rpc(
+                "session.ack", **credentials, sequence=opened["bootstrap_sequence"]
+            )
+            secret_file = group.paths.session_secret_file(session_id)
+            secret_file.write_text(secret)
+            secret_file.chmod(0o600)
+            private = Path(opened["workspace"]["canonical_path"])
+            canary = "c15-staged-nonsignature-private-marker-fb761a04"
+            payload = "MARKER=" + canary + "\n"
+            (private / ".env").write_text(payload)
+            destination = root / "kept.env"
+            exporting = group._spawn(
+                "paused-export-cli",
+                [
+                    "-m",
+                    "llm_cli",
+                    "--profile",
+                    "test",
+                    "--json",
+                    "workspace",
+                    "runtime",
+                    "export",
+                    ".env",
+                    "--session",
+                    session_id,
+                    "--to",
+                    str(destination),
+                    "--yes",
+                    "--allow-secret",
+                    "--into-checkout",
+                ],
+            )
+            _wait((group.signals / "export-stage-ready").exists)
+            with closing(sqlite3.connect(group.paths.control_db)) as connection:
+                admin = Path(
+                    connection.execute(
+                        "SELECT git_dir FROM workspaces WHERE workspace_id=?",
+                        (opened["workspace"]["workspace_id"],),
+                    ).fetchone()[0]
+                )
+            staged = list(admin.glob("loupe-runtime-export-*/*"))
+            assert len(staged) == 1 and staged[0].read_text() == payload
+            assert staged[0].stat().st_mode & 0o777 == 0o600
+            assert not destination.exists()
+            assert not list(root.glob(".loupe-runtime-export-*"))
+            captured = tmp_path / "capture-during-stage"
+            captured.mkdir(mode=0o700)
+            manifest = capture_source(root, captured)
+            assert set(manifest) == {".gitignore", "docs/a.md"}
+            assert all(
+                canary.encode() not in path.read_bytes() for path in captured.iterdir()
+            )
+            chat = group.chat("while-export-chat", resume=session_id)
+            group.submit(chat, "while-export", {"docs/a.md": ""}, read_only=True)
+            assert group.settled("while-export")["state"] == "completed", (
+                group.diagnostics()
+            )
+            model_evidence = group.signals / "while-export.observed.json"
+            _wait(model_evidence.exists)
+            assert canary not in model_evidence.read_text()
+            group.daemon.kill()
+            group.daemon.wait(timeout=10)
+            assert exporting.wait(timeout=10) != 0
+            assert staged[0].read_text() == payload
+            assert not destination.exists()
+            group.daemon = group._spawn(
+                "restarted-daemon",
+                [
+                    "-c",
+                    "from test_cli_process_orchestration import _daemon_entry; "
+                    "_daemon_entry()",
+                ],
+            )
+
+            def ready() -> bool:
+                try:
+                    group.rpc("system.ping")
+                    return True
+                except LlmCoordError:
+                    return False
+
+            _wait(ready)
+            group.rpc("session.close", **credentials)
+            assert not private.exists()
+            assert not admin.exists()
+            assert not destination.exists()
+            with closing(sqlite3.connect(group.paths.control_db)) as connection:
+                assert canary not in "\n".join(connection.iterdump())
+            for path in group.paths.data_dir.rglob("*"):
+                if path.is_file():
+                    assert canary.encode() not in path.read_bytes(), path
+            for path in [
+                *group.root.glob("*.log"),
+                *group.paths.state_dir.rglob("*.jsonl"),
+            ]:
+                assert canary not in path.read_text(), path
+        finally:
+            group.close()
 
 
 def test_export_activity_defers_close_cleanup_and_does_not_hold_daemon_barrier(
