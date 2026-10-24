@@ -1,0 +1,2242 @@
+{
+  "seed": 20261022,
+  "requested_seconds": 3600.0,
+  "bounds": {
+    "database_bytes": 134217728,
+    "candidate_bytes": 134217728,
+    "open_files": 256,
+    "threads": 48,
+    "memory_bytes": 805306368,
+    "rpc_p99_ms": 5000
+  },
+  "status": "failed",
+  "root": "/private/tmp/loupe-soak-sanhz2at",
+  "started_at": "2026-10-23T00:41:05.254512+00:00",
+  "harness_sha256": "25d88f734939d80a9ba32ed7c99c8b78970b6cc98738e36154dac94257f18196",
+  "source_sha256": {
+    "src/llm_cli/__init__.py": "694bd4b9a576d45a56155dc4a84ef5b7fa3dcb635e4153f3e889d5236ac511df",
+    "src/llm_cli/__main__.py": "47e0575c52cac99f97ec4941d0595abedb09efbc9f087dfb9080f97c10109b17",
+    "src/llm_cli/agent/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/llm_cli/agent/bounded_search.py": "2172215e0f4bc4ea9626506d78f2a3434c0781a27f2adc2afeefef02b548c261",
+    "src/llm_cli/agent/driver.py": "208ed4ea4db8a9b4a7397147b0f1f4b82fd2c91c824f31ed06c6d94e46853e29",
+    "src/llm_cli/agent/explorer.py": "ebf4588d0a7273c79bacd65150edf79a6967d3ec24a36a3dff3b851f6dc1b394",
+    "src/llm_cli/agent/finalization.py": "66397f4455e84da3506f7825dd14cbcc006aef30e2370c04140d00b10429c4f4",
+    "src/llm_cli/agent/harness.py": "34c7530ea2c73687e903bf12e3ed5305280c8d612725babdc25335fd822a1041",
+    "src/llm_cli/agent/hooks.py": "a8d3f1ebd4697399ec595341764aa3b881a54287f962c7b921200c4570fd8db7",
+    "src/llm_cli/agent/instructions.py": "79b3b46bf2498ba87622e2b1bfa89013685a6a3de0d47a7b570bc7c8c1051d0b",
+    "src/llm_cli/agent/limits.py": "29ff64c76c625d0361a718a8a1931ec62558a11ef9760c4336cfb785a3bfc56a",
+    "src/llm_cli/agent/modes.py": "0abea0648b494ec070e0ec2e2eb20075792b471796b6002d0268544a0fe8a62e",
+    "src/llm_cli/agent/registry.py": "e053b56799200e945987d18d518013b69a813988414b9dc37c2683367b9831d6",
+    "src/llm_cli/agent/repair.py": "0b9a50149a3d20243a7f34634faaace0996b497612db8a3f35fdcbaf0192f351",
+    "src/llm_cli/agent/reviewer.py": "bbd085761874c37665dd015cbf60c15188202921ff333f49b777d62f938990ab",
+    "src/llm_cli/agent/shared_tools.py": "04a3b3a01fd96b5256c29551f88fff033a0210a612b92d80021f59c2551c39d0",
+    "src/llm_cli/agent/source_policy.py": "9989c2d98bdfb57e7c14c7038f2dc9621306ba78e7d07c0243033fba5a29e940",
+    "src/llm_cli/agent/tools.py": "e96a2d7ab56b6f51bcc2a75faba9404073b80df4104864e7111594dbba2a254c",
+    "src/llm_cli/build.py": "6a5547a4d5c9fb9ebf011d8c9603089e04d9fc8dfe47039a385dd99155a14b2b",
+    "src/llm_cli/cli/__init__.py": "d28bb3e79049150b43cae3ac30021a23e448d2f096a997e8b3a385d650dcfe3b",
+    "src/llm_cli/cli/active_controls.py": "4fc6dc66d1f9e55cc6504349ea6073fdae476efb5fbf22243aa3f906affbb549",
+    "src/llm_cli/cli/app.py": "cb74f5bfc5b1ef886b602f2eccdc586a188b8afd59c5e3c7ef8cd92c1e37570a",
+    "src/llm_cli/cli/auth.py": "b14aeb982086c632e187bcd60c8fdd8c77604204cc667aa9de58cc2761a23711",
+    "src/llm_cli/cli/command_picker.py": "444026f63f8f76fb8afed6c2805155a5619887614f76d5ce05feba2aa5eb7128",
+    "src/llm_cli/cli/composer.py": "96285a640171729f9067ffd5eba3bdb969e031dbb87b5818a7962a6267852c41",
+    "src/llm_cli/cli/connect.py": "79f2b4f5f8781b5f8c4abd693d60f2c67f21ac06e2e329dd74b032033ef71353",
+    "src/llm_cli/cli/demo.py": "b4a10d1002201027a5a8fd534e520867d784890d3a558a0d2e6666c0c77f2252",
+    "src/llm_cli/cli/exit_codes.py": "2817d6086feab2e3d251cf173e2681baac3e7152f1ebc42a6e70d94ca6aacda3",
+    "src/llm_cli/cli/interrupts.py": "39227f82d36543b8b6dc02f53a2cb6acbba036cdc38f72c332e866d20b94cea8",
+    "src/llm_cli/cli/models.py": "f63e00a74b904ea41f8100e38a26288ee8a8284ad375852596a5f5029e770443",
+    "src/llm_cli/cli/output.py": "0415f905aa82f3c28a472783ab4286ded2e82af29580fe2e1ec1e74d887f2542",
+    "src/llm_cli/cli/partial_json.py": "d75c7b91ba4d7b578d02b8bce7f5e39246c19f325616ba3d4c9cca68dca20628",
+    "src/llm_cli/cli/render.py": "518062f4cb68a1c4430cd8caa99ce407d45d9a7b1d8ea1614bf8c46d96730c5e",
+    "src/llm_cli/cli/session.py": "f8f2ac9f1b99c42c58e3ff424059cce0fea7697819bd14514e434f6905e2aea9",
+    "src/llm_cli/cli/shell.py": "ad4f71d98f827b6f039fb3f3b0667d892f45ce1d1d13551adbe550ee42c40a73",
+    "src/llm_cli/cli/status.py": "8b9b2e4292fab4936cf7344652196b2aeef286602ccfcd3fdb84903b91c54f17",
+    "src/llm_cli/cli/streaming_markdown.py": "7452edee1f04ad9260d4fe0bb5c7c652cfa409aa1f2bdc584898cffd43329a20",
+    "src/llm_cli/cli/terminal.py": "92a815ec92f9ca3f20333353078a61bee2aa0c8e667f1f50ce46ad3017e18a18",
+    "src/llm_cli/cli/usage.py": "67c80b9f4b7833219f6f1cc46d5ef8b8f0d5eff7eaf8378e3a0021db05d0325a",
+    "src/llm_cli/config/__init__.py": "539de50321c943c44b6cb4747f3a8ec6efa67998ecb921be2f2b296f64f660e7",
+    "src/llm_cli/config/loader.py": "bbc079f1e40ed5c7a33856aa680ec10e4518a7d89be94ac2144dcc4ac6b24dba",
+    "src/llm_cli/config/models.py": "f593bf34ef19ccf58da75d2aff127e425685cf4d674a01ff58b6023145b5d844",
+    "src/llm_cli/config/operations.py": "abfb9b0425f7d36d79ba9577ea9bf5016fc71c77e5d63f6d1f25fddc6199a4ba",
+    "src/llm_cli/coordination/__init__.py": "c689e762b57edff35e40211712cd1120be6db2332d9b2af81fcf796f207eea44",
+    "src/llm_cli/coordination/coordinator.py": "7e6d43a41bedf8b632d67a1dd784d9e0f52f87fccc4a7ab4a0a706ec9c0f140d",
+    "src/llm_cli/coordination/identity.py": "eb9f0f8d6ff752e8f5a76ea19ebf77d868812eeab3ff60ed409bce670cb1454e",
+    "src/llm_cli/coordination/models.py": "c720aed56c8ab1630031e29dee330791da0fdc83d4c05d3bcc8c677c285c87d9",
+    "src/llm_cli/coordination/scopes.py": "47f156609c56764fd826e52e0416dec65ffb8f8b7e9c720117b68f4d336932c3",
+    "src/llm_cli/daemon/__init__.py": "c133e6e55c876c7fcfb050556cc83c0b047bd46c245740c67ace6569c2b8a052",
+    "src/llm_cli/daemon/main.py": "2b90ba68d2d1cc39b96957e6efabcd31df71180696bbeae3370e3ce7c6511dcb",
+    "src/llm_cli/daemon/service.py": "f811670761b353b7fcd3b279e7eb6c0c863893a6e17b33d28ba12eeab9c897da",
+    "src/llm_cli/doctor.py": "163b56a2d1ff042b4daa90bb96ff0a9106e19ea8819eaa62ccd74349d7b3fd77",
+    "src/llm_cli/errors.py": "9bdbf5e6dd981ffdd22af6fd74a6dc90be58d6650f7b3071124c0d5de162b229",
+    "src/llm_cli/execution/__init__.py": "5abd2fd274034b6342054ad13a330da186af79a51817e43170affaef90445ecc",
+    "src/llm_cli/execution/check_process.py": "44b3f72e1a70e8906e8a5a3304292eb3387e29d7252b14c87b1ed45e1d5ac81e",
+    "src/llm_cli/execution/checks.py": "b9f93d59f706b6940fe14028e7d7f3f8f47a76562d93575d4a9b56f02ea1f083",
+    "src/llm_cli/execution/commands.py": "2ed02a50295030af7c50aefbe71ee5d921edbfdbef477e3acd03917a6c19c6c2",
+    "src/llm_cli/execution/environment.py": "5e62b1fec279db802ab185fec3c122cdd81dd0abff562467126abccc714cc359",
+    "src/llm_cli/execution/recovery.py": "b0173e8a60d3393c293679336e6d5c303342046b3c3abb42cc2d4b069c4a59a6",
+    "src/llm_cli/execution/runner.py": "8480bb94f66f5a52ef7b44e215b6c4cc486be503af268e902491ccc2a5336e60",
+    "src/llm_cli/execution/sandbox.py": "5786bab46dab9020b69a05eef8ad3b0729085247b76f7aebcf7fb4f879de2cf9",
+    "src/llm_cli/execution/shared.py": "9cf34a1f469eb036d1b9ffe79040f3927e4de6b3422c73c4f44eae0a53a6ec9c",
+    "src/llm_cli/execution/workspace.py": "a761901566300a421c419eec82400ab37feca79dec1f5b26bd90915451fdf674",
+    "src/llm_cli/git/__init__.py": "0d30dbaddf7b0f0aaf03c24a9e93c90006627f868f5b1029183e56e55bd76eb6",
+    "src/llm_cli/git/environment.py": "3b98c6d7bf0a2e5b3dc4efc36019d5f5d272009d1a5636c240f944370c970c2c",
+    "src/llm_cli/git/inspect.py": "791ad17c6368ee957b7dfd2073c4024695f76fc103bc446ee7a83911cbb73e47",
+    "src/llm_cli/git/integrate.py": "b0d0d7dd9a2ddd2fdc42057c20d106022276480eccbbdef030172d0067fe0533",
+    "src/llm_cli/git/validate.py": "aa7adec374d42e230a49cd55c7f2925f8af05f1a6fea4ee9bee2dd6b9f1e5e2e",
+    "src/llm_cli/git/worktrees.py": "95c281649f2c6571ec2c64a4a5fba08e65bee0dd6fd472fef77d33da449c4181",
+    "src/llm_cli/ids.py": "232d77729036198015829e761a36a8b5bf639925720de2ff8fa78ccd695500aa",
+    "src/llm_cli/knowledge/__init__.py": "14b9a56cd3ce74de2922d3de91e954962f3b90c266b2c3819869efdb972c20e7",
+    "src/llm_cli/knowledge/chunker.py": "07197882e52581999dfdedb60bf356b4e9902d55c17f451bff648565ad7ad549",
+    "src/llm_cli/knowledge/graph.py": "14c3130623ea862ed67c10f35ae83f3a7d2910f6be75d2c61cdc3e15eaf85634",
+    "src/llm_cli/knowledge/graph_schema.py": "8aa726b9a1dfd9c3ea303a0a1f29cc196225062067de153930773cb526276b3f",
+    "src/llm_cli/knowledge/indexer.py": "b2712cefc527594a2baed4e5fae6500119ff8b632cf9c1287a048de7348d8b11",
+    "src/llm_cli/knowledge/outbox.py": "fa159e70ee0e919bab562fd5788910645709061b8dcbfc55085d4d4822ba35cb",
+    "src/llm_cli/knowledge/parsers.py": "b41ca82dc5266fa116bdeb2c96a29e3975cfd3f4b48a52c6b6acb40bfc99ac37",
+    "src/llm_cli/knowledge/retrieval.py": "1e326a700b2e7de7b4e1b5412ae17dfb756817a980b1799f33cc99a0602b657f",
+    "src/llm_cli/knowledge/search.py": "63298773f6049564338d54a212e8e65b70b541163c05615e6ce84da44710eade",
+    "src/llm_cli/knowledge/store.py": "1f736fd1f906956095751a2e73aa22515613b5304d17852a61ec12bdfb41e379",
+    "src/llm_cli/mcp/__init__.py": "cc3f8b377b17a8a65d7ecc6b7a87f83b8f1456b540eeb117bf74c03f7606faad",
+    "src/llm_cli/mcp/client.py": "de5ed85aad66962827ce9770d698d70794287399c2e1bdfe4a82f7e1e9da33cc",
+    "src/llm_cli/mcp/tools.py": "3770ee0c2591b4855af43a1f55420d0026cbf9aa4419bbb2192f6ecd8e38f7ca",
+    "src/llm_cli/mcp/transport.py": "e6bdac56c408e1de46dc79349662a6023bf06039021907fb5c4e0b47d2dbf128",
+    "src/llm_cli/observability/__init__.py": "a454fe1a1dfe53a317d2670671754e439702a1fa8b2bd1330ba0ad4d773e0dae",
+    "src/llm_cli/observability/logging.py": "14f91f15f4f3aad3235cfe916e991d6423171b4cdb859b80c2b850f78d68e39c",
+    "src/llm_cli/paths.py": "36a28ac55cb3d5b6315e81c1c85e8b20022b3bfb05eace5a5b989b225f6f1259",
+    "src/llm_cli/protocol/__init__.py": "07bc1423ab71b5f0544d1127666cc0e03ba51798f690c8aceda2a2ac84eea960",
+    "src/llm_cli/protocol/capabilities.py": "18393484a6307982406744392b73f74c6851e5fa7b72222819dbd73a09607b42",
+    "src/llm_cli/protocol/client.py": "15cd49d213d93388496cdd1e85cd914c0573c8ea73e4ef05df13bebaf370d51a",
+    "src/llm_cli/protocol/envelopes.py": "7d0a8aa294b0e7c381140a55920d2ac29f301062d14856650cfad903502faf0f",
+    "src/llm_cli/protocol/framing.py": "a71dc70c2db4a75f65ef0ce5c40d0cd87a3860ddadb83d0de53de58bda73909e",
+    "src/llm_cli/protocol/server.py": "9f02a164dc3fb116c44af88cbf3ea80fbf95256a124869a69b438e12c326edb3",
+    "src/llm_cli/providers/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/llm_cli/providers/accounts.py": "ca3d2d50a74ec2933cc61eb11c839900c653044bc7392fa4e35ed60356751ccf",
+    "src/llm_cli/providers/anthropic_provider.py": "80b2a5fd7c9f0242613de7c9f51257e7d3267cc6c997403db97478a7df14ba25",
+    "src/llm_cli/providers/base.py": "fc9394f7242d143bac1dc4ae56326ba7abfead7287965e98a7fdb2bb3ae6e0c8",
+    "src/llm_cli/providers/catalog.py": "92010198e6bb1c6abb2a79af7b0a33549386724305901955691876c739bf51f4",
+    "src/llm_cli/providers/codex_auth.py": "5dc6d149ccfad8083788825216a0e6528489ab5dee4736e2c6b27aaf31b222eb",
+    "src/llm_cli/providers/codex_provider.py": "8066bd4f9a4914eb511c23f60f624439b3ad2f04efa066cb267077b108ed7524",
+    "src/llm_cli/providers/openai_provider.py": "9f672f7422089b49a24c0a49da9f14af7fe6419f18bd03c1289a1ccc7793a853",
+    "src/llm_cli/providers/registry.py": "05187615db08194346aafc4c94be565c89682d2147555b0ed3193dfc5365ee89",
+    "src/llm_cli/storage/__init__.py": "5a513112388d1f6948eae83d383c955fe1e5004a67e4426d1084dc5808f15986",
+    "src/llm_cli/storage/backup.py": "5b1db09aee4408cc33454a949c2d0879e3473ac578a7da4285431fc978cbd03b",
+    "src/llm_cli/storage/connection.py": "1fedb4c6343571886d550a99da77601366e709c9f1d3076e63734134db5abcba",
+    "src/llm_cli/storage/control.py": "249dfe6b32c57a873f4927cbe6b783e23f9d2c4f80fe0b5f9d3e5af415845c58",
+    "src/llm_cli/storage/migrations.py": "1aef9c05cf6e86de650864c0a72f5b1a59b5d586c6f1a438611062962647ca5d",
+    "src/llm_cli/storage/retention.py": "d566810a0ab638f6c5a4adea31cd282d91b03db40b2927f7a32cdf136ab69858",
+    "src/llm_cli/web/__init__.py": "66b14a9ecf2e35525cd129905ba4258c522ce9f0057977b0883f2c12499997c6",
+    "src/llm_cli/web/access.py": "6bc6caec4808d1a1c5b96c99791a9da8e92ad6e05ecbeffd623013432ecf2ad3",
+    "src/llm_cli/web/fetch.py": "e27177076e249c4dd217243eb344ad49672a3b005906279499c37a3d40bce9a0",
+    "src/llm_cli/workspace/__init__.py": "e3913a3aadd743b300dc5e656c47b599bd4a37b50af3856dee7f0e0fd32318c5",
+    "src/llm_cli/workspace/authority.py": "394116edd34a70bc775c827070990b067fd3364bd82a833d91afa65b3aa5bc9e",
+    "src/llm_cli/workspace/batches.py": "e31f50a5aee66b3ce2e0bd372ba064c3a0ee384261d8bcba912533f0c3eb2129",
+    "src/llm_cli/workspace/broker.py": "be6f3c8539b0e7a3492b182bf9cba1bccf53710599231bd0b90dee97296b5d42",
+    "src/llm_cli/workspace/context.py": "6fb4fe5c6efb23f7ae65b22e02a5965451839cb464ec1e81732aef0e558af44b",
+    "src/llm_cli/workspace/external.py": "aa25bbda284029d6ea00c82de3302c7247b6984eabb4ecaaa7017f0dce7ba5b2",
+    "src/llm_cli/workspace/hydration.py": "e761bbd41ed400c641ee4259a6c314cec8f5ef8d372c1081a07ecaeaadeda1a1",
+    "src/llm_cli/workspace/identity.py": "faaa467a056e117aa9392ad98dee2c759704ae0ae456966d3cdfbb2a23bc7fad",
+    "src/llm_cli/workspace/installation.py": "f9ee9af4d089d09b4818ade6a5d0bd834ff4ee0aaa579cf44a5baef5d5142423",
+    "src/llm_cli/workspace/isolated.py": "9471f24a85577eb9d894c4f0ee7fcdb3531f278027d98b13028ec2159f448d9e",
+    "src/llm_cli/workspace/isolated_sync.py": "ea5e3336e97674c437f3533188cb819dbe7f60bf08fbb5e1153a70605b0735d7",
+    "src/llm_cli/workspace/merge.py": "2839bea981fa69a4e0095c1134a57c181274a2558f3b3721348add077c55c2e2",
+    "src/llm_cli/workspace/rebuild.py": "48784a1cff0725687c5f440f8c2d3acdf905da11e1a7c43fbfaa2b9f8dd8ae71",
+    "src/llm_cli/workspace/regime.py": "757ddc399653adbbff332d9126867a4c677650d9e5e73d98e032fd2d60e4403e",
+    "src/llm_cli/workspace/runtime.py": "f597d521beb15df441b916126982eaddf6ec2c0c80b9666a1e9c1389357215df",
+    "src/llm_cli/workspace/runtime_refresh.py": "465f75d86636ea6c5f756ef5ae7395fc5038a2ea05234429152ee6a8c96caf53",
+    "src/llm_cli/workspace/workflow.py": "9fe123e3c22e9803dbe1c7316dca7644d0043ca251fcb79f8055dae0f04c7cef"
+  },
+  "python": "3.14.8 (main, Sep 30 2026, 17:55:09) [Clang 21.0.0 (clang-2100.3.34.2)]",
+  "platform": "darwin",
+  "cycles": 261,
+  "restarts": 23,
+  "elapsed_seconds": 3135.406809416949,
+  "failure": "InvariantFailure: resource bound exceeded: database_bytes=134693672 > 134217728",
+  "samples": [
+    {
+      "database_bytes": 2363896,
+      "candidate_bytes": 174,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49577984,
+      "rpc_p99_ms": 163.8247079681605
+    },
+    {
+      "database_bytes": 5086856,
+      "candidate_bytes": 387,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50167808,
+      "rpc_p99_ms": 1034.260124899447
+    },
+    {
+      "database_bytes": 1782112,
+      "candidate_bytes": 543,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50233344,
+      "rpc_p99_ms": 1034.260124899447
+    },
+    {
+      "database_bytes": 4970992,
+      "candidate_bytes": 732,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50429952,
+      "rpc_p99_ms": 1436.1943330150098
+    },
+    {
+      "database_bytes": 5385912,
+      "candidate_bytes": 922,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50495488,
+      "rpc_p99_ms": 1436.1943330150098
+    },
+    {
+      "database_bytes": 5385912,
+      "candidate_bytes": 1123,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50626560,
+      "rpc_p99_ms": 1650.629583047703
+    },
+    {
+      "database_bytes": 5471928,
+      "candidate_bytes": 1296,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50806784,
+      "rpc_p99_ms": 1650.629583047703
+    },
+    {
+      "database_bytes": 5586616,
+      "candidate_bytes": 1530,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50937856,
+      "rpc_p99_ms": 1724.4647910119966
+    },
+    {
+      "database_bytes": 5820832,
+      "candidate_bytes": 1703,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50954240,
+      "rpc_p99_ms": 1724.4647910119966
+    },
+    {
+      "database_bytes": 5935520,
+      "candidate_bytes": 1911,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50970624,
+      "rpc_p99_ms": 1724.4647910119966
+    },
+    {
+      "database_bytes": 6046112,
+      "candidate_bytes": 2146,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49315840,
+      "rpc_p99_ms": 1724.4647910119966
+    },
+    {
+      "database_bytes": 6136224,
+      "candidate_bytes": 2357,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49922048,
+      "rpc_p99_ms": 1724.4647910119966
+    },
+    {
+      "database_bytes": 6242720,
+      "candidate_bytes": 2530,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 49938432,
+      "rpc_p99_ms": 1724.4647910119966
+    },
+    {
+      "database_bytes": 6357408,
+      "candidate_bytes": 2754,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50200576,
+      "rpc_p99_ms": 1667.5160410813987
+    },
+    {
+      "database_bytes": 6480288,
+      "candidate_bytes": 2918,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50266112,
+      "rpc_p99_ms": 1667.5160410813987
+    },
+    {
+      "database_bytes": 6582688,
+      "candidate_bytes": 3118,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50528256,
+      "rpc_p99_ms": 1667.5160410813987
+    },
+    {
+      "database_bytes": 6812064,
+      "candidate_bytes": 3318,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50790400,
+      "rpc_p99_ms": 1667.5160410813987
+    },
+    {
+      "database_bytes": 6812064,
+      "candidate_bytes": 3530,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 51068928,
+      "rpc_p99_ms": 1667.5160410813987
+    },
+    {
+      "database_bytes": 6955424,
+      "candidate_bytes": 3705,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 51134464,
+      "rpc_p99_ms": 1667.5160410813987
+    },
+    {
+      "database_bytes": 7168416,
+      "candidate_bytes": 3927,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 51298304,
+      "rpc_p99_ms": 1667.5160410813987
+    },
+    {
+      "database_bytes": 7311776,
+      "candidate_bytes": 4103,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 51478528,
+      "rpc_p99_ms": 1667.5160410813987
+    },
+    {
+      "database_bytes": 7422368,
+      "candidate_bytes": 4351,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 50659328,
+      "rpc_p99_ms": 1724.4647910119966
+    },
+    {
+      "database_bytes": 7586208,
+      "candidate_bytes": 4562,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 51216384,
+      "rpc_p99_ms": 1724.4647910119966
+    },
+    {
+      "database_bytes": 7688608,
+      "candidate_bytes": 4774,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 51396608,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 7803296,
+      "candidate_bytes": 4950,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 51527680,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 8106400,
+      "candidate_bytes": 5186,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 51855360,
+      "rpc_p99_ms": 1739.0913750277832
+    },
+    {
+      "database_bytes": 8274336,
+      "candidate_bytes": 5361,
+      "open_files": 15,
+      "threads": 5,
+      "memory_bytes": 52084736,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 8401312,
+      "candidate_bytes": 5572,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52330496,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 8577440,
+      "candidate_bytes": 5772,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52609024,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 8827296,
+      "candidate_bytes": 5983,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52723712,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 8827296,
+      "candidate_bytes": 6159,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52740096,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 9073056,
+      "candidate_bytes": 6383,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52805632,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 9224608,
+      "candidate_bytes": 6593,
+      "open_files": 12,
+      "threads": 4,
+      "memory_bytes": 51789824,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 9347488,
+      "candidate_bytes": 6805,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52314112,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 9658784,
+      "candidate_bytes": 7005,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52396032,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 9793952,
+      "candidate_bytes": 7205,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52461568,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 9929120,
+      "candidate_bytes": 7380,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52510720,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 10174880,
+      "candidate_bytes": 7602,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52740096,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 10363296,
+      "candidate_bytes": 7778,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52789248,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 10494368,
+      "candidate_bytes": 7989,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52936704,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 10756512,
+      "candidate_bytes": 8188,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52936704,
+      "rpc_p99_ms": 1724.4647910119966
+    },
+    {
+      "database_bytes": 10920352,
+      "candidate_bytes": 8400,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52985856,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 11104672,
+      "candidate_bytes": 8576,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53018624,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 11387296,
+      "candidate_bytes": 8848,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 51986432,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 11530656,
+      "candidate_bytes": 9024,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52199424,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 11903392,
+      "candidate_bytes": 9235,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52297728,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 12149152,
+      "candidate_bytes": 9435,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52625408,
+      "rpc_p99_ms": 1730.689457966946
+    },
+    {
+      "database_bytes": 12345760,
+      "candidate_bytes": 9647,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52772864,
+      "rpc_p99_ms": 1739.0913750277832
+    },
+    {
+      "database_bytes": 12546464,
+      "candidate_bytes": 9822,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52838400,
+      "rpc_p99_ms": 1739.0913750277832
+    },
+    {
+      "database_bytes": 12829088,
+      "candidate_bytes": 10057,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52969472,
+      "rpc_p99_ms": 1743.878374923952
+    },
+    {
+      "database_bytes": 13005216,
+      "candidate_bytes": 10233,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52969472,
+      "rpc_p99_ms": 1743.878374923952
+    },
+    {
+      "database_bytes": 10940112,
+      "candidate_bytes": 10444,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53067776,
+      "rpc_p99_ms": 1743.878374923952
+    },
+    {
+      "database_bytes": 13282904,
+      "candidate_bytes": 10644,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53067776,
+      "rpc_p99_ms": 1743.878374923952
+    },
+    {
+      "database_bytes": 13705968,
+      "candidate_bytes": 10856,
+      "open_files": 15,
+      "threads": 5,
+      "memory_bytes": 53133312,
+      "rpc_p99_ms": 1762.0926249073818
+    },
+    {
+      "database_bytes": 14074608,
+      "candidate_bytes": 11078,
+      "open_files": 12,
+      "threads": 4,
+      "memory_bytes": 51757056,
+      "rpc_p99_ms": 1743.878374923952
+    },
+    {
+      "database_bytes": 14381808,
+      "candidate_bytes": 11326,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52232192,
+      "rpc_p99_ms": 1762.0926249073818
+    },
+    {
+      "database_bytes": 14619376,
+      "candidate_bytes": 11512,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52248576,
+      "rpc_p99_ms": 1762.0926249073818
+    },
+    {
+      "database_bytes": 14738160,
+      "candidate_bytes": 11723,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52412416,
+      "rpc_p99_ms": 1762.0926249073818
+    },
+    {
+      "database_bytes": 15045360,
+      "candidate_bytes": 11923,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52527104,
+      "rpc_p99_ms": 1762.0926249073818
+    },
+    {
+      "database_bytes": 15389424,
+      "candidate_bytes": 12143,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52609024,
+      "rpc_p99_ms": 1770.2816249802709
+    },
+    {
+      "database_bytes": 15614704,
+      "candidate_bytes": 12324,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52658176,
+      "rpc_p99_ms": 1770.2816249802709
+    },
+    {
+      "database_bytes": 15971056,
+      "candidate_bytes": 12581,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52772864,
+      "rpc_p99_ms": 1781.0378749854863
+    },
+    {
+      "database_bytes": 16098032,
+      "candidate_bytes": 12762,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52789248,
+      "rpc_p99_ms": 1781.0378749854863
+    },
+    {
+      "database_bytes": 16196336,
+      "candidate_bytes": 12981,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52953088,
+      "rpc_p99_ms": 1781.0378749854863
+    },
+    {
+      "database_bytes": 16630512,
+      "candidate_bytes": 13188,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53051392,
+      "rpc_p99_ms": 1781.0378749854863
+    },
+    {
+      "database_bytes": 17109744,
+      "candidate_bytes": 13446,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52346880,
+      "rpc_p99_ms": 1781.0378749854863
+    },
+    {
+      "database_bytes": 17285872,
+      "candidate_bytes": 13627,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52707328,
+      "rpc_p99_ms": 1781.0378749854863
+    },
+    {
+      "database_bytes": 17621744,
+      "candidate_bytes": 13886,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52854784,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 17765104,
+      "candidate_bytes": 14066,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52936704,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 18146032,
+      "candidate_bytes": 14284,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53133312,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 18387696,
+      "candidate_bytes": 14490,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53198848,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 18649840,
+      "candidate_bytes": 14710,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53264384,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 19018480,
+      "candidate_bytes": 14890,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53264384,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 19333872,
+      "candidate_bytes": 15123,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53313536,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 19542768,
+      "candidate_bytes": 15290,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53362688,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 19919600,
+      "candidate_bytes": 15496,
+      "open_files": 15,
+      "threads": 5,
+      "memory_bytes": 53428224,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 20288240,
+      "candidate_bytes": 15728,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52281344,
+      "rpc_p99_ms": 1781.0378749854863
+    },
+    {
+      "database_bytes": 20534000,
+      "candidate_bytes": 15935,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52576256,
+      "rpc_p99_ms": 1781.0378749854863
+    },
+    {
+      "database_bytes": 20800240,
+      "candidate_bytes": 16114,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52805632,
+      "rpc_p99_ms": 1781.0378749854863
+    },
+    {
+      "database_bytes": 21234416,
+      "candidate_bytes": 16359,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53428224,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 21533424,
+      "candidate_bytes": 16553,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53526528,
+      "rpc_p99_ms": 1801.0223750025034
+    },
+    {
+      "database_bytes": 21869296,
+      "candidate_bytes": 16786,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53690368,
+      "rpc_p99_ms": 1819.886083016172
+    },
+    {
+      "database_bytes": 22172400,
+      "candidate_bytes": 17006,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53755904,
+      "rpc_p99_ms": 1819.886083016172
+    },
+    {
+      "database_bytes": 22479600,
+      "candidate_bytes": 17239,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53755904,
+      "rpc_p99_ms": 1830.0974169978872
+    },
+    {
+      "database_bytes": 22917872,
+      "candidate_bytes": 17418,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53772288,
+      "rpc_p99_ms": 1830.0974169978872
+    },
+    {
+      "database_bytes": 23163632,
+      "candidate_bytes": 17677,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53805056,
+      "rpc_p99_ms": 1837.8225830383599
+    },
+    {
+      "database_bytes": 23630576,
+      "candidate_bytes": 17857,
+      "open_files": 15,
+      "threads": 5,
+      "memory_bytes": 53837824,
+      "rpc_p99_ms": 1837.8225830383599
+    },
+    {
+      "database_bytes": 23982832,
+      "candidate_bytes": 18103,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52428800,
+      "rpc_p99_ms": 1837.8225830383599
+    },
+    {
+      "database_bytes": 24335088,
+      "candidate_bytes": 18321,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52772864,
+      "rpc_p99_ms": 1837.8225830383599
+    },
+    {
+      "database_bytes": 24773360,
+      "candidate_bytes": 18540,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52969472,
+      "rpc_p99_ms": 1837.8225830383599
+    },
+    {
+      "database_bytes": 24920816,
+      "candidate_bytes": 18707,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53051392,
+      "rpc_p99_ms": 1830.0974169978872
+    },
+    {
+      "database_bytes": 25445104,
+      "candidate_bytes": 18938,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53510144,
+      "rpc_p99_ms": 1837.8225830383599
+    },
+    {
+      "database_bytes": 25760496,
+      "candidate_bytes": 19119,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53542912,
+      "rpc_p99_ms": 1837.8225830383599
+    },
+    {
+      "database_bytes": 26026736,
+      "candidate_bytes": 19339,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53739520,
+      "rpc_p99_ms": 1850.3021249780431
+    },
+    {
+      "database_bytes": 26505968,
+      "candidate_bytes": 19546,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53772288,
+      "rpc_p99_ms": 1850.3021249780431
+    },
+    {
+      "database_bytes": 26686192,
+      "candidate_bytes": 19766,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53772288,
+      "rpc_p99_ms": 1851.817165967077
+    },
+    {
+      "database_bytes": 27177712,
+      "candidate_bytes": 19946,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53772288,
+      "rpc_p99_ms": 1851.817165967077
+    },
+    {
+      "database_bytes": 27615984,
+      "candidate_bytes": 20179,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53837824,
+      "rpc_p99_ms": 1851.817165967077
+    },
+    {
+      "database_bytes": 27857648,
+      "candidate_bytes": 20399,
+      "open_files": 12,
+      "threads": 4,
+      "memory_bytes": 52232192,
+      "rpc_p99_ms": 1851.817165967077
+    },
+    {
+      "database_bytes": 28336880,
+      "candidate_bytes": 20632,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52822016,
+      "rpc_p99_ms": 1852.1927919937298
+    },
+    {
+      "database_bytes": 28840688,
+      "candidate_bytes": 20841,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52953088,
+      "rpc_p99_ms": 1852.1927919937298
+    },
+    {
+      "database_bytes": 29078256,
+      "candidate_bytes": 21060,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53182464,
+      "rpc_p99_ms": 1852.1927919937298
+    },
+    {
+      "database_bytes": 29594352,
+      "candidate_bytes": 21255,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53346304,
+      "rpc_p99_ms": 1852.1927919937298
+    },
+    {
+      "database_bytes": 30073584,
+      "candidate_bytes": 21503,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53641216,
+      "rpc_p99_ms": 1852.1927919937298
+    },
+    {
+      "database_bytes": 30323440,
+      "candidate_bytes": 21699,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53673984,
+      "rpc_p99_ms": 1852.1927919937298
+    },
+    {
+      "database_bytes": 30737136,
+      "candidate_bytes": 21920,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53772288,
+      "rpc_p99_ms": 1861.352917039767
+    },
+    {
+      "database_bytes": 31163120,
+      "candidate_bytes": 22142,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53837824,
+      "rpc_p99_ms": 1861.352917039767
+    },
+    {
+      "database_bytes": 31527664,
+      "candidate_bytes": 22376,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53952512,
+      "rpc_p99_ms": 1891.6230419417843
+    },
+    {
+      "database_bytes": 32097008,
+      "candidate_bytes": 22572,
+      "open_files": 14,
+      "threads": 5,
+      "memory_bytes": 53968896,
+      "rpc_p99_ms": 1891.6230419417843
+    },
+    {
+      "database_bytes": 32670448,
+      "candidate_bytes": 22846,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52789248,
+      "rpc_p99_ms": 1906.9605829427019
+    },
+    {
+      "database_bytes": 33047280,
+      "candidate_bytes": 23041,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53018624,
+      "rpc_p99_ms": 1906.9605829427019
+    },
+    {
+      "database_bytes": 33444592,
+      "candidate_bytes": 23263,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53198848,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 33780464,
+      "candidate_bytes": 23472,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53346304,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 34190064,
+      "candidate_bytes": 23694,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53379072,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 34673392,
+      "candidate_bytes": 23876,
+      "open_files": 15,
+      "threads": 5,
+      "memory_bytes": 53493760,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 35234544,
+      "candidate_bytes": 24136,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53510144,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 35615472,
+      "candidate_bytes": 24319,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53592064,
+      "rpc_p99_ms": 1939.2625420587137
+    },
+    {
+      "database_bytes": 36012784,
+      "candidate_bytes": 24541,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53608448,
+      "rpc_p99_ms": 1939.2625420587137
+    },
+    {
+      "database_bytes": 36512496,
+      "candidate_bytes": 24750,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53706752,
+      "rpc_p99_ms": 1939.2625420587137
+    },
+    {
+      "database_bytes": 36954864,
+      "candidate_bytes": 24958,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53755904,
+      "rpc_p99_ms": 1939.2625420587137
+    },
+    {
+      "database_bytes": 37307120,
+      "candidate_bytes": 25180,
+      "open_files": 12,
+      "threads": 4,
+      "memory_bytes": 52363264,
+      "rpc_p99_ms": 1939.2625420587137
+    },
+    {
+      "database_bytes": 37929712,
+      "candidate_bytes": 25441,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52772864,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 38294256,
+      "candidate_bytes": 25623,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52903936,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 38634224,
+      "candidate_bytes": 25844,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53067776,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 39084784,
+      "candidate_bytes": 26053,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53280768,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 39604976,
+      "candidate_bytes": 26275,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54149120,
+      "rpc_p99_ms": 1945.3696670243517
+    },
+    {
+      "database_bytes": 40059632,
+      "candidate_bytes": 26457,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54247424,
+      "rpc_p99_ms": 1945.3696670243517
+    },
+    {
+      "database_bytes": 40633072,
+      "candidate_bytes": 26691,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54525952,
+      "rpc_p99_ms": 1945.3696670243517
+    },
+    {
+      "database_bytes": 41026288,
+      "candidate_bytes": 26874,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54542336,
+      "rpc_p99_ms": 1945.3696670243517
+    },
+    {
+      "database_bytes": 41358064,
+      "candidate_bytes": 27083,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54558720,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 41784048,
+      "candidate_bytes": 27292,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54689792,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 42382064,
+      "candidate_bytes": 27540,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52494336,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 42775280,
+      "candidate_bytes": 27710,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 52903936,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 43352816,
+      "candidate_bytes": 27945,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53166080,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 43733744,
+      "candidate_bytes": 28128,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53198848,
+      "rpc_p99_ms": 1944.176165969111
+    },
+    {
+      "database_bytes": 44008176,
+      "candidate_bytes": 28349,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53248000,
+      "rpc_p99_ms": 1945.3696670243517
+    },
+    {
+      "database_bytes": 44606192,
+      "candidate_bytes": 28558,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53575680,
+      "rpc_p99_ms": 1945.3696670243517
+    },
+    {
+      "database_bytes": 45179632,
+      "candidate_bytes": 28765,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53673984,
+      "rpc_p99_ms": 1945.3696670243517
+    },
+    {
+      "database_bytes": 45589232,
+      "candidate_bytes": 28947,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53706752,
+      "rpc_p99_ms": 1945.3696670243517
+    },
+    {
+      "database_bytes": 46240496,
+      "candidate_bytes": 29195,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53755904,
+      "rpc_p99_ms": 1947.715500020422
+    },
+    {
+      "database_bytes": 46674672,
+      "candidate_bytes": 29378,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53772288,
+      "rpc_p99_ms": 1947.715500020422
+    },
+    {
+      "database_bytes": 47845776,
+      "candidate_bytes": 29598,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53854208,
+      "rpc_p99_ms": 1956.829084083438
+    },
+    {
+      "database_bytes": 48411024,
+      "candidate_bytes": 29859,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53559296,
+      "rpc_p99_ms": 1947.715500020422
+    },
+    {
+      "database_bytes": 48824720,
+      "candidate_bytes": 30081,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53772288,
+      "rpc_p99_ms": 1956.829084083438
+    },
+    {
+      "database_bytes": 49435024,
+      "candidate_bytes": 30277,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53854208,
+      "rpc_p99_ms": 1956.829084083438
+    },
+    {
+      "database_bytes": 50082192,
+      "candidate_bytes": 30525,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54018048,
+      "rpc_p99_ms": 1958.6285419063643
+    },
+    {
+      "database_bytes": 50557328,
+      "candidate_bytes": 30708,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54116352,
+      "rpc_p99_ms": 1958.6285419063643
+    },
+    {
+      "database_bytes": 50958736,
+      "candidate_bytes": 30916,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54280192,
+      "rpc_p99_ms": 1979.9516249913722
+    },
+    {
+      "database_bytes": 51450256,
+      "candidate_bytes": 31125,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54345728,
+      "rpc_p99_ms": 1979.9516249913722
+    },
+    {
+      "database_bytes": 52072848,
+      "candidate_bytes": 31346,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54427648,
+      "rpc_p99_ms": 2004.1057500056922
+    },
+    {
+      "database_bytes": 52605328,
+      "candidate_bytes": 31528,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54509568,
+      "rpc_p99_ms": 2004.1057500056922
+    },
+    {
+      "database_bytes": 53322128,
+      "candidate_bytes": 31775,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54591488,
+      "rpc_p99_ms": 2009.427500073798
+    },
+    {
+      "database_bytes": 53813648,
+      "candidate_bytes": 31971,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54624256,
+      "rpc_p99_ms": 2009.427500073798
+    },
+    {
+      "database_bytes": 54538640,
+      "candidate_bytes": 32231,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53198848,
+      "rpc_p99_ms": 2009.427500073798
+    },
+    {
+      "database_bytes": 54981008,
+      "candidate_bytes": 32451,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53723136,
+      "rpc_p99_ms": 2009.427500073798
+    },
+    {
+      "database_bytes": 55701904,
+      "candidate_bytes": 32685,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53870592,
+      "rpc_p99_ms": 2017.51662499737
+    },
+    {
+      "database_bytes": 56205712,
+      "candidate_bytes": 32880,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53985280,
+      "rpc_p99_ms": 2017.51662499737
+    },
+    {
+      "database_bytes": 56730000,
+      "candidate_bytes": 33115,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54149120,
+      "rpc_p99_ms": 2020.806625019759
+    },
+    {
+      "database_bytes": 57319824,
+      "candidate_bytes": 33310,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54214656,
+      "rpc_p99_ms": 2020.806625019759
+    },
+    {
+      "database_bytes": 57942416,
+      "candidate_bytes": 33532,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54247424,
+      "rpc_p99_ms": 2034.30458297953
+    },
+    {
+      "database_bytes": 58339728,
+      "candidate_bytes": 33753,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54312960,
+      "rpc_p99_ms": 2034.30458297953
+    },
+    {
+      "database_bytes": 59011472,
+      "candidate_bytes": 33987,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54394880,
+      "rpc_p99_ms": 2053.535084007308
+    },
+    {
+      "database_bytes": 59666832,
+      "candidate_bytes": 34182,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54476800,
+      "rpc_p99_ms": 2053.535084007308
+    },
+    {
+      "database_bytes": 60363152,
+      "candidate_bytes": 34430,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 54706176,
+      "rpc_p99_ms": 2068.8647920032963
+    },
+    {
+      "database_bytes": 61100432,
+      "candidate_bytes": 34664,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53182464,
+      "rpc_p99_ms": 2053.535084007308
+    },
+    {
+      "database_bytes": 61682064,
+      "candidate_bytes": 34898,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53608448,
+      "rpc_p99_ms": 2068.8647920032963
+    },
+    {
+      "database_bytes": 62198160,
+      "candidate_bytes": 35119,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53985280,
+      "rpc_p99_ms": 2068.8647920032963
+    },
+    {
+      "database_bytes": 62902672,
+      "candidate_bytes": 35340,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54116352,
+      "rpc_p99_ms": 2068.8647920032963
+    },
+    {
+      "database_bytes": 63390096,
+      "candidate_bytes": 35535,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54280192,
+      "rpc_p99_ms": 2068.8647920032963
+    },
+    {
+      "database_bytes": 64270736,
+      "candidate_bytes": 35795,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 56557568,
+      "rpc_p99_ms": 2081.5177500480786
+    },
+    {
+      "database_bytes": 64852368,
+      "candidate_bytes": 35989,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 56688640,
+      "rpc_p99_ms": 2081.5177500480786
+    },
+    {
+      "database_bytes": 65442192,
+      "candidate_bytes": 36224,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 56754176,
+      "rpc_p99_ms": 2086.8461669888347
+    },
+    {
+      "database_bytes": 65978768,
+      "candidate_bytes": 36446,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 56836096,
+      "rpc_p99_ms": 2086.8461669888347
+    },
+    {
+      "database_bytes": 66695568,
+      "candidate_bytes": 36667,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 56852480,
+      "rpc_p99_ms": 2086.8461669888347
+    },
+    {
+      "database_bytes": 67260816,
+      "candidate_bytes": 36850,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 56868864,
+      "rpc_p99_ms": 2086.8461669888347
+    },
+    {
+      "database_bytes": 68190608,
+      "candidate_bytes": 37137,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53673984,
+      "rpc_p99_ms": 2086.8461669888347
+    },
+    {
+      "database_bytes": 68821392,
+      "candidate_bytes": 37333,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 53968896,
+      "rpc_p99_ms": 2086.8461669888347
+    },
+    {
+      "database_bytes": 69403024,
+      "candidate_bytes": 37553,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54247424,
+      "rpc_p99_ms": 2086.8461669888347
+    },
+    {
+      "database_bytes": 69964176,
+      "candidate_bytes": 37775,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54362112,
+      "rpc_p99_ms": 2086.8461669888347
+    },
+    {
+      "database_bytes": 70730128,
+      "candidate_bytes": 38010,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54509568,
+      "rpc_p99_ms": 2092.2315838979557
+    },
+    {
+      "database_bytes": 71422352,
+      "candidate_bytes": 38205,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54558720,
+      "rpc_p99_ms": 2092.2315838979557
+    },
+    {
+      "database_bytes": 72323472,
+      "candidate_bytes": 38438,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54591488,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 72708496,
+      "candidate_bytes": 38621,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54640640,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 73228688,
+      "candidate_bytes": 38843,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54657024,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 73957776,
+      "candidate_bytes": 39051,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54673408,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 74686864,
+      "candidate_bytes": 39285,
+      "open_files": 15,
+      "threads": 5,
+      "memory_bytes": 54722560,
+      "rpc_p99_ms": 2099.4048750726506
+    },
+    {
+      "database_bytes": 75456912,
+      "candidate_bytes": 39519,
+      "open_files": 12,
+      "threads": 4,
+      "memory_bytes": 53788672,
+      "rpc_p99_ms": 2099.4048750726506
+    },
+    {
+      "database_bytes": 76255632,
+      "candidate_bytes": 39767,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54165504,
+      "rpc_p99_ms": 2099.4048750726506
+    },
+    {
+      "database_bytes": 76853648,
+      "candidate_bytes": 39949,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54296576,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 77398416,
+      "candidate_bytes": 40171,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54444032,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 78209424,
+      "candidate_bytes": 40379,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54542336,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 78864784,
+      "candidate_bytes": 40601,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54624256,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 79409552,
+      "candidate_bytes": 40784,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54706176,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 80232848,
+      "candidate_bytes": 41032,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54804480,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 80892304,
+      "candidate_bytes": 41228,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55083008,
+      "rpc_p99_ms": 2096.6938340570778
+    },
+    {
+      "database_bytes": 81437072,
+      "candidate_bytes": 41463,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55083008,
+      "rpc_p99_ms": 2099.4048750726506
+    },
+    {
+      "database_bytes": 82203024,
+      "candidate_bytes": 41672,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55132160,
+      "rpc_p99_ms": 2099.4048750726506
+    },
+    {
+      "database_bytes": 83124624,
+      "candidate_bytes": 41918,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54050816,
+      "rpc_p99_ms": 2099.4048750726506
+    },
+    {
+      "database_bytes": 83677584,
+      "candidate_bytes": 42101,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54312960,
+      "rpc_p99_ms": 2099.4048750726506
+    },
+    {
+      "database_bytes": 84521360,
+      "candidate_bytes": 42348,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54525952,
+      "rpc_p99_ms": 2099.521249998361
+    },
+    {
+      "database_bytes": 85078416,
+      "candidate_bytes": 42531,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54640640,
+      "rpc_p99_ms": 2099.4048750726506
+    },
+    {
+      "database_bytes": 85647760,
+      "candidate_bytes": 42766,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54706176,
+      "rpc_p99_ms": 2099.521249998361
+    },
+    {
+      "database_bytes": 86335888,
+      "candidate_bytes": 42975,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54870016,
+      "rpc_p99_ms": 2099.521249998361
+    },
+    {
+      "database_bytes": 87105936,
+      "candidate_bytes": 43184,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54935552,
+      "rpc_p99_ms": 2099.521249998361
+    },
+    {
+      "database_bytes": 87802256,
+      "candidate_bytes": 43378,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55033856,
+      "rpc_p99_ms": 2099.521249998361
+    },
+    {
+      "database_bytes": 88736144,
+      "candidate_bytes": 43638,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 55214080,
+      "rpc_p99_ms": 2105.4182500811294
+    },
+    {
+      "database_bytes": 89436560,
+      "candidate_bytes": 43834,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 55214080,
+      "rpc_p99_ms": 2105.4182500811294
+    },
+    {
+      "database_bytes": 90243472,
+      "candidate_bytes": 44056,
+      "open_files": 13,
+      "threads": 6,
+      "memory_bytes": 55377920,
+      "rpc_p99_ms": 2109.361834009178
+    },
+    {
+      "database_bytes": 90943888,
+      "candidate_bytes": 44316,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54542336,
+      "rpc_p99_ms": 2109.361834009178
+    },
+    {
+      "database_bytes": 91816336,
+      "candidate_bytes": 44551,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54870016,
+      "rpc_p99_ms": 2111.6359590087086
+    },
+    {
+      "database_bytes": 92524944,
+      "candidate_bytes": 44733,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55033856,
+      "rpc_p99_ms": 2111.6359590087086
+    },
+    {
+      "database_bytes": 93409680,
+      "candidate_bytes": 44993,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55197696,
+      "rpc_p99_ms": 2112.5770000508055
+    },
+    {
+      "database_bytes": 94159248,
+      "candidate_bytes": 45189,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55296000,
+      "rpc_p99_ms": 2111.6359590087086
+    },
+    {
+      "database_bytes": 94744976,
+      "candidate_bytes": 45424,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55558144,
+      "rpc_p99_ms": 2112.5770000508055
+    },
+    {
+      "database_bytes": 95785360,
+      "candidate_bytes": 45644,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55640064,
+      "rpc_p99_ms": 2112.5770000508055
+    },
+    {
+      "database_bytes": 96375184,
+      "candidate_bytes": 45852,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55705600,
+      "rpc_p99_ms": 2116.1941250320524
+    },
+    {
+      "database_bytes": 96981392,
+      "candidate_bytes": 46035,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 55853056,
+      "rpc_p99_ms": 2116.1941250320524
+    },
+    {
+      "database_bytes": 97964432,
+      "candidate_bytes": 46295,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 55885824,
+      "rpc_p99_ms": 2117.9954579565674
+    },
+    {
+      "database_bytes": 98693520,
+      "candidate_bytes": 46491,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 55902208,
+      "rpc_p99_ms": 2117.9954579565674
+    },
+    {
+      "database_bytes": 99512720,
+      "candidate_bytes": 46765,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54558720,
+      "rpc_p99_ms": 2130.02108305227
+    },
+    {
+      "database_bytes": 100331920,
+      "candidate_bytes": 46986,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54935552,
+      "rpc_p99_ms": 2130.02108305227
+    },
+    {
+      "database_bytes": 101388688,
+      "candidate_bytes": 47221,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55148544,
+      "rpc_p99_ms": 2143.197290948592
+    },
+    {
+      "database_bytes": 101917072,
+      "candidate_bytes": 47404,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55263232,
+      "rpc_p99_ms": 2143.197290948592
+    },
+    {
+      "database_bytes": 102818192,
+      "candidate_bytes": 47652,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55427072,
+      "rpc_p99_ms": 2151.782708009705
+    },
+    {
+      "database_bytes": 103588240,
+      "candidate_bytes": 47848,
+      "open_files": 15,
+      "threads": 5,
+      "memory_bytes": 55525376,
+      "rpc_p99_ms": 2143.197290948592
+    },
+    {
+      "database_bytes": 104202640,
+      "candidate_bytes": 48056,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55558144,
+      "rpc_p99_ms": 2151.782708009705
+    },
+    {
+      "database_bytes": 104911248,
+      "candidate_bytes": 48277,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55689216,
+      "rpc_p99_ms": 2151.782708009705
+    },
+    {
+      "database_bytes": 105759120,
+      "candidate_bytes": 48486,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55803904,
+      "rpc_p99_ms": 2151.782708009705
+    },
+    {
+      "database_bytes": 106557840,
+      "candidate_bytes": 48682,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55803904,
+      "rpc_p99_ms": 2151.782708009705
+    },
+    {
+      "database_bytes": 107590032,
+      "candidate_bytes": 48930,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55820288,
+      "rpc_p99_ms": 2169.8987500276417
+    },
+    {
+      "database_bytes": 108528016,
+      "candidate_bytes": 49165,
+      "open_files": 12,
+      "threads": 4,
+      "memory_bytes": 54362112,
+      "rpc_p99_ms": 2169.8987500276417
+    },
+    {
+      "database_bytes": 109171088,
+      "candidate_bytes": 49387,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 54804480,
+      "rpc_p99_ms": 2173.2031669234857
+    },
+    {
+      "database_bytes": 110195088,
+      "candidate_bytes": 49609,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55066624,
+      "rpc_p99_ms": 2173.2031669234857
+    },
+    {
+      "database_bytes": 110977424,
+      "candidate_bytes": 49830,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55214080,
+      "rpc_p99_ms": 2191.892792005092
+    },
+    {
+      "database_bytes": 111710608,
+      "candidate_bytes": 50026,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55345152,
+      "rpc_p99_ms": 2191.892792005092
+    },
+    {
+      "database_bytes": 112898448,
+      "candidate_bytes": 50274,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55558144,
+      "rpc_p99_ms": 2192.717375000939
+    },
+    {
+      "database_bytes": 113459600,
+      "candidate_bytes": 50470,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55689216,
+      "rpc_p99_ms": 2191.892792005092
+    },
+    {
+      "database_bytes": 114024848,
+      "candidate_bytes": 50679,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56000512,
+      "rpc_p99_ms": 2192.717375000939
+    },
+    {
+      "database_bytes": 114741648,
+      "candidate_bytes": 50888,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56246272,
+      "rpc_p99_ms": 2192.717375000939
+    },
+    {
+      "database_bytes": 115855760,
+      "candidate_bytes": 51110,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56279040,
+      "rpc_p99_ms": 2217.314959038049
+    },
+    {
+      "database_bytes": 116507024,
+      "candidate_bytes": 51306,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56279040,
+      "rpc_p99_ms": 2217.314959038049
+    },
+    {
+      "database_bytes": 117772688,
+      "candidate_bytes": 51592,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55476224,
+      "rpc_p99_ms": 2222.71029104013
+    },
+    {
+      "database_bytes": 118514064,
+      "candidate_bytes": 51788,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55754752,
+      "rpc_p99_ms": 2222.71029104013
+    },
+    {
+      "database_bytes": 119189904,
+      "candidate_bytes": 52010,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55853056,
+      "rpc_p99_ms": 2230.171332950704
+    },
+    {
+      "database_bytes": 120263056,
+      "candidate_bytes": 52232,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55934976,
+      "rpc_p99_ms": 2230.171332950704
+    },
+    {
+      "database_bytes": 121012624,
+      "candidate_bytes": 52466,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55951360,
+      "rpc_p99_ms": 2232.452500029467
+    },
+    {
+      "database_bytes": 121917840,
+      "candidate_bytes": 52662,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56393728,
+      "rpc_p99_ms": 2232.452500029467
+    },
+    {
+      "database_bytes": 122933648,
+      "candidate_bytes": 52909,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56410112,
+      "rpc_p99_ms": 2232.452500029467
+    },
+    {
+      "database_bytes": 123752848,
+      "candidate_bytes": 53105,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56410112,
+      "rpc_p99_ms": 2232.452500029467
+    },
+    {
+      "database_bytes": 124617104,
+      "candidate_bytes": 53339,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56426496,
+      "rpc_p99_ms": 2233.216290944256
+    },
+    {
+      "database_bytes": 125309328,
+      "candidate_bytes": 53546,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56442880,
+      "rpc_p99_ms": 2233.216290944256
+    },
+    {
+      "database_bytes": 126394768,
+      "candidate_bytes": 53781,
+      "open_files": 12,
+      "threads": 6,
+      "memory_bytes": 56524800,
+      "rpc_p99_ms": 2234.351917053573
+    },
+    {
+      "database_bytes": 127345040,
+      "candidate_bytes": 54002,
+      "open_files": 12,
+      "threads": 4,
+      "memory_bytes": 54870016,
+      "rpc_p99_ms": 2234.351917053573
+    },
+    {
+      "database_bytes": 128389520,
+      "candidate_bytes": 54263,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55525376,
+      "rpc_p99_ms": 2241.119166952558
+    },
+    {
+      "database_bytes": 129180048,
+      "candidate_bytes": 54446,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55640064,
+      "rpc_p99_ms": 2241.119166952558
+    },
+    {
+      "database_bytes": 129978768,
+      "candidate_bytes": 54654,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55803904,
+      "rpc_p99_ms": 2253.8042080122977
+    },
+    {
+      "database_bytes": 130580880,
+      "candidate_bytes": 54861,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 55885824,
+      "rpc_p99_ms": 2253.8042080122977
+    },
+    {
+      "database_bytes": 132043512,
+      "candidate_bytes": 55096,
+      "open_files": 15,
+      "threads": 5,
+      "memory_bytes": 56049664,
+      "rpc_p99_ms": 2256.261375034228
+    },
+    {
+      "database_bytes": 132670248,
+      "candidate_bytes": 55292,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56164352,
+      "rpc_p99_ms": 2256.261375034228
+    },
+    {
+      "database_bytes": 133915432,
+      "candidate_bytes": 55552,
+      "open_files": 12,
+      "threads": 5,
+      "memory_bytes": 56180736,
+      "rpc_p99_ms": 2256.261375034228
+    }
+  ],
+  "rpc_latency_ms": {
+    "count": 2110,
+    "p50": 14.137833029963076,
+    "p95": 1848.096500034444,
+    "p99": 2256.261375034228,
+    "max": 2927.5017499458045
+  },
+  "finished_at": "2026-10-23T01:33:20.738864+00:00"
+}

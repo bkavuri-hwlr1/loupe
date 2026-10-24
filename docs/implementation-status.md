@@ -1126,20 +1126,22 @@ remain unlinked. See [Git publication safety](git-publication-safety.md).
 
 ## Next executable slice
 
-[`parallel-work-plan.md`](parallel-work-plan.md) splits this list into
-Waves 8–11, as packages that separate sessions can run at once. Waves 1–7 are
-merged.
+[`parallel-work-plan.md`](parallel-work-plan.md) splits the remaining work into
+Waves 9–11. Wave 8 delivers the 0.1.0a3 release preparation (D4), the soak and
+scan-cost measurement (E3), Git publication safety (C11) and authority
+maintenance (G4).
 
-1. Release 0.1.0a3 with a tested upgrade path from 0.1.0a2 (D4), and run a
-   long multi-session soak that also measures scan cost at scale (E3).
-2. Respect Git's own state. C11 refuses to publish during a Git operation or
-   onto conflicted paths, and records commits and branch switches as Git
-   events, with an epoch change for branch switches. C12 adds native watchers,
-   but only if E3's measurement shows scans are too slow.
-3. Finish the isolated-mode lifecycle: switching a conversation between modes
-   (C13), managed background processes (C14) and runtime export (C15).
-4. Maintain authority: prune stale ownership records, recover stuck cutovers
-   under an ADR 0010 amendment, and name unsupported filesystems (G4).
+1. Finish the isolated-mode lifecycle: switching a conversation between modes
+   (C13) and runtime export (C15), followed by managed background processes
+   (C14).
+2. Bound isolated synchronization-journal storage (C16). E3's growing-path
+   soak exceeded its 128 MiB database bound because every sync keeps a whole
+   manifest.
+3. Add native watchers (C12). E3 measured a 1.94-second safe point at 20,000
+   files, above the 250 ms gate. Hydration admission and outside-scan coverage
+   limits stay explicit constraints.
+4. Push the `v0.1.0a3` tag on D4's merge commit and confirm the tap upgrade on
+   both architectures.
 5. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
    on hold.
 
@@ -1217,3 +1219,29 @@ stage disjoint edits before either publishes, then publish both without changing
 HEAD or index. Malformed/foreign/private-not-ready bindings are refused; older
 exclusive waiters retain their reservations. Full suite: 2,566 passed, one
 case-sensitive-filesystem skip. Ruff and mypy passed.
+
+## Wave 8 E3: soak and scan cost (October 22, 2026)
+
+E3's [experiment report](experiments/soak-and-scan-e3-2026-10-22.md) records
+scripted-provider mixed shared/isolated sessions, concurrent outside writes and
+Git changes, daemon crashes, resource bounds and the deliberately failing
+lost-write control. No model API calls or credentials were used.
+
+- **Steady-path hour passed:** 3,600 active seconds, 300 cycles, 27 daemon
+  restarts, every invariant and original resource bound, and complete
+  disposable-root cleanup. A lid-close sleep extended wall time by about four
+  minutes; the active duration was not shortened.
+- **Growing-path stress failed** the original 128 MiB database bound at 52
+  minutes. Each isolated sync keeps a whole accepted manifest in its journal;
+  growing an admitted checkout from 7,000 to 20,000 files left 981 MB of SQLite
+  files. C16 addresses this; the failed receipt is kept as its workload.
+- **Orphaned private copies:** a refused isolated creation left a quarantined
+  worktree holding its approved `.env` copy. Failed creation and rebuild now
+  retire verified orphan private copies, including runtime generations, and
+  restart cleans earlier orphan attention records. Live, held, foreign and
+  unknown-source data keep their protections.
+- **Scan cost:** at 20,000 source files, a real isolated safe point takes
+  1.94 seconds median, above C12's 250 ms gate. Outside scans cover only each
+  session's latest 1,000 read paths; 20,000-file hydration admission and
+  100,000-file isolated capture remain refused. None of these limits is
+  presented as completed coverage.
