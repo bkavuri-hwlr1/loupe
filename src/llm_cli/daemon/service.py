@@ -1278,6 +1278,9 @@ class DaemonService:
                 checkout = self.store.get_checkout(session.checkout_id)
                 assert workspace is not None and checkout is not None
                 activity.enter_context(
+                    self.physical_authority.pin(Path(checkout.canonical_path))
+                )
+                activity.enter_context(
                     self.isolated_workspaces.runtime.activity(workspace_id)
                 )
                 checkouts = tuple(
@@ -1314,6 +1317,7 @@ class DaemonService:
                 source_paths=tuple(state.source_manifest),
                 shared_checkouts=checkouts,
                 protected_roots=protected,
+                staging_root=Path(workspace.git_dir) if workspace.git_dir else None,
                 **flags,
             )
             if result["state"] == "exported":
