@@ -1,6 +1,6 @@
 # Wave 9 C13 workspace switching verification
 
-The measured implementation/test commit is
+The initial implementation/test freeze is
 `c2d2b0b666bf53d137a2a233df32f2a301fa5aa2`. Normal evidence/ancestry merge
 `550f40cc65baf78f9899a28864b5ae7bf9cce673` adds final C15/C16 documentation.
 All **454 tracked source, test, configuration, CI and script objects** are
@@ -27,15 +27,29 @@ configuration or script bytes changed from `c2d2b0b`; exactly these two test
 objects intentionally differ from the original 454-object manifest. The
 interrupted diagnostic log remains preserved separately.
 
-The source is frozen for the final combined covered correctness run, excluding
+The first restart was stopped early to close one existing-target admission
+consistency issue. A raw generation-1 `session.open` retry selected the current
+isolated binding before checking newly requested runtime consent. Both current
+binding and exact creation-key fallback now check consent, session ownership and
+checkout before opening an authority mutation journal, then recheck admission
+and retain full worktree/token validation inside the journaled path. Seven real
+RPC/disposable-authority cases passed after the fix; five failed before it. The
+regressions also prove rejected requests leave ordinary authority pins usable,
+open no mutation journals, and never copy an unapproved file. This refinement
+changes only `workspace/isolated.py` and its switching regression test in
+addition to the two legacy fixture corrections; migration checksums, harnesses,
+configuration, scripts and all other production source remain unchanged.
+
+The final source is frozen for the combined covered correctness run, excluding
 `index_scale` and `admission_scale`. Those unchanged production gates run
 separately without coverage. Full-run and scale results are recorded in [PR #81](https://github.com/bkavuri-hwlr1/loupe/pull/81)
 when verification completes; no final readiness claim depends on a partial run.
 
 ## Focused evidence
 
-- The combined switching, CLI, isolated creation and immutable-execution
-  concurrency group passed **117 tests** before the last ownership-lifetime fix.
+- After the final admission guard, the combined switching, CLI, isolated
+  creation/cleanup, dependency rebuild, migration and immutable-execution
+  concurrency group passed **202 tests**. Ruff and strict mypy also passed.
 - The last cancellation regression failed before that fix: cancelling the RPC
   waiter allowed forced idle release to change physical authority to
   `observed_only` while its worker continued. It passed after the pin moved inside

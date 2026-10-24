@@ -1678,6 +1678,49 @@ class IsolatedWorkspaceManager:
             self._complete_rebuild(workspace_id, git_dir, primary, recovery=True)
         return True
 
+    def _existing_target(
+        self,
+        checkout: CheckoutRecord,
+        session_id: str,
+        approved_secrets: tuple[str, ...],
+        creation_key: str | None,
+    ) -> WorkspaceRecord | None:
+        workspace_id = None
+        current_binding = False
+        if creation_key is None:
+            session = self.store.get_session(session_id)
+            if (
+                session
+                and session.workspace_mode == "isolated"
+                and session.workspace_id
+            ):
+                workspace_id = session.workspace_id
+                current_binding = True
+        if workspace_id is None:
+            with self.store.connection() as con:
+                prior = con.execute(
+                    "SELECT workspace_id FROM isolated_workspaces WHERE creation_key=?",
+                    (creation_key or "session:" + session_id,),
+                ).fetchone()
+            if prior is None:
+                return None
+            workspace_id = str(prior[0])
+        state = self.get(workspace_id)
+        workspace = self.store.get_workspace(workspace_id)
+        if state is None or workspace is None:
+            raise _error("isolated workspace needs recovery; its files were preserved")
+        if state.session_id != session_id:
+            raise _error(
+                "isolated session binding belongs to another workspace"
+                if current_binding
+                else "isolated creation key belongs to another session"
+            )
+        if workspace.checkout_id != checkout.checkout_id:
+            raise _error("isolated session belongs to another checkout")
+        if set(approved_secrets) - set(state.runtime_files):
+            raise _error("existing isolated session cannot add runtime consent")
+        return workspace
+
     def open(
         self,
         checkout: CheckoutRecord,
@@ -1701,6 +1744,12 @@ class IsolatedWorkspaceManager:
                 ).fetchone()
                 if prior is not None and prior[0] != checkout.checkout_id:
                     raise _error("isolated session belongs to another checkout")
+                # Admission refusals have no filesystem effects and must not
+                # create an empty authority mutation journal. Full worktree
+                # ownership validation remains inside the journaled path.
+                self._existing_target(
+                    checkout, session_id, approved_secrets, creation_key
+                )
             with (
                 self.lock,
                 managed_mutation(
@@ -1756,38 +1805,12 @@ class IsolatedWorkspaceManager:
         creation_key: str | None = None,
     ) -> tuple[WorkspaceRecord, tuple[str, ...]]:
         with self.lock:
-            if creation_key is None:
-                session = self.store.get_session(session_id)
-                if (
-                    session
-                    and session.workspace_mode == "isolated"
-                    and session.workspace_id
-                ):
-                    state = self.validate(session.workspace_id)
-                    workspace = self.store.get_workspace(state.workspace_id)
-                    if (
-                        state.session_id != session_id
-                        or workspace is None
-                        or workspace.checkout_id != checkout.checkout_id
-                    ):
-                        raise _error(
-                            "isolated session binding belongs to another workspace"
-                        )
-                    return workspace, state.notices
-            with self.store.connection() as con:
-                prior = con.execute(
-                    "SELECT workspace_id FROM isolated_workspaces WHERE creation_key=?",
-                    (creation_key or "session:" + session_id,),
-                ).fetchone()
-            if prior is not None:
-                state = self.validate(str(prior[0]))
-                if state.session_id != session_id:
-                    raise _error("isolated creation key belongs to another session")
-                if set(approved_secrets) - set(state.runtime_files):
-                    raise _error("existing isolated session cannot add runtime consent")
-                workspace = self.store.get_workspace(state.workspace_id)
-                assert workspace is not None
-                return workspace, state.notices
+            existing = self._existing_target(
+                checkout, session_id, approved_secrets, creation_key
+            )
+            if existing is not None:
+                state = self.validate(existing.workspace_id)
+                return existing, state.notices
             shared = self.store.ensure_shared_workspace(checkout)
             self.ensure_available(shared.workspace_id)
             scanner = ExternalWorkspaceScanner(self.store)

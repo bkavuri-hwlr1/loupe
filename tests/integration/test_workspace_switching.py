@@ -1236,3 +1236,157 @@ def test_cancelled_switch_waiter_keeps_physical_pin_until_worker_returns(
             service.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("selection", ["current", "creation_key"])
+@pytest.mark.parametrize("refusal", ["consent", "owner", "checkout"])
+def test_existing_isolated_admission_refusals_do_not_open_mutation_journals(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    repository_factory: Any,
+    selection: str,
+    refusal: str,
+) -> None:
+    from contextlib import ExitStack
+
+    from llm_cli.errors import LlmCoordError
+    from llm_cli.workspace.authority import PhysicalAuthority
+
+    env = batch_env
+    (env.repository / ".gitignore").write_text(".env\n.env.other\n")
+    (env.repository / ".env").write_text("original copied input")
+    (env.repository / ".env.other").write_text("unapproved input")
+    with ExitStack() as resources:
+        authority = PhysicalAuthority(
+            env.store,
+            "test",
+            "admission-refusal",
+            tmp_path / "socket",
+            root=tmp_path / "authority" / "v1",
+        )
+        resources.callback(authority.close)
+        env.store.authority = authority
+        manager = switcher(env, tmp_path)
+        checkout = env.store.get_checkout(env.store.get_session("first").checkout_id)
+        owner = (
+            "standalone"
+            if selection == "creation_key" or refusal == "owner"
+            else "first"
+        )
+        workspace, _ = manager.isolated.open(
+            checkout, owner, approved_secrets=(".env",)
+        )
+        if selection == "current":
+            with env.store.connection() as con:
+                con.execute(
+                    "UPDATE sessions SET workspace_id=?,workspace_mode='isolated' "
+                    "WHERE session_id='first'",
+                    (workspace.workspace_id,),
+                )
+        request_owner = "first" if selection == "current" else owner
+        creation_key = None
+        if refusal == "owner" and selection == "creation_key":
+            request_owner, creation_key = "another-owner", "session:" + owner
+        requested_checkout = checkout
+        if refusal == "checkout":
+            other_parent = tmp_path / "other"
+            other_parent.mkdir()
+            other = repository_factory(other_parent, {"a.txt": "other checkout\n"})
+            repository = env.store.register_repository(
+                repo_key="b" * 64,
+                display_name="other",
+                git_common_dir=str(other / ".git"),
+                main_worktree_path=str(other),
+                target_ref="refs/heads/main",
+                path_case_insensitive=False,
+            )
+            requested_checkout = env.store.ensure_checkout(
+                repository=repository,
+                canonical_path=str(other),
+                git_common_dir=str(other / ".git"),
+            )
+        with env.store.connection() as con:
+            journals = con.execute(
+                "SELECT count(*) FROM authority_journals"
+            ).fetchone()[0]
+        expected = {
+            "consent": "cannot add runtime consent",
+            "owner": "belongs to another",
+            "checkout": "belongs to another checkout",
+        }[refusal]
+        with pytest.raises(LlmCoordError, match=expected):
+            manager.isolated.open(
+                requested_checkout,
+                request_owner,
+                creation_key=creation_key,
+                approved_secrets=(".env", ".env.other"),
+            )
+        with authority.pin(env.repository):
+            pass
+        if refusal == "checkout":
+            with authority.pin(Path(requested_checkout.canonical_path)):
+                pass
+        with env.store.connection() as con:
+            assert (
+                con.execute("SELECT count(*) FROM authority_journals").fetchone()[0]
+                == journals
+            )
+        private = Path(workspace.canonical_path)
+        assert (private / ".env").read_text() == "original copied input"
+        assert not (private / ".env.other").exists()
+
+
+def test_raw_existing_session_open_cannot_acknowledge_uncopied_runtime_consent(
+    tmp_path: Path,
+    repository_factory: Any,
+    service_factory: Any,
+) -> None:
+    import asyncio
+    import hashlib
+
+    from test_shared_agent_execution import ScriptedProvider, _register, _request
+
+    from llm_cli.errors import LlmCoordError
+
+    async def scenario() -> None:
+        root = repository_factory(
+            tmp_path, {"a.txt": "base\n", ".gitignore": ".env\n.env.other\n"}
+        )
+        (root / ".env").write_text("original copied input")
+        (root / ".env.other").write_text("unapproved input")
+        service = service_factory(tmp_path)
+        provider = ScriptedProvider("raw-consent", [])
+        _register(service, provider)
+        service.initialize()
+        params = {
+            "path": str(root),
+            "session_id": provider.model,
+            "resume_token_hash": hashlib.sha256(b"raw-owner-secret").hexdigest(),
+            "provider": "scripted",
+            "model": provider.model,
+            "workspace": "isolated",
+            "approved_runtime_files": [".env"],
+        }
+        try:
+            await service.handle(_request("repo.add", {"path": str(root)}))
+            opened = await service.handle(_request("session.open", params))
+            assert opened["session"]["workspace_binding_generation"] == 1
+            with pytest.raises(LlmCoordError, match="cannot add runtime consent"):
+                await service.handle(
+                    _request(
+                        "session.open",
+                        {
+                            **params,
+                            "approved_runtime_files": [".env", ".env.other"],
+                        },
+                    )
+                )
+            with service.physical_authority.pin(root):
+                pass
+            assert not Path(
+                opened["workspace"]["canonical_path"], ".env.other"
+            ).exists()
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
