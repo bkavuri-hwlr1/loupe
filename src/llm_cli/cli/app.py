@@ -301,23 +301,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workspace_status = workspace_commands.add_parser("status")
     workspace_status.add_argument("path", nargs="?", default=".")
+    authority = workspace_commands.add_parser(
+        "authority", help="inspect or explicitly prune stale physical ownership records"
+    )
+    authority_actions = authority.add_subparsers(
+        dest="authority_command", required=True
+    )
+    authority_actions.add_parser(
+        "status", help="list records and reasons they are retained"
+    )
+    authority_prune = authority_actions.add_parser(
+        "prune", help="preview stale records; --apply removes them"
+    )
+    authority_prune.add_argument("--apply", action="store_true")
+    authority_prune.add_argument(
+        "--include-unrecorded",
+        action="store_true",
+        help="also consider records written before checkout paths were recorded",
+    )
+    authority_prune.add_argument(
+        "--include-other-profiles",
+        action="store_true",
+        help="also consider records last owned by another profile or installation; "
+        "a profile that still binds a removed record refuses its checkout",
+    )
     cutover = workspace_commands.add_parser(
         "cutover", help="preview or explicitly migrate a checkout out of legacy claims"
     )
     cutover_actions = cutover.add_subparsers(dest="cutover_command", required=True)
-    for action in ("plan", "apply", "resume", "status", "export"):
+    for action in ("plan", "apply", "resume", "recovery", "status", "export"):
         help_text = {
             "plan": "read the complete conversion preview without changing authority",
             "apply": "irreversibly begin cutover from an exact reviewed checkpoint",
             "resume": "resume the same durable cutover intent after interruption",
+            "recovery": "preview current history for forward-only cutover recovery",
             "status": "inspect the authority regime and retained cutover intent",
             "export": "save retained legacy history to a new private JSON file",
         }[action]
         sub = cutover_actions.add_parser(action, help=help_text)
         sub.add_argument("path", nargs="?", default=".")
-        if action in {"apply", "resume"}:
+        if action in {"apply", "resume", "recovery"}:
             sub.add_argument("--checkpoint", required=True, metavar="TOKEN")
-            sub.add_argument("--intent", required=action == "resume", metavar="ID")
+            sub.add_argument("--intent", required=action != "apply", metavar="ID")
+        if action == "resume":
+            sub.add_argument(
+                "--accept-current-history", metavar="RECOVERY_CHECKPOINT",
+                help="acknowledge exactly the metadata inventory shown by recovery",
+            )
         if action == "apply":
             sub.add_argument(
                 "--cancel-claim",
@@ -908,15 +938,45 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             return _watch(client, task_id, 0, arguments.as_json, arguments.plain)
         return result
     if command == "workspace":
+        if arguments.workspace_command == "authority":
+            prune = arguments.authority_command == "prune"
+            result = client.call(
+                "workspace.authority.maintenance",
+                {
+                    "prune": prune,
+                    "apply": prune and arguments.apply,
+                    "include_unrecorded": prune and arguments.include_unrecorded,
+                    "include_other_profiles": prune
+                    and arguments.include_other_profiles,
+                },
+            )
+            if arguments.as_json:
+                return result
+            lines = [f"Authority records: {result['root']}"]
+            for record in result["records"]:
+                action = "removed" if record["removed"] else record["reason"]
+                path = record.get("checkout_path") or "path not recorded"
+                profile = record.get("owner_profile") or "unknown"
+                lines.append(
+                    f"{record['physical_key']}: {action} ({path}; "
+                    f"last owner profile {profile})"
+                )
+            if prune and not arguments.apply:
+                lines.append("Dry run. Use --apply to remove eligible records.")
+            return "\n".join(lines)
         if arguments.workspace_command == "cutover":
             action = arguments.cutover_command
             cutover_params: dict[str, Any] = {
                 "path": str(Path(arguments.path).expanduser().absolute())
             }
-            if action in {"apply", "resume"}:
+            if action in {"apply", "resume", "recovery"}:
                 cutover_params["checkpoint"] = arguments.checkpoint
                 if arguments.intent is not None:
                     cutover_params["intent_id"] = arguments.intent
+            if action == "resume" and arguments.accept_current_history is not None:
+                cutover_params["accept_current_history"] = (
+                    arguments.accept_current_history
+                )
             if action == "apply":
                 cutover_params["dispositions"] = {
                     claim_id: "cancel" for claim_id in arguments.cancel_claim
@@ -924,8 +984,39 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             result = client.call(f"workspace.cutover.{action}", cutover_params)
             if action == "export":
                 return _write_cutover_export(arguments.out, result)
-            if action == "plan" and not arguments.as_json:
-                return _cutover_plan_text(result)
+            if action in {"plan", "recovery"} and not arguments.as_json:
+                text = _cutover_plan_text(result)
+                if action == "recovery":
+                    text = text.replace(
+                        "Cutover preview (read-only; apply is irreversible)",
+                        "Cutover recovery preview (read-only; resume is forward-only)",
+                        1,
+                    )
+                    text += (
+                        "\nIntent: " + str(result["intent_id"])
+                        + "\nRecovery checkpoint: " + str(result["recovery_checkpoint"])
+                        + "\nOwnership gaps: " + str(len(result["ownership_gaps"]))
+                    )
+                    for gap in result["ownership_gaps"]:
+                        text += (
+                            "\n  " + str(gap["checkout_id"])
+                            + " event " + str(gap["sequence"])
+                            + "; previous profile="
+                            + json.dumps(gap["previous_profile"])
+                            + "; previous database="
+                            + str(gap.get("previous_database_instance_id") or "unknown")
+                        )
+                    if result.get("pending_owner") is not None:
+                        text += (
+                            "\nCurrent foreign owner: "
+                            + json.dumps(result["pending_owner"])
+                            + "\nAfter that owner releases, run this without an "
+                            "acknowledgement to record the ownership gap:\n  "
+                            + result["reacquire_command"]
+                            + "\nIt will stop for attention; then review a fresh "
+                            "recovery preview before acknowledging its token."
+                        )
+                return text
             return result
         if arguments.workspace_command == "hydrate":
             from llm_cli.workspace.hydration import HydrationBudgets, plan_hydration

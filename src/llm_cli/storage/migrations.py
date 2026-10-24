@@ -1336,6 +1336,36 @@ CREATE TABLE workspace_git_batch_commits (
 );
 """,
     ),
+    Migration(
+        30,
+        "immutable_cutover_recovery_acknowledgements",
+        """
+CREATE TABLE cutover_recovery_acknowledgements (
+    acknowledgement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    intent_id TEXT NOT NULL REFERENCES cutover_intents(intent_id) ON DELETE RESTRICT,
+    original_checkpoint TEXT NOT NULL CHECK(length(original_checkpoint)=64),
+    original_history_checkpoint TEXT NOT NULL
+        CHECK(length(original_history_checkpoint)=64),
+    accepted_history_checkpoint TEXT NOT NULL
+        CHECK(length(accepted_history_checkpoint)=64),
+    recovery_checkpoint TEXT NOT NULL CHECK(length(recovery_checkpoint)=64),
+    mappings_json TEXT NOT NULL,
+    dispositions_json TEXT NOT NULL,
+    ownership_gaps_json TEXT NOT NULL,
+    inventory_json TEXT NOT NULL,
+    operator_action TEXT NOT NULL CHECK(operator_action='accept_current_history'),
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX cutover_recovery_intent_idx
+    ON cutover_recovery_acknowledgements(intent_id,acknowledgement_id);
+CREATE TRIGGER cutover_recovery_acknowledgement_immutable
+BEFORE UPDATE ON cutover_recovery_acknowledgements
+BEGIN SELECT RAISE(ABORT,'cutover recovery acknowledgement is immutable'); END;
+CREATE TRIGGER cutover_recovery_acknowledgement_retained
+BEFORE DELETE ON cutover_recovery_acknowledgements
+BEGIN SELECT RAISE(ABORT,'cutover recovery evidence must be retained'); END;
+""",
+    ),
 )
 
 
