@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, suppress
+from contextlib import ExitStack, closing, suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -638,6 +638,11 @@ class DaemonService:
                 # The summary is a model request. Hold the authority lock only
                 # to read and to save, never while the provider responds.
                 return await self._session_compact(request.params)
+            if request.method == "workspace.runtime.export":
+                # Local byte copying must not pin the daemon-wide RPC barrier.
+                return await asyncio.to_thread(
+                    self._workspace_runtime_export, request.params
+                )
             if request.method == "session.retry_answer":
                 # Likewise a model request, locked only to read and to save.
                 return await self._session_retry_answer(request.params)
@@ -1167,6 +1172,73 @@ class DaemonService:
         raise LlmCoordError(
             ErrorCode.PROTOCOL_MISMATCH, f"unknown RPC method: {method}"
         )
+
+    def _workspace_runtime_export(self, params: dict[str, Any]) -> dict[str, Any]:
+        from llm_cli.storage.connection import immediate_transaction
+        from llm_cli.workspace.runtime_export import export_runtime
+
+        flags = {
+            name: params.get(name, False)
+            for name in ("yes", "allow_secret", "into_checkout")
+        }
+        if any(type(value) is not bool for value in flags.values()):
+            raise ValueError("runtime export approvals must be booleans")
+        with ExitStack() as activity:
+            with self.workspace_batches.lock:
+                session = self._authenticated_session(params, require_active=True)
+                if session.workspace_mode != "isolated":
+                    raise LlmCoordError(
+                        ErrorCode.REPOSITORY_UNSAFE,
+                        "runtime export requires an active isolated session",
+                    )
+                workspace_id = session.workspace_id or ""
+                state = self.isolated_workspaces.validate(workspace_id)
+                workspace = self.store.get_workspace(workspace_id)
+                checkout = self.store.get_checkout(session.checkout_id)
+                assert workspace is not None and checkout is not None
+                activity.enter_context(
+                    self.isolated_workspaces.runtime.activity(workspace_id)
+                )
+                checkouts = tuple(
+                    Path(record.canonical_path)
+                    for record in self.store.list_checkouts()
+                )
+                protected = (
+                    self.paths.config_dir,
+                    self.paths.data_dir,
+                    self.paths.state_dir,
+                    self.paths.runtime_dir,
+                    self.isolated_workspaces.managed_root,
+                    self.physical_authority.root,
+                )
+            result = export_runtime(
+                Path(workspace.canonical_path),
+                _string(params, "relative_path"),
+                Path(_string(params, "destination")),
+                checkout=Path(checkout.canonical_path),
+                runtime_paths=state.runtime_paths,
+                source_paths=tuple(state.source_manifest),
+                shared_checkouts=checkouts,
+                protected_roots=protected,
+                **flags,
+            )
+            if result["state"] == "exported":
+                # Paths, file values and content identities never enter the ledger.
+                with self.store.connection() as con, immediate_transaction(con):
+                    self.store.append_checkout_event(
+                        con,
+                        checkout_id=session.checkout_id,
+                        event_type="workspace.runtime_exported",
+                        caused_by_session_id=session.session_id,
+                        payload={
+                            key: result[key]
+                            for key in (
+                                "kind", "bytes", "entries", "sensitivity", "state"
+                            )
+                        },
+                        now=int(time.time() * 1000),
+                    )
+            return result
 
     def _cutover_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         root = _path(params, "path")
