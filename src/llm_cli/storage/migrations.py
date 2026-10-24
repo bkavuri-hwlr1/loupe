@@ -1366,6 +1366,120 @@ BEFORE DELETE ON cutover_recovery_acknowledgements
 BEGIN SELECT RAISE(ABORT,'cutover recovery evidence must be retained'); END;
 """,
     ),
+    Migration(
+        31,
+        "bounded_isolated_sync_journals",
+        """
+-- Reject unreadable evidence before deleting any history. A missing field must
+-- fail the NOT NULL guard, rather than disappear through SQL NULL filtering.
+CREATE TEMP TABLE isolated_sync_compaction_guard (
+    valid INTEGER NOT NULL CHECK(valid=1)
+);
+INSERT INTO isolated_sync_compaction_guard
+SELECT json_valid(steps_json) AND json_type(steps_json)='array'
+FROM isolated_sync_journal WHERE state='applied';
+INSERT INTO isolated_sync_compaction_guard
+SELECT json_type(step.value)='object'
+    AND (SELECT count(*)=count(DISTINCT field.key)
+        FROM json_each(step.value) field)
+    AND json_type(step.value,'$.path')='text'
+    AND length(json_extract(step.value,'$.path')) BETWEEN 1 AND 1000
+    AND json_type(step.value,'$.disposition')='text'
+    AND json_extract(step.value,'$.disposition') IN
+        ('applied','merged','already_current','divergence_preserved')
+    AND json_extract(step.value,'$.path')=trim(json_extract(step.value,'$.path'))
+    AND json_extract(step.value,'$.path') NOT IN ('*','.')
+    AND json_extract(step.value,'$.path') NOT GLOB '[A-Za-z]:*'
+    AND json_extract(step.value,'$.path') NOT LIKE '/%'
+    AND json_extract(step.value,'$.path') NOT LIKE '~%'
+    AND json_extract(step.value,'$.path') NOT LIKE '%/'
+    AND instr(json_extract(step.value,'$.path'),char(92))=0
+    AND instr(json_extract(step.value,'$.path'),char(0))=0
+    AND instr('/'||json_extract(step.value,'$.path')||'/','//')=0
+    AND instr('/'||json_extract(step.value,'$.path')||'/','/./')=0
+    AND instr('/'||json_extract(step.value,'$.path')||'/','/../')=0
+    AND instr('/'||lower(json_extract(step.value,'$.path'))||'/','/.git/')=0
+    AND json_type(step.value,'$.before')='object'
+    AND json_type(step.value,'$.after')='object'
+    AND json_type(step.value,'$.incoming')='object'
+FROM isolated_sync_journal journal, json_each(journal.steps_json) step
+WHERE journal.state='applied';
+INSERT INTO isolated_sync_compaction_guard
+SELECT (SELECT count(*)=count(DISTINCT field.key)
+        FROM json_each(identity.value) field)
+    AND (identity.key='incoming' OR NOT EXISTS (
+        SELECT 1 FROM json_each(identity.value) field
+        WHERE field.key NOT IN ('kind','mode','digest','size','permissions')
+    ))
+    AND json_type(identity.value,'$.kind')='text'
+    AND json_type(identity.value,'$.mode')='text'
+    AND (
+        (json_extract(identity.value,'$.kind')='absent'
+            AND json_extract(identity.value,'$.mode')='')
+        OR (json_extract(identity.value,'$.kind')='regular'
+            AND json_extract(identity.value,'$.mode') IN ('100644','100755'))
+        OR (json_extract(identity.value,'$.kind')='symlink'
+            AND json_extract(identity.value,'$.mode')='120000')
+        OR (json_extract(identity.value,'$.kind')='directory_marker'
+            AND json_extract(identity.value,'$.mode')='040000')
+    )
+    AND json_type(identity.value,'$.digest')='text'
+    AND length(json_extract(identity.value,'$.digest'))=64
+    AND json_extract(identity.value,'$.digest') NOT GLOB '*[^0-9a-f]*'
+    AND json_type(identity.value,'$.size')='integer'
+    AND json_extract(identity.value,'$.size') BETWEEN 0 AND 262144
+    AND (json_extract(identity.value,'$.kind') NOT IN ('absent','directory_marker')
+        OR (json_extract(identity.value,'$.size')=0 AND (
+            (json_extract(identity.value,'$.kind')='absent'
+                AND json_extract(identity.value,'$.digest')=
+                    '8d91d29bdf7308efce0c9e5b9b721a5d69af0bb054e82a08d199a17b11a54ebc')
+            OR (json_extract(identity.value,'$.kind')='directory_marker'
+                AND json_extract(identity.value,'$.digest')=
+                    'de6be190fd818de4d20b4e8eddcac58a2f5498a18037f05f1425ed4c19dac743')
+        )))
+    AND (json_type(identity.value,'$.permissions') IS NULL
+        OR json_type(identity.value,'$.permissions')='null'
+        OR (json_extract(identity.value,'$.kind')='regular'
+            AND json_type(identity.value,'$.permissions')='integer'
+            AND json_extract(identity.value,'$.permissions') BETWEEN 0 AND 511))
+FROM isolated_sync_journal journal, json_each(journal.steps_json) step,
+    json_each(step.value) identity
+WHERE journal.state='applied' AND identity.key IN ('before','after','incoming');
+CREATE TABLE isolated_sync_conflicts (
+    workspace_id TEXT NOT NULL
+        REFERENCES isolated_sync_state(workspace_id) ON DELETE RESTRICT,
+    path TEXT NOT NULL,
+    step_json TEXT NOT NULL,
+    PRIMARY KEY(workspace_id,path)
+);
+-- Replay exactly: the last step wins, including duplicate paths in one row.
+-- A later ordinary step clears a prior divergence instead of resurrecting it.
+WITH latest AS (
+    SELECT journal.workspace_id,step.value AS step_json,
+        json_extract(step.value,'$.path') AS path,
+        row_number() OVER (
+            PARTITION BY journal.workspace_id,json_extract(step.value,'$.path')
+            ORDER BY journal.generation DESC,CAST(step.key AS INTEGER) DESC
+        ) AS ordinal
+    FROM isolated_sync_journal journal,json_each(journal.steps_json) step
+    WHERE journal.state='applied'
+)
+INSERT INTO isolated_sync_conflicts(workspace_id,path,step_json)
+SELECT workspace_id,path,step_json FROM latest WHERE ordinal=1
+    AND json_extract(step_json,'$.disposition')='divergence_preserved';
+-- Keep eight diagnostic rows per workspace; prepared recovery rows are untouched.
+WITH applied AS (
+    SELECT workspace_id,generation,row_number() OVER (
+        PARTITION BY workspace_id ORDER BY generation DESC
+    ) AS ordinal FROM isolated_sync_journal WHERE state='applied'
+)
+DELETE FROM isolated_sync_journal WHERE (workspace_id,generation) IN (
+    SELECT workspace_id,generation FROM applied WHERE ordinal>8
+);
+UPDATE isolated_sync_journal SET manifest_json='{}' WHERE state='applied';
+DROP TABLE isolated_sync_compaction_guard;
+""",
+    ),
 )
 
 
