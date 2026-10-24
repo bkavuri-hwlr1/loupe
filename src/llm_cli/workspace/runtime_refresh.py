@@ -112,6 +112,12 @@ class RuntimeRefresher:
             with self._activity_lock:
                 _ACTIVITIES[key] -= 1
 
+    def busy(self, workspace_id: str) -> bool:
+        """Inspect activity under the publication lock before a binding transfer."""
+        key = self._key(workspace_id)
+        with self._activity_lock:
+            return bool(_ACTIVITIES.get(key, 0) or key in _REFRESHING)
+
     def _binding(self, workspace_id: str) -> tuple[Path, Path, str]:
         from llm_cli.workspace.isolated import _error
 

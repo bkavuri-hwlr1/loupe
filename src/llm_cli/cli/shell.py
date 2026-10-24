@@ -353,6 +353,70 @@ class ChatShell:
             return default_model(self.provider)
         return ""
 
+    def _workspace_command(self, args: list[str]) -> None:
+        usage = (
+            "Usage: /workspace shared|isolated "
+            "[--publish|--hold|--export|--retain|--discard] "
+            "[--approve-secret PATH]"
+        )
+        if not args:
+            self.ui.notice(f"Workspace: {self.workspace_mode}. {usage}")
+            return
+        if args[0] == "rollback":
+            if len(args) != 2 or self.credentials is None:
+                raise ValueError("Usage: /workspace rollback SWITCH_INTENT_ID")
+            self.client.call(
+                "workspace.rollback_switch",
+                {
+                    "session_id": self.credentials.session_id,
+                    "resume_secret": self.credentials.resume_secret,
+                    "switch_intent_id": args[1],
+                },
+            )
+            self.ui.notice("Workspace switch rolled back; retained source is safe.")
+            return
+        target, disposition, approved = args[0], None, []
+        if target not in {"shared", "isolated"}:
+            raise ValueError(usage)
+        index = 1
+        while index < len(args):
+            value = args[index]
+            if value == "--approve-secret" and index + 1 < len(args):
+                approved.append(args[index + 1])
+                index += 2
+                continue
+            if (
+                value in {"--publish", "--hold", "--export", "--retain", "--discard"}
+                and disposition is None
+            ):
+                disposition = value[2:]
+                index += 1
+                continue
+            raise ValueError(usage)
+        self._require_idle()
+        if not self._ensure_session():
+            return
+        assert self.credentials is not None
+        self.credentials, result = session.switch_workspace(
+            self.client,
+            self.credentials,
+            target,
+            disposition=disposition,
+            approved_runtime_files=tuple(approved),
+        )
+        self.workspace_mode = self.credentials.workspace_mode
+        self.ui.notice(
+            f"Conversation now uses the {target} workspace.", style="success"
+        )
+        for notice in self.credentials.workspace_notices:
+            self.ui.notice(notice)
+        if result.get("runtime_summary"):
+            self.ui.notice(str(result["runtime_summary"]))
+        if result.get("proposal_task_id"):
+            self.ui.notice(f"Source retained for /apply {result['proposal_task_id']}")
+        if result.get("export_path"):
+            self.ui.notice(f"Exact source patch bundle: {result['export_path']}")
+
     def _mode_command(self, args: list[str], *, announce: bool = True) -> None:
         if len(args) > 1:
             raise ValueError("Usage: /mode [plan|normal|auto]")
@@ -655,6 +719,8 @@ class ChatShell:
             self._model_command(args)
         elif command == "/effort":
             self._effort_command(args)
+        elif command == "/workspace":
+            self._workspace_command(args)
         elif command == "/mode":
             self._mode_command(args)
         elif command == "/cd":

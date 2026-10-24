@@ -3313,6 +3313,7 @@ class ControlStore:
             close_reason=(
                 str(row["close_reason"]) if row["close_reason"] is not None else None
             ),
+            workspace_binding_generation=int(row["workspace_binding_generation"]),
             updated_at=int(row["updated_at"]),
         )
 

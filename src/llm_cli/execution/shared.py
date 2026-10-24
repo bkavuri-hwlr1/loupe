@@ -286,6 +286,16 @@ class SharedTaskExecutionRunner:
         ):
             raise ClaimConflict("driver cannot prepare recoverable shared candidates")
         session = self.store.get_session(task.session_id or "")
+        with self.publisher.lock, self.store.connection() as connection:
+            pending = connection.execute(
+                "SELECT 1 FROM mode_switch_intents WHERE session_id=? "
+                "AND state NOT IN ('confirmed','rolled_back')",
+                (task.session_id,),
+            ).fetchone()
+            if pending:
+                raise ClaimConflict(
+                    "workspace switch must settle before launching a task"
+                )
         workspace = (
             self.store.get_workspace(session.workspace_id or "") if session else None
         )

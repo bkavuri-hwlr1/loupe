@@ -48,6 +48,7 @@ _COMMANDS = {
     "/cd": "Choose a project folder",
     "/help": "Show commands and keyboard shortcuts",
     "/status": "Show this session and its workspace",
+    "/workspace": "Switch this conversation between shared and isolated workspaces",
     "/mode": "Choose plan, normal review, or auto mode",
     "/scope": "View or change editable paths",
     "/changes": "Show new changes from other sessions",
