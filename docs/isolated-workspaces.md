@@ -471,7 +471,9 @@ proposals require one explicit choice:
   Ordinary source is preserved by the existing safe cleanup/archive path.
 
 Changed runtime alone requires `--retain` or `--discard` after a summary that
-contains no runtime contents. Unresolved incoming conflicts block every choice.
+contains no runtime contents. Changed private source excluded by secret screening
+also requires `--retain` or `--discard`. Unresolved incoming conflicts block every
+choice.
 Running tasks, ambiguous recovery, pending launches, active exports, commands,
 refreshes, and workers that have not actually exited also block switching.
 
