@@ -1,0 +1,155 @@
+[
+  {
+    "at": "2026-10-24T04:48:37.469979+00:00",
+    "cycles": 94,
+    "elapsed_seconds": 941.586754375021,
+    "journals": [
+      {
+        "workspace_id": "workspace_01a16c2edbef2086d3f1909a9680a644",
+        "state": "applied",
+        "rows": 8,
+        "manifest_bytes": 16,
+        "steps_bytes": 5740
+      }
+    ],
+    "conflict_rows": 0,
+    "generation": 950,
+    "page_count": 1525,
+    "freelist_count": 14,
+    "database_and_sidecars_bytes": 10625920,
+    "source_hashes_match": true,
+    "harness_hash_matches": true
+  },
+  {
+    "at": "2026-10-24T05:03:05.280222+00:00",
+    "cycles": 180,
+    "elapsed_seconds": 1806.359303250094,
+    "journals": [
+      {
+        "workspace_id": "workspace_01a16c2edbef2086d3f1909a9680a644",
+        "state": "applied",
+        "rows": 8,
+        "manifest_bytes": 16,
+        "steps_bytes": 5852
+      }
+    ],
+    "conflict_rows": 0,
+    "generation": 1801,
+    "page_count": 2708,
+    "freelist_count": 22,
+    "database_and_sidecars_bytes": 15421928,
+    "source_hashes_match": true,
+    "harness_hash_matches": true
+  },
+  {
+    "at": "2026-10-24T05:16:00.613873+00:00",
+    "cycles": 257,
+    "elapsed_seconds": 2586.189039583085,
+    "journals": [
+      {
+        "workspace_id": "workspace_01a16c2edbef2086d3f1909a9680a644",
+        "state": "applied",
+        "rows": 8,
+        "manifest_bytes": 16,
+        "steps_bytes": 5420
+      }
+    ],
+    "conflict_rows": 0,
+    "generation": 2565,
+    "page_count": 3782,
+    "freelist_count": 32,
+    "database_and_sidecars_bytes": 19821032,
+    "source_hashes_match": false,
+    "harness_hash_matches": true,
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c13/loupe",
+    "source_hash_comparison_note": "Supplementary monitor accidentally ran the hash comparison in the C13 review worktree. C16 source was untouched; immediate explicit-C16-root comparison follows."
+  },
+  {
+    "at": "2026-10-24T05:16:20.902236+00:00",
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c16/loupe",
+    "cycles": 259,
+    "elapsed_seconds": 2607.265467750025,
+    "journals": [
+      {
+        "workspace_id": "workspace_01a16c2edbef2086d3f1909a9680a644",
+        "state": "applied",
+        "rows": 8,
+        "manifest_bytes": 16,
+        "steps_bytes": 5852
+      }
+    ],
+    "conflict_rows": 0,
+    "generation": 2584,
+    "page_count": 3806,
+    "freelist_count": 31,
+    "database_and_sidecars_bytes": 19919336,
+    "source_hashes_match": true,
+    "harness_hash_matches": true
+  },
+  {
+    "at": "2026-10-24T05:19:49.605725+00:00",
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c16/loupe",
+    "cycles": 279,
+    "elapsed_seconds": 2809.4381511250976,
+    "journals": [
+      {
+        "workspace_id": "workspace_01a16c2edbef2086d3f1909a9680a644",
+        "state": "applied",
+        "rows": 8,
+        "manifest_bytes": 16,
+        "steps_bytes": 5632
+      }
+    ],
+    "conflict_rows": 0,
+    "generation": 2787,
+    "page_count": 4112,
+    "freelist_count": 42,
+    "database_and_sidecars_bytes": 21131752,
+    "source_hashes_match": true,
+    "harness_hash_matches": true
+  },
+  {
+    "at": "2026-10-24T05:26:29.375419+00:00",
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c16/loupe",
+    "cycles": 318,
+    "elapsed_seconds": 3216.1583904169966,
+    "journals": [
+      {
+        "workspace_id": "workspace_01a16c2edbef2086d3f1909a9680a644",
+        "state": "applied",
+        "rows": 8,
+        "manifest_bytes": 16,
+        "steps_bytes": 5742
+      }
+    ],
+    "conflict_rows": 0,
+    "generation": 3176,
+    "page_count": 4634,
+    "freelist_count": 48,
+    "database_and_sidecars_bytes": 23298536,
+    "source_hashes_match": true,
+    "harness_hash_matches": true
+  },
+  {
+    "at": "2026-10-24T05:29:41.280312+00:00",
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c16/loupe",
+    "cycles": 336,
+    "elapsed_seconds": 3407.1784802920884,
+    "journals": [
+      {
+        "workspace_id": "workspace_01a16c2edbef2086d3f1909a9680a644",
+        "state": "applied",
+        "rows": 8,
+        "manifest_bytes": 16,
+        "steps_bytes": 5742
+      }
+    ],
+    "conflict_rows": 0,
+    "generation": 3360,
+    "page_count": 4872,
+    "freelist_count": 51,
+    "database_and_sidecars_bytes": 24277480,
+    "source_hashes_match": true,
+    "harness_hash_matches": true
+  }
+]
