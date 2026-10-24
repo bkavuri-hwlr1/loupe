@@ -912,6 +912,8 @@ class IsolatedWorkspaceManager:
                 continue
 
     def _cleanup_needed(self, workspace_id: str, session_id: str) -> bool:
+        if self.runtime.busy(workspace_id):
+            return False
         with self.store.connection() as con:
             if con.execute(
                 "SELECT 1 FROM retained_switch_workspaces WHERE workspace_id=?",
