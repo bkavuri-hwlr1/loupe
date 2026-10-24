@@ -1192,6 +1192,29 @@ class DaemonService:
                         "runtime export requires an active isolated session",
                     )
                 workspace_id = session.workspace_id or ""
+                with self.store.connection() as con:
+                    busy = con.execute(
+                        "SELECT 1 FROM tasks WHERE session_id=? AND state NOT IN "
+                        "('completed','failed','cancelled') LIMIT 1",
+                        (session.session_id,),
+                    ).fetchone()
+                    switching = con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='mode_switch_intents'"
+                    ).fetchone()
+                    if switching:
+                        switching = con.execute(
+                            "SELECT 1 FROM mode_switch_intents WHERE "
+                            "source_workspace_id=? AND state NOT IN "
+                            "('confirmed','rolled_back') LIMIT 1",
+                            (workspace_id,),
+                        ).fetchone()
+                    if busy or switching:
+                        raise LlmCoordError(
+                            ErrorCode.REPOSITORY_UNSAFE,
+                            "runtime export requires an idle workspace without a "
+                            "pending mode switch",
+                        )
                 state = self.isolated_workspaces.validate(workspace_id)
                 workspace = self.store.get_workspace(workspace_id)
                 checkout = self.store.get_checkout(session.checkout_id)
@@ -1203,7 +1226,7 @@ class DaemonService:
                     Path(record.canonical_path)
                     for record in self.store.list_checkouts()
                 )
-                protected = (
+                protected: tuple[Path, ...] = (
                     self.paths.config_dir,
                     self.paths.data_dir,
                     self.paths.state_dir,
@@ -1211,6 +1234,16 @@ class DaemonService:
                     self.isolated_workspaces.managed_root,
                     self.physical_authority.root,
                 )
+                with self.store.connection() as con:
+                    protected += tuple(
+                        Path(row[0])
+                        for row in con.execute(
+                            "SELECT canonical_path FROM workspaces WHERE "
+                            "mode='isolated' UNION SELECT git_common_dir FROM "
+                            "checkouts UNION SELECT git_dir FROM workspaces "
+                            "WHERE git_dir IS NOT NULL"
+                        )
+                    )
             result = export_runtime(
                 Path(workspace.canonical_path),
                 _string(params, "relative_path"),
