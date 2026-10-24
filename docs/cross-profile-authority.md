@@ -119,7 +119,10 @@ read-only observation remain available to diagnose a refusal. Adding support
 for another filesystem requires an explicit change to this contract.
 
 The lock inode is held with `flock`; PID metadata, including process start time,
-is diagnostic. Loupe never unlinks a lock inode to clear a stale record.
+is diagnostic. Loupe never unlinks a lock inode to bypass live ownership or a
+dirty journal. The explicit [maintenance flow](#inspect-and-prune-ownership-records)
+may retire a verified dead, clean, unbound record only while holding both its
+ownership lock and the account-wide maintenance barrier.
 Versioned, checksummed, atomically replaced and fsynced markers contain physical
 identity and opaque journal metadata, never source/runtime bytes or secret
 content hashes. Each control database has a random instance ID bound to an
@@ -135,3 +138,52 @@ participating profile: pre-G2 binaries ignore this protocol. Arbitrary same-UID
 programs and raw editor/Git writers are outside the cooperative guarantee and
 retain the documented external final-check/rename race boundary. Network-backed
 or unknown filesystem semantics fail closed.
+
+## Inspect and prune ownership records
+
+```sh
+loupe workspace authority status
+loupe --json workspace authority prune
+loupe workspace authority prune --apply
+loupe workspace authority prune --include-other-profiles
+```
+
+`status` explains why each account-wide record is retained. `prune` is a dry run
+until `--apply`; it removes only an unlocked, valid clean record whose recorded
+checkout path is gone or now identifies a different physical checkout. This
+profile's database bindings always preserve a record, including a missing
+checkout. Transition/workspace markers are permanent regime tombstones and are
+never pruned, even with `--include-unrecorded`: moving a checkout must not restore
+legacy authority for a new profile. Dirty/attention markers, corrupt storage, unknown contents and uncertain
+identity remain for diagnosis. No command clears a live ownership lock or repairs
+a journal. The diagnostic path does not select the ownership key or adopt history.
+
+A profile sees only its own database bindings. A record last owned by another
+profile or installation is therefore preserved as `other_profile` unless you add
+`--include-other-profiles`. Use it only for profiles you no longer use, or when
+you know the checkout was deleted rather than moved: a profile that still binds
+a removed record refuses that checkout ("authority marker is missing for a
+previously bound checkout"). Prefer running `prune` from the profile that last
+owned the record, which the status output names.
+
+Old records without a recorded path are listed and preserved by default. Use
+`prune --include-unrecorded` to preview them explicitly, then add `--apply` to
+retire eligible records. Every record written before this release lacks a path,
+so their checkouts may still exist. Lock-only records without a valid clean marker still
+require diagnosis. A short maintenance lock serializes retirement with opening a
+new ownership lock. Upgrade all participating Loupe profiles before maintenance;
+older binaries do not observe this maintenance barrier. Do not manually remove
+lock files while a daemon can acquire ownership.
+
+Managed operations require a verified supported local filesystem: `apfs`, `hfs`,
+`ext2`, `ext3`, `ext4`, `xfs`, `btrfs`, `zfs`, `tmpfs` or `overlay`. Refusals include
+the detected filesystem and this supported set in text and JSON details. `9p`
+and `drvfs` (including WSL `/mnt/c`), `virtiofs`, exFAT, eCryptfs and FUSE remain
+unsupported. Move the checkout and authority storage to a supported local
+filesystem; warning-only operation is not enabled.
+
+
+The daemon advertises `workspace.authority.maintenance.v1` for status/prune and
+`workspace.cutover.recovery.v1` for the explicit forward-only recovery flow.
+Clients can inspect `system.ping` capabilities before offering these commands;
+capability discovery does not bypass physical ownership or journal validation.

@@ -130,6 +130,63 @@ has the legacy regime, or export/inspect their retained evidence. There is no
 for one compatibility release and refused in transition/workspace; claim and
 task inspection remain available.
 
+## Recover a changed history before disposition checkpointing
+
+A saved intent can need attention when retained legacy metadata changes, or
+when another profile owned the checkout before its transition marker was
+written. Forward-only recovery is explicit and keeps the original intent and
+all prior dispositions:
+
+```console
+loupe workspace cutover recovery . --intent CUTOVER_ID --checkpoint ORIGINAL
+loupe --json workspace cutover recovery . --intent CUTOVER_ID --checkpoint ORIGINAL
+loupe workspace cutover resume . --intent CUTOVER_ID --checkpoint ORIGINAL \
+  --accept-current-history RECOVERY_CHECKPOINT
+```
+
+`recovery` reads the complete current metadata inventory, saved intent,
+blockers, selected dispositions and observed foreign-ownership gap receipts.
+It changes no ownership, regime or intent and reads no source bodies. Review
+its `recovery_checkpoint`; the acknowledgement applies exactly to that retained
+history, mapping and gap inventory. It does not bind an editor's current source,
+index or HEAD. The ordinary checkpoint still identifies the original intent.
+
+`resume --accept-current-history` reacquires physical ownership and the normal
+publication barrier, rechecks the token, and writes an immutable acknowledgement
+before advancing a marker or disposition. The acknowledgement retains the
+original and accepted history digests, exact mapping, selected dispositions,
+foreign handoff event sequences and prior database-instance identities, complete
+metadata inventory, operator action
+and timestamp. It imports no foreign journals or intermediate authorship and
+never rewrites the original intent or old dispositions. A crash after that
+record resumes against the exact accepted history; repeating the same command
+does not duplicate the acknowledgement.
+
+A shared profile name does not prove a shared installation. Handoffs from a
+different database instance count as foreign ownership even when the profile
+names match. Older handoff receipts without database identity remain unknown
+gaps that require explicit acknowledgement; the profile name cannot excuse them.
+
+If the current clean marker still belongs to another profile/installation, the preview is
+not ready: it shows that owner/generation/contract as pending evidence and gives
+the exact ordinary `resume` command needed to reacquire after the owner releases.
+Run that command without the acknowledgement flag. It stops for attention after
+recording the foreign gap; then obtain and review a fresh recovery preview.
+
+If reacquisition itself reveals a new foreign handoff, or history changes after
+the preview/acknowledgement, the old token refuses with
+`CUTOVER_CHECKPOINT_STALE`. Review a fresh recovery preview and acknowledge its
+new token. Live workers/reservations, changed original mappings or selected
+cancellations, ambiguous history, unfinished publications and foreign
+dirty/attention journals still block recovery. Recover a foreign unfinished
+journal through its recorded owning profile; this flag cannot bypass it.
+
+New acknowledgements are allowed only while the saved intent is `prepared` or
+`transition`. After dispositions are checkpointed, the original exact journal
+must replay; changed history still needs attention and cannot be adopted through
+this command. Recovery always moves forward. There is no `abandon` operation,
+legacy rollback, journal deletion or filesystem-policy bypass.
+
 ## Read and explicitly export old history
 
 ```console
@@ -164,6 +221,7 @@ exits with 65. JSON errors retain the stable code and diagnostic details. Existi
 physical-owner, foreign-recovery and changed-identity errors keep their meanings.
 
 The daemon advertises additive `workspace.cutover.v1`,
+`workspace.cutover.recovery.v1`, `workspace.authority.maintenance.v1`,
 `workspace.execution.claim_free.v1` and `legacy.history.read.v1` capabilities.
 The versioned RPC envelope remains compatible; capability support never bypasses
 the checkout's final regime/ownership validation. Restoring an old binary cannot
