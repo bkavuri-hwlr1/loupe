@@ -1229,8 +1229,11 @@ class DaemonService:
                 protected: tuple[Path, ...] = (
                     self.paths.config_dir,
                     self.paths.data_dir,
+                    self.paths.data_dir.parent.parent,
                     self.paths.state_dir,
+                    self.paths.state_dir.parent.parent,
                     self.paths.runtime_dir,
+                    self.paths.runtime_dir.parent,
                     self.isolated_workspaces.managed_root,
                     self.physical_authority.root,
                 )
@@ -1261,7 +1264,7 @@ class DaemonService:
                     self.store.append_checkout_event(
                         con,
                         checkout_id=session.checkout_id,
-                        event_type="workspace.runtime_exported",
+                        event_type="session.runtime_exported",
                         caused_by_session_id=session.session_id,
                         payload={
                             key: result[key]

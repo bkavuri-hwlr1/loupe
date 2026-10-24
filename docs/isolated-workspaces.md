@@ -76,6 +76,40 @@ paths are never rewritten. Runtime bytes do not enter ordinary model file tools,
 source artifacts, source manifests, or proposals. Closing a conversation does
 not copy runtime changes back to the primary checkout.
 
+To keep one runtime file or directory before closing the session, preview an
+explicit local export:
+
+```sh
+loupe workspace runtime export .env --session SESSION_ID --to /absolute/new.env
+loupe workspace runtime export .env --session SESSION_ID --to /absolute/new.env --yes --allow-secret
+loupe workspace runtime export build --session SESSION_ID --to /absolute/new-build --yes
+```
+
+The preview shows type, byte size, entry count and sensitivity. Nothing is copied
+without `--yes`; likely secrets additionally require `--allow-secret`, even when
+hydration was approved earlier. Sensitivity combines path names with bounded
+local content screening for recognized credentials, including secrets late in
+a file. Every invocation screens current bytes again. Export reads the live private runtime, including
+regenerated files, while the session is idle. The destination's parent must
+already exist and the destination must be new. Export publishes a complete file
+or tree atomically and never replaces an existing destination. Files and
+directories have owner-only permissions. Failed copies remove their staging
+entries and leave the destination absent.
+
+Export into any linked shared checkout requires `--into-checkout`; tracked
+source paths and their parent directories remain protected. A new destination
+there must be ignored, so the source scanner cannot ingest exported runtime
+bytes. Coordinator state,
+Git administration and private workspaces cannot be destinations. Symlinks,
+special files, source paths, changing trees and entries over the hydration
+budgets are refused. Runtime contents never enter model context, source artifacts
+or the source ledger. Only type, byte size, entry count, sensitivity and the
+export disposition enter a redacted checkout event; source and destination names
+are not recorded.
+
+To make an exported file project source, first export outside the checkout, then
+manually change ignore/tracking policy and place the reviewed file yourself.
+
 ## Explicit dependency rebuilds
 
 When a dependency tree is too large to copy, contains an escaping store link,
