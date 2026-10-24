@@ -10,6 +10,7 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import json
+import logging
 import os
 import stat
 import sys
@@ -63,6 +64,7 @@ from llm_cli.workspace.identity import (
 )
 
 _MAX_SOURCE_FILE = 256 * 1024 * 1024
+_LOG = logging.getLogger(__name__)
 _ADMIN = frozenset({".git", ".loupe", ".llm-coord", ".codex", ".agents"})
 
 
@@ -1017,7 +1019,11 @@ class IsolatedWorkspaceManager:
             if state is not None and self._orphaned_creation(state):
                 return self._clean_incomplete_owned(workspace_id)
         except Exception:
-            pass
+            _LOG.warning(
+                "failed isolated creation could not be cleaned; "
+                "its private copies remain quarantined",
+                exc_info=True,
+            )
         return False
 
     def cleanup_closed(self, session_id: str | None = None) -> None:

@@ -59,45 +59,28 @@ experiments in [`implementation-status.md`](implementation-status.md).
 | G4 | Authority maintenance and stuck-cutover recovery | Authority | M | — | app.py, service.py (one handler) | 8 |
 | C13 | Switch a conversation between shared and isolated mode | Workspace | L | — | service.py, shared.py | 9 |
 | C15 | Export runtime files from an isolated session | Workspace | S | — | app.py, service.py (one handler) | 9 |
+| C16 | Bound isolated synchronization-journal storage | Workspace | M | — | — | 9 |
 | C14 | Managed background processes | Workspace | L | C13 | service.py, shared.py, shared_tools.py, app.py | 10 |
-| C12 | Native file-change watchers | Workspace | M | C11, E3's measurement | service.py | 11, only if E3 shows it is needed |
+| C12 | Native file-change watchers | Workspace | M | C11, E3's measurement | service.py | 11 (E3: needed) |
 
 **Wave 8, all at once:** D4, E3, C11, G4. Only G4 touches hot files.
-**Wave 9:** C13 and C15. C15 adds only one RPC handler to `service.py`; keep it
-self-contained and resolve the overlap with C13 at merge.
-**Wave 10:** C14. **Wave 11:** C12, only if E3's measurement shows that scans
-are too slow without watchers.
+**Wave 9:** C13, C15 and C16. C15 adds only one RPC handler to `service.py`;
+keep it self-contained and resolve the overlap with C13 at merge. C16 touches no
+hot file; it shares `isolated.py` with C13 only for journal checks.
+**Wave 10:** C14. **Wave 11:** C12; E3 measured scans above its threshold.
 
 D4 releases what is already on `main` (Waves 1–7), so users get that work
 before Waves 8–11 change it further. Publishing still needs you to push the
 tag. The work in [Later](#later) stays out of these waves.
 
-### Wave 8 implementation record (October 22, 2026)
+### What E3 changed for Waves 9–11 (October 22, 2026)
 
-D4 is prepared in [PR #74](https://github.com/bkavuri-hwlr1/loupe/pull/74);
-all seven CI checks passed on `e02c2d11` (October 23, 01:41 UTC). The release
-PR is not recorded as merged here, and the maintainer still publishes the tag
-and verifies the tap upgrade on both Mac architectures. C11 is implemented in
-[PR #75](https://github.com/bkavuri-hwlr1/loupe/pull/75), with accepted G4 in
-[PR #76](https://github.com/bkavuri-hwlr1/loupe/pull/76), stacked on #75. The
-October 23, 02:27 UTC CI snapshot had five of seven checks green for #75 and four
-of seven for #76, with the rest running and no failures.
-The combined local candidate `10e0e6d` passed 3,494 tests, two expected skips,
-88% coverage, both separate scale gates, Ruff, mypy and package builds. All
-499 tracked-file hashes remained unchanged. Local verification and PR checks
-are tracked separately from merge status.
+E3's [report](experiments/soak-and-scan-e3-2026-10-22.md) changes two things:
 
-E3's [report and raw receipts](experiments/soak-and-scan-e3-2026-10-22.md)
-preserve the growing-path stress failure at the original 128 MiB database bound
-and the separately frozen steady-path pass: 3,600 active seconds, 300 cycles,
-27 daemon restarts, all invariant/resource checks and complete cleanup. A
-lid-close sleep extended wall time; no active duration was shortened. Its real
-20,000-file isolated safe point takes 1.94 seconds median, clearing C12's
-250 ms design gate. The outside scanner covers only its latest 1,000 read
-paths; 20,000-file hydration admission and 100,000-file isolated source capture
-remain explicitly unsupported in the tested fixtures. Retained whole-manifest
-journal growth also needs follow-up; faster invalidation alone does not fix
-that storage cost. E2 remains held and F4 remains gated.
+- **C12 goes ahead.** A real isolated safe point takes 1.94 seconds at 20,000
+  source files, above the 250 ms gate.
+- **C16 joins Wave 9.** The growing-path soak exceeded its 128 MiB database
+  bound after 52 minutes, because every isolated sync keeps a whole manifest.
 
 ## At a glance: Waves 4–7 (merged)
 
@@ -912,9 +895,9 @@ what you are doing with Git (workspace plan §16).
 
 ### C12. Native file-change watchers
 
-*Gated: run only if E3's measurement shows scans are too slow.* Suggested
-threshold: an isolated safe-point scan or periodic outside-edit scan above
-250 ms on the 20,000-file fixture.
+*Gate met.* The threshold was an isolated safe-point scan or periodic
+outside-edit scan above 250 ms on the 20,000-file fixture. E3 measured a
+1.94-second safe point after growing an admitted checkout to 20,000 files.
 
 **Why.** Outside edits are found by periodic stat-and-hash scans (C4), and
 isolated sessions rescan the whole primary source at every safe point. On
@@ -933,7 +916,12 @@ the scanner where to look instead (workspace plan §17.1, §17.6).
   silently skipping changes.
 - **Fallback.** Unsupported platforms or filesystems keep today's periodic
   scans.
-- **Measure** scan cost before and after on E3's fixtures.
+- **Measure** scan cost before and after on E3's fixtures
+  (`scripts/scan_scale.py`).
+- **Not included:** raising admission and coverage limits. Outside scans watch
+  each session's latest 1,000 read paths, 20,000-file hydration admission and
+  100,000-file isolated capture are refused, and watchers remove none of those
+  limits by themselves. State them in the design.
 
 **Files.** `src/llm_cli/workspace/watchers.py` (new),
 `src/llm_cli/workspace/external.py`, `src/llm_cli/workspace/isolated_sync.py`,
@@ -1072,6 +1060,50 @@ tests.
 - Exporting into the checkout is refused without `--into-checkout`.
 - Symlinks and oversized trees are refused.
 - No exported bytes appear in the database or logs.
+
+### C16. Bound isolated synchronization-journal storage
+
+**Why.** Every isolated safe-point sync appends an `isolated_sync_journal` row
+holding the whole accepted manifest, and applied rows are never retired. E3's
+growing-path soak exceeded its 128 MiB database bound after 52 minutes: 1,524
+journal rows and 37 MB of manifest JSON by cycle 153. Growing one admitted
+checkout from 7,000 to 20,000 files left 981 MB of SQLite files. Normal
+isolated use on an active repository grows the database without limit. Keep the
+[failed receipt](experiments/soak-growing-e3-2026-10-22.json) as the regression
+workload rather than raising its bound.
+
+**Scope.**
+
+- **Manifests.** The accepted manifest already lives in
+  `isolated_sync_state`. Keep a manifest only on `prepared` rows, which
+  crash recovery replays; drop it in the same transaction that marks a row
+  `applied` and advances the generation.
+- **Unresolved conflicts.** `_conflicts()` currently replays the steps of
+  every applied row to find unresolved divergences. Keep those in a compact
+  per-workspace record, updated in the apply transaction, so applied rows can
+  be deleted (or kept as a small bounded window for diagnosis).
+- **Migration.** Backfill unresolved conflicts from existing applied rows,
+  then compact them, in the migration transaction. Prepared rows are unchanged.
+- **Recovery is unchanged.** A crash before, during or after apply recovers
+  exactly as today, and a retry never re-applies a step.
+- **Not included:** other retention (task output, events), which
+  `loupe db prune` already covers.
+
+**Files.** `src/llm_cli/workspace/isolated_sync.py`,
+`src/llm_cli/storage/migrations.py`, `src/llm_cli/workspace/isolated.py`
+(journal checks only; coordinate with C13), `docs/isolated-workspaces.md`,
+docs, tests.
+
+**Done when.**
+- 200 syncs over growing paths keep applied-journal storage bounded, apart
+  from unresolved conflicts.
+- Unresolved divergences survive compaction, migration and restart, and
+  resolve exactly as before. The existing conflict tests pass unchanged.
+- A crash at each apply and compaction point recovers without re-applying a
+  step.
+- `PYTHONPATH=src python scripts/soak.py --duration 3600 --growing-paths`
+  passes its original 128 MiB bound for the full hour, and the 7,000→20,000
+  file growth run's database size is recorded in the PR.
 
 ## Lane D — operations
 
@@ -1698,12 +1730,10 @@ it), `docs/adr/0010-cross-profile-publication-authority.md`,
 
 These are deliberately outside Waves 8–11:
 
-- **Synchronization-journal retention.** E3's growing-path stress exceeded
-  128 MiB of SQLite files after 52 minutes; growing an admitted checkout from
-  7,000 to 20,000 files retained 981 MB. Review whole-manifest journal storage
-  and a safe retirement policy separately from C12's invalidation hints. Keep
-  the [original failed stress receipt](experiments/soak-growing-e3-2026-10-22.json)
-  as a regression workload rather than raising its bound.
+- **Larger isolated admission and scan coverage.** E3 found 20,000-file
+  hydration admission and 100,000-file isolated capture refused, and outside
+  scans limited to each session's latest 1,000 read paths. Raise these only
+  with their own measurements; C12 does not change them.
 - **F4 embeddings, the `sqlite-vec` accelerator and opt-in task memory.**
   F3's live comparison showed no benefit from retrieval: 90 of 102 expected
   facts with it on, 92 with it off. Revisit only with a stronger case.
