@@ -59,10 +59,11 @@
     "soak-growing-c16-2026-10-24.json": "fc376492f14a091a3b675b599d9dd150275eb068c3ca85ed903a137ed8f6a2d7",
     "scan-scale-c16-2026-10-24.json": "2cbb3f133698a84f48862e82b709f50ffcb48f924a9a370a468ed93d65a19df5",
     "sync-journal-legacy-pages-c16-2026-10-24.json": "fea57c2bb82be93056d968d0f5300817b03b0de9fc299a9871f425854990ec76",
-    "sync-journal-samples-c16-2026-10-24.json": "c2dd92e2a9a098ce6005fe1a9ee6667c7e618689aad7b7fb77f5e214bf7a427a"
+    "sync-journal-samples-c16-2026-10-24.json": "188b49ffeed45fe2868d8c1ac29b9cc0b43f3f265c7a2f369c6cbc8b9b16a0c2"
   },
   "local_test_log_sha256": {
     "pytest-correctness-coverage.log": "d93f9c4fb6ce5088dff01717f6c25e4b58ab8e3f699ef747e658c66e76d8d090",
     "pytest-production-scale.log": "498b2051313f8f2d1106869579751d0424a862927186f4f2c10e6d4020ca6b83"
-  }
+  },
+  "published_receipt_redaction": "Supplementary monitor comparison roots replace the local home-directory prefix with $CODEX_WORKTREES; worktree identities and all measurements remain intact. Original raw supplemental samples remain in the local experiment directory."
 }

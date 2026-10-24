@@ -61,12 +61,12 @@
     "database_and_sidecars_bytes": 19821032,
     "source_hashes_match": false,
     "harness_hash_matches": true,
-    "source_hash_comparison_root": "/Users/kavuri/.codex/worktrees/wave9-c13/loupe",
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c13/loupe",
     "source_hash_comparison_note": "Supplementary monitor accidentally ran the hash comparison in the C13 review worktree. C16 source was untouched; immediate explicit-C16-root comparison follows."
   },
   {
     "at": "2026-10-24T05:16:20.902236+00:00",
-    "source_hash_comparison_root": "/Users/kavuri/.codex/worktrees/wave9-c16/loupe",
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c16/loupe",
     "cycles": 259,
     "elapsed_seconds": 2607.265467750025,
     "journals": [
@@ -88,7 +88,7 @@
   },
   {
     "at": "2026-10-24T05:19:49.605725+00:00",
-    "source_hash_comparison_root": "/Users/kavuri/.codex/worktrees/wave9-c16/loupe",
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c16/loupe",
     "cycles": 279,
     "elapsed_seconds": 2809.4381511250976,
     "journals": [
@@ -110,7 +110,7 @@
   },
   {
     "at": "2026-10-24T05:26:29.375419+00:00",
-    "source_hash_comparison_root": "/Users/kavuri/.codex/worktrees/wave9-c16/loupe",
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c16/loupe",
     "cycles": 318,
     "elapsed_seconds": 3216.1583904169966,
     "journals": [
@@ -132,7 +132,7 @@
   },
   {
     "at": "2026-10-24T05:29:41.280312+00:00",
-    "source_hash_comparison_root": "/Users/kavuri/.codex/worktrees/wave9-c16/loupe",
+    "source_hash_comparison_root": "$CODEX_WORKTREES/wave9-c16/loupe",
     "cycles": 336,
     "elapsed_seconds": 3407.1784802920884,
     "journals": [
