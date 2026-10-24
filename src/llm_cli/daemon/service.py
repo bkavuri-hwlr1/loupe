@@ -540,9 +540,7 @@ class DaemonService:
                 self.knowledge.graph_neighbors,
                 checkout.checkout_id,
                 _string(params, "node"),
-                edge=(
-                    None if params.get("edge") is None else _string(params, "edge")
-                ),
+                edge=(None if params.get("edge") is None else _string(params, "edge")),
                 depth=_bounded_integer(params, "depth", 1, minimum=1, maximum=4),
             )
         return await asyncio.to_thread(
@@ -784,6 +782,19 @@ class DaemonService:
     async def _dispatch_owned(self, request: Request) -> Any:
         method = request.method
         params = request.params
+        if method == "workspace.authority.maintenance":
+            values = {
+                name: params.get(name, False)
+                for name in (
+                    "prune",
+                    "apply",
+                    "include_unrecorded",
+                    "include_other_profiles",
+                )
+            }
+            if any(type(value) is not bool for value in values.values()):
+                raise ValueError("authority maintenance options must be booleans")
+            return await asyncio.to_thread(self.physical_authority.records, **values)
         if method.startswith("workspace.cutover."):
             return await asyncio.to_thread(self._cutover_request, method, params)
         if method == "system.init":
@@ -1163,6 +1174,12 @@ class DaemonService:
             return self.cutovers.preview(root)
         if method == "workspace.cutover.status":
             return self.cutovers.status(root)
+        if method == "workspace.cutover.recovery":
+            return self.cutovers.recovery(
+                root,
+                _string(params, "intent_id"),
+                checkpoint=_string(params, "checkpoint"),
+            )
         if method == "workspace.cutover.apply":
             dispositions = params.get("dispositions", {})
             if not isinstance(dispositions, dict) or any(
@@ -1183,6 +1200,9 @@ class DaemonService:
                     root,
                     intent_id=_string(params, "intent_id"),
                     checkpoint=_string(params, "checkpoint"),
+                    accept_current_history=_optional_string(
+                        params, "accept_current_history"
+                    ),
                 )
         if method == "workspace.cutover.export":
             return self._cutover_export(root)
@@ -1326,6 +1346,7 @@ class DaemonService:
         if prior is not None and prior.matches(values):
             return
         environment = self._build_session_environment(session, values, removed)
+
         def invalidate_checks() -> None:
             # Values are never persisted. Invalidation and binding replacement
             # serialize with the final successful check write under one lease.
@@ -1346,7 +1367,8 @@ class DaemonService:
         checkout = self.store.get_checkout(session.checkout_id)
         assert checkout is not None
         environment = CommandEnvironment(
-            values, removed,
+            values,
+            removed,
             source_root=Path(checkout.canonical_path),
             credential_names=self.providers.credential_environment_names,
         )
@@ -1363,16 +1385,21 @@ class DaemonService:
     def _apply_environment(
         self, task_id: str, params: dict[str, Any]
     ) -> CommandEnvironment | None:
-        if (self.settings.agent_command_environment != "session"
-                or "command_environment" not in params
-                or params.get("allow_unverified", False)):
+        if (
+            self.settings.agent_command_environment != "session"
+            or "command_environment" not in params
+            or params.get("allow_unverified", False)
+        ):
             return None
         task = self.store.get_task(task_id)
         session = self.store.get_session(task.session_id or "") if task else None
         workflow = self.workflow.get(task_id)
-        if (session is None or workflow is None
-                or workflow["status"] not in {"awaiting_review", "cancelled"}
-                or workflow["proposal_json"] is None):
+        if (
+            session is None
+            or workflow is None
+            or workflow["status"] not in {"awaiting_review", "cancelled"}
+            or workflow["proposal_json"] is None
+        ):
             return None
         try:
             self.session_environments.get(session.session_id)
@@ -1432,7 +1459,7 @@ class DaemonService:
         self._environment_waiters.discard(task_id)
         launch = self.store.get_execution_launch(task_id, task.attempt)
         if launch is not None:
-            self._close_one_shot_if_settled(task,launch)
+            self._close_one_shot_if_settled(task, launch)
 
     async def _session_open(self, params: dict[str, Any]) -> dict[str, Any]:
         """Bind a durable conversation to one exact checkout and provider."""
