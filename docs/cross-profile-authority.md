@@ -145,6 +145,7 @@ or unknown filesystem semantics fail closed.
 loupe workspace authority status
 loupe --json workspace authority prune
 loupe workspace authority prune --apply
+loupe workspace authority prune --include-other-profiles
 ```
 
 `status` explains why each account-wide record is retained. `prune` is a dry run
@@ -157,9 +158,18 @@ legacy authority for a new profile. Dirty/attention markers, corrupt storage, un
 identity remain for diagnosis. No command clears a live ownership lock or repairs
 a journal. The diagnostic path does not select the ownership key or adopt history.
 
+A profile sees only its own database bindings. A record last owned by another
+profile or installation is therefore preserved as `other_profile` unless you add
+`--include-other-profiles`. Use it only for profiles you no longer use, or when
+you know the checkout was deleted rather than moved: a profile that still binds
+a removed record refuses that checkout ("authority marker is missing for a
+previously bound checkout"). Prefer running `prune` from the profile that last
+owned the record, which the status output names.
+
 Old records without a recorded path are listed and preserved by default. Use
 `prune --include-unrecorded` to preview them explicitly, then add `--apply` to
-retire eligible records. Lock-only records without a valid clean marker still
+retire eligible records. Every record written before this release lacks a path,
+so their checkouts may still exist. Lock-only records without a valid clean marker still
 require diagnosis. A short maintenance lock serializes retirement with opening a
 new ownership lock. Upgrade all participating Loupe profiles before maintenance;
 older binaries do not observe this maintenance barrier. Do not manually remove

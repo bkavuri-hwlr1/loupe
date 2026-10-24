@@ -314,7 +314,17 @@ def build_parser() -> argparse.ArgumentParser:
         "prune", help="preview stale records; --apply removes them"
     )
     authority_prune.add_argument("--apply", action="store_true")
-    authority_prune.add_argument("--include-unrecorded", action="store_true")
+    authority_prune.add_argument(
+        "--include-unrecorded",
+        action="store_true",
+        help="also consider records written before checkout paths were recorded",
+    )
+    authority_prune.add_argument(
+        "--include-other-profiles",
+        action="store_true",
+        help="also consider records last owned by another profile or installation; "
+        "a profile that still binds a removed record refuses its checkout",
+    )
     cutover = workspace_commands.add_parser(
         "cutover", help="preview or explicitly migrate a checkout out of legacy claims"
     )
@@ -936,6 +946,8 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                     "prune": prune,
                     "apply": prune and arguments.apply,
                     "include_unrecorded": prune and arguments.include_unrecorded,
+                    "include_other_profiles": prune
+                    and arguments.include_other_profiles,
                 },
             )
             if arguments.as_json:
@@ -944,7 +956,11 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             for record in result["records"]:
                 action = "removed" if record["removed"] else record["reason"]
                 path = record.get("checkout_path") or "path not recorded"
-                lines.append(f"{record['physical_key']}: {action} ({path})")
+                profile = record.get("owner_profile") or "unknown"
+                lines.append(
+                    f"{record['physical_key']}: {action} ({path}; "
+                    f"last owner profile {profile})"
+                )
             if prune and not arguments.apply:
                 lines.append("Dry run. Use --apply to remove eligible records.")
             return "\n".join(lines)

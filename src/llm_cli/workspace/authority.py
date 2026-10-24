@@ -506,12 +506,17 @@ class PhysicalAuthority:
         prune: bool = False,
         apply: bool = False,
         include_unrecorded: bool = False,
+        include_other_profiles: bool = False,
     ) -> dict[str, Any]:
         """Inspect or explicitly retire dead, clean, unbound physical records.
 
         The path is diagnostic evidence of staleness, never an authority key.
         Unsafe/ambiguous records are reported and preserved. Maintenance never
         validates an installation, creates a checkout binding or adopts history.
+        Only this database's bindings are visible, so a record last owned by
+        another profile or installation needs explicit inclusion: that profile
+        refuses a checkout whose bound record is gone, and a missing path may
+        only mean the checkout moved.
         """
         if apply and not prune:
             raise ValueError("only authority prune accepts --apply")
@@ -529,6 +534,11 @@ class PhysicalAuthority:
                         "UNION SELECT physical_key FROM authority_journals"
                     )
                 }
+                row = connection.execute(
+                    "SELECT database_instance_id FROM authority_installation "
+                    "WHERE singleton=1"
+                ).fetchone()
+                instance = row[0] if row is not None else None
             records = []
             for directory in sorted((self.root / "checkouts").iterdir()):
                 item: dict[str, Any] = {
@@ -664,6 +674,13 @@ class PhysicalAuthority:
                                 "owner.json",
                             }:
                                 item["reason"] = "unexpected_contents"
+                                continue
+                            if not include_other_profiles and (
+                                marker.get("owner_profile") != self.profile
+                                or instance is None
+                                or marker.get("database_instance_id") != instance
+                            ):
+                                item["reason"] = "other_profile"
                                 continue
                             item["eligible"] = True
                             item["reason"] = (

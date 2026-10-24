@@ -56,9 +56,13 @@ def test_dry_run_then_apply_removes_only_dead_clean_unbound_record(
 ) -> None:
     observer, repository, directory = _dead_record(tmp_path, repository_factory)
     shutil.rmtree(repository)
-    record = observer.records(prune=True)["records"][0]
-    assert record["eligible"] and not record["removed"] and directory.exists()
     record = observer.records(prune=True, apply=True)["records"][0]
+    assert record["reason"] == "other_profile" and not record["removed"]
+    record = observer.records(prune=True, include_other_profiles=True)["records"][0]
+    assert record["eligible"] and not record["removed"] and directory.exists()
+    record = observer.records(prune=True, apply=True, include_other_profiles=True)[
+        "records"
+    ][0]
     assert record["removed"] and not directory.exists()
     assert observer.records()["records"] == []
 
@@ -106,9 +110,56 @@ def test_missing_path_requires_explicit_include_unrecorded(
     shutil.rmtree(repository)
     record = observer.records(prune=True, apply=True)["records"][0]
     assert record["reason"] == "unrecorded_path" and not record["removed"]
-    assert observer.records(prune=True, apply=True, include_unrecorded=True)["records"][
-        0
-    ]["removed"]
+    assert observer.records(
+        prune=True, apply=True, include_unrecorded=True, include_other_profiles=True
+    )["records"][0]["removed"]
+
+
+def test_other_profiles_live_record_needs_explicit_inclusion(
+    tmp_path: Path, repository_factory: Callable[..., Path]
+) -> None:
+    # A record written before paths were recorded, for a checkout that still
+    # exists and that its last owner still binds.
+    observer, repository, directory = _dead_record(tmp_path, repository_factory)
+    owner = private_read(directory / "owner.json")
+    assert owner is not None
+    del owner["checkout_path"]
+    private_write(directory / "owner.json", owner)
+    record = observer.records(prune=True, apply=True, include_unrecorded=True)[
+        "records"
+    ][0]
+    assert record["reason"] == "other_profile" and not record["removed"]
+    assert record["owner_profile"] == "former"
+    observer.close()
+    former = _owner(tmp_path, repository, "former")
+    with former.pin(repository):
+        pass
+    former.close()
+
+
+def test_own_unbound_record_is_prunable_without_other_profiles(
+    tmp_path: Path, repository_factory: Callable[..., Path]
+) -> None:
+    repository = repository_factory(tmp_path, {"source.py": "VALUE = 1\n"})
+    owner = _owner(tmp_path, repository, "solo")
+    with owner.pin(repository):
+        directory = _marker(owner, repository).parent
+    owner.close()
+    shutil.rmtree(repository)
+    # The binding disappears (as after deleting checkout rows); the database
+    # instance and profile still identify this installation as the last owner.
+    with owner.store.connection() as connection:
+        connection.execute("DELETE FROM authority_checkouts")
+    restarted = PhysicalAuthority(
+        owner.store,
+        "solo",
+        "boot-solo-restarted",
+        tmp_path / "solo" / "socket",
+        root=tmp_path / "authority" / "v1",
+    )
+    record = restarted.records(prune=True, apply=True)["records"][0]
+    assert record["removed"] and not directory.exists()
+    restarted.close()
 
 
 @pytest.mark.parametrize("damage", ["symlink", "corrupt", "extra"])
@@ -135,7 +186,9 @@ def test_replaced_checkout_has_different_identity_and_is_prunable(
     observer, repository, directory = _dead_record(tmp_path, repository_factory)
     repository.rename(tmp_path / "moved")
     repository_factory(tmp_path, {"other.py": "new identity\n"})
-    assert observer.records(prune=True, apply=True)["records"][0]["removed"]
+    assert observer.records(prune=True, apply=True, include_other_profiles=True)[
+        "records"
+    ][0]["removed"]
     assert not directory.exists() and (repository / "other.py").exists()
 
 
@@ -162,11 +215,32 @@ def test_unsupported_filesystem_reports_supported_set(
 @pytest.mark.parametrize(
     "options,expected",
     [
-        (["status"], {"prune": False, "apply": False, "include_unrecorded": False}),
-        (["prune"], {"prune": True, "apply": False, "include_unrecorded": False}),
         (
-            ["prune", "--apply", "--include-unrecorded"],
-            {"prune": True, "apply": True, "include_unrecorded": True},
+            ["status"],
+            {
+                "prune": False,
+                "apply": False,
+                "include_unrecorded": False,
+                "include_other_profiles": False,
+            },
+        ),
+        (
+            ["prune"],
+            {
+                "prune": True,
+                "apply": False,
+                "include_unrecorded": False,
+                "include_other_profiles": False,
+            },
+        ),
+        (
+            ["prune", "--apply", "--include-unrecorded", "--include-other-profiles"],
+            {
+                "prune": True,
+                "apply": True,
+                "include_unrecorded": True,
+                "include_other_profiles": True,
+            },
         ),
     ],
 )
@@ -211,9 +285,12 @@ def test_retirement_serializes_with_new_lock_open(
 
     def prune() -> None:
         try:
-            assert observer.records(prune=True, apply=True, include_unrecorded=True)[
-                "records"
-            ][0]["removed"]
+            assert observer.records(
+                prune=True,
+                apply=True,
+                include_unrecorded=True,
+                include_other_profiles=True,
+            )["records"][0]["removed"]
         except BaseException as exc:
             failures.append(exc)
 
@@ -321,7 +398,9 @@ def test_status_does_not_recreate_a_record_pruned_after_listing(
         nonlocal first
         if first:
             first = False
-            assert rival.records(prune=True, apply=True)["records"][0]["removed"]
+            assert rival.records(prune=True, apply=True, include_other_profiles=True)[
+                "records"
+            ][0]["removed"]
             assert not directory.exists()
         with original():
             yield

@@ -252,7 +252,10 @@ when retained legacy history changed. Add an explicit, forward-only recovery:
 
 Authority-record pruning is separate from cutover recovery. It can retire only
 an unlocked, valid clean record whose diagnostic path no longer resolves to its
-physical identity, and which this profile does not bind. A short account-wide
+physical identity, and which this profile does not bind. A profile cannot see
+another profile's bindings, so a record last owned by another profile or
+database instance also requires explicit operator inclusion: that profile would
+refuse its checkout once a bound record is gone. A short account-wide
 maintenance lock serializes retirement with opening an ownership lock; it never
 clears an active lock or an unfinished journal. Version-2 transition/workspace
 markers remain permanent regime tombstones, even when their diagnostic path is
