@@ -34,6 +34,11 @@ def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def rollback_hint(intent_id: str) -> str:
+    """The only way out of a stopped switch; the owner may not know its ID."""
+    return f"Run /workspace rollback {intent_id} to keep the current workspace."
+
+
 class WorkspaceModeSwitcher:
     def __init__(
         self,
@@ -129,10 +134,10 @@ class WorkspaceModeSwitcher:
             "epoch": workspace.workspace_epoch,
             "local_generation": workspace.local_generation,
         }
-        if workspace.mode == "shared":
-            scope["source_manifest"] = hashlib.sha256(
-                _json(capture_source(root, self.publisher.candidate_dir)).encode()
-            ).hexdigest()
+        # Shared source is not frozen: other sessions, editors and Git keep
+        # changing it, and an isolated target receives those changes through
+        # incoming sync. Publication into it still checks exact bases. Only the
+        # shared binding's identity and epoch are part of the scope.
         if workspace.mode == "isolated":
             state = self.isolated.validate(workspace_id)
             scope["creation_token"] = state.creation_token
@@ -244,9 +249,12 @@ class WorkspaceModeSwitcher:
                     raise ValueError(
                         "conversation already uses the requested workspace mode"
                     )
-                if self.pending(session_id):
+                earlier = self.pending(session_id)
+                if earlier:
                     raise ValueError(
-                        "an earlier workspace switch needs confirmation or recovery"
+                        f"workspace switch {earlier['switch_intent_id']} needs "
+                        "confirmation or recovery. "
+                        + rollback_hint(earlier["switch_intent_id"])
                     )
                 self.require_idle(session)
                 files_json, classification, runtime_summary = "[]", "clean", ""
@@ -671,6 +679,18 @@ class WorkspaceModeSwitcher:
                 "attention_required",
                 error=type(exc).__name__ + ": " + str(exc),
             )
+            # Keep the original error type and code; name the way out where
+            # the message reaches the owner. Later task refusals name it too.
+            attention = f" Workspace switch {intent_id} needs attention. "
+            hint = attention + rollback_hint(intent_id)
+            if isinstance(exc, LlmCoordError):
+                raise LlmCoordError(
+                    exc.code,
+                    exc.message + hint,
+                    {**(exc.details or {}), "switch_intent_id": intent_id},
+                ) from exc
+            if type(exc) is ValueError:
+                raise ValueError(str(exc) + hint) from exc
             raise
         return self._response(self.get(intent_id))
 
@@ -840,7 +860,10 @@ class WorkspaceModeSwitcher:
                     "attention_required",
                     error="workspace scope changed before confirmation",
                 )
-                raise ValueError("workspace scope changed before confirmation")
+                raise ValueError(
+                    "workspace scope changed before confirmation. "
+                    + rollback_hint(intent_id)
+                )
             now = self.store._now(None)
             with self.store.connection() as con, immediate_transaction(con):
                 frozen = con.execute(

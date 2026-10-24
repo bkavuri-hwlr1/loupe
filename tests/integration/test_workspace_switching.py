@@ -228,14 +228,62 @@ def test_scope_change_requires_attention_and_rollback_preserves_source(
 ) -> None:
     manager = switcher(batch_env, tmp_path)
     result = manager.request("first", "pending", "isolated")
-    (batch_env.repository / "a.txt").write_text("late user edit\n")
-    with pytest.raises(ValueError, match="scope changed"):
+    target_id = manager.get("pending")["target_workspace_id"]
+    target = batch_env.store.get_workspace(target_id)
+    assert target is not None
+    # The new private target is frozen until confirmation; shared source is not.
+    Path(target.canonical_path, "a.txt").write_text("late private edit\n")
+    with pytest.raises(ValueError, match="scope changed") as stopped:
         manager.confirm("first", "pending", result["bootstrap_sequence"])
+    assert "/workspace rollback pending" in str(stopped.value)
     assert manager.get("pending")["state"] == "attention_required"
     rolled_back = manager.rollback("first", "pending")
     assert rolled_back["state"] == "rolled_back"
     assert batch_env.store.get_session("first").workspace_mode == "shared"
-    assert (batch_env.repository / "a.txt").read_text() == "late user edit\n"
+    assert (batch_env.repository / "a.txt").read_text() == "old a\n"
+
+
+def test_shared_edits_during_a_switch_to_isolated_do_not_stop_it(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+) -> None:
+    manager = switcher(batch_env, tmp_path)
+
+    def other_session_saves(state: str) -> None:
+        # An editor save or another session's publication while the private
+        # target is created.
+        if state == "target_creating":
+            (batch_env.repository / "docs" / "b.txt").write_text("other session\n")
+
+    manager.fault = other_session_saves
+    prepared = manager.request("first", "busy", "isolated")
+    manager.fault = lambda state: None
+    (batch_env.repository / "a.txt").write_text("edit before confirmation\n")
+    confirmed = manager.confirm("first", "busy", prepared["bootstrap_sequence"])
+    assert confirmed["state"] == "confirmed"
+    assert batch_env.store.get_session("first").workspace_mode == "isolated"
+    assert (batch_env.repository / "a.txt").read_text() == "edit before confirmation\n"
+
+
+def test_stopped_switch_names_its_rollback_command(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+) -> None:
+    manager = switcher(batch_env, tmp_path)
+
+    def interrupted(state: str) -> None:
+        if state == "target_creating":
+            raise ValueError("target setup failed")
+
+    manager.fault = interrupted
+    with pytest.raises(ValueError, match="target setup failed") as stopped:
+        manager.request("first", "stopped", "isolated")
+    assert "/workspace rollback stopped" in str(stopped.value)
+    assert manager.get("stopped")["state"] == "attention_required"
+    manager.fault = lambda state: None
+    with pytest.raises(ValueError, match="/workspace rollback stopped"):
+        manager.request("first", "another", "isolated")
+    assert manager.rollback("first", "stopped")["state"] == "rolled_back"
 
 
 @pytest.mark.parametrize(
@@ -515,6 +563,69 @@ def test_real_daemon_switch_next_task_preserves_model_history_and_workspace(
             )
         finally:
             await service.drain()
+            service.close()
+
+    asyncio.run(scenario())
+
+
+def test_task_refused_by_a_stopped_switch_names_its_rollback(
+    tmp_path: Path,
+    repository_factory: Any,
+    service_factory: Any,
+) -> None:
+    import asyncio
+
+    from test_shared_agent_execution import (
+        ScriptedProvider,
+        _finish,
+        _open_session,
+        _register,
+        _request,
+    )
+
+    from llm_cli.errors import LlmCoordError
+
+    async def scenario() -> None:
+        root = repository_factory(tmp_path, {"a.txt": "before\n"})
+        provider = ScriptedProvider("stopped-switch", [_finish("unused")])
+        service = service_factory(tmp_path)
+        _register(service, provider)
+        service.initialize()
+        try:
+            await service.handle(_request("repo.add", {"path": str(root)}))
+            credentials = await _open_session(service, root, provider)
+
+            def interrupted(state: str) -> None:
+                if state == "target_creating":
+                    raise ValueError("target setup failed")
+
+            service.workspace_switches.fault = interrupted
+            with pytest.raises(LlmCoordError, match="/workspace rollback stuck"):
+                await service.handle(
+                    _request(
+                        "workspace.switch_mode",
+                        {
+                            **credentials,
+                            "switch_intent_id": "stuck",
+                            "workspace": "isolated",
+                        },
+                    )
+                )
+            # The owner may only see this later refusal; it must name the way out.
+            with pytest.raises(LlmCoordError, match="/workspace rollback stuck"):
+                await service.handle(
+                    _request(
+                        "task.run",
+                        {
+                            **credentials,
+                            "title": "next",
+                            "path": str(root),
+                            "task_id": "next",
+                            "scopes": ["*"],
+                        },
+                    )
+                )
+        finally:
             service.close()
 
     asyncio.run(scenario())
@@ -1032,7 +1143,12 @@ def test_real_process_death_in_rollback_and_attention_preserves_source(
         manager.fault = lambda state: os._exit(73) if state == phase else None
         result = manager.request("first", "recovery", "isolated")
         if phase == "attention_required":
-            (batch_env.repository / "a.txt").write_text("later source\n")
+            # Only the new private target is frozen until confirmation.
+            target = batch_env.store.get_workspace(
+                manager.get("recovery")["target_workspace_id"]
+            )
+            assert target is not None
+            Path(target.canonical_path, "a.txt").write_text("later source\n")
             manager.confirm("first", "recovery", result["bootstrap_sequence"])
         else:
             manager.rollback("first", "recovery")
@@ -1049,8 +1165,7 @@ def test_real_process_death_in_rollback_and_attention_preserves_source(
         manager.rollback("first", "recovery")
     assert manager.get("recovery")["state"] == "rolled_back"
     assert batch_env.store.get_session("first").workspace_mode == "shared"
-    expected = "later source\n" if phase == "attention_required" else "old a\n"
-    assert (batch_env.repository / "a.txt").read_text() == expected
+    assert (batch_env.repository / "a.txt").read_text() == "old a\n"
     with batch_env.store.connection() as con:
         assert (
             con.execute("SELECT count(*) FROM isolated_workspaces").fetchone()[0] == 1

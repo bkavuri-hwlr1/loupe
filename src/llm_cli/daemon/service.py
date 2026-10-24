@@ -118,7 +118,7 @@ from llm_cli.workspace.identity import (
 )
 from llm_cli.workspace.isolated import IsolatedWorkspaceManager
 from llm_cli.workspace.regime import CutoverManager
-from llm_cli.workspace.switching import WorkspaceModeSwitcher
+from llm_cli.workspace.switching import WorkspaceModeSwitcher, rollback_hint
 
 # Section 15.1 requires these limits to be visible to operators rather than
 # living only in implementation notes.
@@ -818,11 +818,16 @@ class DaemonService:
             if not owner and params.get("task_id"):
                 task = self.store.get_task(str(params["task_id"]))
                 owner = task.session_id if task else None
-            if isinstance(owner, str) and (
-                owner in self._pending_session_switches
-                or self.workspace_switches.pending(owner)
-            ):
-                raise ValueError("workspace switch requires confirmation or rollback")
+            if isinstance(owner, str):
+                if owner in self._pending_session_switches:
+                    raise ValueError("workspace switch is still running")
+                pending_switch = self.workspace_switches.pending(owner)
+                if pending_switch:
+                    intent_id = pending_switch["switch_intent_id"]
+                    raise ValueError(
+                        f"workspace switch {intent_id} requires confirmation or "
+                        "rollback. " + rollback_hint(intent_id)
+                    )
         if method == "workspace.authority.maintenance":
             values = {
                 name: params.get(name, False)

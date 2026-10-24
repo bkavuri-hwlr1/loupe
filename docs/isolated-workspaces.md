@@ -91,7 +91,9 @@ hydration was approved earlier. Sensitivity combines path names with bounded
 local content screening for recognized credentials, including secrets late in
 a file. Every invocation screens current bytes again. Export reads the live private runtime, including
 regenerated files, while the session is idle. The destination's parent must
-already exist and the destination must be new. Export publishes a complete file
+already exist and the destination must be new. The CLI resolves symbolic links
+in that parent path first (macOS `/tmp` and `$TMPDIR` are links); the daemon
+then refuses any link that appears in the resolved path during the copy. Export publishes a complete file
 or tree atomically and never replaces an existing destination. Files and
 directories have owner-only permissions. Failed copies remove their staging
 entries and leave the destination absent.
@@ -489,8 +491,12 @@ Intents persist requested, prepared, target_creating, transferring, confirming,
 confirmed, rollback_pending, rolled_back, and attention_required states. Retrying
 an intent returns its recorded target and never allocates a second worktree or
 publishes its proposal twice. Resume returns the pending target bootstrap after
-a lost response. An ownership handoff or changed physical/source/runtime scope
-requires attention rather than accepting a stale bootstrap. Use
+a lost response. An ownership handoff, a changed workspace identity or epoch,
+or a changed private source or runtime requires attention rather than accepting
+a stale bootstrap. Shared checkout source is not frozen: other sessions, editors
+and Git may keep changing it during a switch. A new isolated target receives
+those changes through incoming sync, and publication still checks exact bases.
+A stopped switch names its intent; later task refusals repeat it. Use
 `/workspace rollback SWITCH_INTENT_ID` to keep the source binding and retain an
 abandoned target for inspection. Confirmed switches cannot reopen their source
 binding; make a new switch instead. Clean and disposed workspaces remain eligible

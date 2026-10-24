@@ -1077,12 +1077,17 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             "resume_secret": secret,
         }
         if arguments.workspace_command == "runtime":
+            # The daemon refuses symlinked destination ancestors so a link can't
+            # be swapped in mid-copy. Resolve the user's own spelling first:
+            # macOS /tmp and $TMPDIR (/var/folders) are symlinks.
+            destination = arguments.destination.expanduser().absolute()
+            destination = destination.parent.resolve() / destination.name
             result = client.call(
                 "workspace.runtime.export",
                 {
                     **authenticated,
                     "relative_path": arguments.path,
-                    "destination": str(arguments.destination.expanduser().absolute()),
+                    "destination": str(destination),
                     "yes": arguments.yes,
                     "allow_secret": arguments.allow_secret,
                     "into_checkout": arguments.into_checkout,

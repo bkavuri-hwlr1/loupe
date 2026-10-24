@@ -558,3 +558,49 @@ def test_fsync_failure_after_publication_rolls_back_complete_export(
         )
     assert not (tmp_path / "out").exists()
     assert not list(tmp_path.glob(".loupe-runtime-export-*"))
+
+
+def test_cli_resolves_symlinked_destination_parents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # macOS /tmp and $TMPDIR are symlinks; the daemon refuses linked ancestors.
+    from typing import cast
+
+    from llm_cli.cli import app
+    from llm_cli.protocol.client import DaemonClient
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    sent: list[dict[str, Any]] = []
+
+    class Client:
+        paths = None
+
+        def call(self, method: str, params: dict[str, Any], **_: Any) -> Any:
+            sent.append(params)
+            return {
+                "state": "confirmation_required",
+                "kind": "file",
+                "bytes": 1,
+                "entries": 1,
+                "sensitivity": "unclassified",
+                "requires_yes": True,
+                "requires_allow_secret": False,
+            }
+
+    monkeypatch.setattr(app, "session_resume_secret", lambda paths, session: "s")
+    arguments = app.build_parser().parse_args(
+        [
+            "workspace",
+            "runtime",
+            "export",
+            ".env",
+            "--session",
+            "session",
+            "--to",
+            str(tmp_path / "link" / "new.env"),
+        ]
+    )
+    app.dispatch(arguments, cast(DaemonClient, Client()))
+    assert sent[0]["destination"] == str(real.resolve() / "new.env")
