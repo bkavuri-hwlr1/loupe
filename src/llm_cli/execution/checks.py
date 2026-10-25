@@ -817,6 +817,9 @@ class CheckRunner:
                 env.update(overrides)
             from llm_cli.workspace.runtime import private_output_values
 
+            # Historical private values survive runtime rotation/removal and
+            # belong to the live private binding, not this disposable snapshot.
+            self.sensitive_values += private_output_values(self.runtime_root, ())
             self.sensitive_values += private_output_values(
                 snapshot,
                 tuple(sorted(set(self.config.get("runtime_paths", [])))),

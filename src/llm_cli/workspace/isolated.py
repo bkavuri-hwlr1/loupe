@@ -27,12 +27,15 @@ from typing import Any
 
 from llm_cli.agent.source_policy import (
     _private_path,
-    contains_secret_material,
+    contains_private_source,
+    contains_unsafe_source,
     ensure_safe_content,
     excluded_paths,
+    forget_source_private_values,
     register_runtime_paths,
     runtime_path,
     runtime_path_matches,
+    source_private_epoch,
 )
 from llm_cli.config.models import RebuildConfig
 from llm_cli.coordination.models import CheckoutRecord, WorkspaceRecord
@@ -254,6 +257,16 @@ class SourceCaptureCache:
         field(default_factory=OrderedDict)
     )
     lock: RLock = field(default_factory=RLock, repr=False)
+    guard_epochs: dict[Path, int] = field(default_factory=dict, repr=False)
+
+    def guard(self, root: Path) -> None:
+        epoch = source_private_epoch(root)
+        with self.lock:
+            if self.guard_epochs.get(root, 0) != epoch:
+                for key in tuple(self.entries):
+                    if key[0] == root:
+                        self.entries.pop(key)
+                self.guard_epochs[root] = epoch
 
     def lookup(
         self, key: tuple[Path, str]
@@ -295,6 +308,8 @@ def capture_source(
     ordinary artifacts or model-facing proposals.
     """
     manifest = SourceManifest()
+    if cache is not None:
+        cache.guard(root)
     deferred: list[str] = []
     total = 0
     source_paths = _source_paths(root)
@@ -369,7 +384,7 @@ def capture_source(
         total += len(body)
         if total > 1024**3:
             raise _error("isolated source exceeds its 1 GiB budget")
-        screened = contains_secret_material(body)
+        screened = contains_unsafe_source(root, body)
         content_hash = None if screened else _store_source(candidate_dir, body)
         kind = ObjectKind.SYMLINK if is_link else ObjectKind.REGULAR
         mode = (
@@ -636,6 +651,8 @@ class IsolatedWorkspaceManager:
         self.rebuild_protected = rebuild_protected
         self._opening_sessions: set[str] = set()
         self._closed_cleanups: set[str] = set()
+        self._process_values_loaded: set[str] = set()
+        self._process_source_roots: dict[str, Path] = {}
         self.fault: Callable[[str], None] = lambda stage: None
         from llm_cli.workspace.runtime_refresh import RuntimeRefresher
 
@@ -717,11 +734,47 @@ class IsolatedWorkspaceManager:
         with _source(managed.git_dir, marker.name) as descriptor:
             if _read(descriptor, 1024).decode() != state.creation_token:
                 raise _error("isolated worktree ownership changed")
+        self._load_process_values(state, managed.path, managed.git_dir)
         self.runtime.recover(workspace_id)
         state = self.get(workspace_id)
         assert state is not None
         register_runtime_paths(managed.path, state.runtime_paths)
         return state
+
+    def _load_process_values(
+        self, state: IsolatedState, root: Path, admin: Path
+    ) -> None:
+        self._process_source_roots[state.workspace_id] = root
+        if state.workspace_id in self._process_values_loaded:
+            return
+        from llm_cli.workspace.process_privacy import load_values
+
+        load_values(root, admin, state.workspace_id, state.creation_token)
+        self._process_values_loaded.add(state.workspace_id)
+
+    def check_process_source(self, workspace_id: str, content: str | bytes) -> None:
+        """Check cached actual values only; operator RPCs add no scans or queries."""
+        root = self._process_source_roots.get(workspace_id)
+        if root is not None and contains_private_source(root, content):
+            raise _error("source content contains private runtime material")
+
+    def remember_process_values(
+        self, workspace: WorkspaceRecord, values: tuple[str, ...]
+    ) -> None:
+        """Durably retain launch-time private values before any user program runs."""
+        from llm_cli.workspace.process_privacy import remember_values
+
+        state = self.validate(workspace.workspace_id)
+        current = self.store.get_workspace(workspace.workspace_id)
+        if current is None or (current.canonical_path, current.git_dir) != (
+            workspace.canonical_path,
+            workspace.git_dir,
+        ):
+            raise _error("private process workspace binding changed")
+        assert workspace.git_dir is not None
+        root, admin = Path(workspace.canonical_path), Path(workspace.git_dir)
+        remember_values(root, admin, state, self.candidate_dir, values)
+        self._process_values_loaded.add(state.workspace_id)
 
     def _process_known_paths(self, state: IsolatedState) -> set[str]:
         known = (
@@ -1577,7 +1630,30 @@ class IsolatedWorkspaceManager:
                             path, managed.git_dir, primary, state
                         )
                     )
+            if closed:
+                from llm_cli.workspace.process_privacy import (
+                    load_values,
+                    retire_values,
+                    scrub_source_copies,
+                )
+
+                try:
+                    load_values(
+                        path, managed.git_dir, state.workspace_id, state.creation_token
+                    )
+                except LlmCoordError:
+                    self._scrub_private(path, state, generated)
+                    raise
             self._scrub_private(path, state, generated)
+            if closed:
+                generated.update(scrub_source_copies(path))
+                if owner is not None:
+                    generated.update(scrub_source_copies(archive_data, guard_root=path))
+                # All matching private source is gone; ambiguous ordinary files
+                # may still quarantine the tree, but no private seed remains.
+                retire_values(
+                    path, managed.git_dir, state.workspace_id, state.creation_token
+                )
             if not closed and self._orphaned_creation(state):
                 # Known runtime generations are disposable too, even when an
                 # unknown source edit prevents retiring the worktree itself.
@@ -1720,6 +1796,9 @@ class IsolatedWorkspaceManager:
         # Pruning only touches missing managed registrations, never an existing
         # directory created by a user after rmdir. Foreign stale entries abort.
         prune_managed_worktrees(primary, managed_root=self.managed_root)
+        forget_source_private_values(path)
+        self._process_values_loaded.discard(workspace_id)
+        self._process_source_roots.pop(workspace_id, None)
         self.runtime.cleanup(workspace_id)
         with self.store.connection() as con, immediate_transaction(con):
             con.execute(

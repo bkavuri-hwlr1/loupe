@@ -2018,6 +2018,8 @@ class DaemonService:
         if not isinstance(text, str):
             raise ValueError("content must be a string, including an empty string")
         content = text.encode("utf-8")
+        if session.workspace_mode == "isolated" and session.workspace_id:
+            self.isolated_workspaces.check_process_source(session.workspace_id, content)
         executable = params.get("executable", base.mode == EXECUTABLE_MODE)
         if not isinstance(executable, bool):
             raise ValueError("executable must be a boolean")

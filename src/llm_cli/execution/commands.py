@@ -20,7 +20,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 
-from llm_cli.agent.source_policy import ensure_safe_content
+from llm_cli.agent.source_policy import (
+    cached_source_private_values,
+    ensure_safe_content,
+)
 from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
@@ -166,6 +169,7 @@ class CommandRunner:
                 self.root,
                 tuple(sorted(self.runtime_files)),
                 source_paths=tuple(sorted(self.sensitive_paths)),
+                strict_private=True,
             )
             env = self._environment(home)
             if environment is not None:
@@ -259,11 +263,11 @@ class CommandRunner:
         state, exit_code = "error", None
         files: dict[str, bytes | None] = {}
         environment = None
-        sensitive_values: tuple[str, ...] = ()
+        sensitive_values = cached_source_private_values(self.root)
         try:
             environment = self.environment() if self.environment is not None else None
             if environment is not None:
-                sensitive_values = environment.sensitive_values
+                sensitive_values += environment.sensitive_values
             public_argv = list(argv)
             public_cwd = relative_cwd
             for value in sorted(sensitive_values, key=len, reverse=True):

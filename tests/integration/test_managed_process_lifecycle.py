@@ -14,7 +14,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager, suppress
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -28,6 +28,7 @@ from llm_cli.paths import AppPaths
 from llm_cli.protocol.client import DaemonClient
 from llm_cli.providers.base import ModelTurn, ToolCallRequest, ToolCallResult
 from llm_cli.workspace.authority import process_start_identity
+from llm_cli.workspace.identity import identify_path
 
 _SETTLED = {"completed", "failed", "cancelled", "awaiting_review"}
 _PYTHON = str(Path(sys.executable).resolve())
@@ -180,7 +181,7 @@ class _ProcessProvider:
         self.history.append({"role": "user", "text": text})
         self.phase, self.results = 0, []
         flow = self.plan["flow"]
-        if flow == "read":
+        if flow in {"read", "guarded_read", "public_read"}:
             return self._call("read_file", path=self.plan.get("path", "source.txt"))
         if flow == "output":
             return self._call("process_output", process_id=self.plan["process_id"])
@@ -203,8 +204,32 @@ class _ProcessProvider:
         self._record()
         self.phase += 1
         flow = self.plan["flow"]
+        if flow == "guarded_read":
+            if self.phase == 1:
+                assert results[0].is_error, (
+                    "private runtime copied into source was readable"
+                )
+                return self._call(
+                    "search_text", query="PRIVATE_EXPORT", path="generated.py"
+                )
+            if self.phase == 2:
+                return self._call(
+                    "finish_task",
+                    answer="private generated source remains withheld",
+                    summary="done",
+                )
         if flow != "start_refused":
             assert all(not item.is_error for item in results), results
+        if flow == "copy_runtime":
+            if self.phase == 1:
+                self.process_id = str(_json_prefix(results[0].content)["process_id"])
+                return self._call("process_output", process_id=self.process_id)
+            if "process_output" in results[0].call_id:
+                if "c14-source-copy-ready" not in results[0].content:
+                    assert self.phase < 100, "managed runtime copier never became ready"
+                    time.sleep(0.02)
+                    return self._call("process_output", process_id=self.process_id)
+                return self._call("stop_process", process_id=self.process_id)
         offset = 2 if flow == "server_roundtrip" and self.plan.get("edit") else 0
         if offset and self.phase == 1:
             return self._call(
@@ -408,7 +433,14 @@ class _Daemon:
         secret_file.chmod(0o600)
         return result
 
-    def task(self, label: str, flow: str, **plan: Any) -> dict[str, Any]:
+    def task(
+        self,
+        label: str,
+        flow: str,
+        *,
+        expected_states: tuple[str, ...] = ("completed",),
+        **plan: Any,
+    ) -> dict[str, Any]:
         request = {"label": label, "flow": flow, **plan}
         accepted = self.rpc(
             "task.run",
@@ -435,7 +467,9 @@ class _Daemon:
         for item in evidence["results"]:
             if "start_process" in item["call_id"] and not item["is_error"]:
                 self._remember(_json_prefix(item["content"]))
-        assert result["state"] == "completed", self.rpc("task.events", task_id=label)
+        assert result["state"] in expected_states, self.rpc(
+            "task.events", task_id=label
+        )
         return evidence
 
     def _remember(self, record: dict[str, Any]) -> None:
@@ -1128,3 +1162,188 @@ if '--keepalive' in sys.argv:
         daemon.rpc(
             "workspace.process.stop", **daemon.credentials, process_id=row["process_id"]
         )
+
+
+@pytest.mark.parametrize(
+    ("private_value", "runtime_disposition"),
+    [
+        ("c14-runtime-source-opaque-marker-6b3f90d1", "delete"),
+        ("zQ7!m2", "overwrite"),
+        ("c14-runtime-source-rotated-marker-84e9ac20", "overwrite"),
+    ],
+    ids=[
+        "opaque-value-deleted-env",
+        "short-value-overwritten-env",
+        "opaque-value-overwritten-env",
+    ],
+)
+def test_managed_private_runtime_cannot_be_read_or_published_as_source_after_restart(
+    tmp_path: Path,
+    repository_factory: Any,
+    private_value: str,
+    runtime_disposition: str,
+) -> None:
+    assert not contains_secret_material(private_value)
+    program = """\
+from pathlib import Path
+import json, sys, time
+value = Path('.env').read_text().partition('=')[2].strip()
+Path('generated.py').write_text('PRIVATE_EXPORT = ' + repr(value) + '\\n')
+Path('runtime-cache.json').write_text(json.dumps({'public': value}))
+if sys.argv[1] == 'delete':
+    Path('.env').unlink()
+else:
+    Path('.env').write_text('MARKER=replaced-runtime-input\\n')
+print('c14-source-copy-ready', flush=True)
+time.sleep(120)
+"""
+    root = repository_factory(
+        tmp_path,
+        {
+            "copy_runtime.py": program,
+            ".gitignore": ".env\nruntime-cache.json\n",
+        },
+    )
+    (root / ".env").write_text("MARKER=" + private_value + "\n")
+    (root / "runtime-cache.json").write_text('{"public":"initial"}')
+    with _daemon(tmp_path, root) as daemon:
+        opened = daemon.open(approved=[".env"])
+        private = Path(opened["workspace"]["canonical_path"])
+        absent = identify_path(private / "generated.py")
+        assert absent.absent
+        absent_base = asdict(absent)
+        daemon.task(
+            "copy-private-runtime",
+            "copy_runtime",
+            argv=[_PYTHON, "-u", "copy_runtime.py", runtime_disposition],
+            expected_states=("completed", "failed"),
+        )
+        assert private_value in (private / "generated.py").read_text()
+        if runtime_disposition == "delete":
+            assert not (private / ".env").exists()
+        else:
+            assert private_value not in (private / ".env").read_text()
+        assert not (root / "generated.py").exists()
+
+        def assert_rpc_source_is_withheld() -> None:
+            for read_only in (False, True):
+                with pytest.raises(
+                    LlmCoordError, match=r"requires a shared workspace|private runtime"
+                ):
+                    daemon.rpc(
+                        "workspace.read_file",
+                        **daemon.credentials,
+                        relative_path="generated.py",
+                        read_only=read_only,
+                    )
+            with pytest.raises(LlmCoordError, match="private runtime"):
+                daemon.rpc(
+                    "workspace.stage_file",
+                    **daemon.credentials,
+                    candidate_id="must-not-store-runtime-value",
+                    relative_path="generated.py",
+                    base=absent_base,
+                    content=(private / "generated.py").read_text(),
+                )
+
+        assert_rpc_source_is_withheld()
+        evidence = daemon.task(
+            "guarded-source-read",
+            "guarded_read",
+            path="generated.py",
+            expected_states=("completed", "failed"),
+        )
+        assert evidence["results"][0]["is_error"]
+        assert private_value not in json.dumps(evidence)
+        search = next(
+            row for row in evidence["results"] if "search_text" in row["call_id"]
+        )
+        assert "PRIVATE_EXPORT =" not in search["content"]
+
+        def assert_retained_output_is_screened(label: str) -> None:
+            if runtime_disposition == "delete":
+                return
+            output = daemon.task(
+                label,
+                "command",
+                argv=[
+                    _PYTHON,
+                    "-c",
+                    "from pathlib import Path; "
+                    "print(Path('runtime-cache.json').read_text())",
+                ],
+            )
+            content = json.dumps(output)
+            assert private_value not in content
+            assert "[private value]" in content
+
+        assert_retained_output_is_screened("rotated-private-output")
+        assert daemon.daemon is not None
+        daemon.daemon.kill()
+        daemon.daemon.wait(timeout=10)
+        daemon.spawn()
+        daemon.rpc(
+            "session.resume",
+            **daemon.credentials,
+            command_environment={"C14_PROJECT_MODE": "opening-session"},
+        )
+        assert private_value in (private / "generated.py").read_text()
+        if runtime_disposition == "delete":
+            assert not (private / ".env").exists()
+        else:
+            assert private_value not in (private / ".env").read_text()
+        assert_rpc_source_is_withheld()
+        restarted = daemon.task(
+            "guarded-source-after-restart",
+            "guarded_read",
+            path="generated.py",
+            expected_states=("completed", "failed"),
+        )
+        assert restarted["results"][0]["is_error"]
+        assert private_value not in json.dumps(restarted)
+        assert_retained_output_is_screened("rotated-private-output-after-restart")
+        assert not (root / "generated.py").exists()
+        with closing(sqlite3.connect(daemon.paths.control_db)) as con:
+            assert private_value not in "\n".join(con.iterdump())
+        for path in daemon.paths.data_dir.rglob("*"):
+            if path.is_file() and not path.is_relative_to(
+                daemon.paths.data_dir / "isolated-worktrees"
+            ):
+                assert private_value.encode() not in path.read_bytes(), path
+        for path in [
+            *daemon.root.glob("*.log"),
+            *daemon.paths.state_dir.rglob("*.jsonl"),
+        ]:
+            assert private_value.encode() not in path.read_bytes(), path
+
+
+def test_private_runtime_value_already_in_opening_public_source_remains_readable(
+    tmp_path: Path,
+    repository_factory: Any,
+) -> None:
+    public_value = "development"
+    root = repository_factory(
+        tmp_path,
+        {
+            "public.py": 'MODE = "development"\n',
+            "copy_runtime.py": (
+                "import time\nprint('ready', flush=True)\ntime.sleep(120)\n"
+            ),
+            ".gitignore": ".env\n",
+        },
+    )
+    (root / ".env").write_text("MARKER=" + public_value + "\n")
+    with _daemon(tmp_path, root) as daemon:
+        daemon.open(approved=[".env"])
+        evidence = daemon.task(
+            "public-value-start", "start", argv=[_PYTHON, "-u", "copy_runtime.py"]
+        )
+        process = _started_process(evidence)
+        daemon.rpc(
+            "workspace.process.stop",
+            **daemon.credentials,
+            process_id=process["process_id"],
+        )
+        read = daemon.task("public-value-read", "public_read", path="public.py")
+        assert public_value in read["results"][0]["content"]
+        assert not read["results"][0]["is_error"]

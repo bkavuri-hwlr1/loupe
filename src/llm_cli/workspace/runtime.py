@@ -685,7 +685,11 @@ def url_credentials(text: str, *, minimum: int = 1) -> tuple[str, ...]:
 
 
 def private_output_values(
-    root: Path, paths: tuple[str, ...], *, source_paths: tuple[str, ...] = ()
+    root: Path,
+    paths: tuple[str, ...],
+    *,
+    source_paths: tuple[str, ...] = (),
+    strict_private: bool = False,
 ) -> tuple[str, ...]:
     """Keep actual private values in memory only; ordinary ignored files are inert.
 
@@ -693,8 +697,13 @@ def private_output_values(
     credential files inside them are read. ``source_paths`` are screened source
     files, such as tests with fake keys; their short literals (max_tokens=4)
     are test data, so only values of at least _UNNAMED_MINIMUM count.
+    Managed writers use strict_private to retain short private-file values too;
+    source-fixture floors remain unchanged.
     """
-    values: set[str] = set()
+    from llm_cli.agent.source_policy import cached_source_private_values
+
+    values: set[str] = set(cached_source_private_values(root))
+    private_minimum = 1 if strict_private else _UNNAMED_MINIMUM
     floor = 1
 
     def add(value: object, minimum: int = 1) -> None:
@@ -753,16 +762,16 @@ def private_output_values(
                 # protection merely by containing a NUL or invalid UTF-8 byte.
                 text = body.decode("utf-8", errors="replace")
             if private:
-                add(text, _UNNAMED_MINIMUM)
+                add(text, private_minimum)
                 text = text.replace("\0", "\n").replace("\ufffd", "\n")
-                add(text, _UNNAMED_MINIMUM)
+                add(text, private_minimum)
                 with suppress(ValueError):
                     words = shlex.split(text, comments=True)
                     for index, word in enumerate(words[:-1]):
                         if word.casefold() == "password":
                             add(words[index + 1])
                         elif word.casefold() in {"login", "account"}:
-                            add(words[index + 1], _UNNAMED_MINIMUM)
+                            add(words[index + 1], private_minimum)
                 for line in text.splitlines():
                     values.update(url_credentials(line.strip(), minimum=floor))
                     assignment = _ASSIGNMENT.match(line)
@@ -777,7 +786,7 @@ def private_output_values(
                     structured = parse(text)
                     sensitive_fields(structured)
                     if private:
-                        add(structured, _UNNAMED_MINIMUM)
+                        add(structured, private_minimum)
             for line in text.splitlines():
                 if ":" in line and _SECRET_KEY.search(line):
                     for field in _YAML_FIELD.finditer(line):
@@ -787,7 +796,7 @@ def private_output_values(
                 assignment = _ASSIGNMENT.match(line)
                 if assignment and (private or _SECRET_KEY.search(assignment[1])):
                     minimum = (
-                        1 if _SECRET_KEY.search(assignment[1]) else _UNNAMED_MINIMUM
+                        1 if _SECRET_KEY.search(assignment[1]) else private_minimum
                     )
                     add(assignment[2].strip().strip("\"'"), minimum)
                     with suppress(ValueError):

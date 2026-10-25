@@ -7,6 +7,7 @@ import functools
 import hashlib
 import itertools
 import json
+import shutil
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
@@ -735,12 +736,22 @@ class SharedTaskExecutionRunner:
                             )
                             assert self.isolated is not None
                             self.isolated.remember_process_policy(workspace)
-                            return commands.prepare_process(
+                            prepared = commands.prepare_process(
                                 argv,
                                 cwd,
                                 process_id=process_id,
                                 run_root=manager.run_root,
                             )
+                            try:
+                                self.isolated.remember_process_values(
+                                    workspace, prepared.sensitive_values
+                                )
+                            except BaseException:
+                                # The GO-gated program has not started; retire
+                                # its prepared private home on receipt failure.
+                                shutil.rmtree(prepared.run_directory)
+                                raise
+                            return prepared
 
                         try:
                             result = manager.start(

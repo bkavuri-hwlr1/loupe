@@ -926,3 +926,19 @@ def test_retained_runtime_identity_still_refuses_unsafe_workspace_links(
     register_runtime_workspace(root, tmp_path / "source")
     with pytest.raises((LlmCoordError, ValueError), match=r"protected|escapes"):
         runtime_identity(root, ["node_modules"])
+
+
+def test_managed_private_values_include_short_unnamed_config(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("MARKER=zQ7!m2\nPORT=1\n")
+    normal = private_output_values(tmp_path, (".env",))
+    managed = private_output_values(tmp_path, (".env",), strict_private=True)
+    assert "zQ7!m2" not in normal and "1" not in normal
+    assert "zQ7!m2" in managed and "1" in managed
+
+
+def test_managed_private_values_preserve_source_fixture_floor(tmp_path: Path) -> None:
+    (tmp_path / "fixture.py").write_text('password = "fake"\n')
+    values = private_output_values(
+        tmp_path, (), source_paths=("fixture.py",), strict_private=True
+    )
+    assert "fake" not in values

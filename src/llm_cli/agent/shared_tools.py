@@ -29,8 +29,8 @@ from llm_cli.agent.bounded_search import SearchBudget, SearchError, SearchSnapsh
 from llm_cli.agent.hooks import EDITED_PATH
 from llm_cli.agent.limits import ExecutionLimits
 from llm_cli.agent.source_policy import (
-    contains_secret_material,
-    ensure_safe_content,
+    contains_unsafe_source,
+    ensure_safe_source,
     excluded_paths,
 )
 from llm_cli.agent.tools import (
@@ -426,6 +426,11 @@ class SharedToolBroker(ToolBroker):
         """Return immutable pending files; only the runner may publish them."""
 
         with self.publication_lock:
+            for relative, content in self._contents.items():
+                ensure_safe_source(self.worktree, content or b"")
+                ensure_safe_source(
+                    self.worktree, self._observations[relative].content or b""
+                )
             return tuple(
                 BatchFile(
                     relative_path=relative,
@@ -472,7 +477,7 @@ class SharedToolBroker(ToolBroker):
         # Reject a known third state before installing any part of the overlay.
         for item in files:
             self.check_cancelled()
-            ensure_safe_content(item.content or b"")
+            ensure_safe_source(self.worktree, item.content or b"")
             if item.mode == SYMLINK_MODE and item.content is not None:
                 self._validate_link(item.relative_path, item.content)
             observe(item)
@@ -643,6 +648,7 @@ class SharedToolBroker(ToolBroker):
                             adopted.append(relative)
                         continue
                     current, theirs = self._observe(relative, screen=False, typed=True)
+                    ensure_safe_source(self.worktree, theirs or b"")
                     if current == observed.base:
                         continue
                     desired = result_identity(
@@ -673,7 +679,7 @@ class SharedToolBroker(ToolBroker):
                     ):
                         unmerged.append(relative)
                         continue
-                    ensure_safe_content(theirs or b"")
+                    ensure_safe_source(self.worktree, theirs or b"")
                     if ours is not None and theirs is not None:
                         result = merge_text(observed.content or b"", ours, theirs)
                 except (WorkspaceBrokerError, IdentityError, LlmCoordError):
@@ -824,6 +830,9 @@ class SharedToolBroker(ToolBroker):
 
     def usage_snapshot(self) -> dict[str, object]:
         with self.publication_lock:
+            for relative, observation in self._observations.items():
+                ensure_safe_source(self.worktree, observation.content or b"")
+                ensure_safe_source(self.worktree, self._contents.get(relative) or b"")
             saved = ToolBroker.usage_snapshot(self)
             saved["shared_workspace_state"] = {
                 "version": 3,
@@ -903,7 +912,7 @@ class SharedToolBroker(ToolBroker):
                 if item.get("binary", False):
                     binary.add(relative)
                 original = _decode(item["read_content"])
-                ensure_safe_content(original or b"")
+                ensure_safe_source(self.worktree, original or b"")
                 base = _restore_identity(item["base"], original)
                 observations[relative] = _Observation(base, original)
                 access = item.get("permissions")
@@ -912,7 +921,7 @@ class SharedToolBroker(ToolBroker):
                         raise ValueError("saved filesystem permissions are invalid")
                     permissions[relative] = access
                 content = _decode(item["content"])
-                ensure_safe_content(content or b"")
+                ensure_safe_source(self.worktree, content or b"")
                 pending = item.get("pending", content is not None)
                 if not isinstance(pending, bool):
                     raise ValueError("invalid pending flag")
@@ -1237,7 +1246,11 @@ class SharedToolBroker(ToolBroker):
                     scanned_bytes += len(content)
                     if scanned_bytes > self.limits.max_read_bytes:
                         return finish(stop_reason="read_size_limit; narrow path")
-                    if contains_secret_material(content) if secret is None else secret:
+                    if (
+                        contains_unsafe_source(self.worktree, content)
+                        if secret is None
+                        else secret
+                    ):
                         withheld += 1
                         continue
                     current = content.decode("utf-8") if text is None else text
@@ -1276,7 +1289,7 @@ class SharedToolBroker(ToolBroker):
             )
             if content is None:
                 return None, False, None
-            if contains_secret_material(content):
+            if contains_unsafe_source(self.worktree, content):
                 return content, True, None
             try:
                 text = content.decode("utf-8")
@@ -1359,7 +1372,7 @@ class SharedToolBroker(ToolBroker):
             ObjectKind.SYMLINK if symlink else ObjectKind.REGULAR,
         }:
             raise WorkspaceBrokerError("path has a different object type")
-        ensure_safe_content(content or b"")
+        ensure_safe_source(self.worktree, content or b"")
         if self.usage.bytes_read + len(content or b"") > self.limits.max_read_bytes:
             raise WorkspaceBrokerError(
                 "this execution reached its total read-size limit"
@@ -1535,8 +1548,8 @@ class SharedToolBroker(ToolBroker):
         for relative, content in sorted(self._contents.items()):
             self._target(relative, allow_symlink=True)
             observed = self._observations[relative]
-            ensure_safe_content(observed.content or b"")
-            ensure_safe_content(content or b"")
+            ensure_safe_source(self.worktree, observed.content or b"")
+            ensure_safe_source(self.worktree, content or b"")
             if (
                 relative in self._binary
                 or _binary_content(observed.content)
@@ -1735,7 +1748,7 @@ class SharedToolBroker(ToolBroker):
             raise WorkspaceBrokerError("use read_symlink for link targets")
         if _binary_content(content):
             raise WorkspaceBrokerError("use read_binary for binary content")
-        ensure_safe_content(content or b"")
+        ensure_safe_source(self.worktree, content or b"")
         size = len(content) if content is not None else 0
         if charge and self.usage.bytes_read + size > self.limits.max_read_bytes:
             raise WorkspaceBrokerError(
@@ -1751,7 +1764,7 @@ class SharedToolBroker(ToolBroker):
     def _remember(
         self, relative: str, identity: FileIdentity, content: bytes | None
     ) -> None:
-        ensure_safe_content(content or b"")
+        ensure_safe_source(self.worktree, content or b"")
         if relative in self._contents:
             return
         proposed = {**self._observations, relative: _Observation(identity, content)}
@@ -1763,7 +1776,7 @@ class SharedToolBroker(ToolBroker):
     def _stage(
         self, relative: str, content: bytes | None, *, mode: str | None = None
     ) -> ToolOutcome:
-        ensure_safe_content(content or b"")
+        ensure_safe_source(self.worktree, content or b"")
         if len(content or b"") > min(
             MAX_SHARED_TEXT_BYTES, self.limits.max_write_bytes
         ):
@@ -1814,7 +1827,7 @@ class SharedToolBroker(ToolBroker):
         }:
             raise WorkspaceBrokerError(f"{relative} is not a regular source file")
         if screen:
-            ensure_safe_content(content or b"")
+            ensure_safe_source(self.worktree, content or b"")
         return identity, content
 
     def _target(
