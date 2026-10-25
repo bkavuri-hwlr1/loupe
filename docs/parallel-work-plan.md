@@ -1007,7 +1007,8 @@ TCP/IP remains denied. Owner-bound private receipts retain launch-time values
 through runtime changes and restart; model source reads, artifacts, publication
 and later output remain screened. Cleanup scrubs private copies and receipts
 while preserving ordinary source evidence. Process I/O and waits stay outside
-daemon/publication locks; hot RPC source guards use cached state. See
+daemon/publication locks; hot RPC source guards use cached state. Closing an
+unused process manager does not initialize or query storage. See
 [the guide](isolated-workspaces.md#managed-background-processes).
 
 *Depends on C13: switching and closing must stop or keep processes

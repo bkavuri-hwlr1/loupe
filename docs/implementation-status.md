@@ -84,7 +84,8 @@ the remaining planned capabilities are listed below.
   artifacts, publication and later command/check output. Owned cleanup scrubs
   private source copies and receipts while preserving ordinary source evidence.
   Process I/O and waits run outside daemon/publication locks, and source guards
-  use cached state on ordinary RPC paths.
+  use cached state on ordinary RPC paths. Teardown of an unused manager does
+  not initialize or query process storage.
   See [the guide](isolated-workspaces.md#managed-background-processes).
 
 - Private runtime export (Wave 9 C15): `loupe workspace runtime export PATH

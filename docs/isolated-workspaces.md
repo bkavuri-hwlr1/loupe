@@ -310,7 +310,8 @@ identity verification, and names each process and its stop command. This notice
 also applies just after a task finishes while its worker is settling. Incoming
 source sync, runtime refresh and private cleanup wait with the same notice while
 a process may still write. Process start, output and stop do not hold the daemon
-or publication locks while waiting.
+or publication locks while waiting. Closing a daemon before process storage
+initialization does not open or query a process database.
 
 Migration 33 records the owner, binding generation, PID, process start identity
 and process group. On restart Loupe stops a surviving group only when all process
