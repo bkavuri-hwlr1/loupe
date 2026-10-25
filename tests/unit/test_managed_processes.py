@@ -151,6 +151,21 @@ def test_constructor_does_not_query_unmigrated_database(tmp_path: Path) -> None:
     assert not store.path.exists()
 
 
+def test_stop_all_never_opens_uninitialized_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ControlStore(tmp_path / "uninitialized.sqlite3")
+    manager = ManagedProcessManager(store, tmp_path / "managed")
+
+    def refuse_connection() -> None:
+        pytest.fail("shutdown must not open an uninitialized process store")
+
+    monkeypatch.setattr(store, "connection", refuse_connection)
+    assert manager.stop_all() == []
+    assert manager._shutdown
+    assert not store.path.exists()
+
+
 def test_group_identity_and_lifetime_activity(environment: Environment) -> None:
     env = environment
     row = env.start("import time; print('ready', flush=True); time.sleep(30)")

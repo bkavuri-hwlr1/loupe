@@ -908,9 +908,13 @@ class ManagedProcessManager:
         return notices
 
     def stop_all(self) -> builtins.list[str]:
-        self._load_active()
-        with self._lock:
+        # Construction may be used for an uninitialized service's code probe.
+        # Synchronize with an in-flight load, without opening the database only
+        # to close a manager that has never recovered or admitted a process.
+        with self._load_lock, self._lock:
             self._shutdown = True
+            if not self._loaded:
+                return []
             ids = [
                 key
                 for key, live in self._live.items()
