@@ -1003,8 +1003,12 @@ runtime refresh and cleanup wait while a process may write. Verified restart
 survivors stop; reused or unverifiable identities remain visible and fenced
 without unsafe signals. Screened output is bounded to 64 KiB with an 8 KiB tool
 tail. Workspace-private Unix sockets support server/client workflows while
-TCP/IP remains denied. Process I/O and waits stay outside daemon/publication
-locks. See [the guide](isolated-workspaces.md#managed-background-processes).
+TCP/IP remains denied. Owner-bound private receipts retain launch-time values
+through runtime changes and restart; model source reads, artifacts, publication
+and later output remain screened. Cleanup scrubs private copies and receipts
+while preserving ordinary source evidence. Process I/O and waits stay outside
+daemon/publication locks; hot RPC source guards use cached state. See
+[the guide](isolated-workspaces.md#managed-background-processes).
 
 *Depends on C13: switching and closing must stop or keep processes
 explicitly.*

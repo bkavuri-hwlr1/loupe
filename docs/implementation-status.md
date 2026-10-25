@@ -78,7 +78,12 @@ the remaining planned capabilities are listed below.
   switching refuses with exact stop commands. Incoming sync, runtime refresh
   and cleanup defer while a writer remains. Restart recovery stops verified
   survivors and preserves an attention fence for reused or unverifiable
-  identities. Process I/O and waits run outside daemon/publication locks.
+  identities. Owner-bound private receipts preserve launch-time value screening
+  through runtime rotation and restart, including source reads, searches,
+  artifacts, publication and later command/check output. Owned cleanup scrubs
+  private source copies and receipts while preserving ordinary source evidence.
+  Process I/O and waits run outside daemon/publication locks, and source guards
+  use cached state on ordinary RPC paths.
   See [the guide](isolated-workspaces.md#managed-background-processes).
 
 - Private runtime export (Wave 9 C15): `loupe workspace runtime export PATH

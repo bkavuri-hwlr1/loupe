@@ -277,7 +277,14 @@ their private home, but cannot read the primary checkout or provider state.
 Each process retains at most 64 KiB of screened output; output inspection returns
 the last 8 KiB and indicates truncation. Oversized lines are omitted. Recognized
 secret material withholds remaining output, while actual copied private values
-are replaced with `[private value]` before storage or model output.
+are replaced with `[private value]` before storage or model output. Managed
+writers retain short private configuration values too. A private, owner-bound
+receipt keeps launch-time values protected after the original runtime changes
+or disappears and across daemon restarts. Source files containing those values
+are withheld from file reads, searches, source artifacts and publication; values
+already present in accepted opening source remain usable. The receipt stays
+outside SQL, source artifacts and model access, and is scrubbed by owned cleanup
+once live work and held proposals release the workspace.
 
 Ordinary command networking remains denied, including TCP/IP localhost listeners.
 For local server/client workflows, both tools receive `LOUPE_PROCESS_SOCKET_DIR`,
