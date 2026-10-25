@@ -994,6 +994,18 @@ dispatch), `src/llm_cli/cli/composer.py` (command list),
 
 ### C14. Managed background processes
 
+**Implementation complete.** Isolated-only processes use the existing command
+approval, sandbox, environment and screening policies; shared starts are refused.
+Pending private edits are installed before launch. Migration 33 stores owner
+binding, PID, start identity and process group. Close stops the whole group;
+mode switches refuse with exact profile-aware stop commands. Incoming sync,
+runtime refresh and cleanup wait while a process may write. Verified restart
+survivors stop; reused or unverifiable identities remain visible and fenced
+without unsafe signals. Screened output is bounded to 64 KiB with an 8 KiB tool
+tail. Workspace-private Unix sockets support server/client workflows while
+TCP/IP remains denied. Process I/O and waits stay outside daemon/publication
+locks. See [the guide](isolated-workspaces.md#managed-background-processes).
+
 *Depends on C13: switching and closing must stop or keep processes
 explicitly.*
 
@@ -1011,15 +1023,14 @@ processes, so sync and cleanup never race a live writer.
   - Users get `loupe workspace process list|stop`.
 - **Where they run.**
   - Isolated sessions run processes in their private worktree.
-  - Shared sessions run them in a dedicated snapshot. The docs must say
-    plainly that the snapshot does not follow later edits. Alternatively,
-    refuse processes in shared mode for now; decide in the PR.
+  - Shared sessions refuse starts; use an isolated session for processes.
 - **Tracking.** Record PID plus process start identity plus process group,
   never PID alone. Output goes into a bounded, screened ring buffer. Network
   binding to localhost ports follows the sandbox policy.
 - **Lifecycle.**
-  - Processes stop when their session closes or switches mode, or when the
-    user stops them.
+  - Processes stop when their session closes or the user stops them.
+  - A mode switch refuses while processes remain and names each process and
+    the exact command to stop it.
   - After a daemon restart, a process whose identity still matches is
     stopped by process group; an unverifiable one is reported, not
     signalled.

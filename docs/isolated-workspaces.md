@@ -251,14 +251,69 @@ its retained runtime generation. See
 [command environments](command-environments.md) for filtering, names-only
 inspection, output screening, reconnect behavior, and temporary owner-only
 terminal capture for retained apply after the origin closes. Dependency
-rebuilding requires the explicit shared setting above; long-running process
-interfaces remain future work. An isolated session does not grant additional
-access to provider credentials.
+rebuilding requires the explicit shared setting above. An isolated session does
+not grant additional access to provider credentials.
 
 Configured MCP servers follow the same approval and plan-mode rules as shared
 sessions. They remain external authority, outside the worktree's scope and
 sandbox enforcement; isolation does not make them safe to trust. Exploration
 helpers retain their read-only broker view and have no MCP access.
+
+## Managed background processes
+
+Agents can use `start_process` with an argv and checkout-relative cwd, inspect its
+screened output with `process_output`, and end it with `stop_process`. Processes
+run in the isolated session's private worktree. Pending file-tool edits are
+installed there before launch; they still require normal checks and publication.
+Stop existing processes before installing another pending file-tool overlay. Shared sessions refuse process starts. Between
+tasks, switch with `/workspace isolated` to use them. Exploration helpers cannot
+start or stop processes; plan mode permits output inspection only.
+
+The `agent_commands` approval setting applies. An interactive process-start
+approval is separate from approval for disposable `run_command` snapshots.
+Processes use the same operating-system sandbox, C9 command environment and
+secret-output screening as commands. They can write the private worktree and
+their private home, but cannot read the primary checkout or provider state.
+Each process retains at most 64 KiB of screened output; output inspection returns
+the last 8 KiB and indicates truncation. Oversized lines are omitted. Recognized
+secret material withholds remaining output, while actual copied private values
+are replaced with `[private value]` before storage or model output.
+
+Ordinary command networking remains denied, including TCP/IP localhost listeners.
+For local server/client workflows, both tools receive `LOUPE_PROCESS_SOCKET_DIR`,
+an owner-only directory for this workspace's Unix-domain sockets. A server can
+bind a socket there and `run_command` can connect from its disposable snapshot.
+Other workspaces cannot read this directory. Export useful runtime files with
+`workspace runtime export` before closing; scratch socket files are retired with
+the workspace.
+
+List and stop processes from the owning session's profile:
+
+```sh
+loupe workspace process list --session SESSION_ID
+loupe workspace process stop PROCESS_ID --session SESSION_ID
+```
+
+Use global `--json` for structured records and `--profile PROFILE` for a
+non-default profile. Notices include the exact profile-aware stop command.
+Stopping ends the whole owned process group, first with SIGTERM and then SIGKILL
+after a grace period. Closing the session stops its groups before cleanup. A mode
+switch refuses while any process is starting, running, stopping or awaiting
+identity verification, and names each process and its stop command. Incoming
+source sync, runtime refresh and private cleanup wait with the same notice while
+a process may still write. Process start, output and stop do not hold the daemon
+or publication locks while waiting.
+
+Migration 33 records the owner, binding generation, PID, process start identity
+and process group. On restart Loupe stops a surviving group only when all process
+identity checks match. It never signals a reused or unverifiable PID. Such a
+record remains visible and blocks private mutations; retry its displayed stop
+command after inspecting and ending the original process manually. Loupe only
+retires it once it can verify the old group is gone. Held proposals continue to
+retain their private files until apply or discard releases them. Newly generated
+ignored runtime is scrubbed only under a verified unchanged opening ignore
+policy; changed policy or unknown ordinary source preserves the private tree
+for inspection. Runtime bytes never enter source recovery archives.
 
 ## Receive and publish source
 
