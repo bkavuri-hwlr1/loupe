@@ -1894,6 +1894,15 @@ class DaemonService:
                 raise ValueError("session close is still running. " + notice)
             if session.session_id in self._pending_session_switches:
                 raise ValueError("workspace switch is already running")
+            notice = (
+                self._managed_process_notice(session.workspace_id)
+                if session.workspace_id
+                else ""
+            )
+            if notice:
+                raise ValueError(
+                    "Workspace switch waits for managed processes. " + notice
+                )
             if self._workspace_switch_worker_busy(session.session_id):
                 raise ValueError("wait for the active task worker before switching")
             self._pending_session_switches.add(session.session_id)
