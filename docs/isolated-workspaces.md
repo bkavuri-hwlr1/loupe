@@ -306,7 +306,8 @@ non-default profile. Notices include the exact profile-aware stop command.
 Stopping ends the whole owned process group, first with SIGTERM and then SIGKILL
 after a grace period. Closing the session stops its groups before cleanup. A mode
 switch refuses while any process is starting, running, stopping or awaiting
-identity verification, and names each process and its stop command. Incoming
+identity verification, and names each process and its stop command. This notice
+also applies just after a task finishes while its worker is settling. Incoming
 source sync, runtime refresh and private cleanup wait with the same notice while
 a process may still write. Process start, output and stop do not hold the daemon
 or publication locks while waiting.

@@ -75,7 +75,8 @@ the remaining planned capabilities are listed below.
   environment rules apply; private Unix-domain sockets support local
   command/server interaction without enabling TCP/IP. Migration 33 records
   owner binding, PID, start identity and group. Close stops owned groups;
-  switching refuses with exact stop commands. Incoming sync, runtime refresh
+  switching refuses with exact stop commands even while a finished task's worker
+  settles. Incoming sync, runtime refresh
   and cleanup defer while a writer remains. Restart recovery stops verified
   survivors and preserves an attention fence for reused or unverifiable
   identities. Owner-bound private receipts preserve launch-time value screening

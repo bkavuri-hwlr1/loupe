@@ -1034,7 +1034,7 @@ processes, so sync and cleanup never race a live writer.
 - **Lifecycle.**
   - Processes stop when their session closes or the user stops them.
   - A mode switch refuses while processes remain and names each process and
-    the exact command to stop it.
+    the exact command to stop it, including while a finished task's worker settles.
   - After a daemon restart, a process whose identity still matches is
     stopped by process group; an unverifiable one is reported, not
     signalled.
