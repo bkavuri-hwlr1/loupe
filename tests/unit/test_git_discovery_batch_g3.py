@@ -4,17 +4,24 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from subprocess import CompletedProcess
 from typing import Any
 
 import pytest
 
+from llm_cli.coordination.identity import normalize_remote_identity
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git import environment
+from llm_cli.git import inspect as discovery
 from llm_cli.git.inspect import RepositoryInfo, inspect_repository
 
 
 def _counted_inspect(
-    monkeypatch: pytest.MonkeyPatch, path: Path, **kwargs: Any
+    monkeypatch: pytest.MonkeyPatch,
+    path: Path,
+    *,
+    expected_processes: int = 4,
+    **kwargs: Any,
 ) -> tuple[RepositoryInfo, list[tuple[str, ...]]]:
     actual_run = environment.subprocess.run
     commands: list[tuple[str, ...]] = []
@@ -27,7 +34,7 @@ def _counted_inspect(
         patch.setattr(environment.subprocess, "run", run)
         info = inspect_repository(path, profile_id="test", **kwargs)
     # Count actual processes, including the filter preflight hidden by run_git.
-    assert len(commands) == 6, commands
+    assert len(commands) == expected_processes, commands
     assert all(command[0] == "git" for command in commands)
     assert all(
         flag in commands[0]
@@ -60,7 +67,7 @@ def _assert_identity(
 
 
 @pytest.mark.parametrize("kind", ["ordinary", "linked", "separate", "submodule"])
-def test_six_process_discovery_preserves_real_checkout_layouts(
+def test_four_process_discovery_preserves_real_checkout_layouts(
     kind: str,
     tmp_path: Path,
     repository_factory: Callable[..., Path],
@@ -236,3 +243,252 @@ def test_newlines_in_root_and_common_directory_keep_unambiguous_identity(
         target="refs/heads/main",
         oid=oid,
     )
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("false", False),
+        ("no", False),
+        ("off", False),
+        ("0", False),
+        ("", False),
+        ("FALSE", False),
+        ("No", False),
+        ("OFF", False),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        ("1", True),
+        ("TrUe", True),
+    ],
+)
+def test_batched_boolean_forms_keep_exact_four_process_budget(
+    value: str,
+    expected: bool,
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "base\n"})
+    git_run(root, "config", "core.ignorecase", value)
+    info, commands = _counted_inspect(monkeypatch, root)
+    assert info.path_case_insensitive is expected
+    config = next(command for command in commands if "--get-regexp" in command)
+    assert config[-1] == r"^(core\.ignorecase|remote\.origin\.url)$"
+    assert "--null" in config
+
+
+@pytest.mark.parametrize("kind", ["unset", "valueless"])
+def test_unset_and_valueless_ignorecase_remain_fail_closed_without_extra_git(
+    kind: str,
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "base\n"})
+    git_run(root, "config", "core.ignorecase", "false")
+    git_run(root, "config", "--unset-all", "core.ignorecase")
+    if kind == "valueless":
+        with (root / ".git/config").open("a") as handle:
+            handle.write("\n[core]\nignorecase\n")
+    info, _ = _counted_inspect(monkeypatch, root)
+    assert info.path_case_insensitive is True
+
+
+@pytest.mark.parametrize("value", ["-1", "2", "+0", "  false  ", "FALSE ", "invalid"])
+def test_uncommon_boolean_uses_git_typed_fallback(
+    value: str,
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "base\n"})
+    git_run(root, "config", "core.ignorecase", value)
+    expected = discovery._path_case_insensitive(root)
+    actual = discovery.run_git
+    commands: list[list[str]] = []
+
+    def counted(path: Path, arguments: list[str], **kwargs: Any) -> Any:
+        commands.append(arguments)
+        return actual(path, arguments, **kwargs)
+
+    monkeypatch.setattr(discovery, "run_git", counted)
+    insensitive, remote = discovery._discovery_config(root)
+    assert insensitive is expected
+    assert remote is None
+    assert len(commands) == 2
+    assert "--get-regexp" in commands[0]
+    assert "--type=bool" in commands[1]
+
+
+@pytest.mark.parametrize(
+    "remote",
+    [
+        "  git@Example.invalid:Team/répo.git \n",
+        "https://Example.invalid/Team/project.git",
+        "",
+        "git@Example.invalid:Team/repo\nname.git",
+        "git@Example.invalid:Team/repo\rname.git",
+        "git@Example.invalid:Team/repo\r\nname.git",
+    ],
+)
+def test_remote_last_value_preserves_text_stripping_and_unicode(
+    remote: str,
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "base\n"})
+    git_run(root, "config", "core.ignorecase", "true")
+    git_run(root, "config", "--add", "core.ignorecase", "false")
+    git_run(root, "config", "remote.origin.url", "https://first.invalid/old.git")
+    git_run(root, "config", "--add", "remote.origin.url", remote)
+    expected = normalize_remote_identity(
+        git_run(root, "config", "--get", "remote.origin.url")
+    )
+    info, _ = _counted_inspect(monkeypatch, root)
+    assert info.path_case_insensitive is False
+    assert info.normalized_remote == expected
+
+
+def test_valueless_remote_and_subsection_case_preserve_old_query_semantics(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "base\n"})
+    git_run(root, "config", "core.ignorecase", "false")
+    git_run(root, "config", "remote.Origin.url", "https://case.invalid/ignored.git")
+    first, _ = _counted_inspect(monkeypatch, root)
+    assert first.normalized_remote is None
+    with (root / ".git/config").open("a") as handle:
+        handle.write('\n[remote "origin"]\nurl\n')
+    second, _ = _counted_inspect(monkeypatch, root)
+    assert second.normalized_remote is None
+
+
+def test_each_inspection_sees_current_refs_config_includes_and_remote(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "base\n"})
+    git_run(root, "config", "core.ignorecase", "true")
+    git_run(root, "config", "remote.origin.url", "https://base.invalid/branch.git")
+    included = tmp_path / "included config"
+    included.write_text(
+        '[core]\nignorecase = false\n[remote "origin"]\nurl = https://included.invalid/main.git\n'
+    )
+    git_run(root, "config", "includeIf.onbranch:main.path", str(included))
+    first, _ = _counted_inspect(monkeypatch, root)
+    assert first.path_case_insensitive is False
+    assert first.normalized_remote == normalize_remote_identity(
+        "https://included.invalid/main.git"
+    )
+    git_run(root, "checkout", "-b", "another")
+    (root / "source.txt").write_text("current commit\n")
+    git_run(root, "commit", "-am", "current")
+    second, _ = _counted_inspect(monkeypatch, root)
+    assert second.path_case_insensitive is True
+    assert second.normalized_remote == normalize_remote_identity(
+        "https://base.invalid/branch.git"
+    )
+    assert second.target_ref == "refs/heads/another"
+    assert second.base_oid != first.base_oid
+    git_run(root, "config", "core.ignorecase", "false")
+    git_run(root, "config", "remote.origin.url", "https://changed.invalid/current.git")
+    third, _ = _counted_inspect(monkeypatch, root)
+    assert third.path_case_insensitive is False
+    assert third.normalized_remote == normalize_remote_identity(
+        "https://changed.invalid/current.git"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["missing-final-nul", "unexpected.key\nvalue\0", "\0", "", b"unexpected-type\0"],
+)
+def test_malformed_batch_output_uses_old_fresh_queries_safely(
+    raw: str | bytes,
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "base\n"})
+    git_run(root, "config", "core.ignorecase", "false")
+    git_run(root, "config", "remote.origin.url", "https://fallback.invalid/current.git")
+    actual = discovery.run_git
+
+    def malformed(path: Path, args: list[str], **kwargs: Any) -> Any:
+        if "--get-regexp" in args:
+            return CompletedProcess(args, 0, stdout=raw, stderr=b"")
+        return actual(path, args, **kwargs)
+
+    monkeypatch.setattr(discovery, "run_git", malformed)
+    info = inspect_repository(root, profile_id="test")
+    assert info.path_case_insensitive is False
+    assert info.normalized_remote == normalize_remote_identity(
+        "https://fallback.invalid/current.git"
+    )
+
+
+@pytest.mark.parametrize("value", ["  false  ", "FALSE ", "invalid"])
+def test_invalid_boolean_keeps_existing_git_discovery_refusal(
+    value: str,
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "base\n"})
+    git_run(root, "config", "core.ignorecase", value)
+    with pytest.raises(LlmCoordError) as error:
+        inspect_repository(root, profile_id="test")
+    assert error.value.code is ErrorCode.REPOSITORY_UNSAFE
+
+
+@pytest.mark.parametrize(
+    "remote",
+    [
+        "  git@Example.invalid:Team/naïve.git ",
+        "git@Example.invalid:Team/a\nb.git",
+        "git@Example.invalid:Team/a\rb.git",
+        "git@Example.invalid:Team/a\r\nb.git",
+    ],
+)
+def test_config_batch_uses_native_text_decoding_and_universal_newlines(
+    remote: str,
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = repository_factory(tmp_path, {"source.txt": "base\n"})
+    git_run(root, "config", "core.ignorecase", "false")
+    git_run(root, "config", "remote.origin.url", remote)
+    # Use precisely the former subprocess text path as an oracle; batching must
+    # not choose a different encoding or retain CR bytes the old query folded.
+    legacy = environment.run_git(
+        root, ["config", "--get", "remote.origin.url"], check=False
+    )
+    assert isinstance(legacy.stdout, str)
+    actual = discovery.run_git
+    text_modes: list[object] = []
+
+    def checked(path: Path, args: list[str], **kwargs: Any) -> Any:
+        if "--get-regexp" in args:
+            text_modes.append(kwargs.get("text", True))
+        return actual(path, args, **kwargs)
+
+    monkeypatch.setattr(discovery, "run_git", checked)
+    folded, current = discovery._discovery_config(root)
+    assert folded is False
+    assert current == legacy.stdout.strip()
+    assert text_modes == [True]

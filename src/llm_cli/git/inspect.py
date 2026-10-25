@@ -102,12 +102,7 @@ def inspect_repository(
         run_git(worktree, ["rev-parse", "--verify", f"{target_ref}^{{commit}}"])
     )
 
-    path_case_insensitive = _path_case_insensitive(worktree)
-
-    remote_result = run_git(
-        worktree, ["config", "--get", "remote.origin.url"], check=False
-    )
-    raw_remote = _output(remote_result) if remote_result.returncode == 0 else None
+    path_case_insensitive, raw_remote = _discovery_config(worktree)
     normalized_remote = normalize_remote_identity(raw_remote)
     main_worktree = _main_worktree(worktree)
     integration_adapter = "local_git"
@@ -132,6 +127,76 @@ def inspect_repository(
         integration_adapter=integration_adapter,
         path_case_insensitive=path_case_insensitive,
     )
+
+
+def _discovery_config(worktree: Path) -> tuple[bool, str | None]:
+    """Read two fresh settings with the same text decoding as individual queries."""
+    result = run_git(
+        worktree,
+        [
+            "config",
+            "--null",
+            "--get-regexp",
+            r"^(core\.ignorecase|remote\.origin\.url)$",
+        ],
+        check=False,
+    )
+    raw = result.stdout
+    if not isinstance(raw, str) or result.returncode not in {0, 1}:
+        return _unbatched_discovery_config(worktree)
+    values: dict[str, str | None] = {}
+    valid = True
+    if not raw and result.returncode == 0:
+        valid = False
+    elif raw:
+        valid = result.returncode == 0 and raw.endswith("\0")
+        if valid:
+            for record in raw.split("\0")[:-1]:
+                key, separator, value = record.partition("\n")
+                if key not in {"core.ignorecase", "remote.origin.url"}:
+                    valid = False
+                    break
+                # Git emits a key alone for a valueless variable. A key plus
+                # newline is an explicit empty value. Later entries win.
+                values[key] = value if separator else None
+    if not valid:
+        return _unbatched_discovery_config(worktree)
+
+    if "core.ignorecase" not in values or values["core.ignorecase"] is None:
+        insensitive = True
+    else:
+        boolean = values["core.ignorecase"]
+        assert boolean is not None
+        known = {
+            "true": True,
+            "yes": True,
+            "on": True,
+            "1": True,
+            "false": False,
+            "no": False,
+            "off": False,
+            "0": False,
+            "": False,
+        }
+        # Git also understands uncommon numeric forms and rejects some quoted
+        # whitespace. Defer those to its typed query, never strip into false.
+        parsed = known.get(boolean.lower())
+        insensitive = _path_case_insensitive(worktree) if parsed is None else parsed
+    remote_value = values.get("remote.origin.url")
+    remote = (
+        remote_value.strip()
+        if remote_value is not None
+        else ""
+        if "remote.origin.url" in values
+        else None
+    )
+    return insensitive, remote
+
+
+def _unbatched_discovery_config(worktree: Path) -> tuple[bool, str | None]:
+    insensitive = _path_case_insensitive(worktree)
+    remote = run_git(worktree, ["config", "--get", "remote.origin.url"], check=False)
+    return insensitive, _output(remote) if remote.returncode == 0 else None
 
 
 def _path_case_insensitive(worktree: Path) -> bool:
