@@ -85,7 +85,8 @@ the remaining planned capabilities are listed below.
   private source copies and receipts while preserving ordinary source evidence.
   Process I/O and waits run outside daemon/publication locks, and source guards
   use cached state on ordinary RPC paths. Teardown of an unused manager does
-  not initialize or query process storage.
+  not initialize or query process storage. Admission batches fresh Git metadata
+  reads while retaining both repository discoveries and all regime checks.
   See [the guide](isolated-workspaces.md#managed-background-processes).
 
 - Private runtime export (Wave 9 C15): `loupe workspace runtime export PATH

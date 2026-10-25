@@ -1008,7 +1008,8 @@ through runtime changes and restart; model source reads, artifacts, publication
 and later output remain screened. Cleanup scrubs private copies and receipts
 while preserving ordinary source evidence. Process I/O and waits stay outside
 daemon/publication locks; hot RPC source guards use cached state. Closing an
-unused process manager does not initialize or query storage. See
+unused process manager does not initialize or query storage. Batched Git metadata
+queries preserve fresh discovery and all authority gates during admission. See
 [the guide](isolated-workspaces.md#managed-background-processes).
 
 *Depends on C13: switching and closing must stop or keep processes
