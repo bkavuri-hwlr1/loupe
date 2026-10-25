@@ -174,6 +174,20 @@ class IsolatedSynchronizer:
         self.validate = validate
         self.refresh_capture = refresh_capture or capture
         self.runtime_refresh: Callable[[str], tuple[str, ...]] | None = None
+        self.process_notice: Callable[[str], str] | None = None
+        self.process_writer_notice: Callable[[str], str] | None = None
+
+    def _process_deferred(self, workspace_id: str) -> SyncResult | None:
+        notice = self.process_notice(workspace_id) if self.process_notice else ""
+        if not notice:
+            return None
+        state = self._state(workspace_id)
+        return SyncResult(
+            sequence=int(state["source_sequence"]),
+            runtime_notices=(
+                "Incoming synchronization waits for managed processes. " + notice,
+            ),
+        )
 
     def register(
         self,
@@ -283,12 +297,19 @@ class IsolatedSynchronizer:
         refresh_runtime: bool = False,
     ) -> SyncResult:
         """Apply complete ordered incoming batches at a caller-owned safe point."""
+        with self.publisher.lock:
+            deferred_process = self._process_deferred(workspace_id)
+            if deferred_process is not None:
+                return deferred_process
         runtime_notices = (
             self.runtime_refresh(workspace_id)
             if self.runtime_refresh and refresh_source and refresh_runtime
             else ()
         )
         with self.publisher.lock:
+            deferred_process = self._process_deferred(workspace_id)
+            if deferred_process is not None:
+                return deferred_process
             self.recover(workspace_id)
             state = self._state(workspace_id)
             applied: list[str] = []
@@ -357,6 +378,18 @@ class IsolatedSynchronizer:
             except (LlmCoordError, OSError, ValueError):
                 primary = None
             with self.publisher.lock:
+                deferred_process = self._process_deferred(workspace_id)
+                if deferred_process is not None:
+                    return SyncResult(
+                        tuple(applied),
+                        tuple(merged),
+                        tuple(conflicted),
+                        sequence,
+                        runtime_notices=(
+                            *runtime_notices,
+                            *deferred_process.runtime_notices,
+                        ),
+                    )
                 current = self._state(workspace_id)
                 with self.store.connection() as con:
                     latest = con.execute(
@@ -793,11 +826,15 @@ class IsolatedSynchronizer:
         return SyncResult(tuple(applied), tuple(merged), tuple(conflicts), sequence)
 
     def recover(self, workspace_id: str) -> None:
+        if self.process_writer_notice and self.process_writer_notice(workspace_id):
+            return
         with self._authority_pin(workspace_id, recovery=True):
             self._recover(workspace_id)
 
     def _recover(self, workspace_id: str) -> None:
         with self.publisher.lock:
+            if self.process_writer_notice and self.process_writer_notice(workspace_id):
+                return
             state = self._state(workspace_id)
             with self.store.connection() as con:
                 journals = con.execute(

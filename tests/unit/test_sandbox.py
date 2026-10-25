@@ -348,9 +348,29 @@ def test_real_sandbox_has_no_network(layout: dict[str, Path]) -> None:
 
 
 @needs_sandbox
+@pytest.mark.parametrize("position", [0, 1, 2])
+@pytest.mark.parametrize("protected_parent", [False, True])
 def test_real_sandbox_allows_unix_sockets_only_in_writable_paths(
-    layout: dict[str, Path], tmp_path: Path
+    layout: dict[str, Path],
+    visible_directory: Path,
+    position: int,
+    protected_parent: bool,
 ) -> None:
+    home = layout["outside"] / "home"
+    ipc_parent = visible_directory / "ipc"
+    ipc = ipc_parent / "own"
+    home.mkdir()
+    ipc.mkdir(parents=True)
+    writable = (layout["snapshot"], home, ipc)
+    policy = SandboxPolicy(
+        writable=writable,
+        protected=(
+            (layout["secret"], ipc_parent)
+            if protected_parent
+            else (layout["secret"],)
+        ),
+        readable=(layout["dependency"],),
+    )
     code = (
         "import socket\n"
         "server = socket.socket(socket.AF_UNIX)\n"
@@ -358,19 +378,54 @@ def test_real_sandbox_allows_unix_sockets_only_in_writable_paths(
         "server.listen(1)\n"
         "client = socket.socket(socket.AF_UNIX)\n"
         "client.connect('s')\n"
+        "accepted, _ = server.accept()\n"
+        "client.sendall(b'hello')\n"
+        "assert accepted.recv(5) == b'hello'\n"
+        "accepted.sendall(b'ready')\n"
+        "assert client.recv(5) == b'ready'\n"
         "print('connected')\n"
     )
-    inside = _run(_policy(layout), [sys.executable, "-c", code], layout["snapshot"])
+    inside = _run(policy, [sys.executable, "-c", code], writable[position])
+    assert inside.returncode == 0, inside.stderr
     assert inside.stdout.strip() == "connected", inside.stderr
 
-    # A host socket outside the sandbox's paths, like an SSH agent.
-    path = Path("/tmp") / f"loupe-test-{os.getpid()}.sock"
-    path.unlink(missing_ok=True)
-    try:
-        outside = _connect_to_host_socket(layout, path)
-    finally:
-        path.unlink(missing_ok=True)
+    # A writable own-directory exception must not expose its protected sibling.
+    outside = _connect_to_host_socket(
+        layout, ipc_parent / "foreign.sock", policy=policy
+    )
     assert outside.stdout.strip() == "blocked", outside.stderr
+    if protected_parent:
+        listing = _run(policy, ["ls", "-a", str(ipc_parent)], layout["snapshot"])
+        assert "foreign.sock" not in listing.stdout
+
+
+@needs_sandbox
+def test_real_sandbox_multiple_writable_roots_cannot_reach_host_ip(
+    layout: dict[str, Path],
+) -> None:
+    home = layout["outside"] / "home"
+    ipc = layout["secret"] / "ipc" / "own"
+    home.mkdir()
+    ipc.mkdir(parents=True)
+    policy = SandboxPolicy(
+        writable=(layout["snapshot"], home, ipc),
+        protected=(layout["secret"],),
+    )
+    with socket.socket(socket.AF_INET) as host:
+        host.bind(("127.0.0.1", 0))
+        host.listen(1)
+        port = host.getsockname()[1]
+        code = (
+            "import socket\n"
+            "try:\n"
+            f"    socket.create_connection(('127.0.0.1', {port}), timeout=2)\n"
+            "except OSError:\n"
+            "    print('blocked')\n"
+            "else:\n"
+            "    print('connected')\n"
+        )
+        result = _run(policy, [sys.executable, "-c", code], layout["snapshot"])
+    assert result.stdout.strip() == "blocked", result.stderr
 
 
 @needs_sandbox
@@ -385,7 +440,7 @@ def test_real_sandbox_cannot_reach_host_sockets_in_readable_directories(
 
 
 def _connect_to_host_socket(
-    layout: dict[str, Path], path: Path
+    layout: dict[str, Path], path: Path, *, policy: SandboxPolicy | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Listen on ``path`` outside the sandbox and try to connect from inside."""
 
@@ -402,4 +457,8 @@ def _connect_to_host_socket(
     with socket.socket(socket.AF_UNIX) as host:
         host.bind(str(path))
         host.listen(1)
-        return _run(_policy(layout), [sys.executable, "-c", reach], layout["snapshot"])
+        return _run(
+            policy if policy is not None else _policy(layout),
+            [sys.executable, "-c", reach],
+            layout["snapshot"],
+        )

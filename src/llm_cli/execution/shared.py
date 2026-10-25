@@ -59,6 +59,7 @@ from llm_cli.execution.commands import (
     HookRun,
 )
 from llm_cli.execution.environment import EnvironmentProvider
+from llm_cli.execution.processes import ManagedProcessManager, PreparedProcess
 from llm_cli.execution.recovery import RecoveryOutcome
 from llm_cli.execution.runner import TaskExecutionRunner
 from llm_cli.execution.sandbox import available_sandbox
@@ -123,6 +124,7 @@ class SharedTaskExecutionRunner:
         # Set by the daemon. Without it, or without a working OS sandbox,
         # tasks are never offered model-chosen commands.
         self.commands: CommandSettings | None = None
+        self.managed_processes: ManagedProcessManager | None = None
         self.command_environment: EnvironmentProvider | None = None
         # Configured MCP servers; only declared read-only servers run in plan mode.
         self.mcp_servers: tuple[McpServerConfig, ...] = ()
@@ -594,6 +596,16 @@ class SharedTaskExecutionRunner:
                 def finish_gate() -> ToolOutcome | None:
                     safe_point()
                     with runtime_activity():
+                        # Materialized process inputs remain private source
+                        # changes after the broker overlay has been adopted.
+                        if (
+                            isolated
+                            and checked
+                            and not broker.candidates()
+                            and candidate_files()
+                            and not checker.current()
+                        ):
+                            return check_gate()
                         return broker.finish_gate_with(
                             check_gate if checked else None,
                             checker.current if checked else lambda: True,
@@ -610,6 +622,39 @@ class SharedTaskExecutionRunner:
                 broker.check_runner = run_check
                 instructions += "\nConfigured checks: " + ", ".join(
                     checker.config["checks"]
+                )
+            manager = self.managed_processes
+            if manager is not None:
+                def process_output(process_id: str) -> ToolOutcome:
+                    try:
+                        result = manager.output(process_id, session.session_id)
+                    except (ValueError, OSError, LlmCoordError) as exc:
+                        return ToolOutcome(str(exc), True)
+                    return ToolOutcome(json.dumps(result, sort_keys=True))
+
+                def stop_process(process_id: str) -> ToolOutcome:
+                    try:
+                        result = manager.stop(process_id, session.session_id)
+                    except (ValueError, OSError, LlmCoordError) as exc:
+                        return ToolOutcome(str(exc), True)
+                    return ToolOutcome(json.dumps(result, sort_keys=True))
+
+                broker.process_reader = process_output
+                broker.process_stopper = stop_process
+                if not isolated:
+                    broker.process_start_refusal = (
+                        "Managed processes require an isolated session. "
+                        "Between tasks, use `/workspace isolated`, "
+                        "then retry start_process."
+                    )
+                elif self.commands is None or self.commands.approval == "off":
+                    broker.process_start_refusal = (
+                        "Managed processes are disabled by agent_commands=off."
+                    )
+                broker.process_starter = lambda argv, cwd: ToolOutcome(
+                    broker.process_start_refusal
+                    or "No working command sandbox is available.",
+                    True,
                 )
             sandbox = (
                 available_sandbox()
@@ -631,7 +676,10 @@ class SharedTaskExecutionRunner:
                     emit=broker.emit,
                     lock=self.publisher.lock,
                     sandbox=sandbox,
-                    protected=self.commands.protected,
+                    protected=(
+                        *self.commands.protected,
+                        *((Path(checkout.canonical_path),) if isolated else ()),
+                    ),
                     dependency_paths=(
                         *DEPENDENCY_PATHS,
                         *checker.config.get("runtime_paths", []),
@@ -639,6 +687,11 @@ class SharedTaskExecutionRunner:
                     deadline_at=deadline_at,
                     runtime_files=runtime_files,
                     sensitive_paths=sensitive_paths,
+                    process_socket_directory=(
+                        functools.partial(manager.ipc_directory, workspace.workspace_id)
+                        if isolated and manager is not None
+                        else None
+                    ),
                     environment=(
                         functools.partial(self.command_environment, session.session_id)
                         if self.command_environment is not None
@@ -655,6 +708,49 @@ class SharedTaskExecutionRunner:
 
                 broker.command_runner = run_command
                 broker.command_approval = self.commands.approval
+                if manager is not None and isolated:
+
+                    def start_process(argv: list[str], cwd: str) -> ToolOutcome:
+                        safe_point()
+
+                        def prepare(process_id: str) -> PreparedProcess:
+                            self._validate_isolated(workspace.workspace_id)
+                            other = [
+                                record
+                                for record in manager.blockers(workspace.workspace_id)
+                                if record["process_id"] != process_id
+                            ]
+                            if other and broker.candidates():
+                                commands_to_stop = " ".join(
+                                    str(record["stop_command"]) for record in other
+                                )
+                                raise ValueError(
+                                    "Stop managed processes before installing "
+                                    "pending edits: "
+                                    + commands_to_stop
+                                )
+                            assert workspace.git_dir is not None
+                            broker.materialize_private_candidates(
+                                Path(workspace.git_dir)
+                            )
+                            assert self.isolated is not None
+                            self.isolated.remember_process_policy(workspace)
+                            return commands.prepare_process(
+                                argv,
+                                cwd,
+                                process_id=process_id,
+                                run_root=manager.run_root,
+                            )
+
+                        try:
+                            result = manager.start(
+                                session.session_id, workspace.workspace_id, prepare
+                            )
+                        except (ValueError, OSError, LlmCoordError) as exc:
+                            return ToolOutcome(str(exc), True)
+                        return ToolOutcome(json.dumps(result, sort_keys=True))
+
+                    broker.process_starter = start_process
             if self.hooks and self.commands is not None:
                 hook_sandbox = available_sandbox()
                 if hook_sandbox is None:
@@ -674,7 +770,10 @@ class SharedTaskExecutionRunner:
                         emit=broker.emit,
                         lock=self.publisher.lock,
                         sandbox=hook_sandbox,
-                        protected=self.commands.protected,
+                        protected=(
+                            *self.commands.protected,
+                            *((Path(checkout.canonical_path),) if isolated else ()),
+                        ),
                         dependency_paths=(
                             *DEPENDENCY_PATHS,
                             *checker.config.get("runtime_paths", []),

@@ -1,9 +1,11 @@
 """Model tools with private candidate bytes over a coordinated shared checkout.
 
-Tools never write the checkout. The execution runner publishes the collected
-candidates together after the agent finishes, comparing each path with its
-last full-file observation before editing. Checkpoints retain observations and pending
-bytes so a resumed tool call cannot silently adopt another session's base.
+Source tools stage candidates without writing the checkout. The execution
+runner publishes them after the agent finishes, comparing each path with its
+last full-file observation. A runner may explicitly materialize the overlay in
+an admitted isolated worktree before launching a managed process. Checkpoints
+retain observations and pending bytes so replay cannot silently adopt another
+session's base.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import binascii
 import difflib
 import hashlib
 import json
+import os
 import threading
 from _thread import RLock
 from collections import deque
@@ -51,13 +54,19 @@ from llm_cli.coordination.scopes import (
     uncovered_paths,
 )
 from llm_cli.errors import LlmCoordError
+from llm_cli.ids import new_id
 from llm_cli.mcp.tools import PREFIX as MCP_PREFIX
-from llm_cli.workspace.batches import BatchFile, candidate_target
+from llm_cli.workspace.batches import BatchFile, candidate_target, result_identity
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
     WorkspaceBrokerError,
+    _open_publication_parent,
+    atomic_delete_file,
+    atomic_replace_regular_file,
+    atomic_replace_symlink,
     read_candidate_path,
     validate_symlink_target,
+    workspace_target,
 )
 from llm_cli.workspace.identity import (
     ABSENT,
@@ -85,6 +94,19 @@ _MAX_CANDIDATES = 50
 CATCH_UP_ROUNDS = 3
 _MAX_OBSERVATIONS = 200
 _MAX_RETAINED_BYTES = 4 * 1024 * 1024
+
+
+def _materialized_result_matches(current: FileIdentity, expected: FileIdentity) -> bool:
+    if current != expected:
+        return False
+    if expected.permissions is None:
+        return True
+    return (
+        current.permissions is not None
+        and current.permissions & ~expected.permissions == 0
+    )
+
+
 # Directory entries gathered before one exclusion check during a search.
 _SEARCH_BATCH_ENTRIES = 1_000
 
@@ -314,6 +336,9 @@ class SharedToolBroker(ToolBroker):
             "ask_user",
             "run_check",
             "run_command",
+            "start_process",
+            "process_output",
+            "stop_process",
             "finish_task",
             "update_plan",
             "explore",
@@ -416,6 +441,174 @@ class SharedToolBroker(ToolBroker):
                 for relative, content in sorted(self._contents.items())
             )
 
+    def materialize_private_candidates(self, git_dir: Path) -> tuple[str, ...]:
+        """Install this overlay only in an admitted private linked worktree.
+
+        The runner holds its runtime activity and physical ownership pins.
+        Snapshot/adoption use the publication barrier; all filesystem work is
+        outside it. The accepted primary source and publication ledger stay
+        unchanged. An interrupted call can recognize already installed results.
+        """
+        with self.publication_lock:
+            files = self.candidates()
+        if not files:
+            return ()
+        self._private_materialization_binding(git_dir)
+        desired = {item.relative_path: result_identity(item) for item in files}
+
+        def observe(item: BatchFile) -> tuple[FileIdentity, bytes | None]:
+            target = self._target(item.relative_path, allow_symlink=True)
+            current, content = read_candidate_path(target)
+            if (
+                not _materialized_result_matches(current, desired[item.relative_path])
+                and current != item.base
+            ):
+                raise WorkspaceBrokerError(
+                    f"private source {item.relative_path} changed; "
+                    "read the current file before retrying start_process"
+                )
+            return current, content
+
+        # Reject a known third state before installing any part of the overlay.
+        for item in files:
+            self.check_cancelled()
+            ensure_safe_content(item.content or b"")
+            if item.mode == SYMLINK_MODE and item.content is not None:
+                self._validate_link(item.relative_path, item.content)
+            observe(item)
+
+        ordered = sorted(
+            files,
+            key=lambda item: (
+                0
+                if item.mode == DIRECTORY_MODE and item.content is not None
+                else 2
+                if item.base.kind is ObjectKind.DIRECTORY_MARKER
+                else 1,
+                -len(Path(item.relative_path).parts)
+                if item.content is None
+                else len(Path(item.relative_path).parts),
+                item.relative_path,
+            ),
+        )
+        installed: list[str] = []
+        for item in ordered:
+            self.check_cancelled()
+            current, _ = observe(item)
+            result = desired[item.relative_path]
+            if not _materialized_result_matches(current, result):
+                if result.kind is ObjectKind.DIRECTORY_MARKER:
+                    self._materialize_private_directory(item, remove=False)
+                elif item.content is None:
+                    if item.base.kind is ObjectKind.DIRECTORY_MARKER:
+                        self._materialize_private_directory(item, remove=True)
+                    else:
+                        atomic_delete_file(self.worktree, item.relative_path, item.base)
+                elif item.mode == SYMLINK_MODE:
+                    atomic_replace_symlink(
+                        checkout_root=self.worktree,
+                        git_common_dir=git_dir,
+                        relative_path=item.relative_path,
+                        content=item.content,
+                        publication_id=new_id("private_process"),
+                        expected_base=item.base,
+                    )
+                else:
+                    atomic_replace_regular_file(
+                        checkout_root=self.worktree,
+                        git_common_dir=git_dir,
+                        relative_path=item.relative_path,
+                        content=item.content,
+                        mode=item.mode,
+                        publication_id=new_id("private_process"),
+                        permissions=result.permissions,
+                        expected_base=item.base,
+                    )
+            actual, content = observe(item)
+            if not _materialized_result_matches(actual, result):
+                raise WorkspaceBrokerError(
+                    f"private source {item.relative_path} changed during installation; "
+                    "read the current file before retrying start_process"
+                )
+            with self.publication_lock:
+                pending = next(
+                    (
+                        candidate
+                        for candidate in self.candidates()
+                        if candidate.relative_path == item.relative_path
+                    ),
+                    None,
+                )
+                if (
+                    pending is None
+                    or pending != item
+                    or pending.base.permissions != item.base.permissions
+                ):
+                    raise WorkspaceBrokerError(
+                        "pending edits changed while preparing start_process; "
+                        "read the current pending diff and retry"
+                    )
+                self._observations[item.relative_path] = _Observation(actual, content)
+                self._contents.pop(item.relative_path)
+                self._modes.pop(item.relative_path, None)
+                self._permissions.pop(item.relative_path, None)
+            installed.append(item.relative_path)
+        with self.publication_lock:
+            if self._contents:
+                raise WorkspaceBrokerError(
+                    "pending edits changed while preparing start_process; "
+                    "read the current pending diff and retry"
+                )
+        return tuple(installed)
+
+    def _private_materialization_binding(self, git_dir: Path) -> None:
+        if self.worktree.resolve(strict=True) != self.worktree:
+            raise WorkspaceBrokerError("private worktree identity changed")
+        marker = self.worktree / ".git"
+        identity, body = read_identified_path(marker, max_bytes=4096)
+        if (
+            identity.kind is not ObjectKind.REGULAR
+            or body is None
+            or not body.startswith(b"gitdir: ")
+        ):
+            raise WorkspaceBrokerError(
+                "pending process edits require a private linked worktree"
+            )
+        admin = Path(os.fsdecode(body[8:].rstrip(b"\r\n")))
+        if not admin.is_absolute():
+            admin = self.worktree / admin
+        if admin.resolve(strict=True) != git_dir.resolve(
+            strict=True
+        ) or git_dir.resolve().is_relative_to(self.worktree):
+            raise WorkspaceBrokerError("private Git administration binding changed")
+        back_identity, back = read_identified_path(git_dir / "gitdir", max_bytes=4096)
+        if (
+            back_identity.kind is not ObjectKind.REGULAR
+            or back is None
+            or Path(os.fsdecode(back.rstrip(b"\r\n"))).resolve(strict=True) != marker
+        ):
+            raise WorkspaceBrokerError("private Git administration binding changed")
+
+    def _materialize_private_directory(self, item: BatchFile, *, remove: bool) -> None:
+        target = workspace_target(self.worktree, item.relative_path)
+        parent = _open_publication_parent(self.worktree, item.relative_path)
+        try:
+            if read_candidate_path(target)[0] != item.base:
+                raise WorkspaceBrokerError(
+                    "private directory changed before installation"
+                )
+            opened = os.fstat(parent)
+            live = target.parent.stat()
+            if (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino):
+                raise WorkspaceBrokerError("private directory parent changed")
+            if remove:
+                os.rmdir(target.name, dir_fd=parent)
+            else:
+                os.mkdir(target.name, mode=0o700, dir_fd=parent)
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+
     def reconcile(self, *, only_if_clean: bool = False) -> Reconciliation:
         """Move pending edits onto files that changed since they were read.
 
@@ -451,6 +644,26 @@ class SharedToolBroker(ToolBroker):
                         continue
                     current, theirs = self._observe(relative, screen=False, typed=True)
                     if current == observed.base:
+                        continue
+                    desired = result_identity(
+                        BatchFile(
+                            relative_path=relative,
+                            base=observed.base,
+                            content=ours,
+                            mode=modes.get(
+                                relative, observed.base.mode or REGULAR_MODE
+                            ),
+                            permissions=self._permissions.get(relative),
+                        )
+                    )
+                    if _materialized_result_matches(current, desired):
+                        # A private process preparation may have installed this
+                        # exact result before a crash/checkpoint adoption. Typed
+                        # results can be adopted, but never three-way merged.
+                        observations[relative] = _Observation(current, theirs)
+                        contents.pop(relative)
+                        modes.pop(relative, None)
+                        adopted.append(relative)
                         continue
                     if (
                         relative in self._binary

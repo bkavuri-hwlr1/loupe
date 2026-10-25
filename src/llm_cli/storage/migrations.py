@@ -1579,6 +1579,39 @@ ON mode_switch_intents
 BEGIN SELECT RAISE(ABORT,'workspace switch request is immutable'); END;
 """,
     ),
+    Migration(
+        33,
+        "managed_background_processes",
+        """
+CREATE TABLE managed_processes (
+    process_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE RESTRICT,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id) ON DELETE RESTRICT,
+    binding_generation INTEGER NOT NULL CHECK(binding_generation > 0),
+    pid INTEGER CHECK(pid IS NULL OR pid > 1),
+    start_identity TEXT,
+    pgid INTEGER CHECK(pgid IS NULL OR pgid > 1),
+    state TEXT NOT NULL CHECK(state IN (
+        'starting','running','stopping','stopped','exited','failed','attention_required'
+    )),
+    command TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    exit_code INTEGER,
+    screened_output TEXT NOT NULL DEFAULT ''
+        CHECK(length(CAST(screened_output AS BLOB)) <= 65536),
+    truncated INTEGER NOT NULL DEFAULT 0 CHECK(truncated IN (0,1)),
+    error_code TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    CHECK(state <> 'running' OR pid IS NOT NULL),
+    CHECK((pid IS NULL AND start_identity IS NULL AND pgid IS NULL)
+        OR (pid IS NOT NULL AND start_identity IS NOT NULL AND
+            length(start_identity)>0 AND pgid=pid))
+);
+CREATE INDEX managed_processes_session_idx ON managed_processes(session_id,state);
+CREATE INDEX managed_processes_workspace_idx ON managed_processes(workspace_id,state);
+""",
+    ),
 )
 
 
