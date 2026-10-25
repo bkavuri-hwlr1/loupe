@@ -63,6 +63,9 @@ from llm_cli.workspace.merge import has_conflict_markers, merge_text
 
 Manifest = dict[str, dict[str, Any]]
 
+# Applied steps are diagnostic only; unresolved evidence has its own durable row.
+_APPLIED_JOURNAL_WINDOW = 8
+
 
 def _encode(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -647,19 +650,12 @@ class IsolatedSynchronizer:
 
     def _conflicts(self, workspace_id: str) -> dict[str, dict[str, Any]]:
         with self.store.connection() as con:
-            journals = con.execute(
-                "SELECT steps_json FROM isolated_sync_journal WHERE workspace_id=? "
-                "AND state='applied' ORDER BY generation",
+            rows = con.execute(
+                "SELECT path,step_json FROM isolated_sync_conflicts "
+                "WHERE workspace_id=?",
                 (workspace_id,),
             ).fetchall()
-        unresolved: dict[str, dict[str, Any]] = {}
-        for journal in journals:
-            for step in json.loads(journal["steps_json"]):
-                if step["disposition"] == "divergence_preserved":
-                    unresolved[step["path"]] = step
-                else:
-                    unresolved.pop(step["path"], None)
-        return unresolved
+        return {row["path"]: json.loads(row["step_json"]) for row in rows}
 
     def _prepare(
         self, workspace_id: str, sequence: int, request_json: str
@@ -969,10 +965,37 @@ class IsolatedSynchronizer:
                         raise WorkspaceBrokerError(
                             "isolated synchronization generation changed"
                         )
+                    # Preserve the exact last-step conflict semantics before
+                    # retiring history. Artifact hashes and private staging tokens
+                    # remain in the complete conflict step until a later step
+                    # for this path resolves it.
+                    for step in steps:
+                        if step["disposition"] == "divergence_preserved":
+                            con.execute(
+                                "INSERT INTO isolated_sync_conflicts "
+                                "(workspace_id,path,step_json) VALUES(?,?,?) "
+                                "ON CONFLICT(workspace_id,path) DO UPDATE "
+                                "SET step_json=excluded.step_json",
+                                (workspace_id, step["path"], _encode(step)),
+                            )
+                        else:
+                            con.execute(
+                                "DELETE FROM isolated_sync_conflicts "
+                                "WHERE workspace_id=? AND path=?",
+                                (workspace_id, step["path"]),
+                            )
                     con.execute(
-                        "UPDATE isolated_sync_journal SET state='applied' "
-                        "WHERE workspace_id=? AND generation=?",
+                        "UPDATE isolated_sync_journal SET state='applied',"
+                        "manifest_json='{}' WHERE workspace_id=? AND generation=?",
                         (workspace_id, journal["generation"]),
+                    )
+                    con.execute(
+                        "DELETE FROM isolated_sync_journal "
+                        "WHERE workspace_id=? AND state='applied' "
+                        "AND generation NOT IN (SELECT generation FROM "
+                        "isolated_sync_journal WHERE workspace_id=? "
+                        "AND state='applied' ORDER BY generation DESC LIMIT ?)",
+                        (workspace_id, workspace_id, _APPLIED_JOURNAL_WINDOW),
                     )
 
                 for step in steps:

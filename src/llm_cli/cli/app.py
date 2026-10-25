@@ -379,6 +379,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-allocated-bytes", type=int, default=2 * 1024 * 1024 * 1024
     )
     hydrate.add_argument("--max-seconds", type=float, default=10.0)
+    runtime = workspace_commands.add_parser(
+        "runtime", help="explicit local operations on isolated runtime files"
+    )
+    runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
+    runtime_export = runtime_commands.add_parser(
+        "export", help="preview or copy one private runtime entry to a new destination"
+    )
+    runtime_export.add_argument("path")
+    runtime_export.add_argument("--session", required=True, dest="session_id")
+    runtime_export.add_argument("--to", required=True, type=Path, dest="destination")
+    runtime_export.add_argument("--yes", action="store_true")
+    runtime_export.add_argument("--allow-secret", action="store_true")
+    runtime_export.add_argument("--into-checkout", action="store_true")
     workspace_observe = workspace_commands.add_parser(
         "observe", help="read source outside the owner's barrier without an edit base"
     )
@@ -1063,6 +1076,40 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             "session_id": arguments.session_id,
             "resume_secret": secret,
         }
+        if arguments.workspace_command == "runtime":
+            # The daemon refuses symlinked destination ancestors so a link can't
+            # be swapped in mid-copy. Resolve the user's own spelling first:
+            # macOS /tmp and $TMPDIR (/var/folders) are symlinks.
+            destination = arguments.destination.expanduser().absolute()
+            destination = destination.parent.resolve() / destination.name
+            result = client.call(
+                "workspace.runtime.export",
+                {
+                    **authenticated,
+                    "relative_path": arguments.path,
+                    "destination": str(destination),
+                    "yes": arguments.yes,
+                    "allow_secret": arguments.allow_secret,
+                    "into_checkout": arguments.into_checkout,
+                },
+            )
+            if arguments.as_json:
+                return result
+            summary = (
+                f"Runtime export: {result['kind']}, {result['bytes']} bytes, "
+                f"{result['entries']} entries, {result['sensitivity']}."
+            )
+            if result["state"] == "exported":
+                return summary + " Exported to the new local destination."
+            required = [
+                flag
+                for key, flag in (
+                    ("requires_yes", "--yes"),
+                    ("requires_allow_secret", "--allow-secret"),
+                )
+                if result[key]
+            ]
+            return summary + " Preview only; requires " + " and ".join(required) + "."
         if arguments.workspace_command == "read":
             return client.call(
                 "workspace.read_file",
@@ -1094,6 +1141,10 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 "base": observed["identity"],
                 "content": content,
             }
+            if "workspace_binding_generation" in observed:
+                stage_params["workspace_binding_generation"] = observed[
+                    "workspace_binding_generation"
+                ]
             if arguments.executable:
                 stage_params["executable"] = True
             return client.call(

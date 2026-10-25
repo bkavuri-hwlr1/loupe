@@ -1,6 +1,6 @@
 # Parallel work plan
 
-Date: 2026-10-13, extended 2026-10-16 and 2026-10-22. Waves 1–3 started from
+Date: 2026-10-13, extended 2026-10-16, 2026-10-22 and 2026-10-24. Waves 1–3 started from
 `main` after #38, #39 and #41 and are merged (through #56). Waves 4–7 started
 from `main` at #56 and are merged (through #72). Waves 8–11 start from `main` at
 #72.
@@ -64,10 +64,14 @@ experiments in [`implementation-status.md`](implementation-status.md).
 | C12 | Native file-change watchers | Workspace | M | C11, E3's measurement | service.py | 11 (E3: needed) |
 
 **Wave 8, all at once:** D4, E3, C11, G4. Only G4 touches hot files.
-**Wave 9:** C13, C15 and C16. C15 adds only one RPC handler to `service.py`;
-keep it self-contained and resolve the overlap with C13 at merge. C16 touches no
-hot file; it shares `isolated.py` with C13 only for journal checks.
-**Wave 10:** C14. **Wave 11:** C12; E3 measured scans above its threshold.
+**Wave 9 implementation complete:** C13, C15 and C16 are integrated with
+migration 31 for compact synchronization evidence and migration 32 for durable
+workspace switches. C15's self-contained export handler retains the physical and
+runtime activity barriers used by switching and cleanup. The C16 full growing-path
+hour passed with the original bounds. C13's final combined source is frozen for
+full covered correctness and separate production scale gates; see the package
+verification links below. **Wave 10 next:** C14. **Wave 11:** C12; scan cost
+remains above E3's threshold. Neither future package is implemented here.
 
 D4 releases what is already on `main` (Waves 1–7), so users get that work
 before Waves 8–11 change it further. Publishing still needs you to push the
@@ -941,6 +945,8 @@ the scanner where to look instead (workspace plan §17.1, §17.6).
 
 ### C13. Switch a conversation between shared and isolated mode
 
+**Implementation complete (October 24, 2026).** See [verification](experiments/wave9-c13-workspace-switching-2026-10-24.md).
+
 **Why.** A conversation's mode is fixed when it opens. Switching means
 closing it and losing its context, even when the user realizes mid-task that
 they want a private worktree, or wants to bring finished isolated work back
@@ -965,9 +971,9 @@ to the shared checkout (workspace plan §20).
   - Require an explicit disposition: publish (auto mode) or freeze a
     proposal for `/apply` (normal mode), export a patch, keep the isolated
     workspace, or discard.
-  - Unresolved conflicts block the switch until resolved. Runtime-only
-    changes may be discarded after a redacted summary. Unpublished source is
-    never silently deleted.
+  - Unresolved conflicts block the switch until resolved. Changed runtime alone
+    requires explicit retain/discard after a redacted summary. Unpublished source
+    is never silently deleted.
 - **Not included:** a `loupe session switch` CLI command. Add it later; it
   needs `cli/app.py`.
 
@@ -1038,6 +1044,8 @@ processes, so sync and cleanup never race a live writer.
 
 ### C15. Export runtime files from an isolated session
 
+**Implementation complete (October 24, 2026).** See [verification](experiments/wave9-c15-runtime-export-2026-10-24.md).
+
 **Why.** Runtime changes inside an isolated session, such as a regenerated
 `.env`, a built artifact or a lock file under an ignored path, are discarded
 when the session closes. There is no supported way to keep one (workspace plan
@@ -1068,6 +1076,8 @@ tests.
 - No exported bytes appear in the database or logs.
 
 ### C16. Bound isolated synchronization-journal storage
+
+**Implementation complete (October 24, 2026).** See [verification](experiments/bounded-sync-journals-c16-2026-10-24.md).
 
 **Why.** Every isolated safe-point sync appends an `isolated_sync_journal` row
 holding the whole accepted manifest, and applied rows are never retired. E3's

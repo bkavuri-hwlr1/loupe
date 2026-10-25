@@ -423,12 +423,18 @@ _LEGACY_TABLES = (
 )
 
 
-def _legacy_rows(store: ControlStore) -> dict[str, list[tuple[Any, ...]]]:
+def _legacy_rows(
+    store: ControlStore, columns: dict[str, tuple[str, ...]]
+) -> dict[str, list[tuple[Any, ...]]]:
     with store.connection() as connection:
         return {
             name: [
                 tuple(row)
-                for row in connection.execute(f"SELECT * FROM {name} ORDER BY rowid")
+                for row in connection.execute(
+                    "SELECT "
+                    + ",".join(f'"{column}"' for column in columns[name])
+                    + f" FROM {name} ORDER BY rowid"
+                )
             ]
             for name in _LEGACY_TABLES
         }
@@ -599,11 +605,25 @@ def test_real_g2_schema_upgrade_preserves_all_legacy_states_and_ref_dispositions
                     "VALUES (?,1,?,'[]','awaiting_review',1)",
                     (task_id, "execution-held"),
                 )
-    before = _legacy_rows(store)
+    with store.connection() as connection:
+        legacy_columns = {
+            name: tuple(
+                row["name"] for row in connection.execute(f"PRAGMA table_info({name})")
+            )
+            for name in _LEGACY_TABLES
+        }
+    before = _legacy_rows(store, legacy_columns)
     refs = git_run(repository, "show-ref")
     assert store.initialize() == CONTROL_MIGRATIONS[-1].version
-    assert _legacy_rows(store) == before
+    assert _legacy_rows(store, legacy_columns) == before
     with store.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT workspace_binding_generation FROM sessions "
+                "WHERE session_id='legacy-session'"
+            ).fetchone()[0]
+            == 1
+        )
         assert (
             connection.execute("SELECT count(*) FROM checkout_regimes").fetchone()[0]
             == 0
@@ -674,7 +694,7 @@ def test_real_g2_schema_upgrade_preserves_all_legacy_states_and_ref_dispositions
         with pytest.raises(LlmCoordError) as blocked:
             manager.begin(repository, plan["checkpoint"])
         assert blocked.value.code is ErrorCode.CUTOVER_BLOCKED
-        assert _legacy_rows(store) == before
+        assert _legacy_rows(store, legacy_columns) == before
         assert git_run(repository, "show-ref") == refs
         assert authority.regime(repository)["regime"] == "legacy"
     finally:

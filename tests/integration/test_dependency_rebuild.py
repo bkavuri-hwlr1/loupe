@@ -445,29 +445,38 @@ def test_schema_26_upgrade_preserves_frozen_workspace_and_runtime_receipts(
         "checkouts",
         "checkout_heads",
         "workspaces",
+        "sessions",
         "isolated_workspaces",
         "isolated_runtime_state",
         "isolated_runtime_generations",
     )
-    with env.store.connection() as con:
-        frozen = {
-            table: [
-                tuple(row)
-                for row in con.execute(
-                    "SELECT * FROM "
-                    + table
-                    + (
-                        " ORDER BY source_workspace_id IS NOT NULL"
-                        if table == "workspaces"
-                        else ""
-                    )
-                )
-            ]
-            for table in tables
-        }
     legacy = ControlStore(tmp_path / "schema-26.sqlite3")
     with legacy.connection() as con:
         assert apply_migrations(con, CONTROL_MIGRATIONS[:26]) == 26
+        legacy_columns = {
+            table: tuple(
+                row["name"] for row in con.execute("PRAGMA table_info(" + table + ")")
+            )
+            for table in tables
+        }
+        with env.store.connection() as current:
+            frozen = {
+                table: [
+                    tuple(row)
+                    for row in current.execute(
+                        "SELECT "
+                        + ",".join(legacy_columns[table])
+                        + " FROM "
+                        + table
+                        + (
+                            " ORDER BY source_workspace_id IS NOT NULL"
+                            if table == "workspaces"
+                            else ""
+                        )
+                    )
+                ]
+                for table in tables
+            }
         for table, rows in frozen.items():
             assert rows
             placeholders = ",".join("?" for _ in rows[0])
@@ -492,11 +501,26 @@ def test_schema_26_upgrade_preserves_frozen_workspace_and_runtime_receipts(
         assert apply_migrations(con) == CONTROL_MIGRATIONS[-1].version
         for table, rows in frozen.items():
             assert sorted(
-                tuple(row) for row in con.execute("SELECT * FROM " + table)
+                tuple(row)
+                for row in con.execute(
+                    "SELECT " + ",".join(legacy_columns[table]) + " FROM " + table
+                )
             ) == sorted(rows)
-        assert columns == [
+        upgraded_columns = [
             tuple(row) for row in con.execute("PRAGMA table_info(isolated_workspaces)")
         ]
+        assert upgraded_columns[: len(columns)] == columns
+        assert [row[1] for row in upgraded_columns[len(columns) :]] == ["creation_key"]
+        assert all(
+            row["creation_key"] == "session:" + row["session_id"]
+            for row in con.execute(
+                "SELECT session_id,creation_key FROM isolated_workspaces"
+            )
+        )
+        assert all(
+            row[0] == 1
+            for row in con.execute("SELECT workspace_binding_generation FROM sessions")
+        )
         assert bindings == [
             tuple(row)
             for row in con.execute("PRAGMA foreign_key_list(isolated_workspaces)")

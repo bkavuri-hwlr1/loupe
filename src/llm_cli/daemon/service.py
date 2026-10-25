@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, suppress
+from contextlib import ExitStack, closing, suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -118,6 +118,7 @@ from llm_cli.workspace.identity import (
 )
 from llm_cli.workspace.isolated import IsolatedWorkspaceManager
 from llm_cli.workspace.regime import CutoverManager
+from llm_cli.workspace.switching import WorkspaceModeSwitcher, rollback_hint
 
 # Section 15.1 requires these limits to be visible to operators rather than
 # living only in implementation notes.
@@ -260,6 +261,14 @@ class DaemonService:
                 paths.runtime_dir,
             ),
         )
+        self.workspace_switches = WorkspaceModeSwitcher(
+            self.store,
+            self.isolated_workspaces,
+            self.shared_runner.isolated_sync,
+            self.workspace_batches,
+        )
+        self.workspace_switches.worker_busy = self._workspace_switch_worker_busy
+        self.workspace_switches.workflow = self.shared_runner.workflow
         self.shared_runner.isolated = self.isolated_workspaces
         self.workflow = self.shared_runner.workflow
         self.shared_runner.command_environment = self._command_environment
@@ -320,6 +329,7 @@ class DaemonService:
         self._next_external_scan_at = 0.0
         self._authority_lock = asyncio.Lock()
         self._pending_session_opens: set[str] = set()
+        self._pending_session_switches: set[str] = set()
         self._background_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
         self._workspace_workers: set[tuple[str, int]] = set()
         self._workspace_workers_lock = threading.RLock()
@@ -352,6 +362,7 @@ class DaemonService:
             self._session_recovery_done = True
         self._recover_shared_workspace_publications()
         self.isolated_workspaces.recover()
+        self.workspace_switches.recover()
         self.knowledge.initialize()
         self._start_knowledge_worker()
         # Nothing is served until every execution left behind by an earlier
@@ -634,10 +645,17 @@ class DaemonService:
                     # Only the event loop touches this reservation. Keep it
                     # through registration, including the worker-return gap.
                     self._pending_session_opens.discard(session_id)
+            if request.method == "workspace.switch_mode":
+                return await self._workspace_switch_mode(request.params)
             if request.method == "session.compact":
                 # The summary is a model request. Hold the authority lock only
                 # to read and to save, never while the provider responds.
                 return await self._session_compact(request.params)
+            if request.method == "workspace.runtime.export":
+                # Local byte copying must not pin the daemon-wide RPC barrier.
+                return await asyncio.to_thread(
+                    self._workspace_runtime_export, request.params
+                )
             if request.method == "session.retry_answer":
                 # Likewise a model request, locked only to read and to save.
                 return await self._session_retry_answer(request.params)
@@ -716,6 +734,8 @@ class DaemonService:
         managed = {
             "session.open",
             "session.resume",
+            "workspace.confirm_switch",
+            "workspace.rollback_switch",
             "workspace.read_file",
             "workspace.stage_file",
             "workspace.publish_candidate",
@@ -782,6 +802,32 @@ class DaemonService:
     async def _dispatch_owned(self, request: Request) -> Any:
         method = request.method
         params = request.params
+        if method in {
+            "task.run",
+            "task.retry",
+            "task.apply",
+            "task.undo",
+            "task.discard",
+            "workspace.stage_file",
+            "workspace.publish_candidate",
+            "session.close",
+            "session.set_mode",
+            "session.ack",
+        }:
+            owner = params.get("session_id")
+            if not owner and params.get("task_id"):
+                task = self.store.get_task(str(params["task_id"]))
+                owner = task.session_id if task else None
+            if isinstance(owner, str):
+                if owner in self._pending_session_switches:
+                    raise ValueError("workspace switch is still running")
+                pending_switch = self.workspace_switches.pending(owner)
+                if pending_switch:
+                    intent_id = pending_switch["switch_intent_id"]
+                    raise ValueError(
+                        f"workspace switch {intent_id} requires confirmation or "
+                        "rollback. " + rollback_hint(intent_id)
+                    )
         if method == "workspace.authority.maintenance":
             values = {
                 name: params.get(name, False)
@@ -873,6 +919,25 @@ class DaemonService:
                 session.session_id, validate_agent_mode(params.get("mode"))
             )
             return {"session": asdict(updated)}
+        if method == "workspace.confirm_switch":
+            session = self._authenticated_session(params, require_active=True)
+            switch_result = self.workspace_switches.confirm(
+                session.session_id,
+                _string(params, "switch_intent_id"),
+                _integer(params, "sequence"),
+            )
+            current = self.store.get_session(session.session_id)
+            assert current is not None
+            self._accept_session_environment(current, params)
+            switch_result["command_environment"] = self._environment_plan(
+                current.session_id
+            )
+            return switch_result
+        if method == "workspace.rollback_switch":
+            session = self._authenticated_session(params)
+            return self.workspace_switches.rollback(
+                session.session_id, _string(params, "switch_intent_id")
+            )
         if method == "workspace.status":
             return await self._workspace_status(params)
         if method == "workspace.observe":
@@ -929,6 +994,9 @@ class DaemonService:
             self._schedule_ready_launches()
             return {
                 "session": asdict(resumed),
+                "workspace_switch": self.workspace_switches.pending_response(
+                    resumed.session_id
+                ),
                 "command_environment": self._environment_plan(session.session_id),
                 "event": asdict(event) if event is not None else None,
                 "cursor": _asdict_or_none(
@@ -1168,6 +1236,117 @@ class DaemonService:
             ErrorCode.PROTOCOL_MISMATCH, f"unknown RPC method: {method}"
         )
 
+    def _workspace_runtime_export(self, params: dict[str, Any]) -> dict[str, Any]:
+        from llm_cli.storage.connection import immediate_transaction
+        from llm_cli.workspace.runtime_export import export_runtime
+
+        flags = {
+            name: params.get(name, False)
+            for name in ("yes", "allow_secret", "into_checkout")
+        }
+        if any(type(value) is not bool for value in flags.values()):
+            raise ValueError("runtime export approvals must be booleans")
+        with ExitStack() as activity:
+            with self.workspace_batches.lock:
+                session = self._authenticated_session(params, require_active=True)
+                if session.workspace_mode != "isolated":
+                    raise LlmCoordError(
+                        ErrorCode.REPOSITORY_UNSAFE,
+                        "runtime export requires an active isolated session",
+                    )
+                workspace_id = session.workspace_id or ""
+                with self.store.connection() as con:
+                    busy = con.execute(
+                        "SELECT 1 FROM tasks WHERE session_id=? AND state NOT IN "
+                        "('completed','failed','cancelled') LIMIT 1",
+                        (session.session_id,),
+                    ).fetchone()
+                    switching = con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='mode_switch_intents'"
+                    ).fetchone()
+                    if switching:
+                        switching = con.execute(
+                            "SELECT 1 FROM mode_switch_intents WHERE "
+                            "source_workspace_id=? AND state NOT IN "
+                            "('confirmed','rolled_back') LIMIT 1",
+                            (workspace_id,),
+                        ).fetchone()
+                    if busy or switching:
+                        raise LlmCoordError(
+                            ErrorCode.REPOSITORY_UNSAFE,
+                            "runtime export requires an idle workspace without a "
+                            "pending mode switch",
+                        )
+                state = self.isolated_workspaces.validate(workspace_id)
+                workspace = self.store.get_workspace(workspace_id)
+                checkout = self.store.get_checkout(session.checkout_id)
+                assert workspace is not None and checkout is not None
+                activity.enter_context(
+                    self.physical_authority.pin(Path(checkout.canonical_path))
+                )
+                activity.enter_context(
+                    self.isolated_workspaces.runtime.activity(workspace_id)
+                )
+                checkouts = tuple(
+                    Path(record.canonical_path)
+                    for record in self.store.list_checkouts()
+                )
+                protected: tuple[Path, ...] = (
+                    self.paths.config_dir,
+                    self.paths.data_dir,
+                    self.paths.data_dir.parent.parent,
+                    self.paths.state_dir,
+                    self.paths.state_dir.parent.parent,
+                    self.paths.runtime_dir,
+                    self.paths.runtime_dir.parent,
+                    self.isolated_workspaces.managed_root,
+                    self.physical_authority.root,
+                )
+                with self.store.connection() as con:
+                    protected += tuple(
+                        Path(row[0])
+                        for row in con.execute(
+                            "SELECT canonical_path FROM workspaces WHERE "
+                            "mode='isolated' UNION SELECT git_common_dir FROM "
+                            "checkouts UNION SELECT git_dir FROM workspaces "
+                            "WHERE git_dir IS NOT NULL"
+                        )
+                    )
+            result = export_runtime(
+                Path(workspace.canonical_path),
+                _string(params, "relative_path"),
+                Path(_string(params, "destination")),
+                checkout=Path(checkout.canonical_path),
+                runtime_paths=state.runtime_paths,
+                source_paths=tuple(state.source_manifest),
+                shared_checkouts=checkouts,
+                protected_roots=protected,
+                staging_root=Path(workspace.git_dir) if workspace.git_dir else None,
+                **flags,
+            )
+            if result["state"] == "exported":
+                # Paths, file values and content identities never enter the ledger.
+                with self.store.connection() as con, immediate_transaction(con):
+                    self.store.append_checkout_event(
+                        con,
+                        checkout_id=session.checkout_id,
+                        event_type="session.runtime_exported",
+                        caused_by_session_id=session.session_id,
+                        payload={
+                            key: result[key]
+                            for key in (
+                                "kind",
+                                "bytes",
+                                "entries",
+                                "sensitivity",
+                                "state",
+                            )
+                        },
+                        now=int(time.time() * 1000),
+                    )
+            return result
+
     def _cutover_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         root = _path(params, "path")
         if method == "workspace.cutover.plan":
@@ -1251,7 +1430,8 @@ class DaemonService:
                     dict(row)
                     for row in connection.execute(
                         "SELECT e.execution_id,e.task_id,e.task_attempt,e.claim_id,"
-                        "e.driver,e.state,e.base_oid,e.result_tree_id,e.result_commit_id,"
+                        "e.driver,e.state,e.base_oid,e.result_tree_id,e.result_commit"
+                        "_id,"
                         "e.patch_hash,e.created_at,e.updated_at FROM task_executions e "
                         f"JOIN tasks t USING(task_id) WHERE t.repo_key IN ({slots})",
                         keys,
@@ -1508,6 +1688,12 @@ class DaemonService:
                 raise ValueError("approved_runtime_files must be exact relative paths")
             if approved and workspace_mode != "isolated":
                 raise ValueError("runtime consent requires isolated mode")
+            existing = self.store.get_session(session_id)
+            if existing and (
+                existing.workspace_binding_generation > 1
+                or existing.workspace_mode != workspace_mode
+            ):
+                raise ValueError("conversation binding has changed; use session.resume")
         notices: tuple[str, ...] = ()
         if workspace_mode == "isolated":
             workspace, notices = await asyncio.to_thread(
@@ -1554,6 +1740,55 @@ class DaemonService:
                     "workspace_notices": list(notices),
                     "approved_runtime_files": sorted(set(approved)),
                 }
+
+    def _workspace_switch_worker_busy(self, session_id: str) -> bool:
+        with self._workspace_workers_lock:
+            live = set(self._workspace_workers)
+        live.update(self._background_tasks)
+        for task_id, _attempt in live:
+            task = self.store.get_task(task_id)
+            if task and task.session_id == session_id:
+                return True
+        for execution_id in tuple(self._answer_rewrites):
+            execution = self.store.get_execution_by_id(execution_id)
+            task = self.store.get_task(execution.task_id) if execution else None
+            if task and task.session_id == session_id:
+                return True
+        return False
+
+    async def _workspace_switch_mode(self, params: dict[str, Any]) -> dict[str, Any]:
+        async with self._authority_lock:
+            session = self._authenticated_session(params, require_active=True)
+            if session.session_id in self._pending_session_switches:
+                raise ValueError("workspace switch is already running")
+            if self._workspace_switch_worker_busy(session.session_id):
+                raise ValueError("wait for the active task worker before switching")
+            self._pending_session_switches.add(session.session_id)
+            checkout = self.store.get_checkout(session.checkout_id)
+            assert checkout is not None
+        approved = params.get("approved_runtime_files", [])
+        try:
+            if (
+                not isinstance(approved, list)
+                or len(approved) > 1000
+                or any(not isinstance(path, str) for path in approved)
+            ):
+                raise ValueError("runtime consent must name exact relative paths")
+            def switch_pinned() -> dict[str, Any]:
+                # The actual worker owns this lifetime even if its RPC waiter
+                # is cancelled while hydration or required checks still run.
+                with self.physical_authority.pin(Path(checkout.canonical_path)):
+                    return self.workspace_switches.request(
+                        session.session_id,
+                        _string(params, "switch_intent_id"),
+                        _string(params, "workspace"),
+                        disposition=_optional_string(params, "disposition"),
+                        approved_secrets=tuple(approved),
+                    )
+
+            return await asyncio.to_thread(switch_pinned)
+        finally:
+            self._pending_session_switches.discard(session.session_id)
 
     async def _workspace_status(self, params: dict[str, Any]) -> dict[str, Any]:
         """Report the workspace for a checkout, including what it cannot promise.
@@ -1628,6 +1863,7 @@ class DaemonService:
             "relative_path": relative_path,
             "identity": _identity_payload(identity),
             "content": content,
+            "workspace_binding_generation": session.workspace_binding_generation,
             "cooperative_read_barrier": not read_only,
             "edit_capability": not read_only,
         }
@@ -1636,6 +1872,12 @@ class DaemonService:
         """Store a complete text replacement as a private candidate."""
 
         session = self._authenticated_session(params, require_active=True)
+        if (
+            session.workspace_binding_generation > 1
+            and params.get("workspace_binding_generation")
+            != session.workspace_binding_generation
+        ):
+            raise ValueError("workspace binding changed; read current source again")
         candidate_id = _string(params, "candidate_id")
         relative_path = normalize_changed_path(_string(params, "relative_path"))
         base = _identity_from_payload(params.get("base"))
@@ -2036,6 +2278,15 @@ class DaemonService:
             if not one_shot:
                 session = self._authenticated_session(params, require_active=True)
             assert session is not None
+            if (
+                session.workspace_binding_generation > 1
+                and params.get("workspace_binding_generation")
+                != session.workspace_binding_generation
+            ):
+                raise ValueError(
+                    "workspace binding changed; resume the conversation before "
+                    "starting a task"
+                )
             if session.session_id != session_id:
                 raise LlmCoordError(
                     ErrorCode.SESSION_AUTH_REQUIRED,
@@ -3181,6 +3432,15 @@ class DaemonService:
             finally:
                 ownership_pin.close()
 
+        key = (task.task_id, task.attempt)
+        with self._workspace_workers_lock:
+            self._workspace_workers.add(key)
+
+        def completed_worker(_completed: object) -> None:
+            with self._workspace_workers_lock:
+                self._workspace_workers.discard(key)
+            ownership_pin.close()
+
         try:
             operation = functools.partial(
                 contextvars.copy_context().run,
@@ -3196,7 +3456,7 @@ class DaemonService:
             # even when cancelling the asyncio waiter cannot stop that thread.
             worker = self._execution_pool.submit(operation)
             submitted = True
-            worker.add_done_callback(lambda _completed: ownership_pin.close())
+            worker.add_done_callback(completed_worker)
             await asyncio.wrap_future(worker)
             if task.session_id is not None:
                 await asyncio.to_thread(self._settle_session_task, task)
@@ -3212,7 +3472,7 @@ class DaemonService:
             self._fail_unstarted_launch(task, claim, exc)
         finally:
             if not submitted:
-                ownership_pin.close()
+                completed_worker(None)
 
     def _settle_session_task(self, task: TaskRecord) -> None:
         """End a session task's reservation once its result is safely published.
