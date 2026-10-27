@@ -477,7 +477,10 @@ def ensure_safe_source(root: Path, content: str | bytes) -> None:
         raise LlmCoordError(
             ErrorCode.REPOSITORY_UNSAFE,
             "source content contains private runtime material "
-            "and cannot be used by model tools",
+            "and cannot be used by model tools: it repeats a credential-like "
+            "value from an approved private file such as .env. Remove that "
+            "value from the file, or start a fresh isolated workspace with "
+            "/workspace shared then /workspace isolated.",
         )
 
 

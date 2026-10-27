@@ -145,7 +145,7 @@ class CommandRunner:
         The caller has already adopted its pending ordinary-source overlay.
         The long-lived command writes the private worktree, never the checkout.
         """
-        from llm_cli.workspace.runtime import private_output_values
+        from llm_cli.workspace.runtime import private_value_sets, source_guarded
 
         if self.cancelled():
             raise TaskCancelled("task stopped")
@@ -165,7 +165,9 @@ class CommandRunner:
         (home / "tmp").mkdir(mode=0o700)
         try:
             environment = self.environment() if self.environment is not None else None
-            sensitive_values = private_output_values(
+            # Output redaction keeps every private value; the durable source
+            # guard keeps only the credential-like ones (see source_guarded).
+            sensitive_values, source_values = private_value_sets(
                 self.root,
                 tuple(sorted(self.runtime_files)),
                 source_paths=tuple(sorted(self.sensitive_paths)),
@@ -186,6 +188,10 @@ class CommandRunner:
                 env.update(values)
                 env.update(overrides)
                 sensitive_values += protected
+                # Credential-named variables and URL passwords.
+                source_values += tuple(
+                    value for value in protected if source_guarded(value, named=True)
+                )
             ipc = (
                 self.process_socket_directory()
                 if self.process_socket_directory
@@ -213,6 +219,7 @@ class CommandRunner:
                 public_command=" ".join(public_argv),
                 public_cwd=public_cwd,
                 sensitive_values=sensitive_values,
+                source_values=source_values,
                 reaper=uses_reaper(self.sandbox),
             )
         except Exception:

@@ -12,7 +12,7 @@ import tempfile
 import time
 import tomllib
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from pathlib import Path, PurePosixPath
@@ -684,6 +684,53 @@ def url_credentials(text: str, *, minimum: int = 1) -> tuple[str, ...]:
     return tuple(sorted(values, key=len, reverse=True))
 
 
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+
+
+def source_guarded(value: str, *, named: bool = False) -> bool:
+    """Whether a private value is worth refusing wherever it appears in source.
+
+    Output redaction keeps every private value: hiding a harmless word in a
+    command's output costs little. Refusing source is different. An ordinary
+    setting such as ``PORT=3000``, ``NODE_ENV=development`` or a hostname would
+    block all code that mentions it, so only credential-like values qualify:
+    known secret signatures, values of secret-named keys that are more than a
+    plain word or number, mixed-case values with digits, and long opaque tokens.
+    """
+    from llm_cli.agent.source_policy import contains_secret_material
+
+    token = value.strip()
+    if not token:
+        return False
+    if contains_secret_material(token):
+        return True
+    if "\n" in token or "://" in token:
+        # Each line, and a URL's userinfo, is extracted and judged separately.
+        return False
+    assignment = _ASSIGNMENT.match(token)
+    if assignment and _IDENTIFIER.fullmatch(assignment[1].strip()) and assignment[2]:
+        key, setting = assignment[1].strip(), assignment[2].strip().strip("\"'")
+        return source_guarded(setting, named=named or bool(_SECRET_KEY.search(key)))
+    letters = any(character.isalpha() for character in token)
+    digits = any(character.isdigit() for character in token)
+    mixed = (
+        any(character.isupper() for character in token)
+        and any(character.islower() for character in token)
+        and digits
+    )
+    if mixed and len(token) >= 6:
+        return True
+    if (
+        len(token) >= 24
+        and letters
+        and digits
+        and "/" not in token
+        and not any(character.isspace() for character in token)
+    ):
+        return True
+    return named and len(token) >= 8 and not token.isalpha() and not token.isdigit()
+
+
 def private_output_values(
     root: Path,
     paths: tuple[str, ...],
@@ -691,7 +738,22 @@ def private_output_values(
     source_paths: tuple[str, ...] = (),
     strict_private: bool = False,
 ) -> tuple[str, ...]:
-    """Keep actual private values in memory only; ordinary ignored files are inert.
+    """Every private value, for redacting command and process output."""
+    return private_value_sets(
+        root, paths, source_paths=source_paths, strict_private=strict_private
+    )[0]
+
+
+def private_value_sets(
+    root: Path,
+    paths: tuple[str, ...],
+    *,
+    source_paths: tuple[str, ...] = (),
+    strict_private: bool = False,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return (all private values, the subset that source must never contain).
+
+    Keep actual private values in memory only; ordinary ignored files are inert.
 
     Dependency trees are library code, not configuration: only approved
     credential files inside them are read. ``source_paths`` are screened source
@@ -703,34 +765,51 @@ def private_output_values(
     from llm_cli.agent.source_policy import cached_source_private_values
 
     values: set[str] = set(cached_source_private_values(root))
+    guarded: set[str] = set(values)
     private_minimum = 1 if strict_private else _UNNAMED_MINIMUM
     floor = 1
 
-    def add(value: object, minimum: int = 1) -> None:
+    def keep(candidates: Iterable[str], named: bool) -> None:
+        for candidate in candidates:
+            values.add(candidate)
+            if source_guarded(candidate, named=named):
+                guarded.add(candidate)
+
+    def add(value: object, minimum: int = 1, *, named: bool = False) -> None:
         minimum = max(minimum, floor)
         if isinstance(value, str) and value.strip():
-            for candidate in (
-                value.strip(),
-                *(line.strip() for line in value.splitlines() if line.strip()),
-            ):
-                if len(candidate) >= minimum:
-                    values.add(candidate)
+            keep(
+                (
+                    candidate
+                    for candidate in (
+                        value.strip(),
+                        *(line.strip() for line in value.splitlines() if line.strip()),
+                    )
+                    if len(candidate) >= minimum
+                ),
+                named,
+            )
         elif isinstance(value, (int, float, bool)):
-            for candidate in (str(value), json.dumps(value)):
-                if len(candidate) >= minimum:
-                    values.add(candidate)
+            keep(
+                (
+                    candidate
+                    for candidate in (str(value), json.dumps(value))
+                    if len(candidate) >= minimum
+                ),
+                named,
+            )
         elif isinstance(value, dict):
             for item in value.values():
-                add(item, minimum)
+                add(item, minimum, named=named)
         elif isinstance(value, list):
             for item in value:
-                add(item, minimum)
+                add(item, minimum, named=named)
 
     def sensitive_fields(value: object) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
                 if isinstance(key, str) and _SECRET_KEY.search(key):
-                    add(item)
+                    add(item, named=True)
                 else:
                     sensitive_fields(item)
         elif isinstance(value, list):
@@ -769,17 +848,18 @@ def private_output_values(
                     words = shlex.split(text, comments=True)
                     for index, word in enumerate(words[:-1]):
                         if word.casefold() == "password":
-                            add(words[index + 1])
+                            add(words[index + 1], named=True)
                         elif word.casefold() in {"login", "account"}:
                             add(words[index + 1], private_minimum)
                 for line in text.splitlines():
-                    values.update(url_credentials(line.strip(), minimum=floor))
+                    keep(url_credentials(line.strip(), minimum=floor), True)
                     assignment = _ASSIGNMENT.match(line)
                     if assignment:
-                        values.update(
+                        keep(
                             url_credentials(
                                 assignment[2].strip().strip("\"'"), minimum=floor
-                            )
+                            ),
+                            True,
                         )
             for parse in (json.loads, tomllib.loads):
                 with suppress(ValueError):
@@ -792,14 +872,16 @@ def private_output_values(
                     for field in _YAML_FIELD.finditer(line):
                         if _SECRET_KEY.search(field[1]):
                             with suppress(ValueError):
-                                add(_yaml_scalar(field[2]))
+                                add(_yaml_scalar(field[2]), named=True)
                 assignment = _ASSIGNMENT.match(line)
                 if assignment and (private or _SECRET_KEY.search(assignment[1])):
-                    minimum = (
-                        1 if _SECRET_KEY.search(assignment[1]) else private_minimum
-                    )
-                    add(assignment[2].strip().strip("\"'"), minimum)
+                    named = bool(_SECRET_KEY.search(assignment[1]))
+                    minimum = 1 if named else private_minimum
+                    add(assignment[2].strip().strip("\"'"), minimum, named=named)
                     with suppress(ValueError):
                         words = shlex.split(assignment[2], comments=True)
-                        add(" ".join(words), minimum)
-    return tuple(sorted(values, key=len, reverse=True))
+                        add(" ".join(words), minimum, named=named)
+    return (
+        tuple(sorted(values, key=len, reverse=True)),
+        tuple(sorted(guarded, key=len, reverse=True)),
+    )

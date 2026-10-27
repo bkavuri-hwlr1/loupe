@@ -81,7 +81,9 @@ the remaining planned capabilities are listed below.
   survivors and preserves an attention fence for reused or unverifiable
   identities. Owner-bound private receipts preserve launch-time value screening
   through runtime rotation and restart, including source reads, searches,
-  artifacts, publication and later command/check output. Owned cleanup scrubs
+  artifacts, publication and later command/check output. Output redaction keeps
+  every private value; the source guard keeps only credential-like ones, so
+  ordinary settings such as ports, hostnames and environment names stay usable. Owned cleanup scrubs
   private source copies and receipts while preserving ordinary source evidence.
   Process I/O and waits run outside daemon/publication locks, and source guards
   use cached state on ordinary RPC paths. Teardown of an unused manager does

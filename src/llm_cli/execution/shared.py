@@ -744,7 +744,7 @@ class SharedTaskExecutionRunner:
                             )
                             try:
                                 self.isolated.remember_process_values(
-                                    workspace, prepared.sensitive_values
+                                    workspace, prepared.source_values
                                 )
                             except BaseException:
                                 # The GO-gated program has not started; retire

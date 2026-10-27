@@ -339,3 +339,64 @@ def test_private_seed_retirement_crash_replays_after_durable_retired_marker(
     fresh.recover()
     assert not env.private.exists()
     assert env.store.get_workspace(env.workspace.workspace_id).state == "removed"
+
+
+@pytest.mark.parametrize(
+    ("value", "named", "guarded"),
+    [
+        # Ordinary settings: still redacted from output, never refused in source.
+        ("3000", False, False),
+        ("development", False, False),
+        ("localhost", False, False),
+        ("us-east-1", False, False),
+        ("v18.17.0", False, False),
+        ("redis://localhost:6379", False, False),
+        ("PORT=3000", False, False),
+        ("NODE_ENV=development", False, False),
+        ("postgres", True, False),
+        ("12345678", True, False),
+        # Credential-like values.
+        ("zQ7!m2", False, True),
+        ("c14-runtime-source-opaque-marker-6b3f90d1", False, True),
+        ("3f9c0e1a7b2d4c6e8f0a1b2c3d4e5f60", False, True),
+        ("hunter22", True, True),
+        ("API_TOKEN=hunter22", False, True),
+        ("aGVsbG8gd29ybGQ=", True, True),
+    ],
+)
+def test_source_guard_keeps_only_credential_like_values(
+    value: str, named: bool, guarded: bool
+) -> None:
+    from llm_cli.workspace.runtime import source_guarded
+
+    assert source_guarded(value, named=named) is guarded
+
+
+def test_ordinary_env_settings_stay_usable_in_source_after_a_launch(
+    environment: Environment,
+) -> None:
+    from llm_cli.workspace.runtime import private_value_sets
+
+    env = environment
+    token = "c14-api-token-9f2b7d41e8a6c3"
+    (env.private / ".env").write_text(
+        "PORT=3000\nNODE_ENV=development\nAPI_HOST=localhost\n"
+        "DB_PASSWORD=postgres\nAPI_TOKEN=" + token + "\n"
+    )
+    output, source = private_value_sets(env.private, (".env",), strict_private=True)
+    # Output keeps every value; only the credential-like one guards source.
+    assert {"3000", "development", "localhost", "postgres", token} <= set(output)
+    assert token in source
+    assert not {"3000", "development", "localhost", "postgres"} & set(source)
+    env.manager.remember_process_values(env.workspace, source)
+    broker = SharedToolBroker(env.private, ("*",))
+    ordinary = "app.listen(3000)\nMODE = 'development'\nHOST = 'localhost'\n"
+    written = broker.invoke("write_file", {"path": "server.py", "content": ordinary})
+    assert not written.is_error, written.content
+    (env.private / "a.py").write_text("PORT = 3000\n")
+    assert not broker.invoke("read_file", {"path": "a.py"}).is_error
+    leaked = broker.invoke(
+        "write_file", {"path": "leak.py", "content": "TOKEN = " + repr(token)}
+    )
+    assert leaked.is_error and token not in leaked.content
+    assert "/workspace shared then /workspace isolated" in leaked.content

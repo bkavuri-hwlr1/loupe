@@ -53,6 +53,8 @@ class PreparedProcess:
     public_command: str
     public_cwd: str
     sensitive_values: tuple[str, ...] = ()
+    # The credential-like subset that source must never contain afterwards.
+    source_values: tuple[str, ...] = ()
     reaper: bool = False
 
 

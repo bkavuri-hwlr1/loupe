@@ -278,11 +278,18 @@ Each process retains at most 64 KiB of screened output; output inspection return
 the last 8 KiB and indicates truncation. Oversized lines are omitted. Recognized
 secret material withholds remaining output, while actual copied private values
 are replaced with `[private value]` before storage or model output. Managed
-writers retain short private configuration values too. A private, owner-bound
-receipt keeps launch-time values protected after the original runtime changes
-or disappears and across daemon restarts. Source files containing those values
-are withheld from file reads, searches, source artifacts and publication; values
-already present in accepted opening source remain usable. The receipt stays
+writers redact short private configuration values in output too. A private,
+owner-bound receipt keeps credential-like launch-time values protected after the
+original runtime changes or disappears and across daemon restarts. Source files
+containing those values are withheld from file reads, searches, source artifacts
+and publication; values already present in accepted opening source remain
+usable. Only credential-like values guard source: recognized secret signatures,
+values of secret-named keys (such as `*_TOKEN` or `PASSWORD`) that are more than
+a plain word or number, mixed-case values with digits, and long opaque tokens.
+Ordinary settings such as `PORT=3000`, `NODE_ENV=development` or a hostname stay
+usable in source, so starting a dev server with a `.env` does not block code
+that mentions its port. A refusal says how to recover: remove the value from
+the file, or start a fresh isolated workspace. The receipt stays
 outside SQL, source artifacts and model access, and is scrubbed by owned cleanup
 once live work and held proposals release the workspace.
 
