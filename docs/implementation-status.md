@@ -101,8 +101,8 @@ the remaining planned capabilities are listed below.
   add a `checkout.resync_required` notice (`CONTEXT_RESYNC_REQUIRED`) for every
   session on the checkout. Unsupported platforms and filesystems, and
   `[workspace] watchers = "off"`, keep periodic full scans. At 20,000 source
-  files an unchanged isolated safe point takes **SAFE_POINT_WARM** and one
-  outside edit **SAFE_POINT_EDIT**, down from 1.94 seconds. See
+  files an unchanged isolated safe point takes **144 ms** and one
+  outside edit **215 ms**, down from 1.94 and 2.38 seconds. See
   [the design note](file-watchers.md) and
   [measurements](experiments/file-watchers-c12-2026-10-28.md).
 

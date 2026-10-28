@@ -1,0 +1,199 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.12.13 (main, Jul 18 2026, 16:55:18) [Clang 22.1.3 ]",
+  "results": [
+    {
+      "files": 20000,
+      "file_bytes": 35,
+      "repeats": 5,
+      "watchers": "off",
+      "outside_path_cap": 1000,
+      "isolated_path_cap": 20000,
+      "fixture_seconds": 1.5223209590185434,
+      "outside_cold": {
+        "samples_ms": [
+          268.6995000112802
+        ],
+        "median_ms": 268.6995000112802,
+        "result": 0
+      },
+      "outside_warm": {
+        "samples_ms": [
+          82.77533401269466,
+          81.34441694710404,
+          83.55174993630499,
+          82.08004094194621,
+          83.59791699331254
+        ],
+        "median_ms": 82.77533401269466,
+        "result": 0
+      },
+      "outside_observed_paths": 1000,
+      "outside_one_change": {
+        "samples_ms": [
+          100.97833396866918
+        ],
+        "median_ms": 100.97833396866918,
+        "result": 1
+      },
+      "isolated_capture_cold": {
+        "samples_ms": [
+          2372.2211660351604
+        ],
+        "median_ms": 2372.2211660351604,
+        "result": {
+          "captured_paths": 20000,
+          "deferred_paths": 0
+        }
+      },
+      "isolated_capture_warm": {
+        "samples_ms": [
+          1083.569583017379,
+          1090.0425830623135,
+          1086.8125410052016,
+          1088.555834023282,
+          1085.7175830751657
+        ],
+        "median_ms": 1086.8125410052016,
+        "result": {
+          "captured_paths": 20000,
+          "deferred_paths": 0
+        }
+      },
+      "isolated": {
+        "status": "unsupported",
+        "error": "isolated hydration inventory is incomplete: metadata_budget_exceeded",
+        "open_seconds": 6.290672624949366,
+        "scanned_paths": 0
+      }
+    },
+    {
+      "files": 20000,
+      "file_bytes": 35,
+      "repeats": 5,
+      "watchers": "auto",
+      "outside_path_cap": 1000,
+      "isolated_path_cap": 20000,
+      "fixture_seconds": 1.4735797079047188,
+      "outside_cold": {
+        "samples_ms": [
+          295.1243749121204
+        ],
+        "median_ms": 295.1243749121204,
+        "result": 0
+      },
+      "outside_warm": {
+        "samples_ms": [
+          41.36541695334017,
+          40.35837494302541,
+          40.52916704677045,
+          40.59899994172156,
+          40.794832981191576
+        ],
+        "median_ms": 40.59899994172156,
+        "result": 0
+      },
+      "outside_observed_paths": 1000,
+      "outside_one_change": {
+        "samples_ms": [
+          75.72904194239527
+        ],
+        "median_ms": 75.72904194239527,
+        "result": 1
+      },
+      "isolated_capture_cold": {
+        "samples_ms": [
+          2397.92212494649
+        ],
+        "median_ms": 2397.92212494649,
+        "result": {
+          "captured_paths": 20000,
+          "deferred_paths": 0
+        }
+      },
+      "isolated_capture_warm": {
+        "samples_ms": [
+          18.99387501180172,
+          17.49516697600484,
+          19.042625091969967,
+          17.983041936531663,
+          19.130124943330884
+        ],
+        "median_ms": 18.99387501180172,
+        "result": {
+          "captured_paths": 20000,
+          "deferred_paths": 0
+        }
+      },
+      "isolated": {
+        "status": "unsupported",
+        "error": "isolated hydration inventory is incomplete: metadata_budget_exceeded",
+        "open_seconds": 6.408709833980538,
+        "scanned_paths": 0
+      }
+    }
+  ],
+  "growth_20000": {
+    "initial_files": 7000,
+    "target_files": 20000,
+    "growth_step_files": 45,
+    "status": "complete",
+    "growth_seconds": 81.04437708307523,
+    "growth_steps": 289,
+    "accepted_manifest_paths": 20000,
+    "accepted_manifest_entries": 20014,
+    "full_safe_point_warm": {
+      "samples_ms": [
+        146.11624996177852,
+        144.16604093275964,
+        143.38029199279845,
+        142.6859999774024,
+        145.60187503229827
+      ],
+      "median_ms": 144.16604093275964,
+      "result": {
+        "applied": 0,
+        "deferred": 0,
+        "conflicted": 0
+      }
+    },
+    "full_safe_point_one_change": {
+      "samples_ms": [
+        214.52200005296618
+      ],
+      "median_ms": 214.52200005296618,
+      "result": {
+        "applied": 1,
+        "deferred": 0,
+        "conflicted": 0
+      }
+    },
+    "unwatched_safe_point_warm": {
+      "samples_ms": [
+        1283.2126249559224,
+        1272.3532089730725,
+        1279.457833035849,
+        1263.376333983615,
+        1273.128041997552
+      ],
+      "median_ms": 1273.128041997552,
+      "result": {
+        "applied": 0,
+        "deferred": 0,
+        "conflicted": 0
+      }
+    },
+    "unwatched_safe_point_one_change": {
+      "samples_ms": [
+        1366.3365420652553
+      ],
+      "median_ms": 1366.3365420652553,
+      "result": {
+        "applied": 1,
+        "deferred": 0,
+        "conflicted": 0
+      }
+    },
+    "database_bytes": 17637376
+  }
+}

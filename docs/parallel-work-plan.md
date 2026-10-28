@@ -71,8 +71,8 @@ runtime activity barriers used by switching and cleanup. The C16 full growing-pa
 hour passed with the original bounds. C13's final combined source is frozen for
 full covered correctness and separate production scale gates; see the package
 verification links below. **Wave 10:** C14 is implemented. **Wave 11:** C12 is
-implemented; native watchers bring the 20,000-file safe point under E3's
-threshold.
+implemented; native watchers bring the 20,000-file safe point to 144 ms, under
+E3's threshold.
 
 D4 releases what is already on `main` (Waves 1–7), so users get that work
 before Waves 8–11 change it further. Publishing still needs you to push the
