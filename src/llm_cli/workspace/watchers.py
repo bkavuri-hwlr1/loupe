@@ -329,6 +329,8 @@ def _private_directory(path: Path) -> str:
 
 def _release(roots: dict[Path, _Root], lock: threading.Lock) -> None:
     """Stop a collected registry's watches without blocking its collector."""
+    if _FORKED:
+        return
     with lock:
         states = list(roots.values())
         roots.clear()
@@ -379,7 +381,7 @@ class WatchRegistry:
 
     def changes(self, root: Path, cursor: Cursor | None) -> Changes | None:
         """Return narrowed changes, or None when this root keeps periodic scans."""
-        if self.mode == "off" or self._closed:
+        if self.mode == "off" or self._closed or _FORKED:
             return None
         root = root.absolute()
         rebuilt: str | None = None
@@ -432,6 +434,8 @@ class WatchRegistry:
 
     def retain(self, roots: Iterable[Path]) -> None:
         """Stop watching roots that no active session uses any more."""
+        if _FORKED:
+            return
         keep = {root.absolute() for root in roots}
         with self._lock:
             idle = [
@@ -445,6 +449,8 @@ class WatchRegistry:
 
     def close(self) -> None:
         self._closed = True
+        if _FORKED:
+            return
         with self._lock:
             roots = list(self._roots.items())
         for path, state in roots:
@@ -595,6 +601,23 @@ def _owner(state: _Root) -> WatchRegistry | None:
 _BACKEND_LOCK = threading.Lock()
 _BACKEND: _Backend | None = None
 _BACKEND_FAILURE: tuple[float, str] | None = None
+# A child forked without exec inherits neither the watcher threads nor a
+# usable FSEvents queue, and a lock may have been held at the fork. It keeps
+# periodic scans and leaves the parent's watches alone.
+_FORKED = False
+
+
+def _after_fork_in_child() -> None:
+    global _BACKEND, _FORKED
+    _FORKED = True
+    backend, _BACKEND = _BACKEND, None
+    if isinstance(backend, _Inotify):
+        # Reading the inherited descriptor would take the parent's events.
+        with suppress(OSError):
+            os.close(backend.fd)
+
+
+os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
 def _shared_backend() -> _Backend:

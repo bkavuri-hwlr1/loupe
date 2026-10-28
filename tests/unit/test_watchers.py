@@ -315,6 +315,31 @@ def test_replaced_root_forces_a_full_scan(
 
 
 @native
+def test_forked_child_keeps_periodic_scans_and_leaves_parent_watches(
+    watched: Watched,
+) -> None:
+    watched.next()
+    read, write = os.pipe()
+    child = os.fork()
+    if child == 0:  # pragma: no cover - the child reports through the pipe
+        try:
+            result = watched.registry.changes(watched.root, watched.cursor)
+            watched.registry.close()
+            os.write(write, b"none" if result is None else b"watched")
+        finally:
+            os._exit(0)
+    os.close(write)
+    try:
+        assert os.read(read, 16) == b"none"
+    finally:
+        os.close(read)
+        os.waitpid(child, 0)
+    (watched.root / "src/b.py").write_text("after fork\n")
+    changes = watched.next()
+    assert changes.full is None and changes.touches("src/b.py")
+
+
+@native
 def test_collected_registry_releases_its_watches(
     tmp_path: Path, repository_factory: Callable[[Path, dict[str, str]], Path]
 ) -> None:
