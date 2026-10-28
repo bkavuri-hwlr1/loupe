@@ -16,9 +16,12 @@ import json
 import os
 import sqlite3
 import stat
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +41,7 @@ from llm_cli.workspace.identity import (
 
 if TYPE_CHECKING:
     from llm_cli.storage.control import ControlStore
+    from llm_cli.workspace.watchers import Changes, Cursor, WatchRegistry
 
 MAX_PATHS = 1_000
 MAX_BYTES = 16 * 1024 * 1024
@@ -192,10 +196,33 @@ def _source(
         ), count
 
 
+_WATCHED_SESSIONS = 1_024
+
+
+@dataclass(frozen=True)
+class _Watched:
+    root: Path
+    cursor: Cursor
+    # Paths a scan could not settle (deferred, mid-save or out of budget).
+    retry: frozenset[str]
+
+
+@dataclass
+class _Outcome:
+    pending: set[str] = field(default_factory=set)
+    # False when the scan was skipped and its cursor must not advance.
+    settled: bool = True
+
+
 class ExternalWorkspaceScanner:
-    def __init__(self, store: ControlStore) -> None:
+    def __init__(
+        self, store: ControlStore, watchers: WatchRegistry | None = None
+    ) -> None:
         self.store = store
+        self.watchers = watchers
         self._last_session = ""
+        self._watched: OrderedDict[str, _Watched] = OrderedDict()
+        self._watched_lock = threading.Lock()
 
     def scan_active(self) -> int:
         with self.store.connection() as connection:
@@ -244,10 +271,54 @@ class ExternalWorkspaceScanner:
             reconcile(
                 self.store, root, candidate_dir=self.store.path.parent / "candidates"
             )
-            return self._scan_session_owned(session_id)
+            if self.watchers is None:
+                return self._scan_session_owned(session_id)
+            with self._watched_lock:
+                previous = self._watched.get(session_id)
+            if previous is not None and previous.root != root:
+                previous = None
+            changes = self.watchers.changes(
+                root, previous.cursor if previous is not None else None
+            )
+            if changes is None:
+                with self._watched_lock:
+                    self._watched.pop(session_id, None)
+                return self._scan_session_owned(session_id)
+            outcome = _Outcome()
+            emitted = self._scan_session_owned(
+                session_id,
+                changes=changes,
+                retry=previous.retry if previous is not None else frozenset(),
+                outcome=outcome,
+            )
+            if not outcome.settled:
+                return emitted
+            # Only a completed scan advances its cursor; a failed one retries.
+            with self._watched_lock:
+                self._watched[session_id] = _Watched(
+                    root, changes.cursor, frozenset(outcome.pending)
+                )
+                self._watched.move_to_end(session_id)
+                while len(self._watched) > _WATCHED_SESSIONS:
+                    self._watched.popitem(last=False)
+            return emitted
 
-    def _scan_session_owned(self, session_id: str) -> int:
+    def _scan_session_owned(
+        self,
+        session_id: str,
+        *,
+        changes: Changes | None = None,
+        retry: frozenset[str] = frozenset(),
+        outcome: _Outcome | None = None,
+    ) -> int:
+        """Scan read paths; with ``changes``, only those a watcher cannot vouch for.
+
+        A narrowed scan checks every path the watcher names, every path whose
+        identity was never verified, and every path an earlier scan could not
+        settle. ``outcome`` records the paths this scan could not settle.
+        """
         deadline = time.monotonic() + MAX_SECONDS
+        pending = outcome.pending if outcome is not None else set()
 
         def remaining() -> float:
             value = deadline - time.monotonic()
@@ -267,9 +338,11 @@ class ExternalWorkspaceScanner:
                 "AND w.kind='shared_checkout' AND w.mode='shared' AND w.state='active'",
                 (session_id,),
             ).fetchone()
-            if binding is None or self._pending(
-                connection, str(binding["workspace_id"])
-            ):
+            if binding is None:
+                return 0
+            if self._pending(connection, str(binding["workspace_id"])):
+                if outcome is not None:
+                    outcome.settled = False
                 return 0
             # Read observations last as long as the session; a long conversation
             # is covered for the files it read most recently.
@@ -282,6 +355,14 @@ class ExternalWorkspaceScanner:
                 "LIMIT ?",
                 (session_id, MAX_PATHS),
             ).fetchall()
+            if changes is not None:
+                rows = [
+                    row
+                    for row in rows
+                    if row["identity_json"] is None
+                    or row["relative_path"] in retry
+                    or changes.touches(str(row["relative_path"]))
+                ]
             if not rows:
                 return 0
             rows.sort(key=lambda row: str(row["relative_path"]))
@@ -307,9 +388,11 @@ class ExternalWorkspaceScanner:
         artifact_hashes: dict[str, str] = {}
         results: list[tuple[sqlite3.Row, str, str | None, bool]] = []
         consumed = 0
-        for row in rows:
+        for position, row in enumerate(rows):
             if time.monotonic() >= deadline:
-                break  # The remaining paths keep their state for a later scan.
+                # The remaining paths keep their state for a later scan.
+                pending.update(str(item["relative_path"]) for item in rows[position:])
+                break
             path = str(row["relative_path"])
             stamp = stamps[path]
             # First scans always verify source identity against the actual read.
@@ -340,10 +423,12 @@ class ExternalWorkspaceScanner:
                             root, path, stamp, MAX_BYTES - consumed
                         )
                 except _Deferred:
+                    pending.add(path)
                     continue
                 except (OSError, ValueError):
                     # Being written right now, as by an editor's save; a later
                     # scan sees its settled state.
+                    pending.add(path)
                     continue
                 consumed += count
             previous = row["identity_json"]
@@ -397,8 +482,10 @@ class ExternalWorkspaceScanner:
                     row["sequence"],
                 ):
                     # A fresh real read or another scan won the observation race.
+                    pending.add(str(row["relative_path"]))
                     continue
                 if found is None and row["generation"] is not None:
+                    pending.add(str(row["relative_path"]))
                     continue
                 sequence = int(binding["next_event_sequence"])
                 if changed:

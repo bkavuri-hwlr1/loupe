@@ -63,6 +63,9 @@ class Settings:
     coordination_mode: str = "enforce"
     refuse_staged_paths: bool = False
     workspace_mode: str = "shared"
+    # Native file-change watchers narrow outside-edit and isolated safe-point
+    # scans: "auto" where supported, "off" keeps periodic scans only.
+    workspace_watchers: str = "auto"
     knowledge_index: str = "off"
     agent_provider: str = "anthropic"
     agent_model: str | None = None

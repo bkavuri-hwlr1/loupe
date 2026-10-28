@@ -27,12 +27,14 @@ from typing import Any
 
 from llm_cli.agent.source_policy import (
     _private_path,
+    _user_excludes_file,
     contains_private_source,
     contains_unsafe_source,
     ensure_safe_content,
     excluded_paths,
     forget_source_private_values,
     register_runtime_paths,
+    registered_runtime_paths,
     runtime_path,
     runtime_path_matches,
     source_private_epoch,
@@ -66,6 +68,14 @@ from llm_cli.workspace.identity import (
     ObjectKind,
     content_identity,
 )
+from llm_cli.workspace.watchers import (
+    DIRECTORY,
+    STRUCTURAL,
+    Changes,
+    Cursor,
+    WatchRegistry,
+)
+from llm_cli.workspace.watchers import key as watch_key
 
 _MAX_SOURCE_FILE = 256 * 1024 * 1024
 _LOG = logging.getLogger(__name__)
@@ -258,6 +268,10 @@ class SourceCaptureCache:
     )
     lock: RLock = field(default_factory=RLock, repr=False)
     guard_epochs: dict[Path, int] = field(default_factory=dict, repr=False)
+    # Complete safe-point captures that a watcher cursor can narrow.
+    watched: OrderedDict[tuple[Any, ...], _WatchedCapture] = field(
+        default_factory=OrderedDict, repr=False
+    )
 
     def guard(self, root: Path) -> None:
         epoch = source_private_epoch(root)
@@ -311,15 +325,302 @@ def capture_source(
     if cache is not None:
         cache.guard(root)
     deferred: list[str] = []
-    total = 0
     source_paths = _source_paths(root)
     excluded = excluded_paths(root, list(source_paths))
+    _capture_paths(
+        root,
+        candidate_dir,
+        source_paths,
+        excluded=excluded,
+        protected_paths=protected_paths,
+        cache=cache,
+        defer_changed=defer_changed,
+        manifest=manifest,
+        deferred=deferred,
+    )
+    manifest.deferred = tuple(deferred)
+    if cache is not None:
+        cache.prune(root, set(source_paths))
+    return manifest
+
+
+@dataclass(frozen=True)
+class _WatchedCapture:
+    """One complete safe-point capture and the watcher cursor it is current at."""
+
+    cursor: Cursor
+    epoch: int
+    policy_files: tuple[Path, ...]
+    policy: tuple[object, ...]
+    paths: tuple[str, ...]
+    path_set: frozenset[str]
+    # Watcher spellings of ``paths``, sorted, with the source path for each.
+    keys: list[str]
+    owners: list[str]
+    key_set: frozenset[str]
+    manifest: dict[str, dict[str, Any]]
+    excluded: frozenset[str]
+    # Deferred by policy (excluded, protected or runtime-as-source): stable
+    # until the path or the policy changes.
+    held: frozenset[str]
+    # Deferred because a save crossed the scan: always read again.
+    retry: frozenset[str]
+
+
+_WATCHED_CAPTURES = 4
+
+
+def _regular(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _source_set_may_change(
+    root: Path, changes: Changes, previous: _WatchedCapture
+) -> bool:
+    """Whether the listed source set could differ from the retained capture.
+
+    FSEvents keeps creation flags on recently created files, so a structural
+    flag alone does not mean a path appeared, vanished or was respelled.
+    """
+    if changes.index:
+        return True
+    for changed, bits in changes.paths.items():
+        if bits & DIRECTORY:
+            return True
+        if not bits & STRUCTURAL:
+            continue
+        spelling = changes.spellings.get(changed)
+        if spelling is None:
+            return True
+        exists = os.path.lexists(root / spelling)
+        if (changed in previous.key_set) != exists or (
+            exists and spelling not in previous.path_set
+        ):
+            return True
+    return False
+
+
+def _policy_files(root: Path) -> tuple[Path, ...]:
+    """Ignore-policy inputs outside the checkout, which its watcher cannot see.
+
+    Policy inside the checkout (.gitignore, Git config and info/exclude) makes
+    the watcher itself require a full capture.
+    """
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    files = {
+        Path(os.environ.get("GIT_CONFIG_GLOBAL") or Path.home() / ".gitconfig"),
+        config_home / "git" / "config",
+        config_home / "git" / "ignore",
+    }
+    user = _user_excludes_file(root, None)
+    if user:
+        path = Path(user)
+        files.add(path if path.is_absolute() else root / path)
+    return tuple(sorted(files))
+
+
+def _policy_evidence(files: tuple[Path, ...]) -> tuple[object, ...]:
+    evidence: list[object] = []
+    for path in files:
+        try:
+            # Follow links, as Git does for dotfile managers' configuration.
+            status = os.stat(path)
+        except FileNotFoundError:
+            evidence.append(None)
+        except OSError:
+            evidence.append("unavailable")
+        else:
+            evidence.append(
+                (
+                    status.st_dev,
+                    status.st_ino,
+                    status.st_size,
+                    status.st_mtime_ns,
+                    status.st_ctime_ns,
+                )
+            )
+    return tuple(evidence)
+
+
+def capture_watched_source(
+    root: Path,
+    candidate_dir: Path,
+    *,
+    protected_paths: Sequence[str],
+    cache: SourceCaptureCache,
+    watch: WatchRegistry,
+) -> SourceManifest:
+    """A safe-point capture that rereads only paths a watcher may have seen change.
+
+    Without a usable watcher, or whenever it cannot vouch for the previous
+    capture, this is exactly ``capture_source(..., defer_changed=True)``.
+    Reused entries were captured after an earlier settled cursor, and every
+    path the watcher names since then, plus every retry, is read again.
+    """
+    cache.guard(root)
+    snapshot_key = (
+        root,
+        candidate_dir,
+        tuple(protected_paths),
+        registered_runtime_paths(root),
+    )
+    with cache.lock:
+        previous = cache.watched.get(snapshot_key)
+    changes = watch.changes(root, previous.cursor if previous is not None else None)
+    if changes is None:
+        with cache.lock:
+            cache.watched.pop(snapshot_key, None)
+        return capture_source(
+            root,
+            candidate_dir,
+            protected_paths=protected_paths,
+            cache=cache,
+            defer_changed=True,
+        )
+    epoch = source_private_epoch(root)
+    if (
+        previous is None
+        or changes.full is not None
+        or previous.epoch != epoch
+        or _policy_evidence(previous.policy_files) != previous.policy
+    ):
+        try:
+            files = _policy_files(root)
+        except LlmCoordError:
+            files = ()
+        policy = _policy_evidence(files) if files else ("unavailable",)
+        source_paths = _source_paths(root)
+        excluded = frozenset(excluded_paths(root, list(source_paths)))
+        changed = set(source_paths)
+        retained: _WatchedCapture | None = None
+    else:
+        files, policy = previous.policy_files, previous.policy
+        if _source_set_may_change(root, changes, previous):
+            source_paths = _source_paths(root)
+        else:
+            source_paths = previous.paths
+        retained = previous
+        changed = {previous.owners[index] for index in changes.affected(previous.keys)}
+        changed |= previous.retry
+        new_paths = (
+            set(source_paths) - previous.path_set
+            if source_paths is not previous.paths
+            else set()
+        )
+        changed = (changed | new_paths) & (
+            previous.path_set if source_paths is previous.paths else set(source_paths)
+        )
+        # A path keeps its classification unless it is new or was replaced
+        # by something other than a regular file.
+        check = new_paths | {
+            path
+            for path in changed
+            if changes.paths.get(watch_key(path), 0) & STRUCTURAL
+            and not _regular(root / path)
+        }
+        excluded = (previous.excluded - check) | frozenset(
+            excluded_paths(root, sorted(check)) if check else ()
+        )
+    manifest = SourceManifest()
+    deferred: list[str] = []
+    held: list[str] = []
+    _capture_paths(
+        root,
+        candidate_dir,
+        source_paths,
+        excluded=excluded,
+        protected_paths=protected_paths,
+        cache=cache,
+        defer_changed=True,
+        manifest=manifest,
+        deferred=deferred,
+        held=held,
+        retained=retained,
+        changed=changed,
+    )
+    manifest.deferred = tuple(deferred)
+    path_set = (
+        previous.path_set
+        if previous is not None and source_paths is previous.paths
+        else frozenset(source_paths)
+    )
+    if retained is None or path_set != retained.path_set:
+        cache.prune(root, set(path_set))
+        ordered = sorted((watch_key(path), path) for path in source_paths)
+        keys = [item[0] for item in ordered]
+        owners = [item[1] for item in ordered]
+    else:
+        keys, owners = retained.keys, retained.owners
+    key_set = (
+        retained.key_set
+        if retained is not None and keys is retained.keys
+        else frozenset(keys)
+    )
+    held_set = frozenset(held)
+    snapshot = _WatchedCapture(
+        changes.cursor,
+        epoch,
+        files,
+        policy,
+        source_paths,
+        path_set,
+        keys,
+        owners,
+        key_set,
+        {path: dict(entry) for path, entry in manifest.items()},
+        excluded & path_set,
+        held_set,
+        frozenset(deferred) - held_set,
+    )
+    with cache.lock:
+        cache.watched[snapshot_key] = snapshot
+        cache.watched.move_to_end(snapshot_key)
+        while len(cache.watched) > _WATCHED_CAPTURES:
+            cache.watched.popitem(last=False)
+    return manifest
+
+
+def _capture_paths(
+    root: Path,
+    candidate_dir: Path,
+    source_paths: Sequence[str],
+    *,
+    excluded: set[str] | frozenset[str],
+    protected_paths: Sequence[str],
+    cache: SourceCaptureCache | None,
+    defer_changed: bool,
+    manifest: SourceManifest,
+    deferred: list[str],
+    held: list[str] | None = None,
+    retained: _WatchedCapture | None = None,
+    changed: set[str] | None = None,
+) -> None:
+    total = 0
     for relative in source_paths:
+        if retained is not None and changed is not None and relative not in changed:
+            # No change since the retained capture's settled watcher cursor.
+            if relative in retained.held:
+                deferred.append(relative)
+                if held is not None:
+                    held.append(relative)
+                continue
+            entry = retained.manifest.get(relative)
+            if entry is not None:
+                manifest[relative] = dict(entry)
+                total += int(entry["size"])
+                if total > 1024**3:
+                    raise _error("isolated source exceeds its 1 GiB budget")
+            continue
         if runtime_path(root, relative):
             continue
         if runtime_path_matches(relative, protected_paths):
             if defer_changed:
                 deferred.append(relative)
+                if held is not None:
+                    held.append(relative)
                 continue
             raise _error(
                 "runtime path became source; explicit reclassification is required"
@@ -331,6 +632,8 @@ def capture_source(
         ):
             if defer_changed:
                 deferred.append(relative)
+                if held is not None:
+                    held.append(relative)
                 continue
             raise _error(f"protected source cannot be snapshotted: {relative}")
         key = (root, relative)
@@ -403,10 +706,6 @@ def capture_source(
         }
         if cache is not None and not is_link:
             cache.remember(key, before, manifest[relative])
-    manifest.deferred = tuple(deferred)
-    if cache is not None:
-        cache.prune(root, set(source_paths))
-    return manifest
 
 
 def source_fingerprint(root: Path, policy_paths: tuple[str, ...] = ()) -> str:
@@ -658,7 +957,11 @@ class IsolatedWorkspaceManager:
 
         self.runtime = RuntimeRefresher(store, managed_root, publication_lock)
 
-    def get(self, workspace_id: str) -> IsolatedState | None:
+    def get(
+        self, workspace_id: str, *, source_manifest: bool = True
+    ) -> IsolatedState | None:
+        """Load a workspace; ``source_manifest=False`` leaves its creation
+        snapshot empty for callers that only validate."""
         with self.store.connection() as con:
             row = con.execute(
                 "SELECT * FROM isolated_workspaces WHERE workspace_id=?",
@@ -671,7 +974,7 @@ class IsolatedWorkspaceManager:
             str(row["session_id"]),
             str(row["base_oid"]),
             int(row["source_sequence"]),
-            json.loads(row["source_manifest_json"]),
+            json.loads(row["source_manifest_json"]) if source_manifest else {},
             tuple(json.loads(row["runtime_paths_json"])),
             tuple(json.loads(row["runtime_files_json"])),
             tuple(json.loads(row["notices_json"])),
@@ -711,8 +1014,10 @@ class IsolatedWorkspaceManager:
                 ),
             )
 
-    def validate(self, workspace_id: str) -> IsolatedState:
-        state = self.get(workspace_id)
+    def validate(
+        self, workspace_id: str, *, source_manifest: bool = True
+    ) -> IsolatedState:
+        state = self.get(workspace_id, source_manifest=source_manifest)
         workspace = self.store.get_workspace(workspace_id)
         if (
             state is None
@@ -736,7 +1041,7 @@ class IsolatedWorkspaceManager:
                 raise _error("isolated worktree ownership changed")
         self._load_process_values(state, managed.path, managed.git_dir)
         self.runtime.recover(workspace_id)
-        state = self.get(workspace_id)
+        state = self.get(workspace_id, source_manifest=source_manifest)
         assert state is not None
         register_runtime_paths(managed.path, state.runtime_paths)
         return state

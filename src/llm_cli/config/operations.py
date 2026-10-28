@@ -30,6 +30,7 @@ _ALIASES = {
     "coordination_mode": "core.coordination_mode",
     "refuse_staged_paths": "core.refuse_staged_paths",
     "knowledge_index": "knowledge.index",
+    "workspace_watchers": "workspace.watchers",
     "isolated_rebuild": "isolated.rebuild",
     "launch_lease_ms": "leases.launch_ms",
     "work_lease_ms": "leases.work_ms",
