@@ -8,6 +8,7 @@ import hashlib
 import json
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -329,6 +330,43 @@ def test_watchers_off_keeps_the_periodic_full_scans(
         assert synchronize().applied == ()
         assert len(listed) == 2
         assert service.watchers.watching() == []
+    finally:
+        service.close()
+
+
+def test_constant_file_churn_does_not_starve_reconciliation(
+    tmp_path: Path,
+    service_factory: Callable[[Path], DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = service_factory(tmp_path)
+    base.close()
+    service = DaemonService(
+        base.paths,
+        dataclasses.replace(base.settings, reconciliation_interval_ms=200),
+        asyncio.Event(),
+        boot_id="watch-churn",
+        authority_root=tmp_path / "physical-authority" / "v1",
+    )
+    service.initialize()
+    reconciled: list[bool] = []
+    monkeypatch.setattr(
+        service.coordinator, "reconcile_expired", lambda: reconciled.append(True)
+    )
+
+    async def scenario() -> None:
+        loop = asyncio.create_task(service.reconcile_loop())
+        give_up = time.monotonic() + 5
+        while not reconciled and time.monotonic() < give_up:
+            # A watcher reporting changes faster than scans are spaced.
+            service._watch_changed(tmp_path)
+            await asyncio.sleep(0.01)
+        service.shutdown.set()
+        await loop
+
+    try:
+        asyncio.run(scenario())
+        assert reconciled
     finally:
         service.close()
 

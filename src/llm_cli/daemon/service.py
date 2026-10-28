@@ -629,7 +629,7 @@ class DaemonService:
             if woken in done:
                 # A watcher only schedules a scan; the scanner decides.
                 await self._watched_changes()
-                continue
+            # Constant file churn must not starve periodic reconciliation.
             if time.monotonic() >= deadline:
                 async with self._authority_lock:
                     await asyncio.to_thread(self.coordinator.reconcile_expired)
