@@ -117,6 +117,7 @@ _REPAIR_TOOLS = frozenset(
         "rename_file",
         "run_check",
         "run_command",
+        "start_process",
     }
 )
 
@@ -175,6 +176,12 @@ class ToolBroker:
     check_runner: Callable[[str], ToolOutcome] | None = None
     # Runs (argv, cwd, timeout) in a sandboxed snapshot; offered only when set.
     command_runner: Callable[[list[str], str, int], ToolOutcome] | None = None
+    # Session-owned background processes use the configured command policy.
+    process_starter: Callable[[list[str], str], ToolOutcome] | None = None
+    process_reader: Callable[[str], ToolOutcome] | None = None
+    process_stopper: Callable[[str], ToolOutcome] | None = None
+    # A backend can explain why starting is unavailable before approval.
+    process_start_refusal: str | None = None
     # "ask" needs the user's approval through ``asker`` for each command, or
     # once for the rest of the task. "allow" runs sandboxed commands directly.
     command_approval: str = "ask"
@@ -196,6 +203,8 @@ class ToolBroker:
     clock: Callable[[], float] = time.time
     _partial_reads: set[str] = field(default_factory=set, init=False)
     _commands_approved: bool = field(default=False, init=False)
+    # A grant for discarded command snapshots does not cover persistent writers.
+    _processes_approved: bool = field(default=False, init=False)
     _mcp_approved: set[str] = field(default_factory=set, init=False)
     _repairs: RepairTracker = field(default_factory=RepairTracker, init=False)
     _repair_notes: list[str] = field(default_factory=list, init=False)
@@ -492,6 +501,16 @@ class ToolBroker:
             self.command_approval == "allow" or self.asker is not None
         ):
             names.append("run_command")
+        if (
+            (self.process_starter is not None or self.process_start_refusal is not None)
+            and self.command_approval != "off"
+            and (self.command_approval == "allow" or self.asker is not None)
+        ):
+            names.append("start_process")
+        if self.process_reader is not None:
+            names.append("process_output")
+        if self.process_stopper is not None:
+            names.append("stop_process")
         names.extend(("create_directory", "delete_file", "rename_file"))
         # Plan mode's answer is itself a plan; a progress checklist would
         # compete with it, so the plan mode filter below drops this tool.
@@ -515,6 +534,7 @@ class ToolBroker:
                 "read_diff",
                 "validate_changes",
                 "finish_task",
+                "process_output",
                 "explore",
                 "ask_user",
                 "web_fetch",
@@ -1248,28 +1268,93 @@ class ToolBroker:
         result = self.command_runner(list(argv), cwd, timeout)
         return ToolOutcome(_ok(result.content, self.limits).content, result.is_error)
 
+    def _start_process(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        if self.process_start_refusal is not None:
+            return _error(self.process_start_refusal)
+        if self.process_starter is None:
+            return _error("managed background processes are unavailable in this task")
+        if set(arguments) - {"argv", "cwd"}:
+            return _error("start_process accepts only argv and cwd")
+        argv = arguments.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or len(argv) > _MAX_COMMAND_ARGUMENTS
+            or not all(isinstance(item, str) and "\0" not in item for item in argv)
+            or not argv[0]
+            or sum(len(item) for item in argv) > _MAX_COMMAND_CHARACTERS
+        ):
+            return _error(
+                "argv must be a non-empty list of at most "
+                f"{_MAX_COMMAND_ARGUMENTS} strings"
+            )
+        cwd = _string(arguments, "cwd", default=".")
+        refusal = self._command_refusal(list(argv), cwd, None, background=True)
+        if refusal is not None:
+            return refusal
+        return self._process_result(self.process_starter(list(argv), cwd))
+
+    def _process_output(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        if self.process_reader is None:
+            return _error("managed process output is unavailable in this task")
+        return self._process_result(self.process_reader(_process_id(arguments)))
+
+    def _stop_process(self, arguments: Mapping[str, object]) -> ToolOutcome:
+        if self.process_stopper is None:
+            return _error("managed process stop is unavailable in this task")
+        return self._process_result(self.process_stopper(_process_id(arguments)))
+
+    def _process_result(self, result: ToolOutcome) -> ToolOutcome:
+        # The process supervisor has screened output before buffering it.
+        return ToolOutcome(
+            _clipped(result.content, self.limits.max_tool_output_bytes),
+            result.is_error,
+            result.metadata,
+        )
+
     def _command_refusal(
-        self, argv: list[str], cwd: str, timeout: int
+        self,
+        argv: list[str],
+        cwd: str,
+        timeout: int | None,
+        *,
+        background: bool = False,
     ) -> ToolOutcome | None:
         """Ask the user to approve a command; model output can never approve."""
 
         with self._approval_lock:
             self.check_cancelled()
-            if self.command_approval == "allow" or self._commands_approved:
+            task_approved = (
+                self._processes_approved if background else self._commands_approved
+            )
+            if self.command_approval == "allow" or task_approved:
                 return None
             if self.asker is None:
                 return _error(
                     "commands need approval, but no interactive session is attached"
                 )
             location = "" if cwd in {"", "."} else f"\nin {_visible(cwd)}"
-            question = (
-                "Allow this command? It runs in a sandboxed copy of the checkout with "
-                "no network, and its changes are discarded.\n\n"
-                f"$ {_visible(shlex.join(argv))}{location} (timeout {timeout}s)\n\n"
-                "1. Allow once\n2. Allow commands for the rest of this task\n"
-                "3. Deny\n\n"
-                "Reply with a number or your own answer."
-            )
+            if background:
+                question = (
+                    "Allow this background process? It runs in the private worktree "
+                    "with the configured command sandbox and network policy. Its "
+                    "changes remain in that private workspace, and it runs until "
+                    "stopped or the session closes.\n\n"
+                    f"$ {_visible(shlex.join(argv))}{location}\n\n"
+                    "1. Allow once\n"
+                    "2. Allow background processes for the rest of this task\n"
+                    "3. Deny\n\n"
+                    "Reply with a number or your own answer."
+                )
+            else:
+                question = (
+                    "Allow this command? It runs in a sandboxed copy of the checkout "
+                    "with no network, and its changes are discarded.\n\n"
+                    f"$ {_visible(shlex.join(argv))}{location} (timeout {timeout}s)\n\n"
+                    "1. Allow once\n2. Allow commands for the rest of this task\n"
+                    "3. Deny\n\n"
+                    "Reply with a number or your own answer."
+                )
             if _HELPER_CALL.get():
                 question = (
                     "An exploration helper requests this approval.\n\n" + question
@@ -1283,7 +1368,10 @@ class ToolBroker:
             if choice in {"1", "y", "yes", "allow", "allow once"}:
                 return None
             if choice in {"2", "always", "allow all"}:
-                self._commands_approved = True
+                if background:
+                    self._processes_approved = True
+                else:
+                    self._commands_approved = True
                 return None
             self.usage.denied += 1
             reason = "" if choice in {"3", "n", "no", "deny", ""} else f": {answer}"
@@ -1937,6 +2025,17 @@ def _string(
     return value
 
 
+def _process_id(arguments: Mapping[str, object]) -> str:
+    process_id = _string(arguments, "process_id")
+    if set(arguments) != {"process_id"} or not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,200}", process_id
+    ):
+        raise ScopeValidationError(
+            "process_id must be the opaque identifier returned by start_process"
+        )
+    return process_id
+
+
 def _visible(text: str) -> str:
     """Escape control and format characters so a shown command is exact.
 
@@ -1959,6 +2058,9 @@ _HANDLERS: Mapping[str, Callable[[ToolBroker, Mapping[str, object]], ToolOutcome
     "write_symlink": ToolBroker._write_symlink,
     "run_check": ToolBroker._run_check,
     "run_command": ToolBroker._run_command,
+    "start_process": ToolBroker._start_process,
+    "process_output": ToolBroker._process_output,
+    "stop_process": ToolBroker._stop_process,
     "create_directory": ToolBroker._create_directory,
     "delete_file": ToolBroker._delete_file,
     "rename_file": ToolBroker._rename_file,
@@ -2053,6 +2155,41 @@ _SCHEMAS: Mapping[str, dict[str, object]] = {
             },
         },
         ["argv"],
+    ),
+    "start_process": _schema(
+        "start_process",
+        "Start a managed background process in this session's private worktree. "
+        "Use the configured command sandbox, network and command environment. "
+        "Changes remain in the private worktree. The process runs until stopped "
+        "or the session closes; keep its process_id to read output or stop it. "
+        "Shared workspaces do not support background processes.",
+        {
+            "argv": {
+                "type": "array",
+                "items": _TEXT,
+                "minItems": 1,
+                "maxItems": _MAX_COMMAND_ARGUMENTS,
+            },
+            "cwd": {
+                "type": "string",
+                "description": "Directory relative to the private worktree root.",
+            },
+        },
+        ["argv"],
+    ),
+    "process_output": _schema(
+        "process_output",
+        "Read bounded, screened recent output from an owned managed process. "
+        "Truncation is explicit; reading does not wait for the process to exit.",
+        {"process_id": _TEXT},
+        ["process_id"],
+    ),
+    "stop_process": _schema(
+        "stop_process",
+        "Stop an owned managed process and its verified process group, using "
+        "SIGTERM followed by SIGKILL after a grace period.",
+        {"process_id": _TEXT},
+        ["process_id"],
     ),
     "create_directory": _schema(
         "create_directory",

@@ -275,6 +275,20 @@ configured checks remain the required verification. Only report commands that
 run_command actually returned.
 """
 
+_PROCESS_GUIDANCE = """\
+
+Managed background processes:
+- start_process runs in the isolated private worktree, with the configured
+command sandbox, network policy and command environment. Its changes persist
+there. Shared workspaces refuse background processes.
+- Keep the returned process_id. process_output reads bounded, screened recent
+output; stop_process stops the verified process group, including its children.
+Session close stops it too. Incoming sync and runtime refresh wait while it runs,
+and workspace switching requires stopping it explicitly.
+- A running process and its output are evidence about behavior, not successful
+publication checks. Use configured checks for required verification.
+"""
+
 _WEB_GUIDANCE = """\
 
 Web pages:
@@ -452,6 +466,8 @@ class CodingAgentHarness:
             system += "\n" + _EXPLORE_GUIDANCE
         if "run_command" in tool_names:
             system += "\n" + _COMMAND_GUIDANCE
+        if "start_process" in tool_names or "process_output" in tool_names:
+            system += "\n" + _PROCESS_GUIDANCE
         if "web_fetch" in tool_names:
             system += "\n" + _WEB_GUIDANCE
         if "ask_user" in tool_names:

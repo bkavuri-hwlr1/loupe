@@ -93,15 +93,20 @@ class RuntimeRefresher:
         self.store, self.managed_root, self.lock = store, managed_root, lock
         self.fault: Callable[[str], None] = lambda stage: None
         self._activity_lock = _ACTIVITY_LOCK
+        # Daemon-owned, memory-only process fences. No process-table scans run
+        # on ordinary command or workspace dispatch paths.
+        self.process_notice: Callable[[str], str] | None = None
+        self.process_writer_notice: Callable[[str], str] | None = None
 
     def _key(self, workspace_id: str) -> tuple[Path, str]:
         return self.store.path.resolve(), workspace_id
 
     def busy(self, workspace_id: str) -> bool:
         """Call under the publication lock before retiring a runtime binding."""
+        notice = self.process_notice(workspace_id) if self.process_notice else ""
         with self._activity_lock:
             key = self._key(workspace_id)
-            return bool(_ACTIVITIES.get(key, 0) or key in _REFRESHING)
+            return bool(_ACTIVITIES.get(key, 0) or key in _REFRESHING or notice)
 
     @contextmanager
     def activity(self, workspace_id: str) -> Iterator[None]:
@@ -109,6 +114,23 @@ class RuntimeRefresher:
         # The order is always publication lock -> tiny activity counter lock.
         # Installation cannot cross the beginning of a command/check snapshot.
         with self.lock:
+            notice = (
+                self.process_writer_notice(workspace_id)
+                if self.process_writer_notice
+                else ""
+            )
+            if notice:
+                with self.store.connection() as con:
+                    pending = con.execute(
+                        "SELECT 1 FROM isolated_runtime_journal WHERE workspace_id=?",
+                        (workspace_id,),
+                    ).fetchone()
+                if pending is not None:
+                    from llm_cli.workspace.isolated import _error
+
+                    raise _error(
+                        "Runtime recovery waits for managed processes. " + notice
+                    )
             self.recover(workspace_id)
             with self._activity_lock:
                 _ACTIVITIES[key] = _ACTIVITIES.get(key, 0) + 1
@@ -117,6 +139,13 @@ class RuntimeRefresher:
         finally:
             with self._activity_lock:
                 _ACTIVITIES[key] -= 1
+
+    @contextmanager
+    def quiet_cleanup(self, workspace_id: str) -> Iterator[bool]:
+        """Gate only an atomic IPC rename, never recursive file removal."""
+        with self._activity_lock:
+            key = self._key(workspace_id)
+            yield not (_ACTIVITIES.get(key, 0) or key in _REFRESHING)
 
     def _binding(self, workspace_id: str) -> tuple[Path, Path, str]:
         from llm_cli.workspace.isolated import _error
@@ -265,6 +294,9 @@ class RuntimeRefresher:
         from llm_cli.errors import LlmCoordError
 
         key = self._key(workspace_id)
+        notice = self.process_notice(workspace_id) if self.process_notice else ""
+        if notice:
+            return ("Runtime refresh waits for managed processes. " + notice,)
         with self._activity_lock:
             if _ACTIVITIES.get(key, 0) or key in _REFRESHING:
                 return ()
@@ -387,6 +419,13 @@ class RuntimeRefresher:
                 current = self._state(workspace_id)
                 if busy or current["generation"] != state["generation"]:
                     self._remove(root, token)
+                    notice = (
+                        self.process_notice(workspace_id) if self.process_notice else ""
+                    )
+                    if notice:
+                        notices.append(
+                            "Runtime refresh waits for managed processes. " + notice
+                        )
                     return self._notice_result(workspace_id, noticed, receipts, notices)
                 if any(_signature(private, path) != before[path] for path in updates):
                     raise ValueError("private runtime changed before installation")
@@ -486,6 +525,8 @@ class RuntimeRefresher:
         # Beginning activity and replay share this brief lock. A command cannot
         # take a snapshot of a half-installed generation left by a live IO error.
         with self.lock:
+            if self.process_writer_notice and self.process_writer_notice(workspace_id):
+                return
             with self.store.connection() as con:
                 pending = con.execute(
                     "SELECT 1 FROM isolated_runtime_journal WHERE workspace_id=?",

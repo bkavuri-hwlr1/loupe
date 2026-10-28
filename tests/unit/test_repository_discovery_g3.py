@@ -193,3 +193,56 @@ def test_after_pin_discovery_refuses_a_newly_ambiguous_target(
     }
     assert targets == ["refs/heads/main", "refs/heads/unregistered-target"]
     assert env.service.store.list_tasks() == ()
+
+
+def test_after_pin_discovery_uses_fresh_ref_and_repository_configuration(
+    discovery_environment: DiscoveryEnvironment,
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = discovery_environment
+    git_run(env.root, "branch", "after-pin")
+    git_run(env.root, "config", "core.ignorecase", "false")
+    actual_inspect = service_module.inspect_repository
+    actual_pin = env.service.physical_authority.pin
+    discoveries: list[RepositoryInfo] = []
+    changed = False
+
+    def inspected(*args: Any, **kwargs: Any) -> RepositoryInfo:
+        result = actual_inspect(*args, **kwargs)
+        discoveries.append(result)
+        return result
+
+    @contextmanager
+    def configure_after_pin(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        nonlocal changed
+        with actual_pin(*args, **kwargs) as pin:
+            if not changed:
+                git_run(env.root, "switch", "after-pin")
+                git_run(env.root, "config", "core.ignorecase", "true")
+                git_run(
+                    env.root,
+                    "config",
+                    "remote.origin.url",
+                    "https://example.invalid/after-pin/repository.git",
+                )
+                changed = True
+            yield pin
+
+    monkeypatch.setattr(service_module, "inspect_repository", inspected)
+    monkeypatch.setattr(env.service.physical_authority, "pin", configure_after_pin)
+    result = asyncio.run(env.service.handle(env.request()))
+    assert result["claim"]["state"] == "active_work"
+    assert [
+        (info.target_ref, info.path_case_insensitive, info.normalized_remote)
+        for info in discoveries
+    ] == [
+        ("refs/heads/main", False, None),
+        ("refs/heads/after-pin", True, "example.invalid/after-pin/repository"),
+    ]
+    with env.service.store.connection() as connection:
+        binding = connection.execute(
+            "SELECT canonical_path FROM legacy_claim_bindings WHERE claim_id=?",
+            (result["claim"]["claim_id"],),
+        ).fetchone()
+    assert binding is not None and binding["canonical_path"] == str(env.root)

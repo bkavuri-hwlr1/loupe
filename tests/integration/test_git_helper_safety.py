@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import shlex
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -36,6 +38,44 @@ def test_repository_filters_are_refused_before_they_run(
         arguments = ["add", "--all"]
     with pytest.raises(LlmCoordError, match="filters"):
         run_git(repository, arguments)
+    assert not marker.exists()
+
+
+def test_worktree_listing_is_one_metadata_process_without_filter_helpers(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = repository_factory(
+        tmp_path, {".gitattributes": "*.txt filter=probe\n", "source.txt": "base\n"}
+    )
+    linked = tmp_path / "linked"
+    git_run(repository, "worktree", "add", "--detach", str(linked), "HEAD")
+    marker = tmp_path / "listing-helper-ran"
+    for kind in ("clean", "smudge", "process"):
+        helper = f"touch {shlex.quote(str(marker))}; " + (
+            "exit 1" if kind == "process" else "cat"
+        )
+        git_run(repository, "config", f"filter.probe.{kind}", helper)
+    original = subprocess.run
+    started: list[list[str]] = []
+
+    def counted_run(arguments: list[str], **kwargs: Any) -> Any:
+        started.append(arguments)
+        return original(arguments, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", counted_run)
+    result = run_git(repository, ["worktree", "list", "--porcelain", "-z"], text=False)
+    assert isinstance(result.stdout, bytes)
+    paths = {
+        Path(field.removeprefix(b"worktree ").decode()).resolve()
+        for field in result.stdout.split(b"\0")
+        if field.startswith(b"worktree ")
+    }
+    assert paths == {repository.resolve(), linked.resolve()}
+    assert len(started) == 1
+    assert started[0][-4:] == ["worktree", "list", "--porcelain", "-z"]
     assert not marker.exists()
 
 

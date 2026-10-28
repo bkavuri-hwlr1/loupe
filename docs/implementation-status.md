@@ -69,6 +69,28 @@ the remaining planned capabilities are listed below.
   [the guide](isolated-workspaces.md#change-a-conversations-workspace) and
   [verification](experiments/wave9-c13-workspace-switching-2026-10-24.md).
 
+- Managed background processes (Wave 10 C14): isolated agents can start,
+  inspect screened bounded output, and stop long-lived process groups. Shared
+  mode refuses starts. Existing command approval, sandbox, network and C9
+  environment rules apply; private Unix-domain sockets support local
+  command/server interaction without enabling TCP/IP. Migration 33 records
+  owner binding, PID, start identity and group. Close stops owned groups;
+  switching refuses with exact stop commands even while a finished task's worker
+  settles. Incoming sync, runtime refresh
+  and cleanup defer while a writer remains. Restart recovery stops verified
+  survivors and preserves an attention fence for reused or unverifiable
+  identities. Owner-bound private receipts preserve launch-time value screening
+  through runtime rotation and restart, including source reads, searches,
+  artifacts, publication and later command/check output. Output redaction keeps
+  every private value; the source guard keeps only credential-like ones, so
+  ordinary settings such as ports, hostnames and environment names stay usable. Owned cleanup scrubs
+  private source copies and receipts while preserving ordinary source evidence.
+  Process I/O and waits run outside daemon/publication locks, and source guards
+  use cached state on ordinary RPC paths. Teardown of an unused manager does
+  not initialize or query process storage. Admission batches fresh Git metadata
+  reads while retaining both repository discoveries and all regime checks.
+  See [the guide](isolated-workspaces.md#managed-background-processes).
+
 - Private runtime export (Wave 9 C15): `loupe workspace runtime export PATH
   --session ID --to DEST` previews bounded file/tree metadata and requires
   `--yes`, plus `--allow-secret` for sensitive names or recognized credential
@@ -1178,14 +1200,15 @@ C15 exports private runtime explicitly, and C16 keeps the growing-path journal
 bounded. C15 and C16 final verification is recorded above; the final combined C13
 candidate is frozen for covered correctness and separate unchanged-limit scales.
 
-1. Add managed background processes (C14), including explicit stop/keep
-   decisions at conversation close and mode switches.
-2. Add native watchers (C12). E3 measured a 1.94-second safe point at 20,000
+C14 implements managed background processes in Wave 10, with stop-on-close and
+explicit switch refusal while processes remain.
+
+1. Add native watchers (C12). E3 measured a 1.94-second safe point at 20,000
    files, above the 250 ms gate; C16 removes journal growth rather than that
    scan cost. Hydration admission and outside-scan coverage limits remain.
-3. Push the `v0.1.0a3` tag on D4's merge commit and confirm the tap upgrade on
+2. Push the `v0.1.0a3` tag on D4's merge commit and confirm the tap upgrade on
    both architectures.
-4. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
+3. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
    on hold.
 
 The full phased design remains in

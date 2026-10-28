@@ -392,6 +392,15 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_export.add_argument("--yes", action="store_true")
     runtime_export.add_argument("--allow-secret", action="store_true")
     runtime_export.add_argument("--into-checkout", action="store_true")
+    processes = workspace_commands.add_parser(
+        "process", help="list or stop an isolated session's managed process groups"
+    )
+    process_actions = processes.add_subparsers(dest="process_command", required=True)
+    process_list = process_actions.add_parser("list", help="show managed processes")
+    process_list.add_argument("--session", required=True, dest="session_id")
+    process_stop = process_actions.add_parser("stop", help="stop a whole managed group")
+    process_stop.add_argument("process_id")
+    process_stop.add_argument("--session", required=True, dest="session_id")
     workspace_observe = workspace_commands.add_parser(
         "observe", help="read source outside the owner's barrier without an edit base"
     )
@@ -1076,6 +1085,30 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             "session_id": arguments.session_id,
             "resume_secret": secret,
         }
+        if arguments.workspace_command == "process":
+            process_params = dict(authenticated)
+            if arguments.process_command == "stop":
+                process_params["process_id"] = arguments.process_id
+            process_client = (
+                _patient(client, 60)
+                if arguments.process_command == "stop"
+                else client
+            )
+            result = process_client.call(
+                "workspace.process." + arguments.process_command, process_params
+            )
+            if arguments.as_json:
+                return result
+            records = (
+                result["processes"] if arguments.process_command == "list" else [result]
+            )
+            if not records:
+                return "No managed processes for this session."
+            return "\n".join(
+                f"{record['process_id']}: {record['state']} "
+                f"(PID {record.get('pid') or 'not started'}). {record['stop_command']}"
+                for record in records
+            )
         if arguments.workspace_command == "runtime":
             # The daemon refuses symlinked destination ancestors so a link can't
             # be swapped in mid-copy. Resolve the user's own spelling first:
@@ -1410,7 +1443,7 @@ def _dispatch_session(arguments: argparse.Namespace, client: DaemonClient) -> An
             {**authenticated, **session_environment_params(client.paths)},
         )
     if action == "close":
-        result = client.call(
+        result = _patient(client, 60).call(
             "session.close", {**authenticated, "reason": arguments.reason}
         )
         remove_session_secret(client.paths, arguments.session_id)

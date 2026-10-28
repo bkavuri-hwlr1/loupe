@@ -373,6 +373,117 @@ def excluded_paths(
     return excluded
 
 
+# Values learned from approved private runtime stay root-local and memory-only
+# here. Their durable owner-bound receipt lives in protected Git administration.
+_source_private_values: dict[Path, tuple[str, ...]] = {}
+_source_protected_values: dict[Path, tuple[str, ...]] = {}
+_source_private_epochs: dict[Path, int] = {}
+_source_private_lock = threading.Lock()
+_source_private_blocked: set[Path] = set()
+
+
+def register_source_private_values(
+    root: Path, values: tuple[str, ...], *, public_values: tuple[str, ...] = ()
+) -> None:
+    key = root.absolute()
+    with _source_private_lock:
+        current = _source_private_values.get(key, ())
+        merged = tuple(
+            sorted(
+                set(current) | {value for value in values if value},
+                key=len,
+                reverse=True,
+            )
+        )
+        protected = tuple(
+            sorted(
+                set(_source_protected_values.get(key, ()))
+                | (set(merged) - set(current) - set(public_values)),
+                key=len,
+                reverse=True,
+            )
+        )
+        _source_private_values[key] = merged
+        was_blocked = key in _source_private_blocked
+        _source_private_blocked.discard(key)
+        if was_blocked or protected != _source_protected_values.get(key, ()):
+            _source_protected_values[key] = protected
+            _source_private_epochs[key] = _source_private_epochs.get(key, 0) + 1
+
+
+def cached_source_private_values(root: Path) -> tuple[str, ...]:
+    """Return the retained private union without filesystem or database work."""
+    with _source_private_lock:
+        if root.absolute() in _source_private_blocked:
+            raise LlmCoordError(
+                ErrorCode.REPOSITORY_UNSAFE, "private source protection needs recovery"
+            )
+        return _source_private_values.get(root.absolute(), ())
+
+
+def block_source_private_values(root: Path) -> None:
+    with _source_private_lock:
+        key = root.absolute()
+        _source_private_blocked.add(key)
+        _source_private_epochs[key] = _source_private_epochs.get(key, 0) + 1
+
+
+def source_private_epoch(root: Path) -> int:
+    with _source_private_lock:
+        return _source_private_epochs.get(root.absolute(), 0)
+
+
+def forget_source_private_values(root: Path) -> None:
+    with _source_private_lock:
+        key = root.absolute()
+        _source_private_blocked.discard(key)
+        _source_private_values.pop(key, None)
+        _source_protected_values.pop(key, None)
+        _source_private_epochs[key] = _source_private_epochs.get(key, 0) + 1
+
+
+def has_private_source_values(root: Path) -> bool:
+    with _source_private_lock:
+        return (
+            bool(_source_protected_values.get(root.absolute(), ()))
+            or root.absolute() in _source_private_blocked
+        )
+
+
+def contains_private_source(root: Path, content: str | bytes) -> bool:
+    with _source_private_lock:
+        if root.absolute() in _source_private_blocked:
+            return bool(content)
+        values = _source_protected_values.get(root.absolute(), ())
+    if not values:
+        return False
+    # Match the supervisor's replacement decoder as well as ordinary UTF-8,
+    # including copied binary-ish configuration values containing U+FFFD.
+    text = (
+        content
+        if isinstance(content, str)
+        else content.decode("utf-8", errors="replace")
+    )
+    return any(value in text for value in values)
+
+
+def contains_unsafe_source(root: Path, content: str | bytes) -> bool:
+    return contains_secret_material(content) or contains_private_source(root, content)
+
+
+def ensure_safe_source(root: Path, content: str | bytes) -> None:
+    ensure_safe_content(content)
+    if contains_private_source(root, content):
+        raise LlmCoordError(
+            ErrorCode.REPOSITORY_UNSAFE,
+            "source content contains private runtime material "
+            "and cannot be used by model tools: it repeats a credential-like "
+            "value from an approved private file such as .env. Remove that "
+            "value from the file, or start a fresh isolated workspace with "
+            "/workspace shared then /workspace isolated.",
+        )
+
+
 def contains_secret_material(content: str | bytes) -> bool:
     raw = content.encode("utf-8") if isinstance(content, str) else content
     return any(pattern.search(raw) for pattern in _SECRET_PATTERNS)

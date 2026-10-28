@@ -18,7 +18,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
@@ -27,12 +27,15 @@ from typing import Any
 
 from llm_cli.agent.source_policy import (
     _private_path,
-    contains_secret_material,
+    contains_private_source,
+    contains_unsafe_source,
     ensure_safe_content,
     excluded_paths,
+    forget_source_private_values,
     register_runtime_paths,
     runtime_path,
     runtime_path_matches,
+    source_private_epoch,
 )
 from llm_cli.config.models import RebuildConfig
 from llm_cli.coordination.models import CheckoutRecord, WorkspaceRecord
@@ -53,6 +56,7 @@ from llm_cli.workspace.external import ExternalWorkspaceScanner
 from llm_cli.workspace.hydration import (
     HydrationEntry,
     _bounded_git,
+    _BudgetExceeded,
     _evidence,
     plan_hydration,
 )
@@ -253,6 +257,16 @@ class SourceCaptureCache:
         field(default_factory=OrderedDict)
     )
     lock: RLock = field(default_factory=RLock, repr=False)
+    guard_epochs: dict[Path, int] = field(default_factory=dict, repr=False)
+
+    def guard(self, root: Path) -> None:
+        epoch = source_private_epoch(root)
+        with self.lock:
+            if self.guard_epochs.get(root, 0) != epoch:
+                for key in tuple(self.entries):
+                    if key[0] == root:
+                        self.entries.pop(key)
+                self.guard_epochs[root] = epoch
 
     def lookup(
         self, key: tuple[Path, str]
@@ -294,6 +308,8 @@ def capture_source(
     ordinary artifacts or model-facing proposals.
     """
     manifest = SourceManifest()
+    if cache is not None:
+        cache.guard(root)
     deferred: list[str] = []
     total = 0
     source_paths = _source_paths(root)
@@ -368,7 +384,7 @@ def capture_source(
         total += len(body)
         if total > 1024**3:
             raise _error("isolated source exceeds its 1 GiB budget")
-        screened = contains_secret_material(body)
+        screened = contains_unsafe_source(root, body)
         content_hash = None if screened else _store_source(candidate_dir, body)
         kind = ObjectKind.SYMLINK if is_link else ObjectKind.REGULAR
         mode = (
@@ -634,6 +650,9 @@ class IsolatedWorkspaceManager:
         self.rebuild = rebuild
         self.rebuild_protected = rebuild_protected
         self._opening_sessions: set[str] = set()
+        self._closed_cleanups: set[str] = set()
+        self._process_values_loaded: set[str] = set()
+        self._process_source_roots: dict[str, Path] = {}
         self.fault: Callable[[str], None] = lambda stage: None
         from llm_cli.workspace.runtime_refresh import RuntimeRefresher
 
@@ -715,11 +734,309 @@ class IsolatedWorkspaceManager:
         with _source(managed.git_dir, marker.name) as descriptor:
             if _read(descriptor, 1024).decode() != state.creation_token:
                 raise _error("isolated worktree ownership changed")
+        self._load_process_values(state, managed.path, managed.git_dir)
         self.runtime.recover(workspace_id)
         state = self.get(workspace_id)
         assert state is not None
         register_runtime_paths(managed.path, state.runtime_paths)
         return state
+
+    def _load_process_values(
+        self, state: IsolatedState, root: Path, admin: Path
+    ) -> None:
+        self._process_source_roots[state.workspace_id] = root
+        if state.workspace_id in self._process_values_loaded:
+            return
+        from llm_cli.workspace.process_privacy import load_values
+
+        load_values(root, admin, state.workspace_id, state.creation_token)
+        self._process_values_loaded.add(state.workspace_id)
+
+    def check_process_source(self, workspace_id: str, content: str | bytes) -> None:
+        """Check cached actual values only; operator RPCs add no scans or queries."""
+        root = self._process_source_roots.get(workspace_id)
+        if root is not None and contains_private_source(root, content):
+            raise _error("source content contains private runtime material")
+
+    def remember_process_values(
+        self, workspace: WorkspaceRecord, values: tuple[str, ...]
+    ) -> None:
+        """Durably retain launch-time private values before any user program runs."""
+        from llm_cli.workspace.process_privacy import remember_values
+
+        state = self.validate(workspace.workspace_id)
+        current = self.store.get_workspace(workspace.workspace_id)
+        if current is None or (current.canonical_path, current.git_dir) != (
+            workspace.canonical_path,
+            workspace.git_dir,
+        ):
+            raise _error("private process workspace binding changed")
+        assert workspace.git_dir is not None
+        root, admin = Path(workspace.canonical_path), Path(workspace.git_dir)
+        remember_values(root, admin, state, self.candidate_dir, values)
+        self._process_values_loaded.add(state.workspace_id)
+
+    def _process_known_paths(self, state: IsolatedState) -> set[str]:
+        known = (
+            set(state.source_manifest)
+            | set(state.runtime_paths)
+            | set(state.runtime_files)
+        )
+        with self.store.connection() as con:
+            known.update(
+                str(row[0])
+                for row in con.execute(
+                    "SELECT relative_path FROM workspace_candidates "
+                    "WHERE workspace_id=?",
+                    (state.workspace_id,),
+                )
+            )
+            synced = con.execute(
+                "SELECT manifest_json FROM isolated_sync_state WHERE workspace_id=?",
+                (state.workspace_id,),
+            ).fetchone()
+            if synced:
+                known.update(json.loads(synced[0]))
+        return known
+
+    @staticmethod
+    def _process_unknown_paths(root: Path, known: set[str]) -> tuple[str, ...]:
+        """Inventory only unknown roots; never descend disposable dependency trees."""
+        parents = {
+            parent.as_posix()
+            for relative in known
+            for parent in Path(relative).parents
+            if parent != Path(".")
+        }
+        deadline = time.monotonic() + 5
+        count = 0
+        result: list[str] = []
+
+        def scan(descriptor: int, prefix: str) -> None:
+            nonlocal count
+            with os.scandir(descriptor) as entries:
+                for entry in entries:
+                    count += 1
+                    if count > 20_000 or time.monotonic() > deadline:
+                        raise _error(
+                            "process cleanup inventory exceeded its bounded budget"
+                        )
+                    relative = prefix + entry.name
+                    if relative == ".git" or relative in known:
+                        continue
+                    if entry.is_dir(follow_symlinks=False) and relative in parents:
+                        child = os.open(
+                            entry.name,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=descriptor,
+                        )
+                        try:
+                            scan(child, relative + "/")
+                        finally:
+                            os.close(child)
+                    else:
+                        result.append(relative)
+
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            scan(descriptor, "")
+        finally:
+            os.close(descriptor)
+        return tuple(sorted(result))
+
+    @staticmethod
+    def _process_opening_policy(root: Path, state: IsolatedState) -> None:
+        opening = {
+            path
+            for path in state.source_manifest
+            if Path(path).name in {".gitignore", ".gitattributes"}
+        }
+        current = {
+            path
+            for path in _source_paths(root)
+            if Path(path).name in {".gitignore", ".gitattributes"}
+        }
+        if current != opening:
+            raise _error(
+                "process cleanup policy differs from the opening source policy"
+            )
+        for relative in opening:
+            entry = state.source_manifest[relative]
+            if entry["kind"] != "regular":
+                raise _error("process cleanup policy must be a regular opening file")
+            with _source(root, relative) as descriptor:
+                body = _read(descriptor, 4 * 1024 * 1024)
+            if entry["digest"] != content_identity(
+                ObjectKind.REGULAR, entry["mode"], body
+            ):
+                raise _error(
+                    "process cleanup policy differs from the opening source policy"
+                )
+
+    def remember_process_policy(self, workspace: WorkspaceRecord) -> None:
+        """Freeze cleanup authority; legitimate source edits can still run."""
+        state = self.validate(workspace.workspace_id)
+        current = self.store.get_workspace(workspace.workspace_id)
+        if current is None or (
+            current.canonical_path,
+            current.git_dir,
+            current.checkout_id,
+        ) != (workspace.canonical_path, workspace.git_dir, workspace.checkout_id):
+            raise _error("process cleanup workspace binding changed")
+        checkout = self.store.get_checkout(workspace.checkout_id)
+        assert checkout is not None and workspace.git_dir is not None
+        primary, root, admin = (
+            Path(checkout.canonical_path),
+            Path(workspace.canonical_path),
+            Path(workspace.git_dir),
+        )
+        status = root.lstat()
+        expected = {
+            "workspace_id": workspace.workspace_id,
+            "token": state.creation_token,
+            "root_identity": [status.st_dev, status.st_ino],
+        }
+        try:
+            with _source(admin, "loupe-process-policy.json") as descriptor:
+                receipt = json.loads(_read(descriptor, 4 * 1024 * 1024))
+        except FileNotFoundError:
+            eligible = True
+            fingerprint: str | None = None
+            initial: tuple[str, ...] = ()
+            try:
+                if source_fingerprint(primary) != state.source_fingerprint:
+                    raise _error("opening source policy changed")
+                self._process_opening_policy(root, state)
+                fingerprint = source_fingerprint(root)
+                initial = self._process_unknown_paths(
+                    root, self._process_known_paths(state)
+                )
+                if source_fingerprint(root) != fingerprint:
+                    raise _error("source policy changed during process admission")
+            except (LlmCoordError, OSError, ValueError, _BudgetExceeded):
+                # Background commands can edit source policy legitimately. Only
+                # the optional authority to scrub new ignored output is lost.
+                eligible, fingerprint, initial = False, None, ()
+            receipt = {
+                **expected,
+                "eligible": eligible,
+                "fingerprint": fingerprint,
+                "initial_unknown": list(initial),
+            }
+            admin_fd = os.open(admin, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                try:
+                    _write_body(
+                        admin_fd,
+                        "loupe-process-policy.json",
+                        json.dumps(receipt).encode(),
+                        0o600,
+                    )
+                except FileExistsError:
+                    with _source(admin, "loupe-process-policy.json") as descriptor:
+                        receipt = json.loads(_read(descriptor, 4 * 1024 * 1024))
+            finally:
+                os.close(admin_fd)
+        if (
+            not isinstance(receipt, dict)
+            or any(receipt.get(key) != value for key, value in expected.items())
+            or not isinstance(receipt.get("eligible"), bool)
+            or not isinstance(receipt.get("initial_unknown"), list)
+            or (receipt["eligible"] and not isinstance(receipt.get("fingerprint"), str))
+        ):
+            raise _error("process cleanup policy receipt changed; reopen isolated mode")
+
+    def _generated_process_material(
+        self,
+        root: Path,
+        admin: Path,
+        primary: Path,
+        state: IsolatedState,
+    ) -> set[str]:
+        """Admit only fresh ignored roots under the immutable opening policy."""
+        try:
+            with _source(admin, "loupe-process-policy.json") as descriptor:
+                receipt = json.loads(_read(descriptor, 4 * 1024 * 1024))
+        except FileNotFoundError:
+            return set()
+        status = root.lstat()
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("workspace_id") != state.workspace_id
+            or receipt.get("token") != state.creation_token
+            or receipt.get("root_identity") != [status.st_dev, status.st_ino]
+        ):
+            raise _error(
+                "process cleanup policy changed; generated files were preserved"
+            )
+        if receipt.get("eligible") is not True:
+            return set()
+        if (
+            receipt.get("fingerprint") != source_fingerprint(root)
+            or source_fingerprint(primary) != state.source_fingerprint
+        ):
+            raise _error(
+                "process cleanup policy changed; generated files were preserved"
+            )
+        self._process_opening_policy(root, state)
+        initial = receipt.get("initial_unknown")
+        if not isinstance(initial, list) or any(
+            not isinstance(path, str) or normalize_changed_path(path) != path
+            for path in initial
+        ):
+            raise _error("process cleanup policy receipt is invalid")
+        paths = tuple(
+            path
+            for path in self._process_unknown_paths(
+                root, self._process_known_paths(state)
+            )
+            if not any(part in _ADMIN for part in Path(path).parts)
+            and not any(
+                path == old or path.startswith(old + "/") or old.startswith(path + "/")
+                for old in initial
+            )
+        )
+        if not paths:
+            return set()
+        code, output = _bounded_git(
+            root,
+            ["check-ignore", "--no-index", "--verbose", "-z", "--stdin"],
+            deadline=time.monotonic() + 5,
+            limit=4 * 1024 * 1024,
+            input_data=b"\0".join(map(os.fsencode, paths)) + b"\0",
+        )
+        if code not in {0, 1}:
+            raise _error("process cleanup could not verify ignored generated paths")
+        fields = output.split(b"\0")
+        if fields[-1] != b"" or (len(fields) - 1) % 4:
+            raise _error("process cleanup received invalid ignore policy evidence")
+        generated: set[str] = set()
+        for offset in range(0, len(fields) - 1, 4):
+            source, _, pattern, encoded = fields[offset : offset + 4]
+            relative = os.fsdecode(encoded)
+            if relative not in paths or pattern.startswith(b"!"):
+                continue
+            # An ignored .gitignore can hide itself from ls-files. The winning
+            # rule must still come from an original, byte-identical policy file.
+            policy = Path(os.fsdecode(source))
+            if policy.is_absolute():
+                if policy.is_relative_to(root):
+                    policy = policy.relative_to(root)
+                else:
+                    generated.add(relative)  # External policy is fingerprinted.
+                    continue
+            entry = state.source_manifest.get(policy.as_posix())
+            if entry is None or policy.name != ".gitignore":
+                continue
+            with _source(root, policy.as_posix()) as descriptor:
+                body = _read(descriptor, 4 * 1024 * 1024)
+            if entry["digest"] == content_identity(
+                ObjectKind.REGULAR, entry["mode"], body
+            ):
+                generated.add(relative)
+        if source_fingerprint(root) != receipt["fingerprint"]:
+            raise _error("process cleanup policy changed during inspection")
+        return generated
 
     def _creation_file_matches(
         self,
@@ -838,11 +1155,13 @@ class IsolatedWorkspaceManager:
             roots.append(relative)
         return set(roots)
 
-    def _scrub_private(self, root: Path, state: IsolatedState) -> None:
+    def _scrub_private(
+        self, root: Path, state: IsolatedState, generated: set[str] | None = None
+    ) -> None:
         # These paths were privately materialized by Loupe. They are disposable
         # runtime, never recovery evidence or undo history. Screened source is
         # likewise kept out of the ordinary source recovery archive.
-        paths = self._private_material(state)
+        paths = self._private_material(state) | (generated or set())
         for relative in sorted(paths, key=lambda item: (len(Path(item).parts), item)):
             try:
                 with _parent(root, relative) as (parent, leaf):
@@ -1135,31 +1454,57 @@ class IsolatedWorkspaceManager:
             )
         return False
 
-    def cleanup_closed(self, session_id: str | None = None) -> None:
-        """Retire closed sessions only after proposals and live actions release them."""
-        with self.lock:
-            with self.store.connection() as con:
-                rows = con.execute(
-                    "SELECT workspace_id,session_id FROM isolated_workspaces "
-                    "WHERE stage='ready'" + (" AND session_id=?" if session_id else ""),
-                    (session_id,) if session_id else (),
-                ).fetchall()
-            for row in rows:
-                workspace_id = str(row["workspace_id"])
-                if not self._cleanup_needed(workspace_id, str(row["session_id"])):
+    def cleanup_closed(self, session_id: str | None = None) -> tuple[str, ...]:
+        """Claim an idle closed binding briefly; scan/remove it without the lock."""
+        notices: list[str] = []
+        with self.lock, self.store.connection() as con:
+            rows = con.execute(
+                "SELECT workspace_id,session_id FROM isolated_workspaces "
+                "WHERE stage='ready'" + (" AND session_id=?" if session_id else ""),
+                (session_id,) if session_id else (),
+            ).fetchall()
+        for row in rows:
+            workspace_id = str(row["workspace_id"])
+            with self.lock:
+                if workspace_id in self._closed_cleanups:
                     continue
-
-                try:
-                    if not self._clean_incomplete(workspace_id, closed=True):
-                        self._quarantine(workspace_id, closed=True)
-                except (LlmCoordError, OSError, ValueError) as exc:
-                    if isinstance(exc, LlmCoordError) and exc.code in {
-                        ErrorCode.CHECKOUT_OWNED_BY_OTHER_PROFILE,
-                        ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
-                        ErrorCode.CHECKOUT_IDENTITY_CHANGED,
-                    }:
-                        continue
+                if not self._cleanup_needed(workspace_id, str(row["session_id"])):
+                    process_notice = self.runtime.process_notice
+                    notice = process_notice(workspace_id) if process_notice else ""
+                    if notice:
+                        notices.append(
+                            "Workspace cleanup waits for managed processes. " + notice
+                        )
+                    continue
+                self._closed_cleanups.add(workspace_id)
+                with self.store.connection() as con:
+                    con.execute(
+                        "UPDATE workspaces SET state='cleaning',"
+                        "state_version=state_version+1 "
+                        "WHERE workspace_id=?",
+                        (workspace_id,),
+                    )
+            try:
+                if not self._clean_incomplete(workspace_id, closed=True):
                     self._quarantine(workspace_id, closed=True)
+            except (LlmCoordError, OSError, ValueError) as exc:
+                if isinstance(exc, LlmCoordError) and exc.code in {
+                    ErrorCode.CHECKOUT_OWNED_BY_OTHER_PROFILE,
+                    ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED,
+                    ErrorCode.CHECKOUT_IDENTITY_CHANGED,
+                }:
+                    continue
+                self._quarantine(workspace_id, closed=True)
+                workspace = self.store.get_workspace(workspace_id)
+                if workspace is not None:
+                    notices.append(
+                        "Closed isolated workspace preserved at "
+                        f"{workspace.canonical_path}: {exc}"
+                    )
+            finally:
+                with self.lock:
+                    self._closed_cleanups.discard(workspace_id)
+        return tuple(dict.fromkeys(notices))
 
     def _clean_incomplete(self, workspace_id: str, *, closed: bool = False) -> bool:
         authority = self.store.authority
@@ -1172,7 +1517,8 @@ class IsolatedWorkspaceManager:
             return False
         primary = Path(checkout.canonical_path)
         # Match batch/runtime publication ordering before entering authority.
-        with self.lock, authority.pin(primary, recovery=True) as pin:
+        guard = nullcontext() if closed else self.lock
+        with guard, authority.pin(primary, recovery=True) as pin:
             kind, reference = "isolated_cleanup", workspace_id
             if pin.owner.marker["state"] != "clean":
                 with self.store.connection() as con:
@@ -1202,14 +1548,6 @@ class IsolatedWorkspaceManager:
     def _clean_incomplete_owned(
         self, workspace_id: str, *, closed: bool = False
     ) -> bool:
-        if closed:
-            with self.store.connection() as con:
-                con.execute(
-                    "UPDATE workspaces SET "
-                    "state='cleaning',state_version=state_version+1 WHERE "
-                    "workspace_id=?",
-                    (workspace_id,),
-                )
         state = self.get(workspace_id)
         workspace = self.store.get_workspace(workspace_id)
         assert state is not None and workspace is not None
@@ -1220,6 +1558,7 @@ class IsolatedWorkspaceManager:
         archive = self.managed_root / (".recovery-" + workspace_id)
         archive_data = archive / "files"
         owner: dict[str, Any] | None = None
+        generated: set[str] = set()
         if archive.exists() or archive.is_symlink():
             with _source(archive, "owner.json") as descriptor:
                 owner = json.loads(_read(descriptor, 32 * 1024 * 1024))
@@ -1230,7 +1569,16 @@ class IsolatedWorkspaceManager:
                 or len(owner["root_identity"]) != 2
             ):
                 return False
-            self._scrub_private(archive_data, state)
+            private_paths = owner.get("private_paths", [])
+            if not isinstance(private_paths, list) or any(
+                not isinstance(relative, str)
+                or normalize_changed_path(relative) != relative
+                or any(part in _ADMIN for part in Path(relative).parts)
+                for relative in private_paths
+            ):
+                return False
+            generated.update(private_paths)
+            self._scrub_private(archive_data, state, generated)
         if path.exists() or path.is_symlink():
             root_status = path.lstat()
             if owner is not None:
@@ -1273,7 +1621,39 @@ class IsolatedWorkspaceManager:
                     or set(os.listdir(path)) != {".git"}
                 ):
                     return False
-            self._scrub_private(path, state)
+            if closed and owner is None:
+                # Known private inputs still scrub below. Changed or ambiguous
+                # ignore policy grants no authority over unfamiliar paths.
+                with suppress(LlmCoordError, OSError, ValueError, _BudgetExceeded):
+                    generated.update(
+                        self._generated_process_material(
+                            path, managed.git_dir, primary, state
+                        )
+                    )
+            if closed:
+                from llm_cli.workspace.process_privacy import (
+                    load_values,
+                    retire_values,
+                    scrub_source_copies,
+                )
+
+                try:
+                    load_values(
+                        path, managed.git_dir, state.workspace_id, state.creation_token
+                    )
+                except LlmCoordError:
+                    self._scrub_private(path, state, generated)
+                    raise
+            self._scrub_private(path, state, generated)
+            if closed:
+                generated.update(scrub_source_copies(path))
+                if owner is not None:
+                    generated.update(scrub_source_copies(archive_data, guard_root=path))
+                # All matching private source is gone; ambiguous ordinary files
+                # may still quarantine the tree, but no private seed remains.
+                retire_values(
+                    path, managed.git_dir, state.workspace_id, state.creation_token
+                )
             if not closed and self._orphaned_creation(state):
                 # Known runtime generations are disposable too, even when an
                 # unknown source edit prevents retiring the worktree itself.
@@ -1335,7 +1715,9 @@ class IsolatedWorkspaceManager:
                     owner = {
                         "token": state.creation_token,
                         "root_identity": [root_status.st_dev, root_status.st_ino],
-                        "private_paths": sorted(self._private_material(state)),
+                        "private_paths": sorted(
+                            self._private_material(state) | generated
+                        ),
                     }
                     archive_fd = os.open(
                         archive, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -1414,6 +1796,9 @@ class IsolatedWorkspaceManager:
         # Pruning only touches missing managed registrations, never an existing
         # directory created by a user after rmdir. Foreign stale entries abort.
         prune_managed_worktrees(primary, managed_root=self.managed_root)
+        forget_source_private_values(path)
+        self._process_values_loaded.discard(workspace_id)
+        self._process_source_roots.pop(workspace_id, None)
         self.runtime.cleanup(workspace_id)
         with self.store.connection() as con, immediate_transaction(con):
             con.execute(
@@ -1449,11 +1834,11 @@ class IsolatedWorkspaceManager:
     def recover(self) -> None:
         with self.lock:
             self._scrub_removed_archives()
-            self.cleanup_closed()
-            with self.store.connection() as con:
-                rows = con.execute(
-                    "SELECT workspace_id,stage FROM isolated_workspaces"
-                ).fetchall()
+        self.cleanup_closed()
+        with self.lock, self.store.connection() as con:
+            rows = con.execute(
+                "SELECT workspace_id,stage FROM isolated_workspaces"
+            ).fetchall()
         for row in rows:
             workspace_id = str(row["workspace_id"])
             try:

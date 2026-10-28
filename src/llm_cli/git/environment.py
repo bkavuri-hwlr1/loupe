@@ -93,7 +93,12 @@ def run_git(
         # Even status/diff can run clean filters. Refuse configured filters before
         # any command that could inspect/transform worktree contents. Do not
         # silently bypass required transformations such as Git LFS.
-        if operation not in {
+        metadata_only_worktree_list = (
+            operation == "worktree"
+            and operation_index + 1 < len(arguments)
+            and arguments[operation_index + 1] == "list"
+        )
+        if not metadata_only_worktree_list and operation not in {
             "config",
             "init",
             "rev-parse",

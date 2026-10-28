@@ -20,7 +20,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 
-from llm_cli.agent.source_policy import ensure_safe_content
+from llm_cli.agent.source_policy import (
+    cached_source_private_values,
+    ensure_safe_content,
+)
 from llm_cli.agent.tools import TaskCancelled, ToolOutcome
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import LlmCoordError
@@ -30,6 +33,7 @@ from llm_cli.execution.checks import (
     supervised_run,
 )
 from llm_cli.execution.environment import SANDBOX_VARIABLES, EnvironmentSupplier
+from llm_cli.execution.processes import PreparedProcess
 from llm_cli.execution.sandbox import SandboxPolicy, uses_reaper, wrap
 from llm_cli.git.environment import run_git
 from llm_cli.ids import new_id
@@ -89,8 +93,10 @@ class CommandRunner:
         suppress_output: bool = False,
         sensitive_paths: tuple[str, ...] = (),
         environment: EnvironmentSupplier | None = None,
+        process_socket_directory: Callable[[], Path] | None = None,
     ) -> None:
         self.environment = environment
+        self.process_socket_directory = process_socket_directory
         self.runtime_files = runtime_files
         self.suppress_output = suppress_output
         self.sensitive_paths = sensitive_paths
@@ -125,6 +131,100 @@ class CommandRunner:
             _result(state, exit_code, duration, output, clipped),
             state not in {"completed"},
         )
+
+    def prepare_process(
+        self,
+        argv: list[str],
+        cwd: str,
+        *,
+        process_id: str,
+        run_root: Path,
+    ) -> PreparedProcess:
+        """Prepare only while the manager holds this workspace's activity pin.
+
+        The caller has already adopted its pending ordinary-source overlay.
+        The long-lived command writes the private worktree, never the checkout.
+        """
+        from llm_cli.workspace.runtime import private_value_sets, source_guarded
+
+        if self.cancelled():
+            raise TaskCancelled("task stopped")
+        ensure_safe_content("\0".join(argv))
+        relative = "." if cwd in {"", "."} else normalize_changed_path(cwd)
+        directory = (self.root / relative).resolve()
+        if not directory.is_relative_to(self.root) or not directory.is_dir():
+            raise ValueError("process cwd is not a directory in the private workspace")
+        if self.candidates():
+            raise ValueError(
+                "adopt pending private source before starting a managed process"
+            )
+        run_directory = run_root.resolve() / process_id
+        run_directory.mkdir(mode=0o700, parents=True)
+        home = run_directory / "home"
+        home.mkdir(mode=0o700)
+        (home / "tmp").mkdir(mode=0o700)
+        try:
+            environment = self.environment() if self.environment is not None else None
+            # Output redaction keeps every private value; the durable source
+            # guard keeps only the credential-like ones (see source_guarded).
+            sensitive_values, source_values = private_value_sets(
+                self.root,
+                tuple(sorted(self.runtime_files)),
+                source_paths=tuple(sorted(self.sensitive_paths)),
+                strict_private=True,
+            )
+            env = self._environment(home)
+            if environment is not None:
+                values, protected = environment.capture(
+                    self.root,
+                    runtime_root=self.root,
+                    runtime_paths=self.runtime_files,
+                )
+                overrides = {
+                    name: value
+                    for name, value in env.items()
+                    if name in SANDBOX_VARIABLES
+                }
+                env.update(values)
+                env.update(overrides)
+                sensitive_values += protected
+                # Credential-named variables and URL passwords.
+                source_values += tuple(
+                    value for value in protected if source_guarded(value, named=True)
+                )
+            ipc = (
+                self.process_socket_directory()
+                if self.process_socket_directory
+                else None
+            )
+            if ipc is not None:
+                env["LOUPE_PROCESS_SOCKET_DIR"] = str(ipc)
+            public_argv, public_cwd = list(argv), relative
+            for value in sorted(set(sensitive_values), key=len, reverse=True):
+                if value:
+                    public_argv = [
+                        arg.replace(value, "[private value]") for arg in public_argv
+                    ]
+                    public_cwd = public_cwd.replace(value, "[private value]")
+            policy = SandboxPolicy(
+                writable=(self.root, home, *((ipc,) if ipc is not None else ())),
+                protected=self.protected,
+            )
+            return PreparedProcess(
+                process_id=process_id,
+                argv=tuple(wrap(self.sandbox, policy, argv, cwd=directory)),
+                cwd=directory,
+                env=env,
+                run_directory=run_directory,
+                public_command=" ".join(public_argv),
+                public_cwd=public_cwd,
+                sensitive_values=sensitive_values,
+                source_values=source_values,
+                reaper=uses_reaper(self.sandbox),
+            )
+        except Exception:
+            shutil.rmtree(run_directory)
+            raise
 
     def run_hook(
         self,
@@ -170,11 +270,11 @@ class CommandRunner:
         state, exit_code = "error", None
         files: dict[str, bytes | None] = {}
         environment = None
-        sensitive_values: tuple[str, ...] = ()
+        sensitive_values = cached_source_private_values(self.root)
         try:
             environment = self.environment() if self.environment is not None else None
             if environment is not None:
-                sensitive_values = environment.sensitive_values
+                sensitive_values += environment.sensitive_values
             public_argv = list(argv)
             public_cwd = relative_cwd
             for value in sorted(sensitive_values, key=len, reverse=True):
@@ -232,8 +332,15 @@ class CommandRunner:
                 input_file = home / "hook-input.json"
                 input_file.write_text(json.dumps(hook_input), encoding="utf-8")
                 env["LOUPE_HOOK_INPUT"] = str(input_file)
+            ipc = (
+                self.process_socket_directory()
+                if self.process_socket_directory
+                else None
+            )
+            if ipc is not None:
+                env["LOUPE_PROCESS_SOCKET_DIR"] = str(ipc)
             policy = SandboxPolicy(
-                writable=(source, home),
+                writable=(source, home, *((ipc,) if ipc is not None else ())),
                 protected=(self.root, *self.protected),
                 readable=readable,
             )

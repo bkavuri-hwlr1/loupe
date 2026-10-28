@@ -88,6 +88,12 @@ class WorkspaceModeSwitcher:
         return response
 
     def require_idle(self, session: SessionRecord) -> None:
+        process_notice = getattr(self.isolated.runtime, "process_notice", None)
+        notice = process_notice(session.workspace_id or "") if process_notice else ""
+        if notice:
+            raise ValueError(
+                "Stop managed processes before switching workspace. " + notice
+            )
         # Deliberately stricter than advisory session_has_active_task: ambiguous
         # recovery/queued launches also forbid changing the execution binding.
         with self.store.connection() as con:

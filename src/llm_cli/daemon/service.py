@@ -10,9 +10,9 @@ import json
 import sqlite3
 import threading
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, closing, suppress
+from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -65,6 +65,7 @@ from llm_cli.execution.environment import (
     filtered_environment,
     unavailable,
 )
+from llm_cli.execution.processes import ManagedProcessManager
 from llm_cli.execution.recovery import (
     ExecutionReconciler,
     RecoveryOutcome,
@@ -270,6 +271,26 @@ class DaemonService:
         self.workspace_switches.worker_busy = self._workspace_switch_worker_busy
         self.workspace_switches.workflow = self.shared_runner.workflow
         self.shared_runner.isolated = self.isolated_workspaces
+        self.managed_processes = ManagedProcessManager(
+            self.store,
+            paths.data_dir / "managed-processes",
+            activity=self.isolated_workspaces.runtime.activity,
+            pin=self._managed_process_pin,
+            admit=self._managed_process_admit,
+            profile_id=paths.profile_id,
+            cleanup_guard=self.isolated_workspaces.runtime.quiet_cleanup,
+        )
+        self.shared_runner.managed_processes = self.managed_processes
+        runtime = self.isolated_workspaces.runtime
+        runtime.process_notice = self._managed_process_notice
+        runtime.process_writer_notice = functools.partial(
+            self._managed_process_notice, writers_only=True
+        )
+        self.shared_runner.isolated_sync.process_notice = self._managed_process_notice
+        self.shared_runner.isolated_sync.process_writer_notice = (
+            runtime.process_writer_notice
+        )
+        self.isolated_workspaces.rebuild_protected += (self.managed_processes.ipc_root,)
         self.workflow = self.shared_runner.workflow
         self.shared_runner.command_environment = self._command_environment
         self.workflow.command_environment = self._command_environment
@@ -282,6 +303,7 @@ class DaemonService:
                 paths.data_dir,
                 paths.state_dir,
                 paths.runtime_dir,
+                self.managed_processes.ipc_root,
                 *protected_home_paths(Path.home()),
             ),
             approval=settings.agent_commands,
@@ -330,6 +352,7 @@ class DaemonService:
         self._authority_lock = asyncio.Lock()
         self._pending_session_opens: set[str] = set()
         self._pending_session_switches: set[str] = set()
+        self._pending_session_closes: set[str] = set()
         self._background_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
         self._workspace_workers: set[tuple[str, int]] = set()
         self._workspace_workers_lock = threading.RLock()
@@ -350,6 +373,9 @@ class DaemonService:
     def initialize(self) -> None:
         self.paths.ensure()
         self.store.initialize()
+        # Old groups are fenced/stopped before any private source or runtime
+        # recovery and before ordinary snapshot cleanup can remove inputs.
+        self.managed_process_recovery = self.managed_processes.recover()
         if not self._session_recovery_done:
             self.store.disconnect_active_sessions()
             with self.store.connection() as connection:
@@ -482,6 +508,7 @@ class DaemonService:
         if self._ownership_idle_task is not None:
             self._ownership_idle_task.cancel()
         self._execution_pool.shutdown(wait=False)
+        self.managed_processes.stop_all()
         self.physical_authority.close()
 
     def _start_ownership_idle_worker(self) -> None:
@@ -647,6 +674,22 @@ class DaemonService:
                     self._pending_session_opens.discard(session_id)
             if request.method == "workspace.switch_mode":
                 return await self._workspace_switch_mode(request.params)
+            if request.method == "session.close":
+                return await self._session_close(request.params)
+            if request.method in {"workspace.process.list", "workspace.process.stop"}:
+                # Process I/O and group teardown never hold the dispatch barrier.
+                async with self._authority_lock:
+                    session = self._authenticated_session(request.params)
+                if request.method == "workspace.process.list":
+                    records = await asyncio.to_thread(
+                        self.managed_processes.list, session.session_id
+                    )
+                    return {"processes": records}
+                return await asyncio.to_thread(
+                    self.managed_processes.stop,
+                    _string(request.params, "process_id"),
+                    session.session_id,
+                )
             if request.method == "session.compact":
                 # The summary is a model request. Hold the authority lock only
                 # to read and to save, never while the provider responds.
@@ -819,6 +862,8 @@ class DaemonService:
                 task = self.store.get_task(str(params["task_id"]))
                 owner = task.session_id if task else None
             if isinstance(owner, str):
+                if owner in self._pending_session_closes:
+                    raise ValueError("session close is still running")
                 if owner in self._pending_session_switches:
                     raise ValueError("workspace switch is still running")
                 pending_switch = self.workspace_switches.pending(owner)
@@ -1042,25 +1087,6 @@ class DaemonService:
                     ),
                 )
             ]
-        if method == "session.close":
-            session = self._authenticated_session(params)
-            for task_id in tuple(self._environment_waiters):
-                task = self.store.get_task(task_id)
-                if task is not None and task.session_id == session.session_id:
-                    self.workflow.cancel(task_id)
-                    self._finish_environment_waiter(task_id)
-            self.session_environments.discard(session.session_id)
-            closed, event = self.store.close_session(
-                session.session_id,
-                reason=_optional_string(params, "reason") or "operator_exit",
-            )
-            await asyncio.to_thread(
-                self.isolated_workspaces.cleanup_closed, session.session_id
-            )
-            return {
-                "session": asdict(closed),
-                "event": asdict(event) if event is not None else None,
-            }
         if method == "session.set_intent":
             session = self._authenticated_session(params, require_active=True)
             paths = params.get("paths")
@@ -1235,6 +1261,106 @@ class DaemonService:
         raise LlmCoordError(
             ErrorCode.PROTOCOL_MISMATCH, f"unknown RPC method: {method}"
         )
+
+    def _managed_process_notice(
+        self, workspace_id: str, *, writers_only: bool = False
+    ) -> str:
+        records = self.managed_processes.blockers(workspace_id)
+        if writers_only:
+            records = [record for record in records if record["state"] != "starting"]
+        return " ".join(
+            f"Process {record['process_id']} ({record['state']}); "
+            f"stop it with `{record['stop_command']}`."
+            for record in records
+        )
+
+    @contextmanager
+    def _managed_process_pin(self, workspace_id: str) -> Iterator[None]:
+        workspace = self.store.get_workspace(workspace_id)
+        checkout = self.store.get_checkout(workspace.checkout_id) if workspace else None
+        if checkout is None:
+            raise ValueError("managed process workspace binding is unavailable")
+        with self.physical_authority.pin(Path(checkout.canonical_path)):
+            yield
+
+    def _managed_process_admit(self, session_id: str, workspace_id: str) -> None:
+        # Only short state checks use the publication barrier. The manager owns
+        # reservations, the activity lifetime and every subprocess wait.
+        with self.workspace_batches.lock:
+            session = self.store.get_session(session_id)
+            workspace = self.store.get_workspace(workspace_id)
+            if (
+                session is None
+                or session.state != "active"
+                or session.workspace_mode != "isolated"
+                or session.workspace_id != workspace_id
+                or workspace is None
+                or workspace.state != "active"
+                or workspace.mode != "isolated"
+            ):
+                raise ValueError(
+                    "managed processes require the active isolated session binding"
+                )
+            pending = self.workspace_switches.pending(session_id)
+            if pending:
+                intent_id = pending["switch_intent_id"]
+                raise ValueError(
+                    f"Workspace switch {intent_id} must settle "
+                    "before starting a process. "
+                    + rollback_hint(intent_id)
+                )
+
+    async def _session_close(self, params: dict[str, Any]) -> dict[str, Any]:
+        reason = _optional_string(params, "reason") or "operator_exit"
+        if len(reason) > 128:
+            raise ValueError("session close reason is invalid")
+        async with self._authority_lock:
+            session = self._authenticated_session(params)
+            if session.session_id in self._pending_session_switches:
+                raise ValueError("workspace switch is still running")
+            pending = self.workspace_switches.pending(session.session_id)
+            if pending:
+                intent_id = pending["switch_intent_id"]
+                raise ValueError(
+                    f"workspace switch {intent_id} requires confirmation or rollback. "
+                    + rollback_hint(intent_id)
+                )
+            if session.session_id in self._pending_session_closes:
+                raise ValueError("session close is already running")
+            self._pending_session_closes.add(session.session_id)
+        try:
+            unresolved = await asyncio.to_thread(
+                self.managed_processes.stop_session, session.session_id
+            )
+            if unresolved:
+                raise ValueError(
+                    "Session close waits for managed processes. " + " ".join(unresolved)
+                )
+            async with self._authority_lock:
+                session = self._authenticated_session(params)
+                for task_id in tuple(self._environment_waiters):
+                    task = self.store.get_task(task_id)
+                    if task is not None and task.session_id == session.session_id:
+                        self.workflow.cancel(task_id)
+                        self._finish_environment_waiter(task_id)
+                self.session_environments.discard(session.session_id)
+                closed, event = self.store.close_session(
+                    session.session_id, reason=reason
+                )
+            notices = await asyncio.to_thread(
+                self.isolated_workspaces.cleanup_closed, session.session_id
+            )
+            if session.workspace_id:
+                await asyncio.to_thread(
+                    self.managed_processes.cleanup_workspace, session.workspace_id
+                )
+            return {
+                "session": asdict(closed),
+                "event": asdict(event) if event is not None else None,
+                "cleanup_notices": list(notices or ()),
+            }
+        finally:
+            self._pending_session_closes.discard(session.session_id)
 
     def _workspace_runtime_export(self, params: dict[str, Any]) -> dict[str, Any]:
         from llm_cli.storage.connection import immediate_transaction
@@ -1759,8 +1885,24 @@ class DaemonService:
     async def _workspace_switch_mode(self, params: dict[str, Any]) -> dict[str, Any]:
         async with self._authority_lock:
             session = self._authenticated_session(params, require_active=True)
+            if session.session_id in self._pending_session_closes:
+                notice = (
+                    self._managed_process_notice(session.workspace_id)
+                    if session.workspace_id
+                    else ""
+                )
+                raise ValueError("session close is still running. " + notice)
             if session.session_id in self._pending_session_switches:
                 raise ValueError("workspace switch is already running")
+            notice = (
+                self._managed_process_notice(session.workspace_id)
+                if session.workspace_id
+                else ""
+            )
+            if notice:
+                raise ValueError(
+                    "Workspace switch waits for managed processes. " + notice
+                )
             if self._workspace_switch_worker_busy(session.session_id):
                 raise ValueError("wait for the active task worker before switching")
             self._pending_session_switches.add(session.session_id)
@@ -1885,6 +2027,8 @@ class DaemonService:
         if not isinstance(text, str):
             raise ValueError("content must be a string, including an empty string")
         content = text.encode("utf-8")
+        if session.workspace_mode == "isolated" and session.workspace_id:
+            self.isolated_workspaces.check_process_source(session.workspace_id, content)
         executable = params.get("executable", base.mode == EXECUTABLE_MODE)
         if not isinstance(executable, bool):
             raise ValueError("executable must be a boolean")

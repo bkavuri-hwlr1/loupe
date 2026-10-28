@@ -242,7 +242,7 @@ class ChatShell:
         if self.credentials is None:
             return
         self._require_idle()
-        self.client.call(
+        session._patient(self.client, 60).call(
             "session.close",
             {
                 "session_id": self.credentials.session_id,

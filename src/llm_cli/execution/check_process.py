@@ -154,8 +154,86 @@ def _run_reaper(alive: int, trigger: int) -> None:
         os.close(alive)
 
 
+def managed_main(argv: list[str]) -> int:
+    """Keep a trusted recorded leader until every sandboxed writer is gone.
+
+    stdin's first byte authorizes launch only after the daemon commits this
+    leader's PID/start identity/group. EOF later means the daemon died.
+    """
+    status_fd = int(argv.pop(0))
+    grace = max(0.05, min(float(argv.pop(0)), 2.0))
+    reaper = argv[:1] == [_REAPER_FLAG]
+    if reaper:
+        argv = argv[1:]
+    if os.getpgrp() != os.getpid():
+        return 126
+    requested = False
+
+    def stop_requested(signum: int, frame: object) -> None:
+        nonlocal requested
+        requested = True
+
+    signal.signal(signal.SIGTERM, stop_requested)
+    signal.signal(signal.SIGINT, stop_requested)
+    if os.read(sys.stdin.fileno(), 1) != b"S":
+        return 125
+    subreaper = _become_subreaper()
+    alive = trigger = None
+    if reaper:
+        alive, trigger = _reaper_pipes()
+    try:
+        child = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            # This supervisor is the stable group leader. Bubblewrap may
+            # create a namespace/session; its parent-death guard contains it.
+            pass_fds=(3, 4) if reaper else (),
+        )
+    finally:
+        if reaper:
+            os.close(3)
+            os.close(4)
+    selector = selectors.DefaultSelector()
+    selector.register(sys.stdin, selectors.EVENT_READ)
+    natural_code: int | None = None
+    try:
+        while not requested:
+            natural_code = child.poll()
+            if natural_code is not None:
+                break
+            if selector.select(0.05) and not os.read(sys.stdin.fileno(), 1):
+                requested = True
+            if subreaper:
+                _reap_orphans(child.pid)
+    finally:
+        selector.close()
+        # Keep our leader alive while TERM is delivered to its whole group.
+        os.killpg(os.getpgrp(), signal.SIGTERM)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            child.poll()
+            if subreaper:
+                _reap_orphans(child.pid)
+            time.sleep(0.025)
+        if alive is not None and trigger is not None:
+            _run_reaper(alive, trigger)
+        if subreaper:
+            _stop_descendants()
+        code = natural_code if natural_code is not None else child.poll()
+        with contextlib.suppress(OSError):
+            os.write(status_fd, str(code if code is not None else 125).encode("ascii"))
+        os.close(status_fd)
+        # A TERM-ignoring child or a fork whose parent already exited must
+        # never outlive this leader. The sandbox reaper/namespace also catches
+        # descendants that deliberately left the group.
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    return 125
+
+
 def main() -> int:
     argv = sys.argv[1:]
+    if argv[:1] == ["--managed"]:
+        return managed_main(argv[1:])
     reaper = argv[:1] == [_REAPER_FLAG]
     if reaper:
         argv = argv[1:]

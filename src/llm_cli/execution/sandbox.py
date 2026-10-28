@@ -245,10 +245,15 @@ def _seatbelt(policy: SandboxPolicy, argv: Sequence[str]) -> list[str]:
     if policy.writable:
         writable = filters("WRITABLE", policy.writable)
         rules.append(f"(allow file-read* file-write* {writable})")
-        rules.append(
-            f"(allow network-bind network-inbound (local unix-socket {writable}))"
-        )
-        rules.append(f"(allow network-outbound (remote unix-socket {writable}))")
+        # A combined socket address filter admits only its first pathname
+        # predicate on Seatbelt. Keep each writable root in a separate rule.
+        for index in range(len(policy.writable)):
+            socket_path = f'(subpath (param "WRITABLE_{index}"))'
+            rules.append(f"(allow network-bind (local unix-socket {socket_path}))")
+            rules.append(f"(allow network-inbound (local unix-socket {socket_path}))")
+            rules.append(
+                f"(allow network-outbound (remote unix-socket {socket_path}))"
+            )
         # A writable path can sit inside a protected one, as command snapshots
         # sit in Loupe's data directory. Tools such as pytest stat the
         # directories above their working directory and stop at "operation
