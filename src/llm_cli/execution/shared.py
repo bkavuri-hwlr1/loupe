@@ -69,13 +69,16 @@ from llm_cli.mcp.tools import McpToolset
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.workspace.batches import BatchFile, SharedBatchPublisher
 from llm_cli.workspace.context import SharedCoordinationContext
+from llm_cli.workspace.external import ExternalWorkspaceScanner
 from llm_cli.workspace.identity import SYMLINK_MODE, FileIdentity
 from llm_cli.workspace.isolated import (
     IsolatedWorkspaceManager,
     SourceCaptureCache,
     capture_source,
+    capture_watched_source,
 )
 from llm_cli.workspace.isolated_sync import IsolatedSynchronizer
+from llm_cli.workspace.watchers import WatchRegistry
 from llm_cli.workspace.workflow import TaskWorkflow, decode_files, encode_files
 
 
@@ -96,6 +99,10 @@ class SharedTaskExecutionRunner:
         self.publisher = publisher
         self.isolated: IsolatedWorkspaceManager | None = None
         self.workflow = TaskWorkflow(self.store, self.coordinator, publisher)
+        # Set by the daemon when native file watchers narrow safe-point scans.
+        self.watchers: WatchRegistry | None = None
+        # The daemon's outside-edit scanner, shared so its cursors persist.
+        self.external_scanner: ExternalWorkspaceScanner | None = None
         capture_cache = SourceCaptureCache()
         self.isolated_sync = IsolatedSynchronizer(
             self.store,
@@ -107,12 +114,22 @@ class SharedTaskExecutionRunner:
                 cache=capture_cache,
             ),
             self._validate_isolated,
-            refresh_capture=lambda root, protected: capture_source(
-                root,
-                publisher.candidate_dir,
-                protected_paths=protected,
-                cache=capture_cache,
-                defer_changed=True,
+            refresh_capture=lambda root, protected: (
+                capture_source(
+                    root,
+                    publisher.candidate_dir,
+                    protected_paths=protected,
+                    cache=capture_cache,
+                    defer_changed=True,
+                )
+                if self.watchers is None
+                else capture_watched_source(
+                    root,
+                    publisher.candidate_dir,
+                    protected_paths=protected,
+                    cache=capture_cache,
+                    watch=self.watchers,
+                )
             ),
         )
         self.isolated_sync.runtime_refresh = lambda workspace_id: (
@@ -135,7 +152,8 @@ class SharedTaskExecutionRunner:
     def _validate_isolated(self, workspace_id: str) -> object:
         if self.isolated is None:
             raise ClaimConflict("isolated workspace manager is unavailable")
-        return self.isolated.validate(workspace_id)
+        # Callers only need the checks; skip parsing the creation snapshot.
+        return self.isolated.validate(workspace_id, source_manifest=False)
 
     def _prepare_isolated(self, workspace_id: str) -> None:
         if self.isolated is None:
@@ -835,6 +853,7 @@ class SharedTaskExecutionRunner:
                 session.session_id,
                 scopes,
                 scan_external=not isolated,
+                scanner=self.external_scanner,
             )
 
             def refresh_coordination(after_sequence: int | None) -> CoordinationUpdate:

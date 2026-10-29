@@ -91,6 +91,21 @@ the remaining planned capabilities are listed below.
   reads while retaining both repository discoveries and all regime checks.
   See [the guide](isolated-workspaces.md#managed-background-processes).
 
+- Native file watchers (Wave 11 C12): FSEvents on macOS and inotify on Linux,
+  through `ctypes`, narrow isolated safe points and outside-edit scans to the
+  paths that may have changed. Scanners keep exact identity checks and
+  publication keeps exact base checks. A first scan, daemon downtime, overflow,
+  dropped events, a replaced root, a watcher restart, an ignore-policy change,
+  an unconfirmed delivery or more than 8,192 changed paths gives a full scan,
+  and every cursor is verified in full at least every five minutes. Lost events
+  add a `checkout.resync_required` notice (`CONTEXT_RESYNC_REQUIRED`) for every
+  session on the checkout. Unsupported platforms and filesystems, and
+  `[workspace] watchers = "off"`, keep periodic full scans. At 20,000 source
+  files an unchanged isolated safe point takes **144 ms** and one
+  outside edit **215 ms**, down from 1.94 and 2.38 seconds. See
+  [the design note](file-watchers.md) and
+  [measurements](experiments/file-watchers-c12-2026-10-28.md).
+
 - Private runtime export (Wave 9 C15): `loupe workspace runtime export PATH
   --session ID --to DEST` previews bounded file/tree metadata and requires
   `--yes`, plus `--allow-secret` for sensitive names or recognized credential
@@ -1201,11 +1216,12 @@ bounded. C15 and C16 final verification is recorded above; the final combined C1
 candidate is frozen for covered correctness and separate unchanged-limit scales.
 
 C14 implements managed background processes in Wave 10, with stop-on-close and
-explicit switch refusal while processes remain.
+explicit switch refusal while processes remain. C12 adds native file watchers in
+Wave 11; hydration admission and outside-scan coverage limits remain.
 
-1. Add native watchers (C12). E3 measured a 1.94-second safe point at 20,000
-   files, above the 250 ms gate; C16 removes journal growth rather than that
-   scan cost. Hydration admission and outside-scan coverage limits remain.
+1. Let one safe point receive an outside change to more than 50 source files,
+   such as a branch switch, in several journaled batches. Today every later
+   safe point fails on the 50-file batch limit.
 2. Push the `v0.1.0a3` tag on D4's merge commit and confirm the tap upgrade on
    both architectures.
 3. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
@@ -1306,8 +1322,9 @@ lost-write control. No model API calls or credentials were used.
   retire verified orphan private copies, including runtime generations, and
   restart cleans earlier orphan attention records. Live, held, foreign and
   unknown-source data keep their protections.
-- **Scan cost:** at 20,000 source files, a real isolated safe point takes
-  1.94 seconds median, above C12's 250 ms gate. Outside scans cover only each
-  session's latest 1,000 read paths; 20,000-file hydration admission and
-  100,000-file isolated capture remain refused. None of these limits is
-  presented as completed coverage.
+- **Scan cost:** at 20,000 source files, a real isolated safe point took
+  1.94 seconds median, above C12's 250 ms gate. C12's watchers bring it under
+  the gate; see [its measurements](experiments/file-watchers-c12-2026-10-28.md).
+  Outside scans cover only each session's latest 1,000 read paths; 20,000-file
+  hydration admission and 100,000-file isolated capture remain refused. None of
+  these limits is presented as completed coverage.

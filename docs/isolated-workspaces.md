@@ -343,7 +343,10 @@ re-storing the body. The filesystem scan runs outside the publication lock;
 its result is discarded if a publication races it. A crossing save or an
 unavailable path keeps its last accepted version, reports a bounded path-only
 deferral, and retries at the next safe point without failing the task. Unrelated
-source changes can still advance.
+source changes can still advance. Where native file watchers run, a safe point
+rereads only the paths they report and keeps every other identity from its
+previous complete scan; anything a watcher cannot vouch for gives a full scan.
+See [native file watchers](file-watchers.md).
 
 Screened source fixtures, such as tests containing fake credentials, synchronize
 privately when their local copy is unchanged. Their bodies stay out of ordinary

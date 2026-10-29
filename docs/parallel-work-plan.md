@@ -70,8 +70,9 @@ workspace switches. C15's self-contained export handler retains the physical and
 runtime activity barriers used by switching and cleanup. The C16 full growing-path
 hour passed with the original bounds. C13's final combined source is frozen for
 full covered correctness and separate production scale gates; see the package
-verification links below. **Wave 10 next:** C14. **Wave 11:** C12; scan cost
-remains above E3's threshold. Neither future package is implemented here.
+verification links below. **Wave 10:** C14 is implemented. **Wave 11:** C12 is
+implemented; native watchers bring the 20,000-file safe point to 144 ms, under
+E3's threshold.
 
 D4 releases what is already on `main` (Waves 1–7), so users get that work
 before Waves 8–11 change it further. Publishing still needs you to push the
@@ -904,6 +905,16 @@ what you are doing with Git (workspace plan §16).
   attention event and a rescan.
 
 ### C12. Native file-change watchers
+
+**Implementation complete (October 28, 2026).** FSEvents and inotify, through
+`ctypes`, narrow isolated safe points and outside-edit scans; anything a watcher
+cannot vouch for gives a full scan, and lost events add a
+`CONTEXT_RESYNC_REQUIRED` notice. Publication does not pause during a resync:
+it already checks exact bases on disk, so a missed wake-up delays a notice but
+cannot overwrite an outside edit. See [the design note](file-watchers.md) and
+[measurements](experiments/file-watchers-c12-2026-10-28.md). A safe point still
+fails on an outside change to more than 50 source files; that predates C12 and
+is a separate fix.
 
 *Gate met.* The threshold was an isolated safe-point scan or periodic
 outside-edit scan above 250 ms on the 20,000-file fixture. E3 measured a

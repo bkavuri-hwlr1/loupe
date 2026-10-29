@@ -15,6 +15,7 @@ import os
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,24 @@ Manifest = dict[str, dict[str, Any]]
 
 # Applied steps are diagnostic only; unresolved evidence has its own durable row.
 _APPLIED_JOURNAL_WINDOW = 8
+
+# A safe point validates its private worktree when it starts and again after
+# its unlocked source capture, not at every internal step.
+_VALIDATED: ContextVar[set[str] | None] = ContextVar(
+    "isolated_sync_validated", default=None
+)
+
+
+@contextmanager
+def _validation_scope() -> Iterator[None]:
+    if _VALIDATED.get() is not None:
+        yield
+        return
+    token = _VALIDATED.set(set())
+    try:
+        yield
+    finally:
+        _VALIDATED.reset(token)
 
 
 def _encode(value: object) -> str:
@@ -211,9 +230,14 @@ class IsolatedSynchronizer:
                 ),
             )
 
-    def _state(self, workspace_id: str) -> dict[str, Any]:
-        if self.validate is not None:
+    def _state(self, workspace_id: str, *, revalidate: bool = False) -> dict[str, Any]:
+        validated = _VALIDATED.get()
+        if self.validate is not None and (
+            validated is None or revalidate or workspace_id not in validated
+        ):
             self.validate(workspace_id)
+            if validated is not None:
+                validated.add(workspace_id)
         with self.store.connection() as con:
             row = con.execute(
                 "SELECT s.*,w.canonical_path,w.checkout_id,w.source_workspace_id,"
@@ -282,7 +306,7 @@ class IsolatedSynchronizer:
         refresh_source: bool = True,
         refresh_runtime: bool = False,
     ) -> SyncResult:
-        with self._authority_pin(workspace_id):
+        with self._authority_pin(workspace_id), _validation_scope():
             return self._synchronize(
                 workspace_id,
                 refresh_source=refresh_source,
@@ -390,7 +414,8 @@ class IsolatedSynchronizer:
                             *deferred_process.runtime_notices,
                         ),
                     )
-                current = self._state(workspace_id)
+                # The capture ran unlocked; check the worktree binding again.
+                current = self._state(workspace_id, revalidate=True)
                 with self.store.connection() as con:
                     latest = con.execute(
                         "SELECT MAX(sequence) FROM checkout_events WHERE checkout_id=?",
@@ -430,11 +455,19 @@ class IsolatedSynchronizer:
         """Reconcile a source snapshot captured without the publication lock."""
         state = self._state(workspace_id)
         baseline: Manifest = json.loads(state["manifest_json"])
+        runtime_paths = json.loads(state["runtime_paths_json"])
         deferred = set(getattr(primary, "deferred", ()))
         files = []
         screened: list[str] = []
-        for path in sorted(baseline.keys() | primary.keys()):
-            if self._runtime(path, state):
+        # An identical entry needs none of the checks below; skip it before
+        # sorting, so an unchanged large checkout costs one comparison per path.
+        differing = [
+            path
+            for path in baseline.keys() | primary.keys()
+            if (entry := baseline.get(path)) is None or entry != primary.get(path)
+        ]
+        for path in sorted(differing):
+            if runtime_path_matches(path, runtime_paths):
                 continue
             before, after = baseline.get(path), primary.get(path)
             if path in deferred:

@@ -663,6 +663,11 @@ def checkout_event_text(event: dict[str, Any], *, own_session_id: str) -> str | 
             f"  Git changed during publication at {rendered}{suffix}; "
             "attention and rescan required."
         )
+    if kind == "checkout.resync_required":
+        return (
+            "  File watching lost changes here; Loupe rescanned the checkout. "
+            "Re-read files before relying on earlier reads."
+        )
     if kind == "checkout.authority_handoff":
         return (
             "  Checkout ownership changed; earlier history is incomplete. "

@@ -16,7 +16,16 @@ from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.web.fetch import WebFetchError, check_proxy
 
-_ROOT_KEYS = {"agent", "core", "hooks", "leases", "mcp", "knowledge", "isolated"}
+_ROOT_KEYS = {
+    "agent",
+    "core",
+    "hooks",
+    "leases",
+    "mcp",
+    "knowledge",
+    "isolated",
+    "workspace",
+}
 _HOOK_KINDS = ("pre_tool", "post_edit")
 _HOOK_KEYS = {"match", "command", "timeout", "name"}
 _MAX_HOOKS = 16
@@ -99,6 +108,14 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
     }:
         raise LlmCoordError(
             ErrorCode.CONFIG_INVALID, 'knowledge.index must be "off" or "lexical"'
+        )
+    workspace = _table(data, "workspace")
+    if set(workspace) - {"watchers"}:
+        raise _unknown("workspace", set(workspace) - {"watchers"})
+    watchers = workspace.get("watchers", settings.workspace_watchers)
+    if not isinstance(watchers, str) or watchers not in {"auto", "off"}:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID, 'workspace.watchers must be "auto" or "off"'
         )
     if set(core) - _CORE_KEYS:
         raise _unknown("core", set(core) - _CORE_KEYS)
@@ -206,6 +223,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "coordination_mode": mode,
         "refuse_staged_paths": refuse_staged_paths,
         "knowledge_index": knowledge_index,
+        "workspace_watchers": watchers,
         "agent_provider": provider,
         "agent_model": model,
         "agent_commands": commands,

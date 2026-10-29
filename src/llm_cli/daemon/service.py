@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextvars
 import functools
 import hashlib
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -92,12 +94,13 @@ from llm_cli.providers.codex_provider import CodexProvider
 from llm_cli.providers.openai_provider import OpenAIProvider
 from llm_cli.providers.registry import ProviderRegistry
 from llm_cli.storage.backup import BackupError, backup_profile
+from llm_cli.storage.connection import immediate_transaction
 from llm_cli.storage.control import ControlStore
 from llm_cli.storage.migrations import (
     current_schema_version,
 )
 from llm_cli.storage.retention import prune_task_output
-from llm_cli.workspace.authority import OwnershipPin, PhysicalAuthority
+from llm_cli.workspace.authority import OwnershipPin, PhysicalAuthority, managed_pin
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
@@ -120,6 +123,7 @@ from llm_cli.workspace.identity import (
 from llm_cli.workspace.isolated import IsolatedWorkspaceManager
 from llm_cli.workspace.regime import CutoverManager
 from llm_cli.workspace.switching import WorkspaceModeSwitcher, rollback_hint
+from llm_cli.workspace.watchers import WatchRegistry
 
 # Section 15.1 requires these limits to be visible to operators rather than
 # living only in implementation notes.
@@ -135,6 +139,7 @@ _WORKSPACE_GUARANTEES: tuple[str, ...] = (
     "tests, broad formatters, generators, and migrations",
 )
 
+_LOG = logging.getLogger(__name__)
 _ATTACH_BATCH = 200
 _ANSWER_TIMEOUT_SECONDS = 600
 _MAX_ANSWER_CHARACTERS = 4_000
@@ -347,7 +352,21 @@ class DaemonService:
             driver_capabilities=self.drivers.capabilities,
         )
         self.startup_recovery: RecoveryReport | None = None
-        self._external_scanner = ExternalWorkspaceScanner(self.store)
+        # Native file watchers only narrow scans; "off" keeps periodic ones.
+        self.watchers = WatchRegistry(
+            settings.workspace_watchers,
+            cookie_dir=paths.runtime_dir / "watch-cookies",
+            on_loss=self._watch_lost,
+            on_change=self._watch_changed,
+        )
+        narrowing = self.watchers if self.watchers.enabled else None
+        self.shared_runner.watchers = narrowing
+        self._external_scanner = ExternalWorkspaceScanner(self.store, narrowing)
+        self.shared_runner.external_scanner = self._external_scanner
+        # Filled by watcher threads; drained by the reconcile loop.
+        self._watch_losses: collections.deque[tuple[Path, str]] = collections.deque()
+        self._watch_loop: asyncio.AbstractEventLoop | None = None
+        self._watch_wakeup: asyncio.Event | None = None
         self._next_external_scan_at = 0.0
         self._authority_lock = asyncio.Lock()
         self._pending_session_opens: set[str] = set()
@@ -509,6 +528,7 @@ class DaemonService:
             self._ownership_idle_task.cancel()
         self._execution_pool.shutdown(wait=False)
         self.managed_processes.stop_all()
+        self.watchers.close()
         self.physical_authority.close()
 
     def _start_ownership_idle_worker(self) -> None:
@@ -591,10 +611,26 @@ class DaemonService:
 
     async def reconcile_loop(self) -> None:
         interval = self.settings.reconciliation_interval_ms / 1_000
+        self._watch_loop = asyncio.get_running_loop()
+        self._watch_wakeup = wakeup = asyncio.Event()
+        deadline = time.monotonic() + interval
         while not self.shutdown.is_set():
-            try:
-                await asyncio.wait_for(self.shutdown.wait(), timeout=interval)
-            except TimeoutError:
+            stopping = asyncio.ensure_future(self.shutdown.wait())
+            woken = asyncio.ensure_future(wakeup.wait())
+            done, waiting = await asyncio.wait(
+                {stopping, woken},
+                timeout=max(0.0, deadline - time.monotonic()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in waiting:
+                task.cancel()
+            if stopping in done:
+                break
+            if woken in done:
+                # A watcher only schedules a scan; the scanner decides.
+                await self._watched_changes()
+            # Constant file churn must not starve periodic reconciliation.
+            if time.monotonic() >= deadline:
                 async with self._authority_lock:
                     await asyncio.to_thread(self.coordinator.reconcile_expired)
                     await asyncio.to_thread(self.workflow.reconcile)
@@ -612,10 +648,86 @@ class DaemonService:
                     await asyncio.to_thread(self._scan_external_changes)
                     self._next_external_scan_at = time.monotonic() + 2.0
                 self.physical_authority.release_idle()
+                if self.watchers.enabled:
+                    await asyncio.to_thread(self._retain_watchers)
+                deadline = time.monotonic() + interval
 
     def _scan_external_changes(self) -> None:
         with self.workspace_batches.lock:
             self._external_scanner.scan_active()
+
+    def _watch_lost(self, root: Path, reason: str) -> None:
+        # Called on a watcher thread: queue only, never take a daemon lock.
+        self._watch_losses.append((root, reason))
+        self._watch_changed(root)
+
+    def _watch_changed(self, root: Path) -> None:
+        loop, wakeup = self._watch_loop, self._watch_wakeup
+        if loop is not None and wakeup is not None:
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(wakeup.set)
+
+    async def _watched_changes(self) -> None:
+        """Announce lost watcher events, then run the spaced background scan."""
+        while self._watch_losses:
+            root, reason = self._watch_losses.popleft()
+            await asyncio.to_thread(self._announce_resync, root, reason)
+        delay = self._next_external_scan_at - time.monotonic()
+        if delay > 0:
+            # Keep scans spaced; changes meanwhile stay recorded for this scan.
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self.shutdown.wait(), timeout=delay)
+            if self.shutdown.is_set():
+                return
+        if self._watch_wakeup is not None:
+            self._watch_wakeup.clear()
+        await asyncio.to_thread(self._scan_external_changes)
+        self._next_external_scan_at = time.monotonic() + 2.0
+
+    def _announce_resync(self, root: Path, reason: str) -> None:
+        """Tell sessions on a checkout that its watcher lost file events.
+
+        Their next scans are full ones; the notice says earlier reads may be
+        stale and why.
+        """
+        authority = self.store.authority
+        try:
+            if authority is not None and not authority.is_owned(root):
+                return
+            with (
+                managed_pin(self.store, root, activity=False),
+                self.store.connection() as connection,
+                immediate_transaction(connection),
+            ):
+                checkouts = connection.execute(
+                    "SELECT DISTINCT c.checkout_id FROM checkouts c JOIN sessions s "
+                    "ON s.checkout_id=c.checkout_id WHERE c.canonical_path=? AND "
+                    "s.state IN ('active','disconnected')",
+                    (str(root),),
+                ).fetchall()
+                for row in checkouts:
+                    self.store.append_checkout_event(
+                        connection,
+                        checkout_id=str(row[0]),
+                        event_type="checkout.resync_required",
+                        caused_by_session_id=None,
+                        payload={
+                            "code": str(ErrorCode.CONTEXT_RESYNC_REQUIRED),
+                            "reason": reason[:200],
+                        },
+                        now=int(time.time() * 1_000),
+                    )
+        except (LlmCoordError, OSError, sqlite3.Error):
+            _LOG.warning("could not announce a file-watch resync for %s", root)
+
+    def _retain_watchers(self) -> None:
+        with self.store.connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT c.canonical_path FROM sessions s JOIN checkouts c "
+                "ON c.checkout_id=s.checkout_id "
+                "WHERE s.state IN ('active','disconnected')"
+            ).fetchall()
+        self.watchers.retain(Path(row[0]) for row in rows)
 
     async def handle(self, request: Request) -> Any:
         try:

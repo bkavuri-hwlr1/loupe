@@ -65,11 +65,14 @@ class SharedCoordinationContext:
         scopes: Sequence[str],
         *,
         scan_external: bool = True,
+        scanner: ExternalWorkspaceScanner | None = None,
     ) -> None:
         self.store = store
         self.session_id = session_id
         self.scopes = normalize_scopes(scopes)
         self.scan_external = scan_external
+        # The daemon's scanner keeps watcher cursors across model boundaries.
+        self.scanner = scanner
         self._last_sequence: int | None = None
         # Whether the last outside-edit scan failed, and an undelivered notice.
         self._scan_failing = False
@@ -82,7 +85,8 @@ class SharedCoordinationContext:
             raise _too_large("the saved coordination cursor is invalid")
         try:
             if self.scan_external:
-                ExternalWorkspaceScanner(self.store).scan_session(self.session_id)
+                scanner = self.scanner or ExternalWorkspaceScanner(self.store)
+                scanner.scan_session(self.session_id)
         except (LlmCoordError, OSError, ValueError) as exc:
             # Outside-edit notices are advisory and must never fail the model
             # turn. Say so once per failure run; exact-base checks still guard
@@ -182,6 +186,7 @@ class SharedCoordinationContext:
             changes: list[dict[str, object]] = []
             other_events = 0
             ownership_history_gap = False
+            context_resync = False
             unrelated_external = 0
             changes_bytes = 0
             case_insensitive = bool(binding["path_case_insensitive"])
@@ -194,6 +199,9 @@ class SharedCoordinationContext:
                 event_type = str(row["event_type"])
                 if event_type == "checkout.authority_handoff":
                     ownership_history_gap = True
+                    other_events += 1
+                elif event_type == "checkout.resync_required":
+                    context_resync = True
                     other_events += 1
                 elif event_type in _CHANGE_TYPES:
                     if row["payload_json"] is None:
@@ -282,6 +290,16 @@ class SharedCoordinationContext:
                 "other_events": other_events,
                 "guidance": _GUIDANCE,
             }
+            if context_resync:
+                packet["context_resync"] = {
+                    "code": str(ErrorCode.CONTEXT_RESYNC_REQUIRED),
+                    "guidance": (
+                        "File watching lost events for this checkout, so Loupe "
+                        "rescanned it in full. Intermediate outside edits may be "
+                        "missing from this history; re-read current files before "
+                        "relying on earlier reads."
+                    ),
+                }
             if ownership_history_gap:
                 packet["ownership_history_gap"] = (
                     "Checkout ownership changed; intermediate ownership history is "
