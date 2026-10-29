@@ -151,6 +151,76 @@ def test_closed_held_proposal_keeps_runtime_through_restart_until_discard(
     asyncio.run(scenario())
 
 
+def test_restart_settles_a_completed_unchanged_task_so_close_cleans_up(
+    tmp_path: Path, repository_factory: Any, service_factory: Any
+) -> None:
+    async def scenario() -> None:
+        primary = repository_factory(
+            tmp_path, {"a.py": "value = 1\n", ".gitignore": ".env\n"}
+        )
+        (primary / ".env").write_text("private settled runtime")
+        service = service_factory(tmp_path)
+        provider = ScriptedProvider(
+            "close-settled", [_tools(_call("read_file", path="a.py")), _finish()]
+        )
+        _register(service, provider)
+        service.initialize()
+        await service.handle(_request("repo.add", {"path": str(primary)}))
+        credentials = {"session_id": provider.model, "resume_secret": "close-secret"}
+        opened = await service.handle(
+            _request(
+                "session.open",
+                {
+                    "path": str(primary),
+                    "session_id": credentials["session_id"],
+                    "resume_token_hash": hashlib.sha256(
+                        credentials["resume_secret"].encode()
+                    ).hexdigest(),
+                    "provider": "scripted",
+                    "model": provider.model,
+                    "workspace": "isolated",
+                    "approved_runtime_files": [".env"],
+                },
+            )
+        )
+        private = Path(opened["workspace"]["canonical_path"])
+        await service.handle(
+            _request(
+                "session.ack", {**credentials, "sequence": opened["bootstrap_sequence"]}
+            )
+        )
+        try:
+            await asyncio.wait_for(
+                await _start(service, primary, credentials, "settled-task", ("*",)),
+                30,
+            )
+            assert service.workflow.get("settled-task")["status"] == "published"
+            # A daemon killed after settlement but before the disposition write
+            # leaves exactly this row behind.
+            with service.store.connection() as con:
+                con.execute(
+                    "UPDATE task_workflows SET status='running',expires_at=NULL "
+                    "WHERE task_id='settled-task'"
+                )
+        finally:
+            service.close()
+        restarted = service_factory(tmp_path)
+        _register(restarted, ScriptedProvider(provider.model, []))
+        try:
+            restarted.initialize()
+            workflow = restarted.workflow.get("settled-task")
+            assert workflow["status"] == "published"
+            assert workflow["publication_id"] is None
+            assert workflow["expires_at"] is not None
+            await restarted.handle(_request("session.close", credentials))
+            assert not private.exists()
+            assert (primary / ".env").read_text() == "private settled runtime"
+        finally:
+            restarted.close()
+
+    asyncio.run(scenario())
+
+
 def _closed_workspace(env: BatchEnvironment, tmp_path: Path) -> tuple[Any, Any, Path]:
     (env.repository / ".gitignore").write_text(".env\n")
     (env.repository / ".env").write_text("private close runtime")

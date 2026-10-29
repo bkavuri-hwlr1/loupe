@@ -106,6 +106,16 @@ the remaining planned capabilities are listed below.
   [the design note](file-watchers.md) and
   [measurements](experiments/file-watchers-c12-2026-10-28.md).
 
+- Outside catch-up of any size (0.1.0a3 fix): a safe point used to put every
+  outside change into one shared-limit batch, so more than 50 changed files, a
+  changed file over 256 KiB or a changed path kind failed that and every later
+  safe point. Catch-up now journals consecutive steps of at most 50 paths and
+  4 MiB, carries files up to the capture's 256 MiB limit, applies removals
+  first, and replaces a path whose kind changed. A private file where a
+  directory now belongs defers only that subtree. The safe-point notice lists
+  at most 20 paths per kind. Publication limits are unchanged. See
+  [isolated workspaces](isolated-workspaces.md#receive-and-publish-source).
+
 - Private runtime export (Wave 9 C15): `loupe workspace runtime export PATH
   --session ID --to DEST` previews bounded file/tree metadata and requires
   `--yes`, plus `--allow-secret` for sensitive names or recognized credential
@@ -1219,12 +1229,10 @@ C14 implements managed background processes in Wave 10, with stop-on-close and
 explicit switch refusal while processes remain. C12 adds native file watchers in
 Wave 11; hydration admission and outside-scan coverage limits remain.
 
-1. Let one safe point receive an outside change to more than 50 source files,
-   such as a branch switch, in several journaled batches. Today every later
-   safe point fails on the 50-file batch limit.
-2. Push the `v0.1.0a3` tag on D4's merge commit and confirm the tap upgrade on
-   both architectures.
-3. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
+1. Push the `v0.1.0a3` tag on `main` once the Waves 1–11 release notes and
+   the outside catch-up fix are merged, and confirm the tap upgrade on both
+   architectures.
+2. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
    on hold.
 
 The full phased design remains in

@@ -13,7 +13,7 @@ import hashlib
 import json
 import os
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -30,16 +30,19 @@ from llm_cli.errors import LlmCoordError
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.batches import (
+    MAX_BATCH_BYTES,
+    MAX_BATCH_FILES,
     BatchFile,
     BatchPublication,
     SharedBatchPublisher,
-    _identity_from_json,
     _identity_json,
-    _journal_files,
+    _JournalFile,
     _request,
     candidate_target,
     result_identity,
 )
+from llm_cli.workspace.batches import _identity_from_json as _stored_identity
+from llm_cli.workspace.batches import _journal_files as _stored_journal_files
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
     WorkspaceBrokerError,
@@ -66,6 +69,19 @@ Manifest = dict[str, dict[str, Any]]
 
 # Applied steps are diagnostic only; unresolved evidence has its own durable row.
 _APPLIED_JOURNAL_WINDOW = 8
+
+# The isolated capture's per-file limit. Outside edits are the user's own
+# source, so catch-up carries files a shared edit cannot, such as lockfiles.
+_SOURCE_FILE_BYTES = 256 * 1024 * 1024
+
+
+def _identity_from_json(value: object) -> FileIdentity:
+    return _stored_identity(value, max_size=_SOURCE_FILE_BYTES)
+
+
+def _journal_files(request_json: str) -> tuple[_JournalFile, ...]:
+    return _stored_journal_files(request_json, max_size=_SOURCE_FILE_BYTES)
+
 
 # A safe point validates its private worktree when it starts and again after
 # its unlocked source capture, not at every internal step.
@@ -103,8 +119,8 @@ def _entry(
 def _identity(entry: Mapping[str, Any] | None) -> FileIdentity:
     if entry is None:
         return ABSENT
-    # Initial source manifests can include large unchanged files. Batch limits
-    # apply to changed paths, not to merely retaining their accepted identity.
+    # Source manifests and outside catch-up carry files up to the capture's
+    # limit; shared batch limits apply only to edits sessions publish.
     identity = FileIdentity(
         ObjectKind(entry["kind"]),
         entry["mode"],
@@ -121,7 +137,7 @@ def _identity(entry: Mapping[str, Any] | None) -> FileIdentity:
     if (
         identity.mode not in modes.get(identity.kind, set())
         or type(identity.size) is not int
-        or not 0 <= identity.size <= 256 * 1024 * 1024
+        or not 0 <= identity.size <= _SOURCE_FILE_BYTES
         or len(identity.digest) != 64
         or any(c not in "0123456789abcdef" for c in identity.digest)
     ):
@@ -141,6 +157,89 @@ def _binary(body: bytes | None) -> bool:
     return b"\0" in body
 
 
+def _listed(paths: Sequence[str], limit: int = 20) -> str:
+    # A branch switch can deliver thousands of paths in one safe point.
+    shown = ", ".join(paths[:limit])
+    return shown + (f" and {len(paths) - limit} more" if len(paths) > limit else "")
+
+
+@dataclass(frozen=True, slots=True)
+class _CatchUp:
+    """One path's outside change, loaded as a BatchFile only when journaled."""
+
+    path: str
+    before: Mapping[str, Any] | None
+    after: Mapping[str, Any] | None
+    directory: bool = False
+
+    @property
+    def size(self) -> int:
+        return sum(
+            identity.size
+            for identity in (_identity(self.before), _identity(self.after))
+            if identity.kind in {ObjectKind.REGULAR, ObjectKind.SYMLINK}
+        )
+
+
+def _placeable(
+    root: Path,
+    steps: Sequence[_CatchUp],
+    *,
+    creating: bool,
+    held: Set[str] = frozenset(),
+) -> tuple[list[_CatchUp], set[str]]:
+    """Keep the steps recovery can replay; return the others as deferred paths.
+
+    A prepared journal must complete, or every later safe point fails. A
+    private file or link where a directory now belongs, a missing parent no
+    earlier step creates, or a held removal defers that path and its subtree.
+    """
+    kept: list[_CatchUp] = []
+    blocked: set[str] = set()
+    created: set[str] = set()
+    for step in steps:
+        parents = [parent.as_posix() for parent in Path(step.path).parents][:-1]
+        waiting = blocked | held
+        try:
+            candidate_target(root, step.path)
+        except WorkspaceBrokerError:
+            blocked.add(step.path)
+            continue
+        if (
+            step.path in waiting
+            or any(parent in waiting for parent in parents)
+            or (
+                creating
+                and not all(
+                    parent in created or (root / parent).is_dir() for parent in parents
+                )
+            )
+        ):
+            blocked.add(step.path)
+            continue
+        kept.append(step)
+        if step.directory:
+            created.add(step.path)
+    return kept, blocked
+
+
+def _chunks(steps: Sequence[_CatchUp]) -> list[list[_CatchUp]]:
+    """Split ordered steps into journals one stored batch can hold."""
+    chunks: list[list[_CatchUp]] = []
+    total = 0
+    for step in steps:
+        if (
+            not chunks
+            or len(chunks[-1]) == MAX_BATCH_FILES
+            or total + step.size > MAX_BATCH_BYTES
+        ):
+            chunks.append([])
+            total = 0
+        chunks[-1].append(step)
+        total += step.size
+    return chunks
+
+
 @dataclass(frozen=True)
 class SyncResult:
     applied: tuple[str, ...] = ()
@@ -153,15 +252,15 @@ class SyncResult:
     def note(self) -> str:
         notices = []
         if self.applied:
-            notices.append("Received shared changes: " + ", ".join(self.applied))
+            notices.append("Received shared changes: " + _listed(self.applied))
         if self.merged:
             notices.append(
-                "Merged shared changes with local edits: " + ", ".join(self.merged)
+                "Merged shared changes with local edits: " + _listed(self.merged)
             )
         if self.conflicted:
             notices.append(
                 "Shared changes conflict with preserved isolated files: "
-                + ", ".join(self.conflicted)
+                + _listed(self.conflicted)
                 + ". Read and resolve these paths before publication."
             )
         if self.deferred:
@@ -457,7 +556,8 @@ class IsolatedSynchronizer:
         baseline: Manifest = json.loads(state["manifest_json"])
         runtime_paths = json.loads(state["runtime_paths_json"])
         deferred = set(getattr(primary, "deferred", ()))
-        files = []
+        removals: list[_CatchUp] = []
+        creations: list[_CatchUp] = []
         screened: list[str] = []
         # An identical entry needs none of the checks below; skip it before
         # sorting, so an unchanged large checkout costs one comparison per path.
@@ -480,68 +580,162 @@ class IsolatedSynchronizer:
                 target = candidate_target(Path(state["source_path"]), path)
                 if target.is_dir() and not target.is_symlink():
                     continue
-            if _identity(before) == _identity(after):
+            base, result = _identity(before), _identity(after)
+            if base == result:
                 continue
-            theirs = self._body(after)
-            original = (
-                self._body(before)
-                if _identity(before).kind in {ObjectKind.REGULAR, ObjectKind.SYMLINK}
-                else None
-            )
-            files.append(
-                BatchFile(
-                    path,
-                    _identity(before),
-                    theirs,
-                    _identity(after).mode,
-                    original,
-                    _identity(after).permissions,
-                    bool((after or {}).get("binary") or (before or {}).get("binary"))
-                    or _binary(theirs),
-                )
-            )
+            if not base.absent and not result.absent and base.kind is not result.kind:
+                # A batch cannot change a path's kind in place: remove the old
+                # object, then create the new one after every removal.
+                removals.append(_CatchUp(path, before, None))
+                creations.append(_CatchUp(path, None, after))
+            elif result.absent:
+                removals.append(_CatchUp(path, before, None))
+            else:
+                creations.append(_CatchUp(path, before, after))
+        removed = {step.path for step in removals}
         # Source scans contain leaves; explicit parent operations make a newly
-        # added source subtree replayable in a different physical worktree.
-        added = {file.relative_path for file in files}
+        # added source subtree replayable in a different physical worktree. A
+        # parent that was a file gets its directory once the file is removed.
+        created = {step.path for step in creations}
         directories = []
-        for file in files:
-            if file.content is None:
-                continue
-            for parent in Path(file.relative_path).parents:
+        for step in creations:
+            for parent in Path(step.path).parents:
                 relative = parent.as_posix()
-                if relative == "." or relative in baseline or relative in added:
+                if relative == "." or relative in created:
                     continue
-                directories.append(BatchFile(relative, ABSENT, b"", DIRECTORY_MODE))
-                added.add(relative)
-        files = [*directories, *files]
+                if relative in baseline and relative not in removed:
+                    continue
+                directories.append(_CatchUp(relative, None, None, directory=True))
+                created.add(relative)
         # Bodies already live in the capture cache's immutable artifact store.
-        for file in directories:
-            store_candidate_content(self.publisher.candidate_dir, file.content or b"")
+        if directories:
+            store_candidate_content(self.publisher.candidate_dir, b"")
         # Retire opaque leaves before their ordinary directory operations, so
         # an unchanged private fixture does not create a false container conflict.
         opaque = self._prepare_screened(workspace_id, primary, screened)
         self.recover(workspace_id)
         waiting = deferred | set(opaque.deferred)
-        files = [
-            file
-            for file in files
+        removals = [
+            step
+            for step in removals
             if not (
-                file.content is None
-                and file.base.kind is ObjectKind.DIRECTORY_MARKER
-                and any(path.startswith(file.relative_path + "/") for path in waiting)
+                _identity(step.before).kind is ObjectKind.DIRECTORY_MARKER
+                and any(path.startswith(step.path + "/") for path in waiting)
             )
         ]
-        report = SyncResult(sequence=int(state["source_sequence"]))
-        if files:
-            request = _request("isolated-source-refresh", files, ("*",), False)
-            report = self._prepare(workspace_id, int(state["source_sequence"]), request)
-            self.recover(workspace_id)
+        # A branch switch can change more paths than one stored batch holds.
+        # Removals go first, deepest first, so a directory empties before it
+        # goes and a file can give way to a directory of the same name.
+        sequence = int(state["source_sequence"])
+        root = Path(state["canonical_path"])
+        removals, blocked = _placeable(
+            root,
+            sorted(removals, key=lambda step: (-len(Path(step.path).parts), step.path)),
+            creating=False,
+        )
+        report, pending = self._journal(workspace_id, sequence, removals)
+        if pending:
+            pending = (*pending, *(step.path for step in creations))
+        else:
+            # A path whose removal waits cannot take its new kind or become a
+            # directory yet.
+            creations, waiting_creations = _placeable(
+                root,
+                sorted(
+                    [*directories, *creations],
+                    key=lambda step: (
+                        not step.directory,
+                        len(Path(step.path).parts),
+                        step.path,
+                    ),
+                ),
+                creating=True,
+                held=removed - {step.path for step in removals},
+            )
+            blocked |= waiting_creations
+            added, pending = self._journal(workspace_id, sequence, creations)
+            report = SyncResult(
+                (*report.applied, *added.applied),
+                (*report.merged, *added.merged),
+                (*report.conflicted, *added.conflicted),
+                sequence,
+            )
+        conflicted = tuple(dict.fromkeys((*report.conflicted, *opaque.conflicted)))
         return SyncResult(
-            (*report.applied, *opaque.applied),
-            report.merged,
-            (*report.conflicted, *opaque.conflicted),
-            report.sequence,
-            tuple(sorted(deferred | set(opaque.deferred))),
+            tuple(
+                path
+                for path in dict.fromkeys((*report.applied, *opaque.applied))
+                if path not in conflicted
+            ),
+            tuple(dict.fromkeys(report.merged)),
+            conflicted,
+            sequence,
+            tuple(sorted(deferred | set(opaque.deferred) | blocked | set(pending))),
+        )
+
+    def _journal(
+        self, workspace_id: str, sequence: int, steps: Sequence[_CatchUp]
+    ) -> tuple[SyncResult, tuple[str, ...]]:
+        """Apply ordered catch-up steps as consecutive stored-batch journals.
+
+        Each journal is recovered before the next is prepared, so it starts
+        from the accepted manifest the previous one confirmed. Returns the
+        paths left for a later safe point if a managed writer defers recovery.
+        """
+        applied: list[str] = []
+        merged: list[str] = []
+        conflicted: list[str] = []
+        later: tuple[str, ...] = ()
+        chunks = _chunks(steps)
+        for index, chunk in enumerate(chunks):
+            request = _request(
+                "isolated-source-refresh",
+                [self._batch_file(step) for step in chunk],
+                ("*",),
+                False,
+                max_file_bytes=_SOURCE_FILE_BYTES,
+                # Chunks keep several files within MAX_BATCH_BYTES; a larger
+                # file and its original travel alone.
+                max_total_bytes=2 * _SOURCE_FILE_BYTES,
+            )
+            report = self._prepare(workspace_id, sequence, request)
+            self.recover(workspace_id)
+            applied.extend(report.applied)
+            merged.extend(report.merged)
+            conflicted.extend(report.conflicted)
+            with self.store.connection() as con:
+                waiting = con.execute(
+                    "SELECT 1 FROM isolated_sync_journal "
+                    "WHERE workspace_id=? AND state='prepared' LIMIT 1",
+                    (workspace_id,),
+                ).fetchone()
+            if waiting is not None:
+                later = tuple(
+                    step.path for rest in chunks[index + 1 :] for step in rest
+                )
+                break
+        result = SyncResult(tuple(applied), tuple(merged), tuple(conflicted), sequence)
+        return result, later
+
+    def _batch_file(self, step: _CatchUp) -> BatchFile:
+        if step.directory:
+            return BatchFile(step.path, ABSENT, b"", DIRECTORY_MODE)
+        base, result = _identity(step.before), _identity(step.after)
+        theirs = self._body(step.after)
+        original = (
+            self._body(step.before)
+            if base.kind in {ObjectKind.REGULAR, ObjectKind.SYMLINK}
+            else None
+        )
+        return BatchFile(
+            step.path,
+            base,
+            theirs,
+            result.mode,
+            original,
+            result.permissions,
+            bool((step.after or {}).get("binary") or (step.before or {}).get("binary"))
+            or _binary(theirs),
         )
 
     @staticmethod
@@ -751,12 +945,14 @@ class IsolatedSynchronizer:
             theirs = self._body(result)
             current, ours = read_candidate_path(
                 candidate_target(root, path),
-                max_bytes=MAX_SHARED_TEXT_BYTES,
+                max_bytes=_SOURCE_FILE_BYTES,
             )
             if ours is not None:
                 ensure_safe_content(ours)
             local_hash = (
-                store_candidate_content(self.publisher.candidate_dir, ours)
+                store_candidate_content(
+                    self.publisher.candidate_dir, ours, max_bytes=_SOURCE_FILE_BYTES
+                )
                 if ours is not None
                 else None
             )
@@ -815,7 +1011,9 @@ class IsolatedSynchronizer:
                             BatchFile(path, current, merge.content, mode)
                         )
                         content_hash = store_candidate_content(
-                            self.publisher.candidate_dir, merge.content
+                            self.publisher.candidate_dir,
+                            merge.content,
+                            max_bytes=_SOURCE_FILE_BYTES,
                         )
                         disposition = "merged"
                         merged.append(path)
@@ -897,7 +1095,7 @@ class IsolatedSynchronizer:
                         )
                     current, _ = read_candidate_path(
                         candidate_target(root, path),
-                        max_bytes=MAX_SHARED_TEXT_BYTES,
+                        max_bytes=_SOURCE_FILE_BYTES,
                     )
                     if current not in (
                         _identity_from_json(step["before"]),
@@ -932,7 +1130,7 @@ class IsolatedSynchronizer:
                     )
                     current, _ = read_candidate_path(
                         target,
-                        max_bytes=MAX_SHARED_TEXT_BYTES,
+                        max_bytes=_SOURCE_FILE_BYTES,
                     )
                     if current == after:
                         continue
@@ -1010,11 +1208,7 @@ class IsolatedSynchronizer:
                     for step in steps:
                         current, _ = read_candidate_path(
                             candidate_target(root, step["path"]),
-                            max_bytes=(
-                                256 * 1024 * 1024
-                                if step.get("screened")
-                                else MAX_SHARED_TEXT_BYTES
-                            ),
+                            max_bytes=_SOURCE_FILE_BYTES,
                         )
                         if current != _identity_from_json(step["after"]):
                             raise WorkspaceBrokerError(
