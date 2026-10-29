@@ -96,11 +96,6 @@ same scanner code as before watchers.
 - Isolated hydration admission refuses checkouts its 20,000-entry inventory
   budget cannot cover, and isolated capture refuses more than 20,000 source
   paths, so a 100,000-file checkout cannot open an isolated session.
-- A safe point receives outside primary-checkout changes as one batch, which the
-  shared limit caps at 50 files. An outside change to more than 50 source files,
-  such as a branch switch, makes every later safe point fail with "batch must
-  contain 1 to 50 files", with or without watchers. This predates C12 and is a
-  separate fix.
 - Global Git config is followed through its main files; settings reached only
   through `include` directives are caught by the five-minute verification.
 - inotify needs a watch per directory. A checkout with more than 50,000

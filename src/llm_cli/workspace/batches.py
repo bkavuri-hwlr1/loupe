@@ -96,7 +96,9 @@ def _identity_json(identity: FileIdentity) -> dict[str, object]:
     return value
 
 
-def _validate_base(base: FileIdentity) -> None:
+def _validate_base(
+    base: FileIdentity, *, max_size: int = MAX_SHARED_TEXT_BYTES
+) -> None:
     if not isinstance(base, FileIdentity):
         raise WorkspaceBrokerError("batch base must be a FileIdentity")
     if base.permissions is not None and (
@@ -125,12 +127,14 @@ def _validate_base(base: FileIdentity) -> None:
         or any(char not in "0123456789abcdef" for char in base.digest)
         or type(base.size) is not int
         or base.size < 0
-        or base.size > MAX_SHARED_TEXT_BYTES
+        or base.size > max_size
     ):
         raise WorkspaceBrokerError("batch supports bounded regular or absent bases")
 
 
-def _identity_from_json(value: object) -> FileIdentity:
+def _identity_from_json(
+    value: object, *, max_size: int = MAX_SHARED_TEXT_BYTES
+) -> FileIdentity:
     if not isinstance(value, dict) or set(value) not in (
         {"kind", "mode", "digest", "size"},
         {"kind", "mode", "digest", "size", "permissions"},
@@ -150,7 +154,7 @@ def _identity_from_json(value: object) -> FileIdentity:
         value["size"],
         value.get("permissions"),
     )
-    _validate_base(identity)
+    _validate_base(identity, max_size=max_size)
     return identity
 
 
@@ -250,6 +254,9 @@ def _request(
     files: Sequence[BatchFile],
     scopes: tuple[str, ...],
     case_insensitive_filesystem: bool,
+    *,
+    max_file_bytes: int = MAX_SHARED_TEXT_BYTES,
+    max_total_bytes: int = MAX_BATCH_BYTES,
 ) -> str:
     if not files or len(files) > MAX_BATCH_FILES:
         raise WorkspaceBrokerError(f"batch must contain 1 to {MAX_BATCH_FILES} files")
@@ -268,7 +275,7 @@ def _request(
         if path in paths:
             raise WorkspaceBrokerError("batch paths must be unique")
         paths.append(path)
-        _validate_base(item.base)
+        _validate_base(item.base, max_size=max_file_bytes)
         if item.mode not in {
             REGULAR_MODE,
             EXECUTABLE_MODE,
@@ -303,7 +310,7 @@ def _request(
             raise WorkspaceBrokerError(
                 "only creation of absent directories is supported"
             )
-        if len(body) > MAX_SHARED_TEXT_BYTES:
+        if len(body) > max_file_bytes:
             raise WorkspaceBrokerError("batch file exceeds the shared text byte limit")
         if not item.binary and item.mode != SYMLINK_MODE:
             try:
@@ -315,10 +322,10 @@ def _request(
         if type(item.binary) is not bool:
             raise WorkspaceBrokerError("batch binary flag is invalid")
         total += len(body) + len(item.original or b"")
-        if total > MAX_BATCH_BYTES:
+        if total > max_total_bytes:
             raise WorkspaceBrokerError("batch exceeds the 4 MiB aggregate byte limit")
         result = result_identity(item)
-        _validate_base(result)
+        _validate_base(result, max_size=max_file_bytes)
         if (
             not item.base.absent
             and not result.absent
@@ -355,7 +362,9 @@ def _request(
     )
 
 
-def _journal_files(request_json: str) -> tuple[_JournalFile, ...]:
+def _journal_files(
+    request_json: str, *, max_size: int = MAX_SHARED_TEXT_BYTES
+) -> tuple[_JournalFile, ...]:
     value = json.loads(request_json)
     if not isinstance(value, dict) or not isinstance(value.get("files"), list):
         raise WorkspaceBrokerError("stored batch request is invalid")
@@ -383,13 +392,13 @@ def _journal_files(request_json: str) -> tuple[_JournalFile, ...]:
             raise WorkspaceBrokerError("stored batch path or content hash is invalid")
         if type(entry.get("binary", False)) is not bool:
             raise WorkspaceBrokerError("stored batch binary flag is invalid")
-        result = _identity_from_json(entry.get("result"))
+        result = _identity_from_json(entry.get("result"), max_size=max_size)
         if (digest is None) != result.absent:
             raise WorkspaceBrokerError("stored batch result body is inconsistent")
         files.append(
             _JournalFile(
                 path,
-                _identity_from_json(entry.get("base")),
+                _identity_from_json(entry.get("base"), max_size=max_size),
                 result,
                 digest,
                 entry.get("binary", False),

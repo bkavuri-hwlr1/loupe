@@ -348,6 +348,14 @@ rereads only the paths they report and keeps every other identity from its
 previous complete scan; anything a watcher cannot vouch for gives a full scan.
 See [native file watchers](file-watchers.md).
 
+Outside changes of any size reach the private worktree, including a branch
+switch or a large lockfile update. A safe point applies them as consecutive
+journaled steps of at most 50 paths and 4 MiB each; one larger file, up to the
+capture's 256 MiB per-file limit, travels alone. Removals apply first, so a
+file can become a directory of the same name. If a private file or link sits
+where a directory now belongs, that subtree is deferred with a path-only notice
+until the private path is resolved; the rest of the change still arrives.
+
 Screened source fixtures, such as tests containing fake credentials, synchronize
 privately when their local copy is unchanged. Their bodies stay out of ordinary
 source artifacts, proposals, and model file tools. A prepared journal stores only
@@ -365,8 +373,10 @@ Unchanged private paths receive the incoming version, including operator edits
 already incorporated into another session's batch since this session's accepted
 snapshot. Clean three-way text merges preserve private edits alongside incoming
 changes when they share the accepted base. Binary and symlink changes retain
-exact identities and do not merge. A non-absent change between file, symlink,
-and directory kinds remains a conflict requiring explicit resolution.
+exact identities and do not merge. An outside edit that changes a path between
+file, symlink, and directory kinds replaces an unchanged private path. A shared
+batch with such a change, or one that meets a changed private path, remains a
+conflict requiring explicit resolution.
 
 An overlap preserves the private file and retains the incoming source artifact.
 Unrelated paths can still advance. The conflict survives restart and later
@@ -388,7 +398,8 @@ exact-base undo also remains available after its closed private workspace has
 been retired; it uses retained publication data against the shared checkout.
 
 Publication retains the shared limits: 50 paths, 256 KiB per regular file, and
-4 MiB of retained original and candidate bytes. Runtime paths never enter source
+4 MiB of retained original and candidate bytes. They limit what a session
+publishes, not the outside source it receives. Runtime paths never enter source
 proposals, including after ignore-rule changes or alternate path spellings.
 The manual single-file publication RPC remains shared-only; isolated tasks use
 batch publication.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -13,7 +14,12 @@ import pytest
 
 from llm_cli.storage.control import ControlStore
 from llm_cli.workspace import isolated_sync
-from llm_cli.workspace.batches import BatchFile, SharedBatchPublisher
+from llm_cli.workspace.batches import (
+    MAX_BATCH_BYTES,
+    MAX_BATCH_FILES,
+    BatchFile,
+    SharedBatchPublisher,
+)
 from llm_cli.workspace.broker import (
     WorkspaceBrokerError,
     read_candidate_path,
@@ -1105,3 +1111,216 @@ def test_receipt_only_locked_safe_point_does_not_refresh_runtime(
     assert refreshed == []
     env.sync.synchronize(env.workspace_id, refresh_runtime=True)
     assert refreshed == [env.workspace_id]
+
+
+def _prepared_journals(env: Environment) -> int:
+    with env.store.connection() as con:
+        return int(
+            con.execute(
+                "SELECT count(*) FROM isolated_sync_journal WHERE state='prepared'"
+            ).fetchone()[0]
+        )
+
+
+def test_branch_switch_beyond_one_batch_arrives_and_switches_back(
+    env: Environment, git_run: Callable[..., str]
+) -> None:
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    added = [
+        f"pkg/part{number % 3}/module{number:03}.py"
+        for number in range(3 * MAX_BATCH_FILES)
+    ]
+    git_run(env.primary, "checkout", "-b", "wide")
+    for path in added:
+        (env.primary / path).parent.mkdir(parents=True, exist_ok=True)
+        (env.primary / path).write_text(f"name = {path!r}\n")
+    (env.primary / "a.txt").write_text("wide branch\n")
+    git_run(env.primary, "add", "-A")
+    git_run(env.primary, "commit", "-m", "wide")
+
+    report = env.sync.synchronize(env.workspace_id)
+
+    assert {*added, "a.txt"} <= set(report.applied)
+    for path in added:
+        assert (env.local / path).read_text() == f"name = {path!r}\n"
+    assert (env.local / "a.txt").read_text() == "wide branch\n"
+    # The notice names a bounded sample, not every received path.
+    assert f"and {len(report.applied) - 20} more" in report.note()
+
+    git_run(env.primary, "checkout", "main")
+    report = env.sync.synchronize(env.workspace_id)
+
+    assert set(added) <= set(report.applied)
+    assert not (env.local / "pkg").exists()
+    assert (env.local / "a.txt").read_text() == "first\nmiddle\nlast\n"
+    (env.primary / "b.txt").write_text("later edit\n")
+    assert env.sync.synchronize(env.workspace_id).applied == ("b.txt",)
+    assert _prepared_journals(env) == 0
+
+
+def test_large_outside_source_files_reach_the_private_worktree(
+    env: Environment,
+) -> None:
+    from llm_cli.workspace.broker import MAX_SHARED_TEXT_BYTES
+
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    lock = "".join(f"package-{number} = {number}\n" for number in range(40_000))
+    locks = [f"locks/{number}.lock" for number in range(8)]
+    assert len(lock) > MAX_SHARED_TEXT_BYTES
+    assert len(lock) * len(locks) > MAX_BATCH_BYTES
+    (env.primary / "locks").mkdir()
+    for path in locks:
+        (env.primary / path).write_text(lock)
+
+    report = env.sync.synchronize(env.workspace_id)
+
+    assert set(locks) <= set(report.applied)
+    assert all((env.local / path).read_text() == lock for path in locks)
+
+    grown = lock + "package-new = 1\n"
+    (env.primary / locks[0]).write_text(grown)
+    (env.primary / locks[1]).write_text("small now\n")
+    (env.primary / locks[2]).unlink()
+    report = env.sync.synchronize(env.workspace_id)
+    assert set(report.applied) == set(locks[:3])
+    assert (env.local / locks[0]).read_text() == grown
+    assert (env.local / locks[1]).read_text() == "small now\n"
+    assert not (env.local / locks[2]).exists()
+
+    # A private edit still merges with an outside edit to the same large file.
+    rest = lock.split("\n", 1)[1]
+    (env.local / locks[3]).write_text("private header\n" + rest)
+    (env.primary / locks[3]).write_text(lock + "package-outside = 2\n")
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.merged == (locks[3],)
+    assert (env.local / locks[3]).read_text() == (
+        "private header\n" + rest + "package-outside = 2\n"
+    )
+
+
+def test_outside_kind_changes_replace_private_paths(env: Environment) -> None:
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    (env.primary / "a.txt").unlink()
+    (env.primary / "a.txt").symlink_to("b.txt")
+
+    assert env.sync.synchronize(env.workspace_id).applied == ("a.txt",)
+    assert os.readlink(env.local / "a.txt") == "b.txt"
+
+    (env.primary / "a.txt").unlink()
+    (env.primary / "a.txt").write_text("a file again\n")
+    assert env.sync.synchronize(env.workspace_id).applied == ("a.txt",)
+    assert not (env.local / "a.txt").is_symlink()
+    assert (env.local / "a.txt").read_text() == "a file again\n"
+
+
+def test_file_and_directory_of_the_same_name_replace_each_other(
+    env: Environment,
+) -> None:
+    _real_capture(env)
+    (env.primary / "tool").write_text("#!/bin/sh\n")
+    env.sync.synchronize(env.workspace_id)
+    assert (env.local / "tool").read_text() == "#!/bin/sh\n"
+
+    (env.primary / "tool").unlink()
+    (env.primary / "tool").mkdir()
+    (env.primary / "tool" / "main.py").write_text("print('tool')\n")
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.conflicted == report.deferred == ()
+    assert (env.local / "tool" / "main.py").read_text() == "print('tool')\n"
+
+    (env.primary / "tool" / "main.py").unlink()
+    (env.primary / "tool").rmdir()
+    (env.primary / "tool").write_text("#!/bin/sh\n")
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.conflicted == report.deferred == ()
+    assert (env.local / "tool").read_text() == "#!/bin/sh\n"
+
+
+def test_private_file_where_a_directory_arrives_defers_only_that_subtree(
+    env: Environment,
+) -> None:
+    _real_capture(env)
+    (env.primary / "tool").write_text("#!/bin/sh\n")
+    env.sync.synchronize(env.workspace_id)
+    (env.local / "tool").write_text("#!/bin/sh\necho private\n")
+    (env.primary / "tool").unlink()
+    (env.primary / "tool").mkdir()
+    (env.primary / "tool" / "main.py").write_text("print('tool')\n")
+    (env.primary / "b.txt").write_text("unrelated\n")
+
+    report = env.sync.synchronize(env.workspace_id)
+
+    assert report.conflicted == ("tool",)
+    assert report.deferred == ("tool/main.py",)
+    assert (env.local / "tool").read_text() == "#!/bin/sh\necho private\n"
+    assert (env.local / "b.txt").read_text() == "unrelated\n"
+    # The blocked path waits without failing later safe points.
+    (env.primary / "a.txt").write_text("later\n")
+    report = env.sync.synchronize(env.workspace_id)
+    assert report.applied == ("a.txt",)
+    assert report.deferred == ("tool/main.py",)
+    assert _prepared_journals(env) == 0
+
+
+def test_catch_up_stops_while_a_managed_writer_postpones_recovery(
+    env: Environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    paths = [f"many/{number:03}.txt" for number in range(2 * MAX_BATCH_FILES)]
+    (env.primary / "many").mkdir()
+    for path in paths:
+        (env.primary / path).write_text(path + "\n")
+    prepare = env.sync._prepare
+
+    def writer_starts(*args: object) -> isolated_sync.SyncResult:
+        result = prepare(*args)  # type: ignore[arg-type]
+        env.sync.process_writer_notice = lambda workspace: "a writer is running"
+        return result
+
+    monkeypatch.setattr(env.sync, "_prepare", writer_starts)
+    report = env.sync.synchronize(env.workspace_id)
+
+    # The first journal waits for the writer; later ones are not prepared.
+    assert _prepared_journals(env) == 1
+    assert report.deferred == tuple(paths[MAX_BATCH_FILES - 1 :])
+    assert not (env.local / "many").exists()
+
+    monkeypatch.setattr(env.sync, "_prepare", prepare)
+    env.sync.process_writer_notice = None
+    env.sync.synchronize(env.workspace_id)
+    assert _prepared_journals(env) == 0
+    assert all((env.local / path).read_text() == path + "\n" for path in paths)
+
+
+def test_catch_up_journals_respect_stored_batch_limits() -> None:
+    def regular(size: int) -> dict[str, object]:
+        return {
+            "kind": "regular",
+            "mode": REGULAR_MODE,
+            "digest": "0" * 64,
+            "size": size,
+        }
+
+    small = [
+        isolated_sync._CatchUp(f"file{number}", None, regular(1))
+        for number in range(2 * MAX_BATCH_FILES + 1)
+    ]
+    assert [len(chunk) for chunk in isolated_sync._chunks(small)] == [
+        MAX_BATCH_FILES,
+        MAX_BATCH_FILES,
+        1,
+    ]
+    half = MAX_BATCH_BYTES // 2 + 1
+    large = [
+        isolated_sync._CatchUp("a", None, regular(half)),
+        isolated_sync._CatchUp("b", regular(half), regular(1)),
+        isolated_sync._CatchUp("c", regular(3 * MAX_BATCH_BYTES), None),
+        isolated_sync._CatchUp("d", None, regular(1)),
+    ]
+    assert [
+        [step.path for step in chunk] for chunk in isolated_sync._chunks(large)
+    ] == [["a"], ["b"], ["c"], ["d"]]

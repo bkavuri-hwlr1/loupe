@@ -45,12 +45,14 @@ def candidate_content_path(candidate_dir: Path, content_hash: str) -> Path:
     return candidate_dir / content_hash
 
 
-def store_candidate_content(candidate_dir: Path, content: bytes) -> str:
+def store_candidate_content(
+    candidate_dir: Path, content: bytes, *, max_bytes: int = MAX_SHARED_TEXT_BYTES
+) -> str:
     """Durably retain candidate bytes before exposing their candidate record."""
 
-    if len(content) > MAX_SHARED_TEXT_BYTES:
+    if len(content) > max_bytes:
         raise WorkspaceBrokerError(
-            f"shared file content exceeds the {MAX_SHARED_TEXT_BYTES}-byte limit"
+            f"shared file content exceeds the {max_bytes}-byte limit"
         )
     candidate_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     _require_private_directory(candidate_dir)
@@ -289,7 +291,10 @@ def atomic_replace_regular_file(
             workspace_target(checkout_root, relative_path)
             if (
                 expected_base is not None
-                and read_candidate_path(target)[0] != expected_base
+                and read_candidate_path(
+                    target, max_bytes=_base_read_limit(expected_base)
+                )[0]
+                != expected_base
             ):
                 raise WorkspaceBrokerError("file base changed during staging")
             try:
@@ -357,12 +362,18 @@ def atomic_replace_regular_file(
             os.close(parent_fd)
 
 
+def _base_read_limit(expected: FileIdentity) -> int:
+    # Isolated catch-up replaces source files larger than a shared edit may be.
+    return max(MAX_SHARED_TEXT_BYTES, expected.size)
+
+
 def atomic_delete_file(root: Path, relative_path: str, expected: FileIdentity) -> None:
     """Delete the observed leaf through pinned real parents, never its referent."""
     target = workspace_target(root, relative_path)
     parent_fd = _open_publication_parent(root, relative_path)
     try:
-        if read_candidate_path(target)[0] != expected:
+        current, _ = read_candidate_path(target, max_bytes=_base_read_limit(expected))
+        if current != expected:
             raise WorkspaceBrokerError("file base changed before deletion")
         workspace_target(root, relative_path)
         current_parent = target.parent.stat()

@@ -74,9 +74,9 @@ verification links below. **Wave 10:** C14 is implemented. **Wave 11:** C12 is
 implemented; native watchers bring the 20,000-file safe point to 144 ms, under
 E3's threshold.
 
-D4 releases what is already on `main` (Waves 1–7), so users get that work
-before Waves 8–11 change it further. Publishing still needs you to push the
-tag. The work in [Later](#later) stays out of these waves.
+D4 prepared 0.1.0a3 from Waves 1–7. The tag waited until Waves 8–11 and the
+outside catch-up fix merged, so 0.1.0a3 ships Waves 1–11. The work in
+[Later](#later) stays out of these waves.
 
 ### What E3 changed for Waves 9–11 (October 22, 2026)
 
@@ -912,9 +912,9 @@ cannot vouch for gives a full scan, and lost events add a
 `CONTEXT_RESYNC_REQUIRED` notice. Publication does not pause during a resync:
 it already checks exact bases on disk, so a missed wake-up delays a notice but
 cannot overwrite an outside edit. See [the design note](file-watchers.md) and
-[measurements](experiments/file-watchers-c12-2026-10-28.md). A safe point still
-fails on an outside change to more than 50 source files; that predates C12 and
-is a separate fix.
+[measurements](experiments/file-watchers-c12-2026-10-28.md). The outside
+catch-up failure that predated C12 (more than 50 changed files, a changed file
+over 256 KiB, or a changed path kind) was fixed before the 0.1.0a3 tag.
 
 *Gate met.* The threshold was an isolated safe-point scan or periodic
 outside-edit scan above 250 ms on the 20,000-file fixture. E3 measured a
