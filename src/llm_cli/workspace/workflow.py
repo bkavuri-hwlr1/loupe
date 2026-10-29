@@ -112,6 +112,19 @@ class TaskWorkflow:
                     AND status IN ('running','awaiting_review')""",
                 (self.store._now(None) + self.coordinator.terminal_retention_ms,),
             )
+            # Unchanged completions publish no batch. Settlement commits before
+            # the disposition, so an interrupted daemon can leave it running,
+            # which would retain a closed workspace forever.
+            con.execute(
+                """UPDATE task_workflows SET status='published',
+                expires_at=COALESCE(expires_at, ?)
+                WHERE status='running' AND execution_id IN (
+                    SELECT e.execution_id FROM all_task_executions e
+                    JOIN tasks t ON t.task_id=e.task_id
+                        AND t.attempt=e.task_attempt
+                    WHERE e.state='published' AND t.state='completed')""",
+                (self.store._now(None) + self.coordinator.terminal_retention_ms,),
+            )
             rows = con.execute(
                 "SELECT * FROM task_workflows WHERE action_task_id IS NO"
                 "T NULL OR undo_task_id IS NOT NULL"
