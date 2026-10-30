@@ -1233,6 +1233,13 @@ Wave 11; hydration admission and outside-scan coverage limits remain.
 tag is on `4b96151`, and the tap's workflow upgraded from 0.1.0a2 and passed
 its smoke tests on Apple Silicon and Intel.
 
+E2's explicit synthetic API-check harness is prepared in Wave 12. Availability
+checks construct no clients; live mode requires both API sign-ins, explicit
+models and a positive admission allowance. Its metadata-only report separates
+planned, admitted and reported tokens and preserves known usage across later
+failures. Live cache and oversized-prompt evidence remains pending credentials;
+no E2 live requests have run. See the [harness plan](cli-harness-response-plan.md#e2-live-provider-checks-wave-12).
+
 Wave 12 takes up everything still open: catch-up follow-ups (C17), larger
 isolated admission (C18) and outside-scan coverage (C19), an installer cache
 (C20), `loupe session switch` (C21), patch and bundle exports (C22), review on

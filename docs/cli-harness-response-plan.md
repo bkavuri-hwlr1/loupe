@@ -841,6 +841,52 @@ reads; repository instructions appear in the system prompt only when the source
 policy allows them. Remaining gaps: a live Anthropic cache check and a live
 oversized-prompt rejection on each provider.
 
+### E2 live provider checks (Wave 12)
+
+The explicit synthetic check harness is ready in
+`scripts/provider_live_checks.py`. Its default invocation reports credential
+availability only and constructs no API clients:
+
+```sh
+uv run python scripts/provider_live_checks.py --profile explore-eval
+```
+
+After both API providers are signed in through `/login`, an explicitly enabled
+run makes two identical fresh Anthropic requests for a stable generated prefix,
+then one oversized synthetic request per provider. The report requires a
+positive second-request cache-read count, a real HTTP rejection classified as
+`provider_error: context_overflow`, and unchanged failed-request history. No
+repository text, response bodies, provider explanations or credentials enter
+the report. Usage received before a later request or cleanup failure is kept;
+unreported rejected-request usage remains unknown. SDK retries are disabled.
+
+The following candidate model names were checked against primary documentation
+on October 30, 2026: [Claude Haiku 5.5](https://platform.claude.com/docs/en/models/haiku-5-5/overview)
+has a 512-token minimum cacheable prefix; [GPT-5 nano](https://developers.openai.com/api/docs/models/gpt-5-nano)
+has a 400,000-token context window and supports Responses. GPT-5 nano is
+deprecated and [scheduled to shut down on December 11, 2026](https://developers.openai.com/api/docs/deprecations),
+so check availability again before using this example later:
+
+```sh
+uv run python scripts/provider_live_checks.py --profile explore-eval --live \
+  --anthropic-model claude-haiku-5-5 --openai-model gpt-5-nano \
+  --budget-tokens 100000000 --out provider-checks.json
+```
+
+`--budget-tokens` is a positive pre-request admission allowance. The report
+records its conservative synthetic-input/output-reservation estimate, the
+allowance, actual adapter-send attempts and reported token usage separately.
+The 100M example leaves ample admission room for the four planned requests.
+It adds no token-spend stopping loop. Reports are owner-private, publish only
+when complete and never replace earlier evidence. An unexpectedly accepted
+oversized prompt fails the check and records its reported usage; the harness
+does not automatically enlarge and resend it.
+
+**Live status remains pending.** Both API providers were unavailable in the
+non-default `explore-eval` profile when last checked, and no E2 live request has
+run. Scripted transport checks do not satisfy the remaining live cache and
+overflow exit criteria above.
+
 ## Delivery order and boundaries
 
 Phases 1 and 2 define the shared contract. Phase 3 can proceed against that

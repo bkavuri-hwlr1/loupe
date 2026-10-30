@@ -1581,6 +1581,16 @@ only if a check finds a bug, `docs/cli-harness-response-plan.md`.
 - A repeated Anthropic request reports prompt-cache reads.
 - The results are recorded in the harness plan.
 
+**Harness prepared (Wave 12); live checks pending credentials.**
+`scripts/provider_live_checks.py` defaults to availability-only status and
+requires explicit live mode, two model names, a positive admission allowance
+and a non-default profile before constructing API clients. It uses generated
+text through the production adapters, records cache counters and canonical
+HTTP overflow classifications without raw payloads, preserves received usage
+across later failures, and leaves rejected-request usage unknown. The live
+exit criteria remain open until both API sign-ins and the recorded checks
+are available. See the [harness plan](cli-harness-response-plan.md#e2-live-provider-checks-wave-12).
+
 ### E3. Long-running soak and scan-cost measurement
 
 **Why.** Each package is tested in isolation, and the longest combined runs
