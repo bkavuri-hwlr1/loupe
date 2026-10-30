@@ -71,7 +71,8 @@ the remaining planned capabilities are listed below.
 
 - Standalone workspace switching (Wave 12 C21): `loupe session switch SESSION
   --to shared|isolated` uses the existing prepare/confirm/rollback RPCs and the
-  selected profile's retained session secret. Shared targets require one explicit
+  selected profile's retained session secret; retries use the same profile.
+  Shared targets require one explicit
   disposition before any RPC; isolated targets accept repeatable exact-file
   runtime consent. Results include private-state classification and binding
   generation, with global `--json` and the usual retryable exit codes. Stable
