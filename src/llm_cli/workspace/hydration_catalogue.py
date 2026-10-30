@@ -47,7 +47,8 @@ class PathCatalogue:
             )
             self.connection.execute(
                 "CREATE TABLE paths(alias TEXT PRIMARY KEY, spelling TEXT, "
-                "collision INTEGER NOT NULL, administration INTEGER NOT NULL) "
+                "collision INTEGER NOT NULL, administration INTEGER NOT NULL, "
+                "tracked INTEGER NOT NULL, directory INTEGER NOT NULL) "
                 "WITHOUT ROWID"
             )
         except BaseException as exc:
@@ -65,7 +66,9 @@ class PathCatalogue:
         assert self.connection is not None
         return int(self.connection.execute("PRAGMA page_count").fetchone()[0]) * 4096
 
-    def add(self, path: str, *, administration: bool) -> str | None:
+    def add(
+        self, path: str, *, administration: bool, directory: bool = False
+    ) -> str | None:
         assert self.connection is not None
         alias = unicodedata.normalize("NFC", path).casefold()
         try:
@@ -78,14 +81,63 @@ class PathCatalogue:
                 )
                 return str(previous[0]) if previous[0] is not None else alias
             self.connection.execute(
-                "INSERT INTO paths VALUES (?,?,?,?)",
-                (alias, path if path != alias else None, 0, administration),
+                "INSERT INTO paths VALUES (?,?,?,?,?,?)",
+                (
+                    alias,
+                    path if path != alias else None,
+                    0,
+                    administration,
+                    2 if directory else 0,
+                    directory,
+                ),
             )
         except sqlite3.Error as exc:
             if exc.sqlite_errorcode == sqlite3.SQLITE_FULL:
                 raise CatalogueLimit from None
             raise OSError("hydration metadata catalogue could not be stored") from exc
         return None
+
+    def _change(self, query: str, parameters: tuple[object, ...] = ()) -> None:
+        assert self.connection is not None
+        try:
+            self.connection.execute(query, parameters)
+        except sqlite3.Error as exc:
+            if exc.sqlite_errorcode == sqlite3.SQLITE_FULL:
+                raise CatalogueLimit from None
+            raise OSError("hydration metadata catalogue could not be stored") from exc
+
+    def reset_tracked(self) -> None:
+        assert self.connection is not None
+        self._change("UPDATE paths SET tracked=2 WHERE directory=1")
+        self._change("UPDATE paths SET tracked=0 WHERE directory=0")
+
+    def mark_tracked(self, path: str) -> None:
+        """Exact Git spelling proves tracking; aliases/prefixes use Git itself."""
+        assert self.connection is not None
+        alias = unicodedata.normalize("NFC", path).casefold()
+        row = self.connection.execute(
+            "SELECT spelling,directory FROM paths WHERE alias=?", (alias,)
+        ).fetchone()
+        if row is None:
+            return  # A tracked path can be absent from the working tree.
+        spelling = row[0] if row[0] is not None else alias
+        ambiguous = spelling != path or bool(row[1])
+        self._change(
+            "UPDATE paths SET tracked=? WHERE alias=?", (2 if ambiguous else 1, alias)
+        )
+        if row[1]:
+            # The index can name a file/symlink/gitlink where this inventory has
+            # a directory. Default check-ignore validates those descendant paths.
+            self._change(
+                "UPDATE paths SET tracked=2 WHERE alias>=? AND alias<?",
+                (alias + "/", alias + "0"),
+            )
+
+    def untracked(self) -> Iterator[str]:
+        yield from self._paths(tracked=0)
+
+    def ambiguous(self) -> Iterator[str]:
+        yield from self._paths(tracked=2)
 
     def records(self) -> Iterator[str]:
         yield from self._paths(collisions=False)
@@ -114,7 +166,9 @@ class PathCatalogue:
         ).fetchone()
         return row is not None and bool(row[0])
 
-    def _paths(self, *, collisions: bool) -> Iterator[str]:
+    def _paths(
+        self, *, collisions: bool = False, tracked: int | None = None
+    ) -> Iterator[str]:
         assert self.connection is not None
         query = (
             "SELECT alias,spelling FROM paths WHERE collision=1 ORDER BY alias"
@@ -124,7 +178,14 @@ class PathCatalogue:
                 "WHERE administration=0 ORDER BY alias"
             )
         )
-        cursor = self.connection.execute(query)
+        parameters: tuple[int, ...] = ()
+        if tracked is not None:
+            query = (
+                "SELECT alias,spelling FROM paths "
+                "WHERE administration=0 AND tracked=? ORDER BY alias"
+            )
+            parameters = (tracked,)
+        cursor = self.connection.execute(query, parameters)
         try:
             for alias, spelling in cursor:
                 yield str(spelling) if spelling is not None else str(alias)

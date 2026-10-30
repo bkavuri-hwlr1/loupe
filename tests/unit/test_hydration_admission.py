@@ -165,7 +165,8 @@ def test_source_shards_do_not_start_one_ignore_process_per_directory(
     monkeypatch.setattr(hydration, "_bounded_git", counted)
     plan = plan_hydration(root, budgets=HydrationBudgets(max_entries=7000))
     assert plan.complete, plan.issues
-    assert len(classifications) <= 2
+    assert len(classifications) <= 4
+    assert sum("--no-index" in arguments for arguments in classifications) == 2
 
 
 def test_ignored_file_kind_change_before_promotion_is_not_complete(

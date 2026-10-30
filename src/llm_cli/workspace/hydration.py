@@ -9,9 +9,11 @@ removed before it returns.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import posixpath
+import re
 import selectors
 import stat
 import subprocess
@@ -285,6 +287,7 @@ def _ignored_paths(
     limit: int,
     includes: Callable[[str], bool] | None = None,
     account: Callable[[int], None] | None = None,
+    no_index: bool = False,
 ) -> set[str]:
     """Classify one bounded stream without repeatedly loading Git's index.
 
@@ -370,7 +373,7 @@ def _ignored_paths(
         charge(pipe_cost)
         code, _ = _bounded_git(
             root,
-            ["check-ignore", "-z", "--stdin"],
+            ["check-ignore", *(["--no-index"] if no_index else []), "-z", "--stdin"],
             deadline=deadline,
             limit=limit,
             input_chunks=inputs(),
@@ -461,6 +464,7 @@ class _Inventory:
         self.retained: dict[str, _Observed] = {}
         self.catalogue: PathCatalogue | None = None
         self.deferred_ignored_paths: set[str] = set()
+        self.index_fingerprint: str | None = None
 
     def metadata(self) -> None:
         allocated = self.catalogue.allocated_bytes if self.catalogue is not None else 0
@@ -483,7 +487,9 @@ class _Inventory:
             if self.catalogue is None:
                 self.catalogue = PathCatalogue(self.budgets.max_metadata_bytes)
             previous_path = self.catalogue.add(
-                entry.path, administration=administration
+                entry.path,
+                administration=administration,
+                directory=stat.S_ISDIR(entry.status.st_mode),
             )
         except CatalogueLimit:
             raise _BudgetExceeded("metadata_budget_exceeded") from None
@@ -506,14 +512,91 @@ class _Inventory:
             if amount > 0:
                 self.metadata()
 
-        return _ignored_paths(
+        try:
+            self.catalogue.reset_tracked()
+        except CatalogueLimit:
+            raise _BudgetExceeded("metadata_budget_exceeded") from None
+        tail = bytearray()
+        tail_cost = 0
+        fingerprint = hashlib.sha256()
+
+        def receive(chunk: bytes) -> None:
+            nonlocal tail_cost
+            fingerprint.update(chunk)
+            tail_cost += len(chunk)
+            account(len(chunk))
+            tail.extend(chunk)
+            while (end := tail.find(b"\x00")) >= 0:
+                row_cost = (end + 1) * 2 + 256
+                try:
+                    account(row_cost)
+                    record = tail[:end].decode(
+                        sys.getfilesystemencoding(), errors="surrogateescape"
+                    )
+                    prefix, separator, path = record.partition("\t")
+                    if not separator or not path or not re.fullmatch(
+                        r"[0-7]{6} (?:[0-9a-f]{40}|[0-9a-f]{64}) [0-3]", prefix
+                    ):
+                        raise LlmCoordError(
+                            ErrorCode.REPOSITORY_UNSAFE,
+                            "Git returned invalid tracked path metadata",
+                        )
+                    assert self.catalogue is not None
+                    try:
+                        self.catalogue.mark_tracked(path)
+                    except CatalogueLimit:
+                        raise _BudgetExceeded("metadata_budget_exceeded") from None
+                    self.metadata()
+                    del tail[: end + 1]
+                    tail_cost -= end + 1
+                    account(-(end + 1))
+                finally:
+                    account(-row_cost)
+
+        pipe_cost = _PIPE_BYTES * 4
+        try:
+            account(pipe_cost)
+            code, _ = _bounded_git(
+                self.root,
+                ["ls-files", "--cached", "--stage", "-z"],
+                deadline=self.deadline,
+                limit=self.budgets.max_metadata_bytes,
+                output_chunk=receive,
+            )
+            if code or tail:
+                raise LlmCoordError(
+                    ErrorCode.REPOSITORY_UNSAFE,
+                    "Git could not inspect tracked path metadata",
+                )
+        finally:
+            account(-pipe_cost - tail_cost)
+        observed_index = fingerprint.hexdigest()
+        if (
+            self.index_fingerprint is not None
+            and observed_index != self.index_fingerprint
+        ):
+            self.issues.append("tracked_index_changed")
+        self.index_fingerprint = observed_index
+        ignored = _ignored_paths(
             self.root,
-            self.catalogue.records(),
+            self.catalogue.untracked(),
             deadline=self.deadline,
             limit=self.budgets.max_metadata_bytes,
             includes=self.catalogue.includes,
             account=account,
+            no_index=True,
         )
+        ignored.update(
+            _ignored_paths(
+                self.root,
+                self.catalogue.ambiguous(),
+                deadline=self.deadline,
+                limit=self.budgets.max_metadata_bytes,
+                includes=self.catalogue.includes,
+                account=account,
+            )
+        )
+        return ignored
 
     def promote(self, root: int, ignored: set[str]) -> None:
         """Retain stat receipts only after a bounded full-path classification.
