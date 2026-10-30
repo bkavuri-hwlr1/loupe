@@ -631,6 +631,9 @@ source binding; `rollback_pending` means an active switch worker still needs to
 settle. Errors include profile-aware inspection and rollback commands. Each
 operation uses the selected profile's locally retained session secret, without
 opening a replacement conversation or asking for provider credentials.
+For a session opened under a named profile, include that profile on the switch
+and every retry, for example `loupe --profile work session switch SESSION_ID
+--to isolated`.
 
 
 ## Export source changes

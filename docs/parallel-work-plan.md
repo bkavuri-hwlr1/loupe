@@ -1406,7 +1406,8 @@ exact target bootstrap and reports classification, runtime summary and retained
 work. Shared targets require an explicit disposition before any RPC; isolated
 targets accept exact-file consent. `--switch-intent-id` makes retries idempotent,
 `--confirm ID --sequence N` acknowledges a pending target, and `--rollback ID`
-keeps the source binding. Existing daemon guards and retry exit codes are
+keeps the source binding. Session lookup and retries use the selected profile.
+Existing daemon guards and retry exit codes are
 preserved. See the [CLI guide](isolated-workspaces.md#switch-from-scripts-or-another-terminal).
 
 ### C22. Patch and bundle exports of candidates and batches
