@@ -93,6 +93,19 @@ class PathCatalogue:
     def collisions(self) -> Iterator[str]:
         yield from self._paths(collisions=True)
 
+    def includes(self, path: str) -> bool:
+        """Validate exact non-administration spelling without loading all paths."""
+        assert self.connection is not None
+        alias = unicodedata.normalize("NFC", path).casefold()
+        row = self.connection.execute(
+            "SELECT spelling,administration FROM paths WHERE alias=?", (alias,)
+        ).fetchone()
+        return (
+            row is not None
+            and not row[1]
+            and (row[0] if row[0] is not None else alias) == path
+        )
+
     def collided(self, path: str) -> bool:
         assert self.connection is not None
         alias = unicodedata.normalize("NFC", path).casefold()

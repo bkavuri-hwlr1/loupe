@@ -15,8 +15,9 @@ import posixpath
 import selectors
 import stat
 import subprocess
+import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -53,8 +54,8 @@ _SECRET_NAMES = frozenset(
     }
 )
 _COPY_ACTIONS = frozenset({"clone_or_copy", "private_copy", "private_tree"})
-_CHECK_BATCH = 4096
 _CHECK_INPUT_BYTES = 256 * 1024
+_PIPE_BYTES = 8192
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +147,8 @@ def _bounded_git(
     deadline: float,
     limit: int,
     input_data: bytes = b"",
+    input_chunks: Iterable[bytes | bytearray] | None = None,
+    output_chunk: Callable[[bytes], None] | None = None,
 ) -> tuple[int, bytes]:
     """Bound pipe storage as well as Git runtime; never run a hook or filter.
 
@@ -175,6 +178,17 @@ def _bounded_git(
     output = bytearray()
     total = 0
     sent = 0
+    chunks = iter(input_chunks if input_chunks is not None else (input_data,))
+    pending: bytes | bytearray = b""
+
+    def advance() -> bytes | bytearray:
+        for chunk in chunks:
+            if time.monotonic() >= deadline:
+                raise _BudgetExceeded("time_budget_exceeded")
+            if chunk:
+                return chunk
+        return b""
+
     try:
         process = subprocess.Popen(
             command,
@@ -192,11 +206,12 @@ def _bounded_git(
     assert process.stdout is not None
     assert process.stderr is not None
     try:
+        pending = advance()
         with selectors.DefaultSelector() as selector:
             for stream in (process.stdout, process.stderr):
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, selectors.EVENT_READ)
-            if input_data:
+            if pending:
                 os.set_blocking(process.stdin.fileno(), False)
                 selector.register(process.stdin, selectors.EVENT_WRITE)
             else:
@@ -210,16 +225,30 @@ def _bounded_git(
                     if selected_stream is process.stdin:
                         try:
                             sent += os.write(
-                                process.stdin.fileno(), input_data[sent : sent + 8192]
+                                process.stdin.fileno(),
+                                pending[sent : sent + _PIPE_BYTES],
                             )
-                        except BrokenPipeError:
-                            sent = len(input_data)
-                        if sent == len(input_data):
-                            selector.unregister(process.stdin)
-                            process.stdin.close()
+                        except (BlockingIOError, InterruptedError):
+                            continue
+                        except BrokenPipeError as exc:
+                            raise LlmCoordError(
+                                ErrorCode.REPOSITORY_UNSAFE,
+                                "Git did not consume its complete metadata input",
+                            ) from exc
+                        if sent == len(pending):
+                            pending = b""
+                            pending = advance()
+                            sent = 0
+                            if not pending:
+                                selector.unregister(process.stdin)
+                                process.stdin.close()
                         continue
                     descriptor = key.fd
-                    chunk = os.read(descriptor, min(65_536, limit - total + 1))
+                    read_limit = _PIPE_BYTES if output_chunk is not None else 65_536
+                    try:
+                        chunk = os.read(descriptor, min(read_limit, limit - total + 1))
+                    except (BlockingIOError, InterruptedError):
+                        continue
                     if not chunk:
                         selector.unregister(selected_stream)
                         continue
@@ -227,7 +256,10 @@ def _bounded_git(
                     if total > limit:
                         raise _BudgetExceeded("git_metadata_budget_exceeded")
                     if selected_stream is process.stdout:
-                        output.extend(chunk)
+                        if output_chunk is None:
+                            output.extend(chunk)
+                        else:
+                            output_chunk(chunk)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise _BudgetExceeded("time_budget_exceeded")
@@ -240,49 +272,121 @@ def _bounded_git(
         process.wait()
         for stream in (process.stdin, process.stdout, process.stderr):
             stream.close()
+        close_input = getattr(chunks, "close", None)
+        if close_input is not None:
+            close_input()
 
 
 def _ignored_paths(
-    root: Path, paths: Sequence[str], *, deadline: float, limit: int
+    root: Path,
+    paths: Iterable[str],
+    *,
+    deadline: float,
+    limit: int,
+    includes: Callable[[str], bool] | None = None,
+    account: Callable[[int], None] | None = None,
 ) -> set[str]:
+    """Classify one bounded stream without repeatedly loading Git's index.
+
+    Only the active stdin chunk, an incomplete stdout record and matched paths
+    stay live. The inventory accounts those against its shared metadata budget.
+    """
+    if includes is None:
+        expected = set(paths)
+        paths = expected
+        includes = expected.__contains__
+
+    def charge(amount: int) -> None:
+        if account is not None:
+            account(amount)
+
+    def inputs() -> Iterable[bytes | bytearray]:
+        buffer = bytearray()
+        held = 0
+        try:
+            for path in paths:
+                if time.monotonic() >= deadline:
+                    raise _BudgetExceeded("time_budget_exceeded")
+                encoded = os.fsencode(path) + b"\x00"
+                if len(encoded) > min(limit, _CHECK_INPUT_BYTES):
+                    raise _BudgetExceeded("git_metadata_budget_exceeded")
+                # A decoded catalogue row and its encoding can remain live
+                # while a previous full pipe buffer is yielded to the child.
+                row_cost = len(encoded) * 2 + 256
+                try:
+                    charge(row_cost)
+                    if buffer and len(buffer) + len(encoded) > _PIPE_BYTES:
+                        yield buffer
+                        buffer = bytearray()
+                        charge(-held)
+                        held = 0
+                    held += len(encoded)
+                    charge(len(encoded))
+                    buffer.extend(encoded)
+                finally:
+                    charge(-row_cost)
+            if buffer:
+                yield buffer
+        finally:
+            charge(-held)
+
     ignored: set[str] = set()
-    batches: list[list[str]] = []
-    batch: list[str] = []
-    byte_count = 0
-    for path in paths:
-        cost = len(os.fsencode(path)) + 1
-        if cost > min(limit, _CHECK_INPUT_BYTES):
-            raise _BudgetExceeded("git_metadata_budget_exceeded")
-        if batch and (
-            len(batch) == _CHECK_BATCH
-            or byte_count + cost > min(limit, _CHECK_INPUT_BYTES)
-        ):
-            batches.append(batch)
-            batch, byte_count = [], 0
-        batch.append(path)
-        byte_count += cost
-    if batch:
-        batches.append(batch)
-    for batch in batches:
-        code, output = _bounded_git(
+    tail = bytearray()
+    tail_cost = result_cost = 0
+    completed = False
+
+    def receive(chunk: bytes) -> None:
+        nonlocal tail_cost, result_cost
+        tail_cost += len(chunk)
+        charge(len(chunk))
+        tail.extend(chunk)
+        while (end := tail.find(b"\x00")) >= 0:
+            decoding_cost = (end + 1) * 2 + 256
+            try:
+                charge(decoding_cost)
+                path = tail[:end].decode(
+                    sys.getfilesystemencoding(), errors="surrogateescape"
+                )
+                if not path or not includes(path):
+                    raise LlmCoordError(
+                        ErrorCode.REPOSITORY_UNSAFE,
+                        "Git returned unexpected ignore metadata",
+                    )
+                if path not in ignored:
+                    needed = len(os.fsencode(path)) + 256
+                    result_cost += needed
+                    charge(needed)
+                    ignored.add(path)
+                del tail[: end + 1]
+                tail_cost -= end + 1
+                charge(-(end + 1))
+            finally:
+                charge(-decoding_cost)
+
+    # Reserve read/write slices and bytearray allocation slack in addition to
+    # accounted stdin/stdout contents. No complete raw stdout stream is retained.
+    pipe_cost = _PIPE_BYTES * 4
+    try:
+        charge(pipe_cost)
+        code, _ = _bounded_git(
             root,
             ["check-ignore", "-z", "--stdin"],
             deadline=deadline,
             limit=limit,
-            input_data=b"\x00".join(map(os.fsencode, batch)) + b"\x00",
+            input_chunks=inputs(),
+            output_chunk=receive,
         )
-        if code not in {0, 1}:
+        if code not in {0, 1} or tail:
             raise LlmCoordError(
                 ErrorCode.REPOSITORY_UNSAFE,
                 "Git could not classify ignored runtime paths",
             )
-        matches = {os.fsdecode(path) for path in output.split(b"\x00") if path}
-        if not matches.issubset(batch):
-            raise LlmCoordError(
-                ErrorCode.REPOSITORY_UNSAFE, "Git returned unexpected ignore metadata"
-            )
-        ignored.update(matches)
-    return ignored
+        completed = True
+        return ignored
+    finally:
+        charge(-pipe_cost - tail_cost)
+        if not completed:
+            charge(-result_cost)
 
 
 def _evidence(status: os.stat_result) -> dict[str, int]:
@@ -393,46 +497,23 @@ class _Inventory:
             self.issues.append("path_alias_requires_decision")
 
     def ignored_paths(self) -> set[str]:
-        """Recheck all classifications in batches that share the live byte cap."""
+        """Stream classifications through one child with bounded live metadata."""
         if self.catalogue is None:
             return set()
-        result: set[str] = set()
-        batch: list[str] = []
-        cost = 0
 
-        def flush() -> None:
-            nonlocal cost
-            if not batch:
-                return
-            self.temporary_metadata_bytes += cost
-            self.metadata()
-            try:
-                actual = _ignored_paths(
-                    self.root,
-                    batch,
-                    deadline=self.deadline,
-                    limit=self.budgets.max_metadata_bytes,
-                )
-                result.update(actual)
-            finally:
-                self.temporary_metadata_bytes -= cost
-            batch.clear()
-            cost = 0
+        def account(amount: int) -> None:
+            self.temporary_metadata_bytes += amount
+            if amount > 0:
+                self.metadata()
 
-        for path in self.catalogue.records():
-            self.remaining()
-            needed = len(path.encode("utf-8")) + 256
-            available = (
-                self.budgets.max_metadata_bytes
-                - self.retained_metadata_bytes
-                - self.catalogue.allocated_bytes
-            )
-            if batch and (cost + needed > available or len(batch) >= _CHECK_BATCH):
-                flush()
-            batch.append(path)
-            cost += needed
-        flush()
-        return result
+        return _ignored_paths(
+            self.root,
+            self.catalogue.records(),
+            deadline=self.deadline,
+            limit=self.budgets.max_metadata_bytes,
+            includes=self.catalogue.includes,
+            account=account,
+        )
 
     def promote(self, root: int, ignored: set[str]) -> None:
         """Retain stat receipts only after a bounded full-path classification.

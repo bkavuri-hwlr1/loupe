@@ -153,7 +153,7 @@ def test_source_shards_do_not_start_one_ignore_process_per_directory(
 
     from llm_cli.workspace import hydration
 
-    root = source_checkout(tmp_path, repository_factory)
+    root = source_checkout(tmp_path, repository_factory, count=6000)
     original = hydration._bounded_git
     classifications: list[list[str]] = []
 
@@ -163,7 +163,7 @@ def test_source_shards_do_not_start_one_ignore_process_per_directory(
         return original(root, arguments, **kwargs)
 
     monkeypatch.setattr(hydration, "_bounded_git", counted)
-    plan = plan_hydration(root, budgets=HydrationBudgets(max_entries=2000))
+    plan = plan_hydration(root, budgets=HydrationBudgets(max_entries=7000))
     assert plan.complete, plan.issues
     assert len(classifications) <= 2
 
