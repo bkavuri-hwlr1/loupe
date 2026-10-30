@@ -29,8 +29,13 @@ from llm_cli.daemon.service import DaemonService
 from llm_cli.errors import LlmCoordError
 from llm_cli.paths import AppPaths
 from llm_cli.protocol.envelopes import Request
-from llm_cli.workspace.external import MAX_PATHS
-from llm_cli.workspace.identity import ObjectKind, content_identity
+from llm_cli.workspace.external import MAX_PATHS, MAX_READ_REGISTRATIONS
+from llm_cli.workspace.identity import (
+    ABSENT,
+    FileIdentity,
+    ObjectKind,
+    content_identity,
+)
 from llm_cli.workspace.isolated import (
     SourceCaptureCache,
     capture_source,
@@ -90,7 +95,11 @@ def timing(function: Any, repeats: int) -> dict[str, Any]:
 
 
 async def measure(
-    count: int, repeats: int, *, watchers: str = "auto"
+    count: int,
+    repeats: int,
+    *,
+    watchers: str = "auto",
+    outside_only: bool = False,
 ) -> dict[str, Any]:
     root = Path(
         tempfile.mkdtemp(
@@ -106,6 +115,7 @@ async def measure(
         "repeats": repeats,
         "watchers": watchers,
         "outside_path_cap": MAX_PATHS,
+        "outside_registration_cap": MAX_READ_REGISTRATIONS,
         "isolated_path_cap": 20000,
     }
     try:
@@ -164,37 +174,99 @@ async def measure(
             resume_secret=secret,
             sequence=opened["bootstrap_sequence"],
         )
-        # Bulk-seed genuine read identities so fixture construction does not
-        # dominate measurement with one transaction per synthetic model read.
-        # The timed scanner uses the unchanged production code and SQL cap.
-        identity = content_identity(ObjectKind.REGULAR, "100644", BODY)
-        with service.store.connection() as connection:
-            workspace = connection.execute(
-                "SELECT workspace_id FROM sessions WHERE session_id='reader'"
-            ).fetchone()[0]
-            connection.executemany(
-                "INSERT INTO workspace_read_observations("
-                "session_id,workspace_id,relative_path,"
-                "observed_kind,observed_mode,observed_digest,observed_at) "
-                "VALUES ('reader',?,?,"
-                "'regular','100644',?,?)",
-                [
-                    (workspace, path, identity, index)
-                    for index, path in enumerate(paths)
-                ],
+        # Register genuine accepted identities through the production read
+        # facade. The fixture body is already known, so this isolates metadata
+        # registration cost without repeatedly measuring source-file reads.
+        import resource
+
+        identity = FileIdentity(
+            ObjectKind.REGULAR,
+            "100644",
+            content_identity(ObjectKind.REGULAR, "100644", BODY),
+            len(BODY),
+        )
+        read_paths = paths[: min(count, MAX_READ_REGISTRATIONS)]
+
+        def sqlite_bytes() -> int:
+            return sum(
+                path.stat().st_size
+                for suffix in ("", "-wal", "-shm")
+                if (path := Path(str(app_paths.control_db) + suffix)).exists()
             )
-        # The daemon's own scanner, which keeps watcher cursors when enabled.
+
+        rss_scale = 1 if sys.platform == "darwin" else 1024
+        before_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * rss_scale
+        before_database = sqlite_bytes()
+        started = time.perf_counter()
+        for index, path in enumerate(read_paths):
+            service.store.record_workspace_read(
+                session_id="reader", relative_path=path, identity=identity, now=index
+            )
+        registration_seconds = time.perf_counter() - started
+        peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * rss_scale
+        record["outside_registration"] = {
+            "paths": len(read_paths),
+            "seconds": registration_seconds,
+            "mean_api_ms": registration_seconds * 1000 / len(read_paths),
+            "database_bytes_before": before_database,
+            "database_bytes_after": sqlite_bytes(),
+            "process_peak_rss_bytes": peak_rss,
+            "process_peak_rss_increase_bytes": max(0, peak_rss - before_rss),
+        }
         scanner = service._external_scanner
         record["outside_cold"] = timing(lambda: scanner.scan_session("reader"), 1)
+        started = time.perf_counter()
+        verification_passes = 0
+        for _ in range(len(read_paths) // MAX_PATHS + 2):
+            if scanner.pending_count("reader") == 0:
+                break
+            scanner.scan_session("reader")
+            verification_passes += 1
+        record["outside_initial_verification"] = {
+            "passes_after_cold": verification_passes,
+            "seconds": time.perf_counter() - started,
+            "pending_paths": scanner.pending_count("reader"),
+        }
         record["outside_warm"] = timing(lambda: scanner.scan_session("reader"), repeats)
         with service.store.connection() as connection:
             record["outside_observed_paths"] = connection.execute(
                 "SELECT count(*) FROM workspace_external_observations "
                 "WHERE session_id='reader'"
             ).fetchone()[0]
-        # Modify the most recently observed path, within the production window.
-        (repository / paths[-1]).write_bytes(BODY + b"# external edit\n")
+            record["outside_verified_paths"] = connection.execute(
+                "SELECT count(*) FROM workspace_external_observations "
+                "WHERE session_id='reader' AND identity_json IS NOT NULL"
+            ).fetchone()[0]
+        # The oldest retained read is deliberately outside the polling window
+        # at large sizes. A healthy watcher must still report this edit.
+        (repository / read_paths[0]).write_bytes(BODY + b"# oldest outside edit\n")
+        record["outside_oldest_read_change"] = timing(
+            lambda: scanner.scan_session("reader"), 1
+        )
+        record["outside_oldest_coverage_notice"] = scanner.coverage_notice("reader")
+        (repository / read_paths[-1]).write_bytes(BODY + b"# recent outside edit\n")
         record["outside_one_change"] = timing(lambda: scanner.scan_session("reader"), 1)
+        # An absent read proves overflow bounds without changing the fixture's
+        # source-path count or weakening isolated-admission budgets.
+        service.store.record_workspace_read(
+            session_id="reader", relative_path="absent-observation.py", identity=ABSENT
+        )
+        scanner.scan_session("reader")
+        with service.store.connection() as connection:
+            record["outside_after_extra_read"] = {
+                "advisory_registrations": connection.execute(
+                    "SELECT count(*) FROM workspace_external_observations "
+                    "WHERE session_id='reader'"
+                ).fetchone()[0],
+                "canonical_bases": connection.execute(
+                    "SELECT count(*) FROM workspace_read_observations "
+                    "WHERE session_id='reader'"
+                ).fetchone()[0],
+                "coverage_notice": scanner.coverage_notice("reader"),
+            }
+        if outside_only:
+            await rpc("session.close", session_id="reader", resume_secret=secret)
+            return record
         # Capture is the scanner component of the safe point. Report it
         # separately even when the private-workspace hydration inventory cannot
         # admit this repository; it is never relabelled an end-to-end result.
@@ -447,6 +519,14 @@ def main() -> int:
         default="both",
         help="measure with native file watchers, without them, or both",
     )
+    parser.add_argument(
+        "--outside-only",
+        action="store_true",
+        help=(
+            "measure advisory registrations and outside scans "
+            "without isolated admission"
+        ),
+    )
     parser.add_argument("--output", type=Path, default=Path("scan-scale-result.json"))
     options = parser.parse_args()
     if any(count < 1 for count in options.files) or options.repeats < 1:
@@ -455,12 +535,19 @@ def main() -> int:
     record = {"platform": platform.platform(), "python": sys.version, "results": []}
     for count in options.files:
         for mode in modes:
-            result = asyncio.run(measure(count, options.repeats, watchers=mode))
+            result = asyncio.run(
+                measure(
+                    count,
+                    options.repeats,
+                    watchers=mode,
+                    outside_only=options.outside_only,
+                )
+            )
             record["results"].append(result)
             options.output.parent.mkdir(parents=True, exist_ok=True)
             options.output.write_text(json.dumps(record, indent=2) + "\n")
             print(json.dumps(result, indent=2), flush=True)
-    if 20000 in options.files:
+    if 20000 in options.files and not options.outside_only:
         record["growth_20000"] = asyncio.run(measure_growth(20000, options.repeats))
         options.output.write_text(json.dumps(record, indent=2) + "\n")
         print(json.dumps(record["growth_20000"], indent=2), flush=True)

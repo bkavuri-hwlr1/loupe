@@ -51,6 +51,7 @@ from llm_cli.workspace.identity import FileIdentity, ObjectKind
 
 if TYPE_CHECKING:
     from llm_cli.workspace.authority import PhysicalAuthority
+    from llm_cli.workspace.external_reads import ReadRegistry
 
 
 class ExecutionUpdate(TypedDict):
@@ -190,6 +191,7 @@ class ControlStore:
         if not callable(clock):
             raise TypeError("clock must be callable")
         self.clock = clock
+        self._external_reads: ReadRegistry | None = None
 
     def connect(self) -> sqlite3.Connection:
         return connect_control(self.path, timeout_seconds=self.timeout_seconds)
@@ -205,8 +207,12 @@ class ControlStore:
             connection.close()
 
     def initialize(self) -> int:
+        from llm_cli.workspace.external_reads import initialize_read_registry
+
         with self.connection() as connection:
-            return apply_migrations(connection)
+            version = apply_migrations(connection)
+            self._external_reads = initialize_read_registry(self, connection)
+            return version
 
     def register_repository(
         self,
@@ -655,8 +661,15 @@ class ControlStore:
     ) -> WorkspaceRecord:
         """Persist the base token a session received from the file broker."""
 
+        from llm_cli.workspace.external import register_read
+        from llm_cli.workspace.external_reads import registering_reads
+
         timestamp = self._now(now)
-        with self.connection() as connection, immediate_transaction(connection):
+        with (
+            registering_reads(self, session_id) as registration,
+            self.connection() as connection,
+            immediate_transaction(connection),
+        ):
             session = connection.execute(
                 "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
             ).fetchone()
@@ -696,13 +709,13 @@ class ControlStore:
                     timestamp,
                 ),
             )
-            from llm_cli.workspace.external import register_read
-
             register_read(
                 connection,
                 session_id=session_id,
                 workspace_id=str(workspace["workspace_id"]),
                 relative_path=relative_path,
+                binding_generation=int(session["workspace_binding_generation"]),
+                registration=registration,
             )
             return self.workspace_from_row(workspace)
 
@@ -1672,8 +1685,14 @@ class ControlStore:
     ) -> tuple[SessionRecord, CheckoutEventRecord | None]:
         if not reason or len(reason) > 128:
             raise ValueError("session close reason is invalid")
+        from llm_cli.workspace.external_reads import closing_reads
+
         timestamp = self._now(now)
-        with self.connection() as connection, immediate_transaction(connection):
+        with (
+            closing_reads(self, session_id),
+            self.connection() as connection,
+            immediate_transaction(connection),
+        ):
             row = connection.execute(
                 "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
             ).fetchone()
