@@ -1798,8 +1798,17 @@ the older pilot and bounded-attempt records remain unchanged.
 
 ### F4. Embeddings with exact scoring
 
-**Gate.** F3 showed no benefit from lexical retrieval. Run only if F5's
-offline comparison recommends it, or the user asks for semantic search.
+**Gate: closed after F5 (October 30, 2026).** The fixed local-model comparison
+improved hybrid Recall@10 by 3.33 points on each repository and in the macro
+mean, below the predeclared 5-point per-repository and 10-point macro gates.
+Loupe Recall@5 fell 3.33 points; the paired bootstrap 95% interval was
+[−5.00, +11.67] points. Its strong lexical baseline left only 8.33 macro points
+of possible improvement, below the declared threshold, and most source chunks
+were truncated at 256 wordpieces. This limited fixed comparison does not open
+F4 or establish that semantic retrieval is generally ineffective. See the
+[complete F5 result](experiments/semantic-retrieval-f5-2026-10-30.md). Run only
+if a separately fixed comparison recommends it, or the user asks for semantic
+search.
 
 **Scope.**
 
@@ -1861,6 +1870,16 @@ either. An offline retrieval comparison answers that cheaply.
 - The recorded run has a recall table for all three arms on both
   repositories, with cost and build time.
 - F4's gate records go or no-go with those numbers.
+
+**Completed (Wave 12): no-go for F4.** The offline prototype uses the real
+product lexical search and chunker, one pinned local ONNX model, and sixty
+predeclared questions across Loupe and a larger pinned Django corpus. All three
+arms' Recall@5/@10, build/embedding costs, per-query records, identities and
+limitations are retained in the [dated result](experiments/semantic-retrieval-f5-2026-10-30.md).
+Hybrid Recall@10 improved 3.33 points per repository, but missed the fixed gate;
+F4 stays closed. No product code, defaults or dependencies changed, and no
+repository content was sent to a hosted model. Questions and thresholds were
+not retuned after ranks were observed.
 
 ## Lane G — authority across profiles
 

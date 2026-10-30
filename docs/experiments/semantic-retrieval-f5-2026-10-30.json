@@ -1,0 +1,4286 @@
+{
+  "version": 1,
+  "model": {
+    "id": "sentence-transformers/all-MiniLM-L6-v2",
+    "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "files": {
+      "tokenizer.json": {
+        "sha256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+        "bytes": 466247
+      },
+      "onnx/model.onnx": {
+        "sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+        "bytes": 90405214
+      }
+    },
+    "dimensions": 384,
+    "normalization": "L2",
+    "pooling": "attention-masked mean",
+    "task_type": "generic sentence similarity",
+    "max_wordpieces": 256,
+    "load_seconds": 1.6501693750033155,
+    "provider": "local ONNX CPU"
+  },
+  "hosted_embedding_requests": 0,
+  "model_api_tokens": 0,
+  "runtime": {
+    "python": "3.12.13",
+    "system": "Darwin",
+    "machine": "arm64",
+    "packages": {
+      "numpy": "2.5.4",
+      "onnxruntime": "1.31.1",
+      "tokenizers": "0.23.3"
+    }
+  },
+  "chunk_candidate_pool_per_arm": 80,
+  "file_result_limit_per_arm": 20,
+  "rrf_constant": 60,
+  "repositories": {
+    "loupe": {
+      "repository": "https://github.com/bkavuri-hwlr1/loupe",
+      "revision": "69b8bcfcdf5091dc3f76674cd93318ae6fa86213",
+      "prefix": "src/llm_cli/",
+      "manifest_sha256": "1bea672f80307e65335955f762805b0d317a68ba19db26b53bee842128ee00c9",
+      "files": 135,
+      "bytes": 2762491,
+      "lines": 69298,
+      "excluded": 0,
+      "chunks": 1433,
+      "queries": 30,
+      "source_seconds": 0.14042812504339963,
+      "lexical_build_seconds": 0.270862374920398,
+      "embedding_seconds": 20.067313415929675,
+      "embedding_cpu_seconds": 20.032053,
+      "truncated_chunks": 1375,
+      "query_embedding_seconds": 0.03802291699685156,
+      "query_embedding_cpu_seconds": 0.03799100000000166,
+      "truncated_queries": 0,
+      "lexical_query_seconds": 1.4175602479372174,
+      "exact_query_seconds": 0.004974254872649908,
+      "vector_bytes": 2201088,
+      "recall": {
+        "lexical": {
+          "5": 0.8,
+          "10": 0.9
+        },
+        "semantic": {
+          "5": 0.7333333333333333,
+          "10": 0.8
+        },
+        "hybrid": {
+          "5": 0.7666666666666667,
+          "10": 0.9333333333333333
+        }
+      }
+    },
+    "django": {
+      "repository": "https://github.com/django/django",
+      "revision": "f4c65fd6a517dd32bd2e732ae3543e550e56f206",
+      "prefix": "django/",
+      "manifest_sha256": "58ef9648f8056cd8dcb93dea45768f24f3c08f09878776bc2014d686c7f13302",
+      "files": 907,
+      "bytes": 5946720,
+      "lines": 166144,
+      "excluded": 0,
+      "chunks": 3615,
+      "queries": 30,
+      "source_seconds": 0.19297187495976686,
+      "lexical_build_seconds": 0.6620958329876885,
+      "embedding_seconds": 50.5103439160157,
+      "embedding_cpu_seconds": 50.470744999999994,
+      "truncated_chunks": 3259,
+      "query_embedding_seconds": 0.03592554200440645,
+      "query_embedding_cpu_seconds": 0.03590099999999552,
+      "truncated_queries": 0,
+      "lexical_query_seconds": 1.3677564598619938,
+      "exact_query_seconds": 0.007946584140881896,
+      "vector_bytes": 5552640,
+      "recall": {
+        "lexical": {
+          "5": 0.9,
+          "10": 0.9333333333333333
+        },
+        "semantic": {
+          "5": 0.9333333333333333,
+          "10": 0.9666666666666667
+        },
+        "hybrid": {
+          "5": 0.9666666666666667,
+          "10": 0.9666666666666667
+        }
+      }
+    }
+  },
+  "queries": [
+    {
+      "id": "loupe-01",
+      "repository": "loupe",
+      "question": "Where does opening a private conversation decide which ignored local inputs need consent before they are copied?",
+      "expected": [
+        "src/llm_cli/workspace/hydration.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/workspace/hydration.py",
+          "symbol": "plan_hydration",
+          "start_line": 620,
+          "end_line": 810,
+          "file_sha256": "e761bbd41ed400c641ee4259a6c314cec8f5ef8d372c1081a07ecaeaadeda1a1"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/workspace/runtime_refresh.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/storage/backup.py",
+          "src/llm_cli/config/models.py",
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/workspace/hydration.py",
+          "src/llm_cli/coordination/coordinator.py"
+        ],
+        "semantic": [
+          "src/llm_cli/providers/base.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/source_policy.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/mcp/client.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/providers/anthropic_provider.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/workspace/process_privacy.py",
+          "src/llm_cli/execution/sandbox.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/config/models.py",
+          "src/llm_cli/workspace/hydration.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/providers/base.py",
+          "src/llm_cli/workspace/runtime_refresh.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 0.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-02",
+      "repository": "loupe",
+      "question": "Where is a saved proposed edit combined with changes somebody made to the checkout since the proposal was prepared?",
+      "expected": [
+        "src/llm_cli/workspace/workflow.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/workspace/workflow.py",
+          "symbol": "TaskWorkflow.apply",
+          "start_line": 613,
+          "end_line": 692,
+          "file_sha256": "8220ae12b8fc29546a13b50e601de6c6ccb3081c4e90816bee37353696663bb3"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/cli/composer.py",
+          "src/llm_cli/coordination/models.py",
+          "src/llm_cli/workspace/switching.py"
+        ],
+        "semantic": [
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/workspace/merge.py",
+          "src/llm_cli/agent/hooks.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/execution/shared.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/coordination/models.py",
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/daemon/service.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 0.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-03",
+      "repository": "loupe",
+      "question": "Where is removing a source file refused if its current contents no longer match the version the editor observed?",
+      "expected": [
+        "src/llm_cli/workspace/broker.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/workspace/broker.py",
+          "symbol": "atomic_delete_file",
+          "start_line": 370,
+          "end_line": 389,
+          "file_sha256": "dea448f003dcea210cf18b48b3a07706950653f912396c5e00505cb80250e8d6"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/workspace/hydration.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/workspace/identity.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/git/integrate.py",
+          "src/llm_cli/execution/commands.py"
+        ],
+        "semantic": [
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/rebuild.py",
+          "src/llm_cli/workspace/broker.py",
+          "src/llm_cli/git/validate.py",
+          "src/llm_cli/workspace/patches.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/agent/hooks.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/workspace/hydration.py",
+          "src/llm_cli/workspace/broker.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/workspace/rebuild.py",
+          "src/llm_cli/git/validate.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-04",
+      "repository": "loupe",
+      "question": "Where are changes made by an external editor turned into notices for conversations that already inspected those files?",
+      "expected": [
+        "src/llm_cli/workspace/external.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/workspace/external.py",
+          "symbol": "ExternalWorkspaceScanner._scan_session_owned",
+          "start_line": 306,
+          "end_line": 534,
+          "file_sha256": "a3bcc0b18ed4951e22d95c5dd8ee3867d2b6afb85a10299228c3e8ecc6542fc7"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/config/models.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/cli/render.py"
+        ],
+        "semantic": [
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/workspace/watchers.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/workspace/merge.py",
+          "src/llm_cli/cli/composer.py",
+          "src/llm_cli/agent/tools.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/agent/hooks.py",
+          "src/llm_cli/workspace/context.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-05",
+      "repository": "loupe",
+      "question": "Where is one physical checkout prevented from being owned by two different user profiles at the same time?",
+      "expected": [
+        "src/llm_cli/workspace/authority.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/workspace/authority.py",
+          "symbol": "PhysicalAuthority._acquire",
+          "start_line": 985,
+          "end_line": 1164,
+          "file_sha256": "59962d07b0b868823774cbb6ac894e2482c1d0d78b6c494b53458c2efdcfb984"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/workspace/identity.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/coordination/scopes.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/batches.py",
+          "src/llm_cli/storage/control.py"
+        ],
+        "semantic": [
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/protocol/capabilities.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/execution/workspace.py",
+          "src/llm_cli/workspace/batches.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/workspace/batches.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/identity.py",
+          "src/llm_cli/protocol/capabilities.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-06",
+      "repository": "loupe",
+      "question": "Where must an operator acknowledge changed historical evidence before resuming an interrupted ownership conversion?",
+      "expected": [
+        "src/llm_cli/workspace/regime.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/workspace/regime.py",
+          "symbol": "CutoverManager._accept_recovery",
+          "start_line": 1223,
+          "end_line": 1285,
+          "file_sha256": "ce052464ef7f2d3e46fa7765887e304c0abc6bd5aa4886afd427cc079edd25fb"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/agent/finalization.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/execution/checks.py"
+        ],
+        "semantic": [
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/daemon/service.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/execution/checks.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-07",
+      "repository": "loupe",
+      "question": "Where are ignored local dependencies replaced safely while older held work keeps its original private inputs?",
+      "expected": [
+        "src/llm_cli/workspace/runtime_refresh.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/workspace/runtime_refresh.py",
+          "symbol": "RuntimeRefresher._refresh",
+          "start_line": 320,
+          "end_line": 462,
+          "file_sha256": "5a1d674beeeb905d18ee0597e774a6da1cf2c89a611c2aac51db30f317ee804e"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/watchers.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/workspace/runtime_refresh.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/workspace/hydration.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/agent/shared_tools.py"
+        ],
+        "semantic": [
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/workspace/__init__.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/workspace/switching.py",
+          "src/llm_cli/execution/environment.py",
+          "src/llm_cli/workspace/process_privacy.py",
+          "src/llm_cli/workspace/hydration.py",
+          "src/llm_cli/build.py",
+          "src/llm_cli/execution/commands.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/workspace/hydration.py",
+          "src/llm_cli/workspace/switching.py",
+          "src/llm_cli/workspace/watchers.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/workspace/broker.py",
+          "src/llm_cli/workspace/authority.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "hybrid": {
+          "5": 0.0,
+          "10": 0.0
+        }
+      }
+    },
+    {
+      "id": "loupe-08",
+      "repository": "loupe",
+      "question": "Where does a restarted background service refuse to kill a surviving worker when its numeric process identifier has been reused?",
+      "expected": [
+        "src/llm_cli/execution/processes.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/execution/processes.py",
+          "symbol": "ManagedProcessManager._recover_one",
+          "start_line": 933,
+          "end_line": 946,
+          "file_sha256": "170bfca44c52338a4109d021f8dc3c29e7779e00ad069290b5f624e7abd1f1a9"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/execution/check_process.py",
+          "src/llm_cli/agent/bounded_search.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/protocol/client.py",
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/agent/driver.py"
+        ],
+        "semantic": [
+          "src/llm_cli/daemon/main.py",
+          "src/llm_cli/cli/shell.py",
+          "src/llm_cli/daemon/__init__.py",
+          "src/llm_cli/execution/processes.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/execution/check_process.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/execution/commands.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/execution/check_process.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/daemon/main.py",
+          "src/llm_cli/cli/shell.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/execution/processes.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/execution/shared.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 0.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-09",
+      "repository": "loupe",
+      "question": "Where can one malformed review finding be discarded while useful findings from the same response survive?",
+      "expected": [
+        "src/llm_cli/agent/reviewer.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/agent/reviewer.py",
+          "symbol": "_parse",
+          "start_line": 267,
+          "end_line": 304,
+          "file_sha256": "bbd085761874c37665dd015cbf60c15188202921ff333f49b777d62f938990ab"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/agent/reviewer.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/protocol/server.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/providers/openai_provider.py",
+          "src/llm_cli/workspace/workflow.py"
+        ],
+        "semantic": [
+          "src/llm_cli/agent/reviewer.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/workspace/watchers.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/knowledge/store.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/knowledge/indexer.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/agent/reviewer.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/workspace/watchers.py",
+          "src/llm_cli/execution/recovery.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-10",
+      "repository": "loupe",
+      "question": "Where is a long conversation replaced by a bounded summary while the current task and pending tool results are preserved?",
+      "expected": [
+        "src/llm_cli/agent/harness.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/agent/harness.py",
+          "symbol": "CodingAgentHarness._compact",
+          "start_line": 1602,
+          "end_line": 1652,
+          "file_sha256": "86e495d6f7b3f70776a0b8406adcfbfb600dbde6a8c1e192fd1b6e8e62f77c01"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/providers/base.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/providers/anthropic_provider.py",
+          "src/llm_cli/agent/bounded_search.py",
+          "src/llm_cli/knowledge/retrieval.py",
+          "src/llm_cli/providers/openai_provider.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/reviewer.py",
+          "src/llm_cli/cli/composer.py"
+        ],
+        "semantic": [
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/providers/anthropic_provider.py",
+          "src/llm_cli/cli/composer.py",
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/agent/reviewer.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/agent/finalization.py",
+          "src/llm_cli/cli/session.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/providers/anthropic_provider.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/cli/composer.py",
+          "src/llm_cli/agent/reviewer.py",
+          "src/llm_cli/providers/openai_provider.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/agent/shared_tools.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-11",
+      "repository": "loupe",
+      "question": "Where are checkout paths in inherited process variables translated into the temporary tree used to verify a proposed change?",
+      "expected": [
+        "src/llm_cli/execution/environment.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/execution/environment.py",
+          "symbol": "CommandEnvironment.prepare",
+          "start_line": 197,
+          "end_line": 300,
+          "file_sha256": "5e62b1fec279db802ab185fec3c122cdd81dd0abff562467126abccc714cc359"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/mcp/tools.py",
+          "src/llm_cli/coordination/models.py",
+          "src/llm_cli/workspace/runtime_export.py",
+          "src/llm_cli/execution/environment.py",
+          "src/llm_cli/git/validate.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/git/worktrees.py",
+          "src/llm_cli/coordination/scopes.py"
+        ],
+        "semantic": [
+          "src/llm_cli/git/worktrees.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/git/validate.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/workspace/identity.py",
+          "src/llm_cli/workspace/runtime_export.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/workspace/broker.py",
+          "src/llm_cli/protocol/capabilities.py",
+          "src/llm_cli/workspace/workflow.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/git/validate.py",
+          "src/llm_cli/workspace/runtime_export.py",
+          "src/llm_cli/git/worktrees.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/workspace/broker.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/mcp/tools.py",
+          "src/llm_cli/coordination/models.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/execution/environment.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "hybrid": {
+          "5": 0.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-12",
+      "repository": "loupe",
+      "question": "Where is an incoming local message refused when its advertised byte length exceeds the allowed frame size?",
+      "expected": [
+        "src/llm_cli/protocol/framing.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/protocol/framing.py",
+          "symbol": "read_frame",
+          "start_line": 50,
+          "end_line": 58,
+          "file_sha256": "a71dc70c2db4a75f65ef0ce5c40d0cd87a3860ddadb83d0de53de58bda73909e"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/protocol/framing.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/protocol/server.py",
+          "src/llm_cli/coordination/scopes.py",
+          "src/llm_cli/workspace/identity.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/providers/openai_provider.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/knowledge/indexer.py"
+        ],
+        "semantic": [
+          "src/llm_cli/protocol/framing.py",
+          "src/llm_cli/protocol/server.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/providers/anthropic_provider.py",
+          "src/llm_cli/mcp/client.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/mcp/transport.py",
+          "src/llm_cli/protocol/client.py",
+          "src/llm_cli/workspace/identity.py",
+          "src/llm_cli/execution/processes.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/protocol/framing.py",
+          "src/llm_cli/protocol/server.py",
+          "src/llm_cli/workspace/identity.py",
+          "src/llm_cli/protocol/client.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/providers/openai_provider.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/coordination/scopes.py",
+          "src/llm_cli/providers/anthropic_provider.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-13",
+      "repository": "loupe",
+      "question": "Where are already completed provider response items retained when the final streamed event omits their list?",
+      "expected": [
+        "src/llm_cli/providers/codex_provider.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/providers/codex_provider.py",
+          "symbol": "_SubscriptionStream.__iter__",
+          "start_line": 265,
+          "end_line": 321,
+          "file_sha256": "8066bd4f9a4914eb511c23f60f624439b3ad2f04efa066cb267077b108ed7524"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/providers/codex_provider.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/providers/openai_provider.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/agent/finalization.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/knowledge/indexer.py",
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/cli/shell.py",
+          "src/llm_cli/providers/base.py"
+        ],
+        "semantic": [
+          "src/llm_cli/providers/codex_provider.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/protocol/server.py",
+          "src/llm_cli/providers/anthropic_provider.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/workspace/watchers.py",
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/providers/openai_provider.py",
+          "src/llm_cli/mcp/client.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/providers/codex_provider.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/providers/openai_provider.py",
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/agent/finalization.py",
+          "src/llm_cli/providers/anthropic_provider.py",
+          "src/llm_cli/protocol/server.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/cli/session.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-14",
+      "repository": "loupe",
+      "question": "Where do two helpers requesting the same web page wait for one shared download without holding the cache lock during human approval?",
+      "expected": [
+        "src/llm_cli/web/access.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/web/access.py",
+          "symbol": "WebAccess.page",
+          "start_line": 70,
+          "end_line": 118,
+          "file_sha256": "6bc6caec4808d1a1c5b96c99791a9da8e92ad6e05ecbeffd623013432ecf2ad3"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/web/access.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/config/models.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/web/fetch.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/workspace/batches.py",
+          "src/llm_cli/providers/openai_provider.py"
+        ],
+        "semantic": [
+          "src/llm_cli/web/access.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/web/__init__.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/watchers.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/workspace/external.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/web/access.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/workspace/batches.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/config/models.py",
+          "src/llm_cli/agent/harness.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-15",
+      "repository": "loupe",
+      "question": "Where are public page downloads protected against a hostname that resolves to a private network address?",
+      "expected": [
+        "src/llm_cli/web/fetch.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/web/fetch.py",
+          "symbol": "public_addresses",
+          "start_line": 98,
+          "end_line": 112,
+          "file_sha256": "e27177076e249c4dd217243eb344ad49672a3b005906279499c37a3d40bce9a0"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/web/fetch.py",
+          "src/llm_cli/web/access.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/agent/source_policy.py",
+          "src/llm_cli/workspace/rebuild.py",
+          "src/llm_cli/workspace/process_privacy.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/config/models.py"
+        ],
+        "semantic": [
+          "src/llm_cli/web/__init__.py",
+          "src/llm_cli/web/fetch.py",
+          "src/llm_cli/web/access.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/paths.py",
+          "src/llm_cli/workspace/switching.py",
+          "src/llm_cli/execution/environment.py",
+          "src/llm_cli/coordination/identity.py",
+          "src/llm_cli/workspace/runtime.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/web/fetch.py",
+          "src/llm_cli/web/access.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/agent/source_policy.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/mcp/transport.py",
+          "src/llm_cli/config/loader.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/workspace/broker.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-16",
+      "repository": "loupe",
+      "question": "Where are differently cased or differently normalized spellings of private runtime paths kept out of model-visible source?",
+      "expected": [
+        "src/llm_cli/agent/source_policy.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/agent/source_policy.py",
+          "symbol": "runtime_path_matches",
+          "start_line": 71,
+          "end_line": 82,
+          "file_sha256": "02ea4ef6414568410a922a779bbe613be75e967c01d0dade9468c25350dd8b9c"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/coordination/scopes.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/agent/repair.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/workspace/runtime_refresh.py"
+        ],
+        "semantic": [
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/coordination/scopes.py",
+          "src/llm_cli/execution/environment.py",
+          "src/llm_cli/workspace/identity.py",
+          "src/llm_cli/git/inspect.py",
+          "src/llm_cli/agent/source_policy.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/paths.py",
+          "src/llm_cli/workspace/runtime_export.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/coordination/scopes.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/source_policy.py",
+          "src/llm_cli/execution/environment.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/workspace/watchers.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 0.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-17",
+      "repository": "loupe",
+      "question": "Where are search citations checked against the current file before they are labelled as current or stale?",
+      "expected": [
+        "src/llm_cli/knowledge/search.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/knowledge/search.py",
+          "symbol": "current_state",
+          "start_line": 43,
+          "end_line": 60,
+          "file_sha256": "63298773f6049564338d54a212e8e65b70b541163c05615e6ce84da44710eade"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/knowledge/search.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/knowledge/indexer.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/agent/instructions.py",
+          "src/llm_cli/knowledge/retrieval.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/workspace/context.py"
+        ],
+        "semantic": [
+          "src/llm_cli/knowledge/search.py",
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/knowledge/retrieval.py",
+          "src/llm_cli/coordination/models.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/knowledge/__init__.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/build.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/knowledge/search.py",
+          "src/llm_cli/knowledge/retrieval.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/agent/bounded_search.py",
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/coordination/models.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-18",
+      "repository": "loupe",
+      "question": "Where are source declarations and import relationships extracted without running the project being inspected?",
+      "expected": [
+        "src/llm_cli/knowledge/parsers.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/knowledge/parsers.py",
+          "symbol": "_python",
+          "start_line": 139,
+          "end_line": 207,
+          "file_sha256": "b41ca82dc5266fa116bdeb2c96a29e3975cfd3f4b48a52c6b6acb40bfc99ac37"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/knowledge/parsers.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/knowledge/retrieval.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/execution/environment.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/identity.py"
+        ],
+        "semantic": [
+          "src/llm_cli/workspace/runtime_export.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/knowledge/search.py",
+          "src/llm_cli/git/__init__.py",
+          "src/llm_cli/agent/instructions.py",
+          "src/llm_cli/build.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/knowledge/graph_schema.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/execution/environment.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/execution/environment.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/workspace/runtime_export.py",
+          "src/llm_cli/knowledge/parsers.py",
+          "src/llm_cli/knowledge/search.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/git/__init__.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "hybrid": {
+          "5": 0.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-19",
+      "repository": "loupe",
+      "question": "Where is source text split into overlapping line windows with stable identities and a byte ceiling?",
+      "expected": [
+        "src/llm_cli/knowledge/chunker.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/knowledge/chunker.py",
+          "symbol": "chunks",
+          "start_line": 21,
+          "end_line": 74,
+          "file_sha256": "07197882e52581999dfdedb60bf356b4e9902d55c17f451bff648565ad7ad549"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/knowledge/chunker.py",
+          "src/llm_cli/cli/streaming_markdown.py",
+          "src/llm_cli/knowledge/store.py",
+          "src/llm_cli/providers/base.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/agent/reviewer.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/cli/status.py"
+        ],
+        "semantic": [
+          "src/llm_cli/knowledge/chunker.py",
+          "src/llm_cli/cli/terminal.py",
+          "src/llm_cli/cli/status.py",
+          "src/llm_cli/cli/streaming_markdown.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/cli/command_picker.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/agent/shared_tools.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/knowledge/chunker.py",
+          "src/llm_cli/cli/streaming_markdown.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/cli/status.py",
+          "src/llm_cli/knowledge/indexer.py",
+          "src/llm_cli/workspace/identity.py",
+          "src/llm_cli/cli/terminal.py",
+          "src/llm_cli/knowledge/store.py",
+          "src/llm_cli/providers/base.py",
+          "src/llm_cli/execution/checks.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-20",
+      "repository": "loupe",
+      "question": "Where are newly published documents applied to the search projection without rewriting all the unchanged documents?",
+      "expected": [
+        "src/llm_cli/knowledge/indexer.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/knowledge/indexer.py",
+          "symbol": "KnowledgeIndex.process_pending",
+          "start_line": 368,
+          "end_line": 482,
+          "file_sha256": "b2712cefc527594a2baed4e5fae6500119ff8b632cf9c1287a048de7348d8b11"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/knowledge/indexer.py",
+          "src/llm_cli/knowledge/store.py",
+          "src/llm_cli/knowledge/graph.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/knowledge/search.py",
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/cli/composer.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/knowledge/graph_schema.py"
+        ],
+        "semantic": [
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/knowledge/__init__.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/knowledge/retrieval.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/knowledge/graph.py",
+          "src/llm_cli/workspace/switching.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/knowledge/graph.py",
+          "src/llm_cli/knowledge/store.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/knowledge/search.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/switching.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/cli/render.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "hybrid": {
+          "5": 0.0,
+          "10": 0.0
+        }
+      }
+    },
+    {
+      "id": "loupe-21",
+      "repository": "loupe",
+      "question": "Where are retrieved snippets shortened to a caller budget while retaining their file and version citations?",
+      "expected": [
+        "src/llm_cli/knowledge/retrieval.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/knowledge/retrieval.py",
+          "symbol": "render_retrieval",
+          "start_line": 143,
+          "end_line": 169,
+          "file_sha256": "1e326a700b2e7de7b4e1b5412ae17dfb756817a980b1799f33cc99a0602b657f"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/knowledge/retrieval.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/daemon/main.py",
+          "src/llm_cli/providers/openai_provider.py",
+          "src/llm_cli/agent/instructions.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/knowledge/indexer.py",
+          "src/llm_cli/workspace/runtime_refresh.py"
+        ],
+        "semantic": [
+          "src/llm_cli/knowledge/search.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/cli/usage.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/agent/instructions.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/runtime_export.py",
+          "src/llm_cli/protocol/capabilities.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/knowledge/search.py",
+          "src/llm_cli/agent/instructions.py",
+          "src/llm_cli/knowledge/retrieval.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/cli/usage.py",
+          "src/llm_cli/daemon/main.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "hybrid": {
+          "5": 0.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-22",
+      "repository": "loupe",
+      "question": "Where is a consistent database copy made while another process may still be writing to the live database?",
+      "expected": [
+        "src/llm_cli/storage/backup.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/storage/backup.py",
+          "symbol": "_copy_and_validate",
+          "start_line": 195,
+          "end_line": 224,
+          "file_sha256": "5b1db09aee4408cc33454a949c2d0879e3473ac578a7da4285431fc978cbd03b"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/execution/processes.py",
+          "src/llm_cli/storage/backup.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/workspace/installation.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/storage/connection.py",
+          "src/llm_cli/workspace/regime.py",
+          "src/llm_cli/doctor.py"
+        ],
+        "semantic": [
+          "src/llm_cli/storage/backup.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/workspace/batches.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/storage/__init__.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/storage/backup.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/execution/processes.py",
+          "src/llm_cli/workspace/batches.py",
+          "src/llm_cli/storage/connection.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/storage/__init__.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/agent/harness.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-23",
+      "repository": "loupe",
+      "question": "Where can old streaming output be pruned without deleting settled answers or information needed to recover unfinished work?",
+      "expected": [
+        "src/llm_cli/storage/retention.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/storage/retention.py",
+          "symbol": "prune_task_output",
+          "start_line": 68,
+          "end_line": 210,
+          "file_sha256": "d566810a0ab638f6c5a4adea31cd282d91b03db40b2927f7a32cdf136ab69858"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/cli/streaming_markdown.py",
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/cli/status.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/providers/base.py"
+        ],
+        "semantic": [
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/workspace/watchers.py",
+          "src/llm_cli/mcp/client.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/providers/codex_provider.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/protocol/server.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/workspace/hydration.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/storage/retention.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/cli/status.py",
+          "src/llm_cli/providers/base.py",
+          "src/llm_cli/knowledge/store.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/agent/tools.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 0.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-24",
+      "repository": "loupe",
+      "question": "Where does opening an existing database reject a numbered upgrade whose previously applied definition was changed?",
+      "expected": [
+        "src/llm_cli/storage/migrations.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/storage/migrations.py",
+          "symbol": "apply_migrations",
+          "start_line": 1748,
+          "end_line": 1795,
+          "file_sha256": "d1e62403c16f5934b1810f02af03a3d979f502fcd60dd680910bd7c0c5b56be9"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/paths.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/storage/backup.py",
+          "src/llm_cli/workspace/installation.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/agent/tools.py"
+        ],
+        "semantic": [
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/workspace/installation.py",
+          "src/llm_cli/storage/__init__.py",
+          "src/llm_cli/paths.py",
+          "src/llm_cli/workspace/runtime_refresh.py",
+          "src/llm_cli/execution/runner.py",
+          "src/llm_cli/workspace/runtime_export.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/agent/tools.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/paths.py",
+          "src/llm_cli/workspace/installation.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/workspace/isolated.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/runtime_refresh.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/workspace/gitstate.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-25",
+      "repository": "loupe",
+      "question": "Where are operating system restrictions assembled so a subprocess can write only to approved trees and cannot read credential directories?",
+      "expected": [
+        "src/llm_cli/execution/sandbox.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/execution/sandbox.py",
+          "symbol": "wrap",
+          "start_line": 182,
+          "end_line": 191,
+          "file_sha256": "2c000b4091c9a63a77b4b94153e3e914f566f9f2814b34b676a3f98c7f90e539"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/agent/instructions.py",
+          "src/llm_cli/git/environment.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/hydration.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/coordination/scopes.py"
+        ],
+        "semantic": [
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/agent/source_policy.py",
+          "src/llm_cli/workspace/__init__.py",
+          "src/llm_cli/git/environment.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/git/worktrees.py",
+          "src/llm_cli/workspace/identity.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/git/environment.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/agent/instructions.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-26",
+      "repository": "loupe",
+      "question": "Where is test output screened line by line before it can be emitted or retained by the background service?",
+      "expected": [
+        "src/llm_cli/execution/checks.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/execution/checks.py",
+          "symbol": "supervised_run",
+          "start_line": 1146,
+          "end_line": 1290,
+          "file_sha256": "c65a1eb092d4bf3b8996156d5cb42a51d3868a949b6a54ddc1c1652c061c0c78"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/knowledge/parsers.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/cli/shell.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/git/integrate.py",
+          "src/llm_cli/workspace/gitstate.py"
+        ],
+        "semantic": [
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/cli/status.py",
+          "src/llm_cli/cli/shell.py",
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/mcp/client.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/execution/commands.py",
+          "src/llm_cli/execution/processes.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/storage/retention.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/execution/checks.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/cli/shell.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/execution/processes.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/cli/status.py",
+          "src/llm_cli/knowledge/parsers.py",
+          "src/llm_cli/workspace/external.py",
+          "src/llm_cli/mcp/client.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-27",
+      "repository": "loupe",
+      "question": "Where do earlier queued overlapping reservations prevent later exclusive work from jumping ahead of them?",
+      "expected": [
+        "src/llm_cli/coordination/coordinator.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/coordination/coordinator.py",
+          "symbol": "RepositoryCoordinator.request_claim",
+          "start_line": 82,
+          "end_line": 281,
+          "file_sha256": "7e6d43a41bedf8b632d67a1dd784d9e0f52f87fccc4a7ab4a0a706ec9c0f140d"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/agent/driver.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/cli/connect.py",
+          "src/llm_cli/coordination/models.py"
+        ],
+        "semantic": [
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/workspace/switching.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/coordination/models.py",
+          "src/llm_cli/workspace/authority.py",
+          "src/llm_cli/knowledge/store.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/coordination/models.py",
+          "src/llm_cli/storage/migrations.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/workspace/workflow.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-28",
+      "repository": "loupe",
+      "question": "Where does the interactive input editor offer slash-command suggestions and distinguish submitting text from inserting another line?",
+      "expected": [
+        "src/llm_cli/cli/composer.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/cli/composer.py",
+          "symbol": "Composer.__init__",
+          "start_line": 113,
+          "end_line": 288,
+          "file_sha256": "069132708b5c2f1b69b861fc6a82320cd1dd44d74186062d20ec5d73378753c6"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/cli/command_picker.py",
+          "src/llm_cli/cli/session.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/mcp/tools.py",
+          "src/llm_cli/cli/composer.py",
+          "src/llm_cli/knowledge/parsers.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/config/models.py",
+          "src/llm_cli/daemon/service.py"
+        ],
+        "semantic": [
+          "src/llm_cli/cli/command_picker.py",
+          "src/llm_cli/cli/composer.py",
+          "src/llm_cli/cli/models.py",
+          "src/llm_cli/cli/__init__.py",
+          "src/llm_cli/cli/terminal.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/cli/streaming_markdown.py",
+          "src/llm_cli/cli/session.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/cli/command_picker.py",
+          "src/llm_cli/cli/composer.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/cli/session.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/cli/models.py",
+          "src/llm_cli/cli/render.py",
+          "src/llm_cli/knowledge/parsers.py",
+          "src/llm_cli/cli/app.py",
+          "src/llm_cli/cli/active_controls.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-29",
+      "repository": "loupe",
+      "question": "Where is publishing paused when version-control operations such as a merge or rebase are still in progress?",
+      "expected": [
+        "src/llm_cli/workspace/gitstate.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/workspace/gitstate.py",
+          "symbol": "preflight",
+          "start_line": 128,
+          "end_line": 206,
+          "file_sha256": "4116d327cd6f2727935225d83a99c628c4ae5b433dbb4b05a96679dcfb0d7d02"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/workspace/merge.py",
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/workspace/watchers.py",
+          "src/llm_cli/storage/control.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/execution/recovery.py"
+        ],
+        "semantic": [
+          "src/llm_cli/workspace/workflow.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/workspace/switching.py",
+          "src/llm_cli/workspace/merge.py",
+          "src/llm_cli/execution/recovery.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/workspace/gitstate.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/workspace/isolated_sync.py",
+          "src/llm_cli/workspace/merge.py",
+          "src/llm_cli/agent/shared_tools.py",
+          "src/llm_cli/coordination/coordinator.py",
+          "src/llm_cli/execution/recovery.py",
+          "src/llm_cli/execution/shared.py",
+          "src/llm_cli/workspace/switching.py",
+          "src/llm_cli/workspace/workflow.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "loupe-30",
+      "repository": "loupe",
+      "question": "Where are repository guidance files found from broad to narrow directories and framed so they cannot expand an agent authority?",
+      "expected": [
+        "src/llm_cli/agent/instructions.py"
+      ],
+      "evidence": [
+        {
+          "path": "src/llm_cli/agent/instructions.py",
+          "symbol": "discover_instructions",
+          "start_line": 59,
+          "end_line": 93,
+          "file_sha256": "79b3b46bf2498ba87622e2b1bfa89013685a6a3de0d47a7b570bc7c8c1051d0b"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "src/llm_cli/agent/instructions.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/agent/reviewer.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/workspace/context.py",
+          "src/llm_cli/cli/session.py",
+          "src/llm_cli/agent/bounded_search.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/execution/sandbox.py",
+          "src/llm_cli/daemon/service.py"
+        ],
+        "semantic": [
+          "src/llm_cli/agent/instructions.py",
+          "src/llm_cli/knowledge/__init__.py",
+          "src/llm_cli/__init__.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/coordination/__init__.py",
+          "src/llm_cli/web/__init__.py",
+          "src/llm_cli/coordination/scopes.py",
+          "src/llm_cli/workspace/runtime.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/agent/explorer.py"
+        ],
+        "hybrid": [
+          "src/llm_cli/agent/instructions.py",
+          "src/llm_cli/agent/harness.py",
+          "src/llm_cli/agent/tools.py",
+          "src/llm_cli/agent/explorer.py",
+          "src/llm_cli/daemon/service.py",
+          "src/llm_cli/knowledge/__init__.py",
+          "src/llm_cli/__init__.py",
+          "src/llm_cli/agent/reviewer.py",
+          "src/llm_cli/coordination/__init__.py",
+          "src/llm_cli/workspace/context.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-01",
+      "repository": "django",
+      "question": "Where is application startup ordered so configuration is registered before models and final initialization hooks run?",
+      "expected": [
+        "django/apps/registry.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/apps/registry.py",
+          "symbol": "Apps.populate",
+          "start_line": 61,
+          "end_line": 127,
+          "file_sha256": "ec931677450952aad787249d5582cc3fe0cb0bdb2a9a7ee7fdd817c4263a0d66"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/core/management/base.py",
+          "django/db/backends/base/base.py",
+          "django/db/models/base.py",
+          "django/apps/registry.py",
+          "django/apps/config.py",
+          "django/test/utils.py",
+          "django/core/management/commands/shell.py",
+          "django/db/models/sql/subqueries.py",
+          "django/test/testcases.py",
+          "django/db/models/fields/__init__.py"
+        ],
+        "semantic": [
+          "django/apps/registry.py",
+          "django/core/serializers/__init__.py",
+          "django/apps/config.py",
+          "django/core/management/commands/sqlsequencereset.py",
+          "django/contrib/admin/sites.py",
+          "django/db/migrations/state.py",
+          "django/apps/__init__.py",
+          "django/__init__.py",
+          "django/contrib/sites/management.py",
+          "django/db/migrations/questioner.py"
+        ],
+        "hybrid": [
+          "django/apps/registry.py",
+          "django/apps/config.py",
+          "django/core/management/base.py",
+          "django/contrib/admin/sites.py",
+          "django/core/management/commands/shell.py",
+          "django/db/models/options.py",
+          "django/db/models/query.py",
+          "django/core/serializers/__init__.py",
+          "django/db/backends/base/base.py",
+          "django/db/models/base.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-02",
+      "repository": "django",
+      "question": "Where is the current authenticated person attached to a request lazily instead of querying the database immediately?",
+      "expected": [
+        "django/contrib/auth/middleware.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/contrib/auth/middleware.py",
+          "symbol": "AuthenticationMiddleware.process_request",
+          "start_line": 32,
+          "end_line": 42,
+          "file_sha256": "be060fbf4c9a53dcc1f6dc3bdfebbbdc6cd7ef642931545b736efad9bfb9a036"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/contrib/auth/middleware.py",
+          "django/db/models/sql/query.py",
+          "django/contrib/auth/mixins.py",
+          "django/contrib/flatpages/templatetags/flatpages.py",
+          "django/contrib/auth/__init__.py",
+          "django/contrib/auth/views.py",
+          "django/contrib/sessions/backends/db.py",
+          "django/contrib/admin/sites.py",
+          "django/db/backends/base/base.py",
+          "django/utils/text.py"
+        ],
+        "semantic": [
+          "django/contrib/auth/__init__.py",
+          "django/contrib/auth/middleware.py",
+          "django/contrib/auth/handlers/modwsgi.py",
+          "django/contrib/auth/backends.py",
+          "django/contrib/auth/context_processors.py",
+          "django/contrib/auth/management/__init__.py",
+          "django/core/exceptions.py",
+          "django/db/models/query_utils.py",
+          "django/views/debug.py",
+          "django/shortcuts.py"
+        ],
+        "hybrid": [
+          "django/contrib/auth/middleware.py",
+          "django/contrib/auth/__init__.py",
+          "django/db/models/sql/query.py",
+          "django/contrib/auth/handlers/modwsgi.py",
+          "django/contrib/auth/mixins.py",
+          "django/contrib/auth/backends.py",
+          "django/contrib/flatpages/templatetags/flatpages.py",
+          "django/contrib/auth/context_processors.py",
+          "django/contrib/auth/management/__init__.py",
+          "django/contrib/auth/views.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-03",
+      "repository": "django",
+      "question": "Where can a side effect be deferred until the surrounding database transaction has committed successfully?",
+      "expected": [
+        "django/db/transaction.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/db/transaction.py",
+          "symbol": "on_commit",
+          "start_line": 143,
+          "end_line": 148,
+          "file_sha256": "b7955289b6982bf3a4c272fc80b4fddc1580ea843788f163aee69f0592b6151c"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/db/backends/sqlite3/base.py",
+          "django/db/transaction.py",
+          "django/db/backends/mysql/base.py",
+          "django/db/backends/postgresql/schema.py",
+          "django/core/management/commands/loaddata.py",
+          "django/utils/text.py",
+          "django/db/models/query.py",
+          "django/db/backends/postgresql/base.py",
+          "django/db/models/sql/query.py",
+          "django/db/backends/base/creation.py"
+        ],
+        "semantic": [
+          "django/db/transaction.py",
+          "django/db/backends/base/base.py",
+          "django/test/testcases.py",
+          "django/db/models/sql/compiler.py",
+          "django/db/backends/dummy/base.py",
+          "django/db/backends/oracle/base.py",
+          "django/test/utils.py",
+          "django/db/backends/sqlite3/base.py",
+          "django/contrib/contenttypes/fields.py",
+          "django/contrib/postgres/operations.py"
+        ],
+        "hybrid": [
+          "django/db/transaction.py",
+          "django/db/backends/sqlite3/base.py",
+          "django/db/models/sql/compiler.py",
+          "django/test/testcases.py",
+          "django/db/backends/mysql/base.py",
+          "django/test/utils.py",
+          "django/db/backends/oracle/base.py",
+          "django/contrib/sessions/backends/db.py",
+          "django/db/models/fields/related_descriptors.py",
+          "django/db/backends/base/features.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-04",
+      "repository": "django",
+      "question": "Where are address patterns matched recursively and captured path values collected for the selected view?",
+      "expected": [
+        "django/urls/resolvers.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/urls/resolvers.py",
+          "symbol": "URLResolver.resolve",
+          "start_line": 671,
+          "end_line": 718,
+          "file_sha256": "4dd4946560baaf845e4b0811f2b39b6cf7551cf43e7f43d38c123af70dfba891"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/urls/resolvers.py",
+          "django/contrib/staticfiles/storage.py",
+          "django/contrib/staticfiles/utils.py",
+          "django/contrib/staticfiles/finders.py",
+          "django/core/management/commands/listurls.py",
+          "django/urls/conf.py",
+          "django/contrib/staticfiles/management/commands/collectstatic.py",
+          "django/test/utils.py",
+          "django/core/checks/urls.py",
+          "django/db/models/sql/compiler.py"
+        ],
+        "semantic": [
+          "django/urls/resolvers.py",
+          "django/db/models/fields/related.py",
+          "django/core/management/commands/listurls.py",
+          "django/urls/conf.py",
+          "django/db/models/options.py",
+          "django/db/models/sql/compiler.py",
+          "django/contrib/sitemaps/views.py",
+          "django/utils/autoreload.py",
+          "django/contrib/auth/urls.py",
+          "django/urls/utils.py"
+        ],
+        "hybrid": [
+          "django/urls/resolvers.py",
+          "django/core/management/commands/listurls.py",
+          "django/urls/conf.py",
+          "django/db/models/sql/compiler.py",
+          "django/contrib/staticfiles/finders.py",
+          "django/utils/autoreload.py",
+          "django/contrib/staticfiles/storage.py",
+          "django/db/models/fields/related.py",
+          "django/contrib/staticfiles/utils.py",
+          "django/db/models/options.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-05",
+      "repository": "django",
+      "question": "Where does a large incoming file upload use a temporary disk file instead of keeping all its bytes in memory?",
+      "expected": [
+        "django/core/files/uploadhandler.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/core/files/uploadhandler.py",
+          "symbol": "MemoryFileUploadHandler.handle_raw_input",
+          "start_line": 199,
+          "end_line": 223,
+          "file_sha256": "c8d989eef378ad5f28b8b071ea935582e418d3de5908d190b30dcf28bed0d21a"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/conf/global_settings.py",
+          "django/core/files/uploadhandler.py",
+          "django/core/files/uploadedfile.py",
+          "django/core/files/storage/memory.py",
+          "django/forms/fields.py",
+          "django/http/multipartparser.py",
+          "django/core/handlers/asgi.py",
+          "django/contrib/gis/gdal/raster/source.py",
+          "django/test/client.py",
+          "django/core/files/storage/filesystem.py"
+        ],
+        "semantic": [
+          "django/core/files/uploadedfile.py",
+          "django/core/files/uploadhandler.py",
+          "django/contrib/staticfiles/storage.py",
+          "django/core/files/storage/base.py",
+          "django/conf/global_settings.py",
+          "django/contrib/sessions/backends/file.py",
+          "django/core/files/storage/filesystem.py",
+          "django/http/multipartparser.py",
+          "django/core/cache/backends/filebased.py",
+          "django/http/response.py"
+        ],
+        "hybrid": [
+          "django/core/files/uploadedfile.py",
+          "django/core/files/uploadhandler.py",
+          "django/conf/global_settings.py",
+          "django/http/multipartparser.py",
+          "django/core/files/storage/memory.py",
+          "django/core/files/storage/filesystem.py",
+          "django/contrib/sessions/backends/file.py",
+          "django/forms/fields.py",
+          "django/test/client.py",
+          "django/core/handlers/asgi.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-06",
+      "repository": "django",
+      "question": "Where is a stored upload given a different available name when the requested filename already exists?",
+      "expected": [
+        "django/core/files/storage/base.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/core/files/storage/base.py",
+          "symbol": "Storage.get_available_name",
+          "start_line": 75,
+          "end_line": 115,
+          "file_sha256": "774578b9e5c43daf46fb4fb5f0d020b96c2c4c1df795b4100d8643a0296203c9"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/core/files/storage/base.py",
+          "django/db/models/fields/files.py",
+          "django/apps/registry.py",
+          "django/core/files/storage/filesystem.py",
+          "django/conf/global_settings.py",
+          "django/core/files/storage/memory.py",
+          "django/http/multipartparser.py",
+          "django/db/models/sql/query.py",
+          "django/core/management/templates.py",
+          "django/core/files/uploadhandler.py"
+        ],
+        "semantic": [
+          "django/core/files/uploadedfile.py",
+          "django/core/files/storage/base.py",
+          "django/db/models/fields/files.py",
+          "django/test/client.py",
+          "django/http/multipartparser.py",
+          "django/core/files/storage/filesystem.py",
+          "django/core/files/storage/memory.py",
+          "django/contrib/staticfiles/storage.py",
+          "django/core/checks/files.py",
+          "django/core/files/uploadhandler.py"
+        ],
+        "hybrid": [
+          "django/core/files/storage/base.py",
+          "django/db/models/fields/files.py",
+          "django/core/files/storage/filesystem.py",
+          "django/http/multipartparser.py",
+          "django/core/files/storage/memory.py",
+          "django/core/files/uploadhandler.py",
+          "django/contrib/staticfiles/storage.py",
+          "django/contrib/sessions/backends/file.py",
+          "django/core/files/uploadedfile.py",
+          "django/apps/registry.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-07",
+      "repository": "django",
+      "question": "Where are substituted template values escaped before they are inserted into rendered markup?",
+      "expected": [
+        "django/template/base.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/template/base.py",
+          "symbol": "render_value_in_context",
+          "start_line": 1263,
+          "end_line": 1276,
+          "file_sha256": "5dcb830abbf1b216c2ef197b369488a5ac9579bedc2605fde1baf71bd61ffe28"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/db/models/sql/query.py",
+          "django/template/base.py",
+          "django/template/context.py",
+          "django/template/response.py",
+          "django/db/models/base.py",
+          "django/template/defaulttags.py",
+          "django/test/client.py",
+          "django/test/testcases.py",
+          "django/db/models/sql/where.py",
+          "django/template/defaultfilters.py"
+        ],
+        "semantic": [
+          "django/template/base.py",
+          "django/templatetags/l10n.py",
+          "django/template/engine.py",
+          "django/template/loader.py",
+          "django/template/defaulttags.py",
+          "django/template/response.py",
+          "django/template/loader_tags.py",
+          "django/template/backends/dummy.py",
+          "django/test/testcases.py",
+          "django/utils/html.py"
+        ],
+        "hybrid": [
+          "django/template/base.py",
+          "django/template/response.py",
+          "django/template/defaulttags.py",
+          "django/test/testcases.py",
+          "django/template/defaultfilters.py",
+          "django/db/models/sql/query.py",
+          "django/templatetags/l10n.py",
+          "django/template/context.py",
+          "django/template/engine.py",
+          "django/template/loader.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-08",
+      "repository": "django",
+      "question": "Where are unsafe requests rejected when the browser origin or secure referrer does not match the trusted site?",
+      "expected": [
+        "django/middleware/csrf.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/middleware/csrf.py",
+          "symbol": "CsrfViewMiddleware.process_view",
+          "start_line": 416,
+          "end_line": 472,
+          "file_sha256": "1238ee0f2813fc8e0ef977fbfb3ceca6dafd9e9fa7fd64bf4808fafd507d5f18"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/core/checks/security/base.py",
+          "django/views/csrf.py",
+          "django/middleware/csrf.py",
+          "django/conf/global_settings.py",
+          "django/middleware/security.py",
+          "django/core/checks/compatibility/django_4_0.py",
+          "django/utils/csp.py",
+          "django/template/exceptions.py",
+          "django/contrib/sites/shortcuts.py",
+          "django/test/client.py"
+        ],
+        "semantic": [
+          "django/core/checks/security/base.py",
+          "django/middleware/csrf.py",
+          "django/core/checks/compatibility/django_4_0.py",
+          "django/core/checks/security/csrf.py",
+          "django/conf/global_settings.py",
+          "django/middleware/security.py",
+          "django/contrib/auth/views.py",
+          "django/utils/http.py",
+          "django/views/csrf.py",
+          "django/middleware/clickjacking.py"
+        ],
+        "hybrid": [
+          "django/core/checks/security/base.py",
+          "django/middleware/csrf.py",
+          "django/core/checks/compatibility/django_4_0.py",
+          "django/conf/global_settings.py",
+          "django/views/csrf.py",
+          "django/middleware/security.py",
+          "django/contrib/syndication/views.py",
+          "django/middleware/common.py",
+          "django/core/checks/security/csrf.py",
+          "django/contrib/auth/views.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-09",
+      "repository": "django",
+      "question": "Where is a new browser-session key generated until it avoids a collision with an existing stored session?",
+      "expected": [
+        "django/contrib/sessions/backends/base.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/contrib/sessions/backends/base.py",
+          "symbol": "SessionBase._get_new_session_key",
+          "start_line": 197,
+          "end_line": 202,
+          "file_sha256": "a78d5d0f5c41d7b2523f37b36921c87023262e7479aec1ea739836c8db4d3105"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/contrib/sessions/backends/file.py",
+          "django/contrib/sessions/backends/base.py",
+          "django/contrib/sessions/backends/db.py",
+          "django/contrib/sessions/backends/cache.py",
+          "django/contrib/sessions/middleware.py",
+          "django/contrib/auth/__init__.py",
+          "django/conf/global_settings.py",
+          "django/contrib/sessions/backends/signed_cookies.py",
+          "django/test/client.py",
+          "django/contrib/auth/middleware.py"
+        ],
+        "semantic": [
+          "django/contrib/sessions/backends/base.py",
+          "django/contrib/sessions/backends/signed_cookies.py",
+          "django/contrib/sessions/middleware.py",
+          "django/conf/global_settings.py",
+          "django/contrib/sessions/backends/cached_db.py",
+          "django/contrib/sessions/models.py",
+          "django/contrib/sessions/backends/cache.py",
+          "django/contrib/sessions/backends/db.py",
+          "django/contrib/auth/__init__.py",
+          "django/contrib/sessions/backends/file.py"
+        ],
+        "hybrid": [
+          "django/contrib/sessions/backends/base.py",
+          "django/contrib/sessions/middleware.py",
+          "django/contrib/sessions/backends/signed_cookies.py",
+          "django/contrib/sessions/backends/file.py",
+          "django/contrib/sessions/backends/db.py",
+          "django/conf/global_settings.py",
+          "django/contrib/sessions/backends/cache.py",
+          "django/contrib/auth/__init__.py",
+          "django/contrib/sessions/backends/cached_db.py",
+          "django/test/client.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-10",
+      "repository": "django",
+      "question": "Where is a stored login password checked and upgraded to the preferred hashing scheme after successful verification?",
+      "expected": [
+        "django/contrib/auth/hashers.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/contrib/auth/hashers.py",
+          "symbol": "check_password",
+          "start_line": 75,
+          "end_line": 86,
+          "file_sha256": "383f05a125b68ac62ebdc46e01b9c28c460c6b22cae722fb8be90006f8848c7a"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/contrib/auth/middleware.py",
+          "django/contrib/auth/views.py",
+          "django/contrib/auth/mixins.py",
+          "django/contrib/auth/tokens.py",
+          "django/contrib/auth/hashers.py",
+          "django/conf/global_settings.py",
+          "django/contrib/auth/base_user.py",
+          "django/contrib/auth/decorators.py",
+          "django/contrib/auth/forms.py",
+          "django/contrib/auth/templatetags/auth.py"
+        ],
+        "semantic": [
+          "django/contrib/auth/hashers.py",
+          "django/contrib/auth/base_user.py",
+          "django/contrib/auth/__init__.py",
+          "django/test/signals.py",
+          "django/contrib/auth/views.py",
+          "django/contrib/auth/tokens.py",
+          "django/contrib/auth/templatetags/auth.py",
+          "django/contrib/auth/management/commands/changepassword.py",
+          "django/contrib/auth/forms.py",
+          "django/conf/global_settings.py"
+        ],
+        "hybrid": [
+          "django/contrib/auth/hashers.py",
+          "django/contrib/auth/views.py",
+          "django/contrib/auth/base_user.py",
+          "django/contrib/auth/tokens.py",
+          "django/conf/global_settings.py",
+          "django/contrib/auth/templatetags/auth.py",
+          "django/contrib/auth/forms.py",
+          "django/contrib/auth/mixins.py",
+          "django/contrib/admin/sites.py",
+          "django/contrib/auth/urls.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-11",
+      "repository": "django",
+      "question": "Where can signed data carry an age limit so an otherwise valid signature is refused after it expires?",
+      "expected": [
+        "django/core/signing.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/core/signing.py",
+          "symbol": "TimestampSigner.unsign",
+          "start_line": 303,
+          "end_line": 318,
+          "file_sha256": "e628b24e597bd6dc8cf188bb16d2a65382a2927e4db7ee8180083027778714f5"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/http/response.py",
+          "django/core/signing.py",
+          "django/utils/cache.py",
+          "django/contrib/sessions/backends/signed_cookies.py",
+          "django/contrib/sessions/middleware.py",
+          "django/http/request.py",
+          "django/conf/global_settings.py",
+          "django/contrib/admin/options.py",
+          "django/middleware/cache.py",
+          "django/forms/formsets.py"
+        ],
+        "semantic": [
+          "django/core/signing.py",
+          "django/contrib/sessions/backends/signed_cookies.py",
+          "django/contrib/sessions/backends/cached_db.py",
+          "django/contrib/sessions/backends/base.py",
+          "django/core/cache/backends/base.py",
+          "django/core/cache/backends/locmem.py",
+          "django/contrib/sessions/backends/file.py",
+          "django/http/response.py",
+          "django/middleware/cache.py",
+          "django/core/cache/backends/memcached.py"
+        ],
+        "hybrid": [
+          "django/core/signing.py",
+          "django/contrib/sessions/backends/signed_cookies.py",
+          "django/http/response.py",
+          "django/utils/cache.py",
+          "django/middleware/cache.py",
+          "django/contrib/sessions/backends/file.py",
+          "django/core/cache/backends/db.py",
+          "django/contrib/sessions/backends/cached_db.py",
+          "django/contrib/sessions/backends/base.py",
+          "django/contrib/sessions/middleware.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-12",
+      "repository": "django",
+      "question": "Where are circular database schema dependencies detected before an ordered upgrade plan can be produced?",
+      "expected": [
+        "django/db/migrations/graph.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/db/migrations/graph.py",
+          "symbol": "MigrationGraph.ensure_not_cyclic",
+          "start_line": 271,
+          "end_line": 294,
+          "file_sha256": "825d260e522b1c49bc11db05d16cd88fcacbefd0c2c88322ca3b27f6636c3a0c"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/test/utils.py",
+          "django/db/migrations/executor.py",
+          "django/db/migrations/graph.py",
+          "django/core/management/commands/showmigrations.py",
+          "django/core/management/commands/migrate.py",
+          "django/db/migrations/migration.py",
+          "django/db/migrations/autodetector.py",
+          "django/db/backends/mysql/introspection.py",
+          "django/db/migrations/loader.py",
+          "django/db/backends/sqlite3/introspection.py"
+        ],
+        "semantic": [
+          "django/test/utils.py",
+          "django/db/migrations/autodetector.py",
+          "django/db/backends/base/features.py",
+          "django/db/migrations/executor.py",
+          "django/core/management/commands/loaddata.py",
+          "django/db/migrations/graph.py",
+          "django/core/serializers/__init__.py",
+          "django/db/backends/base/schema.py",
+          "django/db/backends/dummy/base.py",
+          "django/db/migrations/migration.py"
+        ],
+        "hybrid": [
+          "django/test/utils.py",
+          "django/db/migrations/executor.py",
+          "django/db/migrations/autodetector.py",
+          "django/db/migrations/graph.py",
+          "django/db/migrations/migration.py",
+          "django/core/serializers/__init__.py",
+          "django/db/migrations/loader.py",
+          "django/db/backends/base/features.py",
+          "django/core/management/commands/showmigrations.py",
+          "django/core/management/commands/loaddata.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-13",
+      "repository": "django",
+      "question": "Where does saving an existing database object try an update and fall back to insertion when no row was affected?",
+      "expected": [
+        "django/db/models/base.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/db/models/base.py",
+          "symbol": "Model._save_table",
+          "start_line": 1075,
+          "end_line": 1212,
+          "file_sha256": "924cb2668bbe7b7f55bfe204528984bd484398f0e0911d1fbfa9967438f809ea"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/db/models/base.py",
+          "django/db/models/sql/compiler.py",
+          "django/utils/cache.py",
+          "django/contrib/admin/options.py",
+          "django/db/models/query.py",
+          "django/db/backends/base/features.py",
+          "django/contrib/auth/management/__init__.py",
+          "django/forms/models.py",
+          "django/middleware/csrf.py",
+          "django/contrib/sessions/backends/db.py"
+        ],
+        "semantic": [
+          "django/db/backends/base/features.py",
+          "django/forms/models.py",
+          "django/db/models/base.py",
+          "django/db/migrations/recorder.py",
+          "django/db/backends/mysql/base.py",
+          "django/db/backends/dummy/base.py",
+          "django/db/models/query.py",
+          "django/db/backends/base/schema.py",
+          "django/db/backends/base/base.py",
+          "django/db/migrations/executor.py"
+        ],
+        "hybrid": [
+          "django/db/models/base.py",
+          "django/db/backends/base/features.py",
+          "django/forms/models.py",
+          "django/db/models/query.py",
+          "django/db/models/sql/compiler.py",
+          "django/db/backends/base/base.py",
+          "django/db/models/fields/related_descriptors.py",
+          "django/db/backends/oracle/base.py",
+          "django/utils/cache.py",
+          "django/contrib/admin/options.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-14",
+      "repository": "django",
+      "question": "Where are database query results cached so repeated iteration does not issue the same query again?",
+      "expected": [
+        "django/db/models/query.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/db/models/query.py",
+          "symbol": "QuerySet._fetch_all",
+          "start_line": 2327,
+          "end_line": 2331,
+          "file_sha256": "0d06d11772bd9158a2a8860a0973f0d66714b1a73dc4492b35d191f8402e30a9"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/db/models/base.py",
+          "django/db/models/sql/query.py",
+          "django/db/models/sql/compiler.py",
+          "django/db/models/query.py",
+          "django/db/models/sql/subqueries.py",
+          "django/http/request.py",
+          "django/contrib/gis/geoip2.py",
+          "django/db/backends/base/features.py",
+          "django/db/models/sql/where.py",
+          "django/db/backends/postgresql/features.py"
+        ],
+        "semantic": [
+          "django/db/models/query.py",
+          "django/db/models/fields/related_descriptors.py",
+          "django/db/models/sql/subqueries.py",
+          "django/contrib/contenttypes/fields.py",
+          "django/contrib/sessions/backends/cached_db.py",
+          "django/core/paginator.py",
+          "django/tasks/base.py",
+          "django/db/models/expressions.py",
+          "django/core/cache/backends/db.py",
+          "django/db/models/base.py"
+        ],
+        "hybrid": [
+          "django/db/models/query.py",
+          "django/db/models/sql/subqueries.py",
+          "django/db/models/base.py",
+          "django/db/models/sql/query.py",
+          "django/db/models/expressions.py",
+          "django/db/backends/base/features.py",
+          "django/db/models/fields/related_descriptors.py",
+          "django/db/models/sql/compiler.py",
+          "django/contrib/contenttypes/fields.py",
+          "django/contrib/sessions/backends/cached_db.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-15",
+      "repository": "django",
+      "question": "Where is a disposable database created and populated for the test suite before it is destroyed afterwards?",
+      "expected": [
+        "django/db/backends/base/creation.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/db/backends/base/creation.py",
+          "symbol": "BaseDatabaseCreation.create_test_db",
+          "start_line": 45,
+          "end_line": 129,
+          "file_sha256": "2697faf70ca7c3e99811e9fb68748a96b0f0fcb27ed32046a83ff8c5a4b98531"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/test/runner.py",
+          "django/db/backends/base/base.py",
+          "django/test/utils.py",
+          "django/db/backends/base/features.py",
+          "django/db/backends/base/creation.py",
+          "django/contrib/sites/management.py",
+          "django/db/backends/oracle/creation.py",
+          "django/middleware/csrf.py",
+          "django/db/backends/postgresql/creation.py",
+          "django/core/management/commands/testserver.py"
+        ],
+        "semantic": [
+          "django/db/backends/base/creation.py",
+          "django/db/backends/oracle/creation.py",
+          "django/test/runner.py",
+          "django/db/backends/postgresql/creation.py",
+          "django/db/backends/sqlite3/creation.py",
+          "django/test/testcases.py",
+          "django/test/utils.py",
+          "django/db/backends/base/base.py",
+          "django/db/backends/mysql/creation.py",
+          "django/db/backends/dummy/base.py"
+        ],
+        "hybrid": [
+          "django/test/runner.py",
+          "django/db/backends/base/creation.py",
+          "django/db/backends/oracle/creation.py",
+          "django/db/backends/base/base.py",
+          "django/test/utils.py",
+          "django/db/backends/postgresql/creation.py",
+          "django/db/backends/sqlite3/creation.py",
+          "django/contrib/sites/management.py",
+          "django/test/testcases.py",
+          "django/apps/registry.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-16",
+      "repository": "django",
+      "question": "Where is a database connection prevented from crossing thread boundaries unless sharing was explicitly enabled?",
+      "expected": [
+        "django/db/backends/base/base.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/db/backends/base/base.py",
+          "symbol": "BaseDatabaseWrapper.validate_thread_sharing",
+          "start_line": 637,
+          "end_line": 650,
+          "file_sha256": "771987a03823ab45576fe78e52b9bc6c759e79eb50aeed1f6c7bcd3dbc3c35b4"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/db/backends/base/base.py",
+          "django/test/testcases.py",
+          "django/db/backends/sqlite3/base.py",
+          "django/db/utils.py",
+          "django/db/models/query_utils.py",
+          "django/db/models/query.py",
+          "django/db/backends/base/creation.py",
+          "django/db/models/expressions.py",
+          "django/db/backends/mysql/base.py",
+          "django/db/transaction.py"
+        ],
+        "semantic": [
+          "django/db/backends/sqlite3/base.py",
+          "django/db/backends/base/base.py",
+          "django/test/testcases.py",
+          "django/db/backends/oracle/creation.py",
+          "django/db/backends/dummy/base.py",
+          "django/core/management/commands/testserver.py",
+          "django/db/transaction.py",
+          "django/db/backends/sqlite3/features.py",
+          "django/db/backends/sqlite3/creation.py",
+          "django/test/runner.py"
+        ],
+        "hybrid": [
+          "django/db/backends/base/base.py",
+          "django/db/backends/sqlite3/base.py",
+          "django/test/testcases.py",
+          "django/db/transaction.py",
+          "django/db/backends/base/creation.py",
+          "django/db/backends/sqlite3/features.py",
+          "django/db/backends/postgresql/base.py",
+          "django/db/backends/oracle/base.py",
+          "django/db/backends/base/features.py",
+          "django/db/backends/oracle/creation.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-17",
+      "repository": "django",
+      "question": "Where are request-handling exceptions converted into the appropriate error responses without exposing debug details in production?",
+      "expected": [
+        "django/core/handlers/exception.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/core/handlers/exception.py",
+          "symbol": "response_for_exception",
+          "start_line": 64,
+          "end_line": 160,
+          "file_sha256": "4e57c7fc0dfe6d6b56ee7124a9531c033442c69298c20fe886d43c83a3aef2c4"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/core/handlers/exception.py",
+          "django/db/backends/base/base.py",
+          "django/db/models/fields/__init__.py",
+          "django/views/decorators/debug.py",
+          "django/core/handlers/asgi.py",
+          "django/utils/log.py",
+          "django/views/debug.py",
+          "django/core/checks/mail.py",
+          "django/views/defaults.py",
+          "django/utils/safestring.py"
+        ],
+        "semantic": [
+          "django/core/handlers/exception.py",
+          "django/core/management/base.py",
+          "django/conf/global_settings.py",
+          "django/views/debug.py",
+          "django/utils/log.py",
+          "django/template/exceptions.py",
+          "django/template/base.py",
+          "django/dispatch/dispatcher.py",
+          "django/views/generic/base.py",
+          "django/contrib/flatpages/middleware.py"
+        ],
+        "hybrid": [
+          "django/core/handlers/exception.py",
+          "django/views/debug.py",
+          "django/utils/log.py",
+          "django/db/backends/base/base.py",
+          "django/template/base.py",
+          "django/contrib/flatpages/middleware.py",
+          "django/dispatch/dispatcher.py",
+          "django/views/defaults.py",
+          "django/core/management/base.py",
+          "django/conf/global_settings.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-18",
+      "repository": "django",
+      "question": "Where are synchronous and asynchronous request middleware adapted so either style can surround a view safely?",
+      "expected": [
+        "django/core/handlers/base.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/core/handlers/base.py",
+          "symbol": "BaseHandler.adapt_method_mode",
+          "start_line": 106,
+          "end_line": 136,
+          "file_sha256": "b661b5d782bed13a74805e9ab239da89e8369f0bcd51d4a4d31274cc3d4f9ce9"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/core/handlers/base.py",
+          "django/dispatch/dispatcher.py",
+          "django/views/decorators/debug.py",
+          "django/contrib/admindocs/middleware.py",
+          "django/views/decorators/csrf.py",
+          "django/contrib/admin/sites.py",
+          "django/middleware/csrf.py",
+          "django/test/client.py",
+          "django/http/response.py",
+          "django/utils/decorators.py"
+        ],
+        "semantic": [
+          "django/contrib/admindocs/middleware.py",
+          "django/test/client.py",
+          "django/core/handlers/base.py",
+          "django/utils/decorators.py",
+          "django/middleware/http.py",
+          "django/middleware/clickjacking.py",
+          "django/contrib/sites/middleware.py",
+          "django/views/decorators/http.py",
+          "django/middleware/cache.py",
+          "django/views/decorators/cache.py"
+        ],
+        "hybrid": [
+          "django/core/handlers/base.py",
+          "django/contrib/admindocs/middleware.py",
+          "django/test/client.py",
+          "django/utils/decorators.py",
+          "django/views/decorators/debug.py",
+          "django/views/decorators/http.py",
+          "django/views/decorators/cache.py",
+          "django/dispatch/dispatcher.py",
+          "django/middleware/http.py",
+          "django/views/decorators/csrf.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-19",
+      "repository": "django",
+      "question": "Where does the development server intercept asset requests before passing ordinary requests to the application?",
+      "expected": [
+        "django/contrib/staticfiles/handlers.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/contrib/staticfiles/handlers.py",
+          "symbol": "StaticFilesHandler.__call__",
+          "start_line": 78,
+          "end_line": 81,
+          "file_sha256": "de2d1c7a54d8f4845a26a22bacd2b682247e1dcff2c1b2eea8de203c1d9d5892"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/core/servers/basehttp.py",
+          "django/contrib/staticfiles/handlers.py",
+          "django/conf/global_settings.py",
+          "django/test/testcases.py",
+          "django/db/transaction.py",
+          "django/core/management/commands/testserver.py",
+          "django/contrib/sites/requests.py",
+          "django/http/request.py",
+          "django/middleware/csrf.py",
+          "django/core/handlers/base.py"
+        ],
+        "semantic": [
+          "django/contrib/staticfiles/handlers.py",
+          "django/test/testcases.py",
+          "django/contrib/staticfiles/testing.py",
+          "django/conf/global_settings.py",
+          "django/contrib/staticfiles/storage.py",
+          "django/test/client.py",
+          "django/templatetags/static.py",
+          "django/contrib/sites/middleware.py",
+          "django/contrib/staticfiles/management/commands/collectstatic.py",
+          "django/core/handlers/wsgi.py"
+        ],
+        "hybrid": [
+          "django/contrib/staticfiles/handlers.py",
+          "django/test/testcases.py",
+          "django/conf/global_settings.py",
+          "django/test/client.py",
+          "django/core/servers/basehttp.py",
+          "django/templatetags/static.py",
+          "django/core/handlers/base.py",
+          "django/contrib/sites/requests.py",
+          "django/contrib/sites/shortcuts.py",
+          "django/contrib/staticfiles/testing.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-20",
+      "repository": "django",
+      "question": "Where are user-input errors collected from individual fields before whole-form validation is performed?",
+      "expected": [
+        "django/forms/forms.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/forms/forms.py",
+          "symbol": "BaseForm.full_clean",
+          "start_line": 324,
+          "end_line": 339,
+          "file_sha256": "56a023f76d58eea37f0364a69f1cb2b04ce3f84b9ced6614af4dd03ee46d45fd"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/forms/models.py",
+          "django/contrib/staticfiles/management/commands/collectstatic.py",
+          "django/db/migrations/migration.py",
+          "django/http/multipartparser.py",
+          "django/forms/fields.py",
+          "django/core/management/base.py",
+          "django/db/models/base.py",
+          "django/forms/formsets.py",
+          "django/forms/forms.py",
+          "django/db/models/fields/__init__.py"
+        ],
+        "semantic": [
+          "django/forms/formsets.py",
+          "django/forms/__init__.py",
+          "django/contrib/postgres/forms/array.py",
+          "django/forms/forms.py",
+          "django/forms/models.py",
+          "django/contrib/admin/helpers.py",
+          "django/forms/fields.py",
+          "django/test/testcases.py",
+          "django/db/models/fields/__init__.py",
+          "django/core/exceptions.py"
+        ],
+        "hybrid": [
+          "django/forms/models.py",
+          "django/forms/formsets.py",
+          "django/forms/fields.py",
+          "django/forms/forms.py",
+          "django/db/models/base.py",
+          "django/db/models/fields/__init__.py",
+          "django/contrib/auth/forms.py",
+          "django/contrib/admin/options.py",
+          "django/contrib/staticfiles/management/commands/collectstatic.py",
+          "django/forms/__init__.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 0.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-21",
+      "repository": "django",
+      "question": "Where are textual form values converted to their intended data type and checked with validators?",
+      "expected": [
+        "django/forms/fields.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/forms/fields.py",
+          "symbol": "Field.clean",
+          "start_line": 203,
+          "end_line": 211,
+          "file_sha256": "f5ac5b73acfb81380a75a1c51f15324015a55108514b7745a0f7f65b48da43da"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/db/models/fields/__init__.py",
+          "django/forms/models.py",
+          "django/forms/widgets.py",
+          "django/forms/fields.py",
+          "django/utils/dateformat.py",
+          "django/http/request.py",
+          "django/contrib/gis/forms/fields.py",
+          "django/core/management/base.py",
+          "django/db/models/utils.py",
+          "django/db/models/fields/files.py"
+        ],
+        "semantic": [
+          "django/forms/widgets.py",
+          "django/forms/fields.py",
+          "django/db/models/fields/__init__.py",
+          "django/forms/models.py",
+          "django/db/models/fields/related.py",
+          "django/contrib/postgres/forms/array.py",
+          "django/contrib/admin/options.py",
+          "django/forms/__init__.py",
+          "django/contrib/postgres/fields/array.py",
+          "django/forms/formsets.py"
+        ],
+        "hybrid": [
+          "django/db/models/fields/__init__.py",
+          "django/forms/widgets.py",
+          "django/forms/fields.py",
+          "django/forms/models.py",
+          "django/contrib/postgres/forms/array.py",
+          "django/forms/formsets.py",
+          "django/contrib/gis/forms/fields.py",
+          "django/forms/forms.py",
+          "django/db/models/fields/related.py",
+          "django/utils/dateformat.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-22",
+      "repository": "django",
+      "question": "Where are dates, decimal numbers and universally unique identifiers converted to values that a JSON response can encode?",
+      "expected": [
+        "django/core/serializers/json.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/core/serializers/json.py",
+          "symbol": "DjangoJSONEncoder.default",
+          "start_line": 90,
+          "end_line": 114,
+          "file_sha256": "388346801a843f8f583deb28bae6674e19041c1670e8b865a3ac6c91498b4e75"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/test/client.py",
+          "django/http/response.py",
+          "django/core/serializers/python.py",
+          "django/conf/global_settings.py",
+          "django/forms/fields.py",
+          "django/core/handlers/asgi.py",
+          "django/contrib/messages/storage/cookie.py",
+          "django/core/handlers/exception.py",
+          "django/db/models/fields/__init__.py",
+          "django/template/defaultfilters.py"
+        ],
+        "semantic": [
+          "django/db/backends/base/operations.py",
+          "django/db/models/functions/__init__.py",
+          "django/core/serializers/json.py",
+          "django/utils/encoding.py",
+          "django/utils/http.py",
+          "django/utils/json.py",
+          "django/forms/fields.py",
+          "django/template/defaultfilters.py",
+          "django/contrib/messages/storage/cookie.py",
+          "django/utils/formats.py"
+        ],
+        "hybrid": [
+          "django/test/client.py",
+          "django/forms/fields.py",
+          "django/core/serializers/json.py",
+          "django/contrib/messages/storage/cookie.py",
+          "django/template/defaultfilters.py",
+          "django/utils/encoding.py",
+          "django/utils/formats.py",
+          "django/db/backends/base/operations.py",
+          "django/db/models/functions/__init__.py",
+          "django/http/response.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-23",
+      "repository": "django",
+      "question": "Where are calendar dates from an HTTP header parsed into seconds while malformed dates can be rejected?",
+      "expected": [
+        "django/utils/http.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/utils/http.py",
+          "symbol": "parse_http_date",
+          "start_line": 102,
+          "end_line": 139,
+          "file_sha256": "dcad948bbcc84d0cdba5da404a30eff606224438c98aadfb10210b541d024232"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/utils/http.py",
+          "django/db/backends/utils.py",
+          "django/middleware/csrf.py",
+          "django/http/response.py",
+          "django/views/generic/dates.py",
+          "django/utils/cache.py",
+          "django/http/cookie.py",
+          "django/conf/global_settings.py",
+          "django/db/models/query.py",
+          "django/db/models/fields/__init__.py"
+        ],
+        "semantic": [
+          "django/utils/http.py",
+          "django/views/static.py",
+          "django/views/generic/dates.py",
+          "django/utils/dateformat.py",
+          "django/utils/dateparse.py",
+          "django/contrib/sitemaps/views.py",
+          "django/http/response.py",
+          "django/conf/global_settings.py",
+          "django/views/decorators/http.py",
+          "django/conf/locale/ja/formats.py"
+        ],
+        "hybrid": [
+          "django/utils/http.py",
+          "django/views/generic/dates.py",
+          "django/http/response.py",
+          "django/utils/dateformat.py",
+          "django/conf/global_settings.py",
+          "django/db/backends/utils.py",
+          "django/views/static.py",
+          "django/middleware/csrf.py",
+          "django/utils/dateparse.py",
+          "django/contrib/sitemaps/views.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-24",
+      "repository": "django",
+      "question": "Where are naive date-time values made aware of a selected time zone rather than silently assuming the operating system zone?",
+      "expected": [
+        "django/utils/timezone.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/utils/timezone.py",
+          "symbol": "make_aware",
+          "start_line": 237,
+          "end_line": 245,
+          "file_sha256": "ceaad7cc041ee1856e38f16519e6a59e844672c83b2f401f9b451ef1d27a086d"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/utils/timezone.py",
+          "django/forms/utils.py",
+          "django/templatetags/tz.py",
+          "django/contrib/humanize/templatetags/humanize.py",
+          "django/utils/dateparse.py",
+          "django/http/response.py",
+          "django/conf/global_settings.py",
+          "django/db/models/fields/__init__.py",
+          "django/db/backends/base/base.py",
+          "django/contrib/admin/filters.py"
+        ],
+        "semantic": [
+          "django/utils/timezone.py",
+          "django/templatetags/tz.py",
+          "django/db/models/fields/__init__.py",
+          "django/db/backends/sqlite3/operations.py",
+          "django/conf/__init__.py",
+          "django/utils/dateformat.py",
+          "django/db/backends/base/base.py",
+          "django/forms/utils.py",
+          "django/utils/dateparse.py",
+          "django/test/utils.py"
+        ],
+        "hybrid": [
+          "django/utils/timezone.py",
+          "django/templatetags/tz.py",
+          "django/forms/utils.py",
+          "django/db/models/fields/__init__.py",
+          "django/utils/dateparse.py",
+          "django/db/backends/base/base.py",
+          "django/conf/__init__.py",
+          "django/test/utils.py",
+          "django/test/signals.py",
+          "django/utils/timesince.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-25",
+      "repository": "django",
+      "question": "Where are asset filenames rewritten with content hashes and recorded in a manifest for later lookup?",
+      "expected": [
+        "django/contrib/staticfiles/storage.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/contrib/staticfiles/storage.py",
+          "symbol": "ManifestFilesMixin",
+          "start_line": 536,
+          "end_line": 611,
+          "file_sha256": "d46286159e9bc71b2a01f94b0c474d6b5d04d7f80cce56cd0a4e1f0ddc22c3e7"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/contrib/staticfiles/storage.py",
+          "django/http/multipartparser.py",
+          "django/templatetags/static.py",
+          "django/utils/csp.py",
+          "django/db/models/sql/query.py",
+          "django/contrib/admin/utils.py",
+          "django/test/runner.py",
+          "django/contrib/messages/api.py",
+          "django/http/response.py",
+          "django/db/models/sql/where.py"
+        ],
+        "semantic": [
+          "django/contrib/staticfiles/storage.py",
+          "django/contrib/staticfiles/finders.py",
+          "django/core/cache/backends/filebased.py",
+          "django/core/files/uploadedfile.py",
+          "django/core/checks/caches.py",
+          "django/contrib/staticfiles/management/commands/collectstatic.py",
+          "django/contrib/staticfiles/apps.py",
+          "django/db/models/fields/files.py",
+          "django/core/cache/utils.py",
+          "django/utils/autoreload.py"
+        ],
+        "hybrid": [
+          "django/contrib/staticfiles/storage.py",
+          "django/utils/autoreload.py",
+          "django/contrib/staticfiles/finders.py",
+          "django/http/multipartparser.py",
+          "django/core/cache/backends/filebased.py",
+          "django/templatetags/static.py",
+          "django/core/files/uploadedfile.py",
+          "django/utils/csp.py",
+          "django/core/checks/caches.py",
+          "django/db/models/sql/query.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-26",
+      "repository": "django",
+      "question": "Where is the preferred request language selected and the response marked so caches vary on language preferences?",
+      "expected": [
+        "django/middleware/locale.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/middleware/locale.py",
+          "symbol": "LocaleMiddleware",
+          "start_line": 10,
+          "end_line": 81,
+          "file_sha256": "0098ede5cf8afc896a1d5eaf776cdf20c28caef7fa6f2f2d6cd9d150728d86fa"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/middleware/locale.py",
+          "django/utils/cache.py",
+          "django/views/decorators/vary.py",
+          "django/middleware/cache.py",
+          "django/views/i18n.py",
+          "django/middleware/gzip.py",
+          "django/utils/translation/trans_real.py",
+          "django/utils/translation/trans_null.py",
+          "django/utils/translation/__init__.py",
+          "django/contrib/syndication/views.py"
+        ],
+        "semantic": [
+          "django/utils/cache.py",
+          "django/middleware/locale.py",
+          "django/utils/translation/trans_null.py",
+          "django/conf/urls/i18n.py",
+          "django/views/i18n.py",
+          "django/utils/translation/trans_real.py",
+          "django/conf/global_settings.py",
+          "django/utils/formats.py",
+          "django/test/signals.py",
+          "django/core/cache/__init__.py"
+        ],
+        "hybrid": [
+          "django/middleware/locale.py",
+          "django/utils/cache.py",
+          "django/views/i18n.py",
+          "django/utils/translation/trans_null.py",
+          "django/utils/translation/trans_real.py",
+          "django/middleware/cache.py",
+          "django/views/decorators/vary.py",
+          "django/utils/translation/__init__.py",
+          "django/middleware/gzip.py",
+          "django/template/context_processors.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-27",
+      "repository": "django",
+      "question": "Where are outgoing messages sent through a mail server connection with optional encryption and authentication?",
+      "expected": [
+        "django/core/mail/backends/smtp.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/core/mail/backends/smtp.py",
+          "symbol": "EmailBackend.open",
+          "start_line": 114,
+          "end_line": 155,
+          "file_sha256": "15bcb6130e27356d76730dcf0e951ea6f1a26bd910b6a4ab34fe815f6c3b3c3f"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/core/mail/backends/smtp.py",
+          "django/core/mail/backends/locmem.py",
+          "django/conf/global_settings.py",
+          "django/core/mail/backends/base.py",
+          "django/core/mail/__init__.py",
+          "django/core/mail/message.py",
+          "django/utils/log.py",
+          "django/core/servers/basehttp.py",
+          "django/contrib/auth/models.py",
+          "django/core/checks/mail.py"
+        ],
+        "semantic": [
+          "django/core/mail/backends/smtp.py",
+          "django/core/mail/__init__.py",
+          "django/core/mail/backends/base.py",
+          "django/core/mail/backends/console.py",
+          "django/core/mail/deprecation.py",
+          "django/core/mail/message.py",
+          "django/core/mail/backends/dummy.py",
+          "django/core/management/commands/sendtestemail.py",
+          "django/core/mail/backends/locmem.py",
+          "django/core/mail/handler.py"
+        ],
+        "hybrid": [
+          "django/core/mail/backends/smtp.py",
+          "django/core/mail/__init__.py",
+          "django/core/mail/backends/base.py",
+          "django/core/mail/backends/locmem.py",
+          "django/core/mail/message.py",
+          "django/core/management/commands/sendtestemail.py",
+          "django/core/mail/backends/console.py",
+          "django/core/mail/backends/dummy.py",
+          "django/utils/log.py",
+          "django/contrib/auth/forms.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-28",
+      "repository": "django",
+      "question": "Where are management commands given consistent argument parsing, error reporting and output styling?",
+      "expected": [
+        "django/core/management/base.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/core/management/base.py",
+          "symbol": "BaseCommand.run_from_argv",
+          "start_line": 410,
+          "end_line": 444,
+          "file_sha256": "bad40932e2d8bd03d9baa83179dae6cde4fba94ec9a4b4e342b5f8d1e2e5a1be"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/core/management/commands/makemigrations.py",
+          "django/core/management/commands/dumpdata.py",
+          "django/core/management/base.py",
+          "django/core/management/commands/inspectdb.py",
+          "django/core/management/commands/check.py",
+          "django/core/management/commands/diffsettings.py",
+          "django/core/management/commands/sqlsequencereset.py",
+          "django/core/management/commands/listurls.py",
+          "django/core/management/commands/showmigrations.py",
+          "django/core/management/__init__.py"
+        ],
+        "semantic": [
+          "django/core/management/base.py",
+          "django/core/management/__init__.py",
+          "django/core/management/utils.py",
+          "django/core/management/commands/diffsettings.py",
+          "django/test/runner.py",
+          "django/template/smartif.py",
+          "django/core/management/commands/makemessages.py",
+          "django/test/testcases.py",
+          "django/template/base.py",
+          "django/core/management/commands/shell.py"
+        ],
+        "hybrid": [
+          "django/core/management/base.py",
+          "django/core/management/commands/diffsettings.py",
+          "django/core/management/__init__.py",
+          "django/core/management/commands/makemigrations.py",
+          "django/core/management/commands/check.py",
+          "django/core/management/commands/makemessages.py",
+          "django/core/management/commands/listurls.py",
+          "django/core/management/commands/testserver.py",
+          "django/core/management/commands/shell.py",
+          "django/core/management/commands/dumpdata.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-29",
+      "repository": "django",
+      "question": "Where can a test client construct a browser-like request without opening a real network socket?",
+      "expected": [
+        "django/test/client.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/test/client.py",
+          "symbol": "Client.request",
+          "start_line": 1101,
+          "end_line": 1146,
+          "file_sha256": "c60f54cb95ac2f839ec098d86c7d841327c8760f747610179d4fc353081c6c9e"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/test/client.py",
+          "django/template/response.py",
+          "django/conf/global_settings.py",
+          "django/test/testcases.py",
+          "django/core/servers/basehttp.py",
+          "django/test/utils.py",
+          "django/utils/csp.py",
+          "django/db/backends/base/features.py",
+          "django/contrib/sessions/middleware.py",
+          "django/middleware/csrf.py"
+        ],
+        "semantic": [
+          "django/test/client.py",
+          "django/core/servers/basehttp.py",
+          "django/test/testcases.py",
+          "django/core/handlers/asgi.py",
+          "django/utils/http.py",
+          "django/utils/autoreload.py",
+          "django/http/request.py",
+          "django/db/backends/postgresql/base.py",
+          "django/contrib/sites/middleware.py",
+          "django/core/handlers/wsgi.py"
+        ],
+        "hybrid": [
+          "django/test/client.py",
+          "django/core/servers/basehttp.py",
+          "django/test/testcases.py",
+          "django/template/response.py",
+          "django/core/mail/utils.py",
+          "django/conf/global_settings.py",
+          "django/core/handlers/asgi.py",
+          "django/utils/http.py",
+          "django/test/utils.py",
+          "django/utils/autoreload.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "semantic": {
+          "5": 1.0,
+          "10": 1.0
+        },
+        "hybrid": {
+          "5": 1.0,
+          "10": 1.0
+        }
+      }
+    },
+    {
+      "id": "django-30",
+      "repository": "django",
+      "question": "Where are address fragments converted into typed values such as integers before view dispatch?",
+      "expected": [
+        "django/urls/converters.py"
+      ],
+      "evidence": [
+        {
+          "path": "django/urls/converters.py",
+          "symbol": "IntConverter",
+          "start_line": 5,
+          "end_line": 12,
+          "file_sha256": "8437c539d0aa281883857f16975a271d003483ac0444b0f5050a0d8b49525d3e"
+        }
+      ],
+      "rankings": {
+        "lexical": [
+          "django/db/migrations/migration.py",
+          "django/core/mail/message.py",
+          "django/db/models/query.py",
+          "django/views/generic/base.py",
+          "django/http/request.py",
+          "django/core/validators.py",
+          "django/dispatch/dispatcher.py",
+          "django/db/models/sql/compiler.py",
+          "django/db/backends/sqlite3/introspection.py",
+          "django/db/models/fields/related_lookups.py"
+        ],
+        "semantic": [
+          "django/contrib/gis/geos/geometry.py",
+          "django/db/backends/base/features.py",
+          "django/contrib/gis/db/models/fields.py",
+          "django/template/base.py",
+          "django/core/cache/utils.py",
+          "django/contrib/gis/db/backends/postgis/const.py",
+          "django/template/smartif.py",
+          "django/urls/base.py",
+          "django/contrib/gis/geoip2.py",
+          "django/contrib/admindocs/views.py"
+        ],
+        "hybrid": [
+          "django/template/base.py",
+          "django/contrib/gis/gdal/raster/const.py",
+          "django/contrib/gis/geos/geometry.py",
+          "django/db/migrations/migration.py",
+          "django/core/mail/message.py",
+          "django/db/backends/base/features.py",
+          "django/contrib/gis/db/models/fields.py",
+          "django/db/models/query.py",
+          "django/views/generic/base.py",
+          "django/core/cache/utils.py"
+        ]
+      },
+      "recall": {
+        "lexical": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "semantic": {
+          "5": 0.0,
+          "10": 0.0
+        },
+        "hybrid": {
+          "5": 0.0,
+          "10": 0.0
+        }
+      }
+    }
+  ],
+  "f4_gate": {
+    "decision": "no-go",
+    "macro_delta_at_10": 0.03333333333333333,
+    "paired_stratified_bootstrap_95_percent": [
+      -0.049999999999999996,
+      0.11666666666666667
+    ],
+    "repositories": {
+      "django": {
+        "queries": 30,
+        "delta_at_10": 0.03333333333333333,
+        "delta_at_5": 0.06666666666666667
+      },
+      "loupe": {
+        "queries": 30,
+        "delta_at_10": 0.03333333333333333,
+        "delta_at_5": -0.03333333333333333
+      }
+    },
+    "thresholds": {
+      "minimum_queries_per_repository": 30,
+      "minimum_macro_delta_at_10": 0.1,
+      "minimum_repository_delta_at_10": 0.05,
+      "bootstrap_seed": 20261030,
+      "bootstrap_samples": 10000
+    }
+  },
+  "query_file_sha256": "4f18cf632873ef79624fb7790c3568cffe3e0fa9112d69fda1bb671866331c02",
+  "script_sha256": "f73ebaba0dcf9b622232648e1688f8b3685318fd67f29f9f2cdc30fc139765ec"
+}
