@@ -1122,9 +1122,7 @@ class SharedTaskExecutionRunner:
                         if not files:
                             outcome = "no_changes"
                         else:
-                            publication = (
-                                self.isolated_sync if isolated else self.publisher
-                            ).publish(
+                            publication = self.publisher.publish(
                                 execution.execution_id,
                                 session.session_id,
                                 files,
@@ -1135,6 +1133,10 @@ class SharedTaskExecutionRunner:
                             )
                             outcome = publication.state
                 break
+            if isolated and outcome == "published":
+                self.isolated_sync.after_publication(
+                    execution.execution_id, workspace.workspace_id
+                )
             # The files are settled. Finish the response before the task
             # becomes terminal, outside the lock: a model call must never
             # block other sessions' reads.
