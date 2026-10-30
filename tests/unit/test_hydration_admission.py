@@ -282,3 +282,24 @@ def test_catalogue_retains_the_first_alias_spelling_for_refusals() -> None:
         assert tuple(catalogue.records()) == ("runtime/A",)
     finally:
         catalogue.close()
+
+
+def test_preview_catalogue_never_uses_a_checkout_controlled_temporary_directory(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tempfile
+
+    from llm_cli.workspace.hydration import _evidence
+
+    root = source_checkout(tmp_path, repository_factory, count=1)
+    runtime = root / "runtime"
+    runtime.mkdir()
+    before = _evidence(runtime.stat()), _evidence(root.stat())
+    monkeypatch.setenv("TMPDIR", str(runtime))
+    monkeypatch.setattr(tempfile, "tempdir", str(runtime))
+    plan = plan_hydration(root)
+    assert plan.complete, plan.issues
+    assert list(runtime.iterdir()) == []
+    assert (_evidence(runtime.stat()), _evidence(root.stat())) == before

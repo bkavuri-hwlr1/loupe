@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import tempfile
 import unicodedata
 from collections.abc import Iterator
@@ -23,7 +24,12 @@ class CatalogueLimit(Exception):
 
 class PathCatalogue:
     def __init__(self, maximum_bytes: int) -> None:
-        self.directory = Path(tempfile.mkdtemp(prefix="loupe-hydration-"))
+        # TMPDIR can point into the checkout. A read-only preview must never
+        # allocate its catalogue there, even when tempfile has cached that path.
+        system_tmp = "/private/tmp" if sys.platform == "darwin" else "/tmp"
+        self.directory = Path(
+            tempfile.mkdtemp(prefix="loupe-hydration-", dir=system_tmp)
+        )
         self.path = self.directory / "paths.sqlite3"
         self.connection: sqlite3.Connection | None = None
         try:
