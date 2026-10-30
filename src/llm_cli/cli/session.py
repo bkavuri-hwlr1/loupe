@@ -505,6 +505,81 @@ def set_session_mode(
     return replace(credentials, agent_mode=selected)
 
 
+def _prepare_workspace_switch(
+    client: DaemonClient,
+    authenticated: dict[str, str],
+    workspace: str,
+    intent_id: str,
+    *,
+    disposition: str | None,
+    approved_runtime_files: tuple[str, ...],
+) -> tuple[DaemonClient, dict[str, Any]]:
+    setup = _runtime_open_client(client, workspace, resume=True)
+    if disposition == "publish":
+        setup = _patient(setup, APPLY_TIMEOUT_SECONDS)
+    prepared = setup.call(
+        "workspace.switch_mode",
+        {
+            **authenticated,
+            "switch_intent_id": intent_id,
+            "workspace": workspace,
+            "disposition": disposition,
+            "approved_runtime_files": list(approved_runtime_files),
+        },
+        idempotency_key=intent_id,
+    )
+    if not isinstance(prepared, dict) or prepared.get("state") not in (
+        "confirming",
+        "confirmed",
+    ):
+        raise LlmCoordError(
+            ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
+            f"Workspace switch {intent_id} needs attention; resume or roll it back.",
+        )
+    target = _object(prepared, "workspace")
+    if target.get("mode") != workspace:
+        raise LlmCoordError(ErrorCode.PROTOCOL_MISMATCH, "switch target is malformed")
+    if isinstance(_integer(prepared, "bootstrap_sequence"), bool):
+        raise LlmCoordError(
+            ErrorCode.PROTOCOL_MISMATCH, "switch bootstrap is malformed"
+        )
+    return setup, prepared
+
+
+def _confirm_workspace_switch(
+    client: DaemonClient,
+    authenticated: dict[str, str],
+    intent_id: str,
+    sequence: int,
+    *,
+    expected_workspace: str | None = None,
+) -> dict[str, Any]:
+    confirmed = client.call(
+        "workspace.confirm_switch",
+        {
+            **authenticated,
+            "switch_intent_id": intent_id,
+            "sequence": sequence,
+            **session_environment_params(client.paths),
+        },
+    )
+    current = _object(confirmed, "session")
+    mode = current.get("workspace_mode")
+    generation = _integer(current, "workspace_binding_generation")
+    if (
+        mode not in ("shared", "isolated")
+        or (expected_workspace is not None and mode != expected_workspace)
+        or confirmed.get("state") != "confirmed"
+        or isinstance(generation, bool)
+        or generation < 1
+    ):
+        raise LlmCoordError(
+            ErrorCode.PROTOCOL_MISMATCH, "workspace switch was not confirmed"
+        )
+    assert isinstance(confirmed, dict)
+    return confirmed
+
+
 def switch_workspace(
     client: DaemonClient,
     credentials: _SessionCredentials,
@@ -515,51 +590,27 @@ def switch_workspace(
     switch_intent_id: str | None = None,
 ) -> tuple[_SessionCredentials, dict[str, Any]]:
     intent_id = switch_intent_id or new_id("switch")
-    setup = _runtime_open_client(client, workspace, resume=True)
-    if disposition == "publish":
-        setup = _patient(setup, APPLY_TIMEOUT_SECONDS)
-    prepared = setup.call(
-        "workspace.switch_mode",
-        {
-            "session_id": credentials.session_id,
-            "resume_secret": credentials.resume_secret,
-            "switch_intent_id": intent_id,
-            "workspace": workspace,
-            "disposition": disposition,
-            "approved_runtime_files": list(approved_runtime_files),
-        },
-        idempotency_key=intent_id,
+    authenticated = {
+        "session_id": credentials.session_id,
+        "resume_secret": credentials.resume_secret,
+    }
+    setup, prepared = _prepare_workspace_switch(
+        client,
+        authenticated,
+        workspace,
+        intent_id,
+        disposition=disposition,
+        approved_runtime_files=approved_runtime_files,
     )
-    if not isinstance(prepared, dict) or prepared.get("state") not in {
-        "confirming",
-        "confirmed",
-    }:
-        raise LlmCoordError(
-            ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
-            f"Workspace switch {intent_id} needs attention; resume or roll it back.",
-        )
-    target = _object(prepared, "workspace")
-    if target.get("mode") != workspace:
-        raise LlmCoordError(ErrorCode.PROTOCOL_MISMATCH, "switch target is malformed")
     sequence = _integer(prepared, "bootstrap_sequence")
-    confirmed = setup.call(
-        "workspace.confirm_switch",
-        {
-            "session_id": credentials.session_id,
-            "resume_secret": credentials.resume_secret,
-            "switch_intent_id": intent_id,
-            "sequence": sequence,
-            **session_environment_params(client.paths),
-        },
+    confirmed = _confirm_workspace_switch(
+        setup,
+        authenticated,
+        intent_id,
+        sequence,
+        expected_workspace=workspace,
     )
     current = _object(confirmed, "session")
-    if (
-        current.get("workspace_mode") != workspace
-        or confirmed.get("state") != "confirmed"
-    ):
-        raise LlmCoordError(
-            ErrorCode.PROTOCOL_MISMATCH, "workspace switch was not confirmed"
-        )
     return replace(
         credentials,
         workspace_mode=workspace,
@@ -567,6 +618,160 @@ def switch_workspace(
         workspace_binding_generation=_integer(current, "workspace_binding_generation"),
         workspace_notices=tuple(confirmed.get("workspace_notices", [])),
     ), confirmed
+
+
+def switch_session_workspace(
+    client: DaemonClient,
+    session_id: str,
+    *,
+    workspace: str | None = None,
+    disposition: str | None = None,
+    approved_runtime_files: tuple[str, ...] = (),
+    switch_intent_id: str | None = None,
+    confirm_intent_id: str | None = None,
+    rollback_intent_id: str | None = None,
+    sequence: int | None = None,
+) -> dict[str, Any]:
+    """Standalone switching never infers consent or resumes a pending target."""
+    if (
+        sum(
+            value is not None
+            for value in (workspace, confirm_intent_id, rollback_intent_id)
+        )
+        != 1
+    ):
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID, "choose --to, --confirm, or --rollback"
+        )
+    if workspace is not None:
+        if workspace not in {"shared", "isolated"}:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, "--to requires shared or isolated"
+            )
+        choices = {"publish", "hold", "export", "retain", "discard"}
+        if workspace == "shared" and disposition not in choices:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "--to shared requires --publish, --hold, --export, "
+                "--retain, or --discard",
+            )
+        if workspace == "isolated" and disposition is not None:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "private-state disposition requires --to shared",
+            )
+        if sequence is not None:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, "--sequence requires --confirm"
+            )
+        if approved_runtime_files and workspace != "isolated":
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, "--approve-secret requires --to isolated"
+            )
+        approved_runtime_files = validate_runtime_consent(
+            approved_runtime_files, workspace, None
+        )
+        intent_id = (
+            switch_intent_id if switch_intent_id is not None else new_id("switch")
+        )
+    else:
+        if (
+            disposition is not None
+            or approved_runtime_files
+            or switch_intent_id is not None
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "dispositions, runtime consent, and --switch-intent-id require --to",
+            )
+        if confirm_intent_id is not None:
+            if (
+                not isinstance(sequence, int)
+                or isinstance(sequence, bool)
+                or sequence < 0
+            ):
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID,
+                    "--confirm requires the exact nonnegative --sequence "
+                    "from session resume",
+                )
+            intent_id = confirm_intent_id
+        else:
+            if sequence is not None:
+                raise LlmCoordError(
+                    ErrorCode.CONFIG_INVALID, "--sequence requires --confirm"
+                )
+            assert rollback_intent_id is not None
+            intent_id = rollback_intent_id
+    if not intent_id or len(intent_id) > 128:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            "switch intent ID must contain 1 to 128 characters",
+        )
+    authenticated = {
+        "session_id": session_id,
+        "resume_secret": session_resume_secret(client.paths, session_id),
+    }
+    target_prepared = False
+    try:
+        if rollback_intent_id is not None:
+            result = _session_setup_client(client).call(
+                "workspace.rollback_switch",
+                {**authenticated, "switch_intent_id": intent_id},
+            )
+            if not isinstance(result, dict) or result.get("state") not in (
+                "rolled_back",
+                "rollback_pending",
+            ):
+                raise LlmCoordError(
+                    ErrorCode.PROTOCOL_MISMATCH,
+                    "workspace rollback was not acknowledged",
+                )
+            return result
+        if confirm_intent_id is not None:
+            assert sequence is not None
+            return _confirm_workspace_switch(
+                _session_setup_client(client), authenticated, intent_id, sequence
+            )
+        assert workspace is not None
+        setup, prepared = _prepare_workspace_switch(
+            client,
+            authenticated,
+            workspace,
+            intent_id,
+            disposition=disposition,
+            approved_runtime_files=approved_runtime_files,
+        )
+        target_prepared = True
+        return _confirm_workspace_switch(
+            setup,
+            authenticated,
+            intent_id,
+            _integer(prepared, "bootstrap_sequence"),
+            expected_workspace=workspace,
+        )
+    except LlmCoordError as exc:
+        prefix = ["loupe", "--profile", client.paths.profile_id, "session"]
+        inspect = shlex.join([*prefix, "resume", session_id])
+        message = exc.message + f" Inspect pending state with '{inspect}'."
+        details = {**(exc.details or {}), "requested_switch_intent_id": intent_id}
+        # A refused new request may name a different already-pending intent.
+        # Never direct the owner to roll back the unallocated request instead.
+        if target_prepared or workspace is None or exc.code in {
+            ErrorCode.DAEMON_UNAVAILABLE,
+            ErrorCode.PROTOCOL_MISMATCH,
+            ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
+            ErrorCode.INTERNAL_RECOVERABLE,
+        }:
+            rollback = shlex.join(
+                [*prefix, "switch", session_id, "--rollback", intent_id]
+            )
+            message += (
+                " If this intent is pending, request rollback with "
+                f"'{rollback}'."
+            )
+            details["switch_intent_id"] = intent_id
+        raise LlmCoordError(exc.code, message, details) from exc
 
 
 def _optional_effort(session: dict[str, Any]) -> str | None:
@@ -993,4 +1198,5 @@ __all__ = [
     "remove_session_secret",
     "run_session",
     "session_resume_secret",
+    "switch_session_workspace",
 ]
