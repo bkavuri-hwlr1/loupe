@@ -1229,11 +1229,12 @@ C14 implements managed background processes in Wave 10, with stop-on-close and
 explicit switch refusal while processes remain. C12 adds native file watchers in
 Wave 11; hydration admission and outside-scan coverage limits remain.
 
-1. Push the `v0.1.0a3` tag on `main` once the Waves 1–11 release notes and
-   the outside catch-up fix are merged, and confirm the tap upgrade on both
-   architectures.
-2. F4 embeddings stay gated by F3's result, and E2's live provider checks stay
-   on hold.
+0.1.0a3 shipped Waves 1–11 to Homebrew on October 29, 2026. The `v0.1.0a3`
+tag is on `4b96151`, and the tap's workflow upgraded from 0.1.0a2 and passed
+its smoke tests on Apple Silicon and Intel.
+
+F4 embeddings stay gated by F3's result, and E2's live provider checks stay on
+hold.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).

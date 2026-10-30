@@ -75,8 +75,8 @@ implemented; native watchers bring the 20,000-file safe point to 144 ms, under
 E3's threshold.
 
 D4 prepared 0.1.0a3 from Waves 1–7. The tag waited until Waves 8–11 and the
-outside catch-up fix merged, so 0.1.0a3 ships Waves 1–11. The work in
-[Later](#later) stays out of these waves.
+outside catch-up fix merged, so 0.1.0a3 shipped Waves 1–11 on October 29,
+2026. The work in [Later](#later) stays out of these waves.
 
 ### What E3 changed for Waves 9–11 (October 22, 2026)
 
