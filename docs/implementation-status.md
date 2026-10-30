@@ -85,7 +85,8 @@ the remaining planned capabilities are listed below.
   exports held task proposals, staged candidates and published batches as Git
   binary patches or self-contained content-addressed JSON bundles. Exact source
   identities and runtime exclusions remain attached to the original work.
-  Migration 34 stores metadata-only durable intents, with private staging,
+  Migration 34 stores profile-local metadata-only durable intents, with private
+  staging,
   no-overwrite publication and identity-checked retry after a crash. Existing
   checkout destinations require explicit `--into-checkout`; runtime files and
   screened source never enter artifacts. No Git commit, reference or pull request

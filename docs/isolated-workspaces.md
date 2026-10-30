@@ -679,7 +679,8 @@ runtime values are refused with a path-only reason. Exported bodies never enter
 the export journal or operational logs; screened artifacts remain in the
 profile's private export storage.
 
-Use a stable `--intent ID` when a script may retry. Retrying the same ID, source,
+Use a stable `--intent ID` and the same profile when a script may retry. Retrying
+the same ID, source,
 format and destination resumes its durable receipt and returns metadata for the
 same complete file. A crash leaves either no destination or the complete
 artifact; a matching retry does not replace or write that file again. A refusal

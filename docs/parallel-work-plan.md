@@ -1456,7 +1456,8 @@ staged candidate or published batch, with optional explicit source kind. Patches
 preserve Git binary, mode and symlink changes; bundles retain exact before/after
 identities and SHA-256 addressed bodies. Migration 34 journals immutable request
 metadata and filesystem receipts, with private staging, no-replace publication
-and safe same-intent crash replay. Runtime and screened bytes are refused, and
+and safe same-intent crash replay within the selected profile. Runtime and
+screened bytes are refused, and
 checkout destinations require explicit consent. Existing daemon and publication
 locks do not cover export I/O. See [source exports](isolated-workspaces.md#export-source-changes).
 
