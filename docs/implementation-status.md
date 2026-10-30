@@ -80,6 +80,16 @@ the remaining planned capabilities are listed below.
   protocol change is needed. See
   [the CLI flow](isolated-workspaces.md#switch-from-scripts-or-another-terminal).
 
+- Source change exports (Wave 12 C22): `loupe change export ID --to DEST`
+  exports held task proposals, staged candidates and published batches as Git
+  binary patches or self-contained content-addressed JSON bundles. Exact source
+  identities and runtime exclusions remain attached to the original work.
+  Migration 34 stores metadata-only durable intents, with private staging,
+  no-overwrite publication and identity-checked retry after a crash. Existing
+  checkout destinations require explicit `--into-checkout`; runtime files and
+  screened source never enter artifacts. No Git commit, reference or pull request
+  is created. See [source exports](isolated-workspaces.md#export-source-changes).
+
 - Managed background processes (Wave 10 C14): isolated agents can start,
   inspect screened bounded output, and stop long-lived process groups. Shared
   mode refuses starts. Existing command approval, sandbox, network and C9
