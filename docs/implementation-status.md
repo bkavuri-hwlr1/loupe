@@ -1216,7 +1216,7 @@ remain unlinked. See [Git publication safety](git-publication-safety.md).
 ## Next executable slice
 
 [`parallel-work-plan.md`](parallel-work-plan.md) splits the remaining work into
-Waves 9–11. Wave 8 delivers the 0.1.0a3 release preparation (D4), the soak and
+waves of parallel packages. Wave 8 delivered the 0.1.0a3 release preparation (D4), the soak and
 scan-cost measurement (E3), Git publication safety (C11) and authority
 maintenance (G4).
 
@@ -1233,8 +1233,11 @@ Wave 11; hydration admission and outside-scan coverage limits remain.
 tag is on `4b96151`, and the tap's workflow upgraded from 0.1.0a2 and passed
 its smoke tests on Apple Silicon and Intel.
 
-F4 embeddings stay gated by F3's result, and E2's live provider checks stay on
-hold.
+Wave 12 takes up everything still open: catch-up follow-ups (C17), larger
+isolated admission (C18) and outside-scan coverage (C19), an installer cache
+(C20), `loupe session switch` (C21), patch and bundle exports (C22), review on
+natural tasks (B7), an offline comparison for semantic retrieval (F5) and E2's
+live provider checks. F4 embeddings stay gated, now by F5's result.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
