@@ -618,6 +618,16 @@ documents replace their graph facts atomically; unchanged graph rows remain.
 F3 adds optional agent/helper retrieval; its 30-cell live comparison is complete,
 with indexing kept off and F4 gated by the recorded result.
 Embedding providers, semantic retrieval and `sqlite-vec` remain planned.
+F5's [offline comparison](experiments/semantic-retrieval-f5-2026-10-30.md) keeps
+F4 gated: hybrid Recall@10 gained 3.33 points on each of two repositories,
+below the fixed 5-point per-repository and 10-point macro thresholds, while
+Loupe Recall@5 lost 3.33 points. The paired bootstrap interval crossed zero.
+The lexical baseline's maximum remaining macro gain was only 8.33 points,
+below the preregistered threshold, and the short-input model truncated most
+code chunks; these limits prevent a broad conclusion about semantic search.
+All sixty questions, three arms' results, local costs and exact input hashes
+are retained. The prototype changes no product code or dependencies, makes no
+hosted embedding requests and leaves retrieval defaults unchanged.
 
 F2 validation at `0ab3fcd` passed 2,824 tests, with one case-sensitive-filesystem
 skip and the existing G1 cross-profile expected failure. Ruff, mypy over 119 source

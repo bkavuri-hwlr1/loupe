@@ -25,7 +25,8 @@ computed. The experiment does not change product configuration or code under
   for code windows, which is a limitation of this fixed model, not a reason to
   change inputs after measuring.
 
-Pinned Git blobs are read without executing either repository. Source admission
+Pinned corpus blobs are read as data; no Django code or repository hooks run.
+The prototype executes Loupe's retrieval implementation. Source admission
 keeps the existing 20,000-file, 1 MiB-per-file and 64 MiB-total bounds and excludes
 recognized secret material. No source is sent to a hosted embedding provider.
 Only public model weights and the public repository are downloaded. Optional
