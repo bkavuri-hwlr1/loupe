@@ -26,6 +26,7 @@ from llm_cli.agent import harness as harness_module
 from llm_cli.agent.driver import RunRequest
 from llm_cli.agent.harness import CodingAgentHarness
 from llm_cli.agent.limits import ExecutionLimits
+from llm_cli.agent.reviewer import Reviewer
 from llm_cli.agent.shared_tools import SharedToolBroker
 from llm_cli.agent.tools import TaskCancelled
 from llm_cli.daemon.service import DaemonService
@@ -383,11 +384,20 @@ def test_daemon_cancel_preserves_review_usage_on_the_execution_record(
         service = service_factory(tmp_path)
         service.settings = replace(service.settings, agent_review="on")
 
-        def cancel_after_turn(_: Sequence[ToolCallResult] = ()) -> ModelTurn:
+        count = Reviewer._count
+
+        def cancel_received_turn(reviewer: Reviewer, turn: ModelTurn) -> None:
+            # The turn has reached the supervisor, so its usage is known.
+            # Cancelling in the provider worker before it returns races the
+            # supervisor's cancellation poll and can abandon an unknown turn.
             service.workflow.update("task", 1, stop_requested=1)
+            count(reviewer, turn)
+
+        def review_turn(_: Sequence[ToolCallResult] = ()) -> ModelTurn:
             return ModelTurn(text='{"findings": []}', usage={"prompt_tokens": 19})
 
-        monkeypatch.setattr(provider.reviewer, "_next", cancel_after_turn)
+        monkeypatch.setattr(Reviewer, "_count", cancel_received_turn)
+        monkeypatch.setattr(provider.reviewer, "_next", review_turn)
         credentials = await setup(service, root, provider, code="print('passed')")
         await asyncio.wait_for(
             await _start(service, root, credentials, "task", ("a.py",)), 30
