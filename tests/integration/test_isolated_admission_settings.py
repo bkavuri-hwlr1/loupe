@@ -271,7 +271,9 @@ def test_large_process_workspace_scrubs_private_values_after_restart(
             json.dumps(
                 {
                     "default_source_paths": count,
-                    "default_hydration_entries": Settings().isolated_hydration_max_entries,
+                    "default_hydration_entries": (
+                        Settings().isolated_hydration_max_entries
+                    ),
                     "preserved_unknown_output": unknown,
                     "open_seconds": open_seconds,
                     "safe_point_cold_seconds": safe_samples[0],
