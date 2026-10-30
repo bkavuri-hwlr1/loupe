@@ -541,6 +541,12 @@ class _Inventory:
                             ErrorCode.REPOSITORY_UNSAFE,
                             "Git returned invalid tracked path metadata",
                         )
+                    try:
+                        path.encode("utf-8")
+                    except UnicodeError as exc:
+                        raise _BudgetExceeded(
+                            "unsupported_path_encoding_budget"
+                        ) from exc
                     assert self.catalogue is not None
                     try:
                         self.catalogue.mark_tracked(path)

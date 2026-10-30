@@ -137,3 +137,27 @@ def test_tracked_object_change_without_ignore_change_is_still_detected(
     plan = hydration.plan_hydration(root)
     assert not plan.complete
     assert "tracked_index_changed" in plan.issues
+
+
+def test_malformed_indexed_name_absent_from_checkout_is_a_bounded_refusal(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    git_run: Callable[..., str],
+) -> None:
+    import subprocess
+
+    root = repository_factory(tmp_path, {"tracked.txt": "source\n"})
+    blob = git_run(root, "rev-parse", "HEAD:tracked.txt").strip().encode()
+    subprocess.run(
+        [
+            b"git", b"update-index", b"--add", b"--cacheinfo", b"100644", blob,
+            b"absent-\xff",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        timeout=5,
+    )
+    plan = hydration.plan_hydration(root)
+    assert not plan.complete
+    assert "unsupported_path_encoding_budget" in plan.issues
