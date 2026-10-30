@@ -1,8 +1,8 @@
 """Private, bounded path metadata for one hydration inventory.
 
 Ordinary source does not need a retained stat record in a runtime plan. This
-catalogue retains only its spelling, alias and ignored classification, so the
-planner can still reject aliases and recheck every classification. It never
+catalogue retains only its spelling and alias, so the planner can still reject
+aliases and classify every path in bounded batches. It never
 reads repository file contents and is removed before the preview returns.
 """
 
@@ -41,7 +41,7 @@ class PathCatalogue:
             )
             self.connection.execute(
                 "CREATE TABLE paths(alias TEXT PRIMARY KEY, spelling TEXT, "
-                "ignored INTEGER NOT NULL, administration INTEGER NOT NULL) "
+                "collision INTEGER NOT NULL, administration INTEGER NOT NULL) "
                 "WITHOUT ROWID"
             )
         except BaseException as exc:
@@ -59,7 +59,7 @@ class PathCatalogue:
         assert self.connection is not None
         return int(self.connection.execute("PRAGMA page_count").fetchone()[0]) * 4096
 
-    def add(self, path: str, *, ignored: bool, administration: bool) -> str | None:
+    def add(self, path: str, *, administration: bool) -> str | None:
         assert self.connection is not None
         alias = unicodedata.normalize("NFC", path).casefold()
         try:
@@ -67,10 +67,13 @@ class PathCatalogue:
                 "SELECT spelling FROM paths WHERE alias=?", (alias,)
             ).fetchone()
             if previous is not None:
+                self.connection.execute(
+                    "UPDATE paths SET collision=1 WHERE alias=?", (alias,)
+                )
                 return str(previous[0]) if previous[0] is not None else alias
             self.connection.execute(
                 "INSERT INTO paths VALUES (?,?,?,?)",
-                (alias, path if path != alias else None, ignored, administration),
+                (alias, path if path != alias else None, 0, administration),
             )
         except sqlite3.Error as exc:
             if exc.sqlite_errorcode == sqlite3.SQLITE_FULL:
@@ -78,18 +81,34 @@ class PathCatalogue:
             raise OSError("hydration metadata catalogue could not be stored") from exc
         return None
 
-    def records(self) -> Iterator[tuple[str, bool]]:
+    def records(self) -> Iterator[str]:
+        yield from self._paths(collisions=False)
+
+    def collisions(self) -> Iterator[str]:
+        yield from self._paths(collisions=True)
+
+    def collided(self, path: str) -> bool:
         assert self.connection is not None
-        cursor = self.connection.execute(
-            "SELECT alias,spelling,ignored FROM paths "
-            "WHERE administration=0 ORDER BY alias"
+        alias = unicodedata.normalize("NFC", path).casefold()
+        row = self.connection.execute(
+            "SELECT collision FROM paths WHERE alias=?", (alias,)
+        ).fetchone()
+        return row is not None and bool(row[0])
+
+    def _paths(self, *, collisions: bool) -> Iterator[str]:
+        assert self.connection is not None
+        query = (
+            "SELECT alias,spelling FROM paths WHERE collision=1 ORDER BY alias"
+            if collisions
+            else (
+                "SELECT alias,spelling FROM paths "
+                "WHERE administration=0 ORDER BY alias"
+            )
         )
+        cursor = self.connection.execute(query)
         try:
-            for alias, spelling, ignored in cursor:
-                yield (
-                    str(spelling) if spelling is not None else str(alias),
-                    bool(ignored),
-                )
+            for alias, spelling in cursor:
+                yield str(spelling) if spelling is not None else str(alias)
         finally:
             cursor.close()
 

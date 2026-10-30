@@ -374,12 +374,12 @@ class _Inventory:
             self.entries.append(entry)
             self.retained[entry.path] = entry
 
-    def observe(self, entry: _Observed, *, ignored: bool, administration: bool) -> None:
+    def observe(self, entry: _Observed, *, administration: bool) -> None:
         try:
             if self.catalogue is None:
                 self.catalogue = PathCatalogue(self.budgets.max_metadata_bytes)
             previous_path = self.catalogue.add(
-                entry.path, ignored=ignored, administration=administration
+                entry.path, administration=administration
             )
         except CatalogueLimit:
             raise _BudgetExceeded("metadata_budget_exceeded") from None
@@ -398,7 +398,6 @@ class _Inventory:
             return set()
         result: set[str] = set()
         batch: list[str] = []
-        expected: set[str] = set()
         cost = 0
 
         def flush() -> None:
@@ -414,16 +413,13 @@ class _Inventory:
                     deadline=self.deadline,
                     limit=self.budgets.max_metadata_bytes,
                 )
-                if actual != expected:
-                    self.issues.append("ignore_policy_changed")
                 result.update(actual)
             finally:
                 self.temporary_metadata_bytes -= cost
             batch.clear()
-            expected.clear()
             cost = 0
 
-        for path, ignored in self.catalogue.records():
+        for path in self.catalogue.records():
             self.remaining()
             needed = len(path.encode("utf-8")) + 256
             available = (
@@ -435,10 +431,45 @@ class _Inventory:
                 flush()
             batch.append(path)
             cost += needed
-            if ignored:
-                expected.add(path)
         flush()
         return result
+
+    def promote(self, root: int, ignored: set[str]) -> None:
+        """Retain stat receipts only after a bounded full-path classification.
+
+        Every entry was observed without following links during the walk. A
+        second no-follow observation pins an ignored regular file's current
+        receipt; a changed kind or an unstable receipt makes the plan incomplete.
+        """
+        if self.catalogue is None:
+            return
+        for path in sorted(ignored | set(self.catalogue.collisions())):
+            self.remaining()
+            if path in self.retained:
+                continue
+            before = _safe_status(root, path)
+            if before is None:
+                self.issues.append(
+                    "entry_changed_or_unreadable_during_inventory:" + path
+                )
+                continue
+            entry = _Observed(path, before)
+            if not stat.S_ISREG(before.st_mode):
+                entry.refusal = "needs_rescan"
+                entry.reason = "entry kind changed during metadata observation"
+                entry.descendants_inventoried = (
+                    False if stat.S_ISDIR(before.st_mode) else None
+                )
+                self.issues.append("entry_changed_during_inventory")
+            elif self.catalogue.collided(path):
+                entry.refusal = "refuse_path_alias"
+                entry.reason = "case or Unicode destination alias"
+            self.retain(entry)
+            after = _safe_status(root, path)
+            if after is None or _evidence(before) != _evidence(after):
+                entry.refusal = "needs_rescan"
+                entry.reason = "entry changed during metadata observation"
+                self.issues.append("entry_changed_during_inventory")
 
     def close(self) -> None:
         if self.catalogue is not None:
@@ -475,16 +506,6 @@ class _Inventory:
         try:
             names = self.names(descriptor, prefix)
             child_count = len(names)
-            ignored_here = _ignored_paths(
-                self.root,
-                [
-                    f"{prefix}/{name}" if prefix else name
-                    for name in names
-                    if name.casefold() not in _ADMIN_NAMES
-                ],
-                deadline=self.deadline,
-                limit=self.budgets.max_metadata_bytes,
-            )
             for name in names:
                 self.remaining()
                 relative = f"{prefix}/{name}" if prefix else name
@@ -492,15 +513,12 @@ class _Inventory:
                 try:
                     status = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
                     entry = _Observed(relative, status)
-                    ignored = relative in ignored_here
                     self.observe(
                         entry,
-                        ignored=ignored,
                         administration=name.casefold() in _ADMIN_NAMES,
                     )
                     if (
-                        ignored
-                        or not stat.S_ISREG(status.st_mode)
+                        not stat.S_ISREG(status.st_mode)
                         or name in {".gitignore", ".gitattributes"}
                         or entry.refusal is not None
                     ):
@@ -641,7 +659,7 @@ class _Inventory:
         )
 
 
-def _safe_stat(root: int, relative: str) -> dict[str, int] | None:
+def _safe_status(root: int, relative: str) -> os.stat_result | None:
     parts = PurePosixPath(relative).parts
     descriptor = os.dup(root)
     try:
@@ -651,11 +669,16 @@ def _safe_stat(root: int, relative: str) -> dict[str, int] | None:
             )
             os.close(descriptor)
             descriptor = child
-        return _evidence(os.stat(parts[-1], dir_fd=descriptor, follow_symlinks=False))
+        return os.stat(parts[-1], dir_fd=descriptor, follow_symlinks=False)
     except OSError:
         return None
     finally:
         os.close(descriptor)
+
+
+def _safe_stat(root: int, relative: str) -> dict[str, int] | None:
+    status = _safe_status(root, relative)
+    return _evidence(status) if status is not None else None
 
 
 def _root_is_symlink(root: Path, relative: str) -> bool:
@@ -829,6 +852,7 @@ def plan_hydration(
             # Every path remains in the bounded catalogue, including ordinary
             # source whose full stat record is no longer retained for hydration.
             ignored = inventory.ignored_paths()
+            inventory.promote(descriptor, ignored)
             repeated = inventory.ignored_paths()
             rules_changed = any(
                 _safe_stat(descriptor, entry.path) != _evidence(entry.status)
