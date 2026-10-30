@@ -1401,6 +1401,14 @@ if needed), `docs/isolated-workspaces.md`, `README.md`, tests.
   confirmed or rolled back.
 - An unknown or missing disposition is refused before any RPC is sent.
 
+**Implemented (Wave 12).** The standalone command prepares and confirms one
+exact target bootstrap and reports classification, runtime summary and retained
+work. Shared targets require an explicit disposition before any RPC; isolated
+targets accept exact-file consent. `--switch-intent-id` makes retries idempotent,
+`--confirm ID --sequence N` acknowledges a pending target, and `--rollback ID`
+keeps the source binding. Existing daemon guards and retry exit codes are
+preserved. See the [CLI guide](isolated-workspaces.md#switch-from-scripts-or-another-terminal).
+
 ### C22. Patch and bundle exports of candidates and batches
 
 *Run after C21 in the same session: both change `cli/app.py`.*

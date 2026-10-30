@@ -589,3 +589,45 @@ abandoned target for inspection. Confirmed switches cannot reopen their source
 binding; make a new switch instead. Clean and disposed workspaces remain eligible
 for safe close-time cleanup; only deliberately retained or still-needed proposal
 runtime stays pinned.
+
+### Switch from scripts or another terminal
+
+The standalone command uses the same conversation and mode-switch RPCs as chat:
+
+```sh
+loupe session switch SESSION_ID --to isolated
+loupe session switch SESSION_ID --to isolated --approve-secret .env
+loupe session switch SESSION_ID --to shared --hold
+loupe --json session switch SESSION_ID --to shared --retain
+```
+
+Every `--to shared` invocation requires exactly one of `--publish`, `--hold`,
+`--export`, `--retain`, or `--discard`, including a clean private workspace.
+The dispositions have the same meaning and restrictions as the chat command
+above. Dispositions apply only to shared targets; exact-file `--approve-secret`
+consent applies only to a new isolated target. Invalid or missing choices are
+refused locally before contacting the daemon. The result includes the private
+state classification, runtime summary, binding generation, and any retained
+proposal or export paths. Existing retryable refusals retain exit status 75.
+
+The command prepares and confirms one exact target bootstrap. Supply
+`--switch-intent-id ID` with `--to` to give a script a stable request identity;
+retrying the same intent and arguments returns the recorded switch rather than
+creating another worktree or publishing twice. A recorded result describes that
+intent, even if a later switch has changed the conversation again.
+
+After an interrupted request, inspect the pending intent and its
+`bootstrap_sequence`, then acknowledge that exact sequence or roll it back:
+
+```sh
+loupe --json session resume SESSION_ID
+loupe session switch SESSION_ID --confirm SWITCH_INTENT_ID --sequence SEQUENCE
+loupe session switch SESSION_ID --rollback SWITCH_INTENT_ID
+```
+
+`session resume` exposes pending state without confirming it. Confirmation needs
+both the intent ID and its exact target bootstrap sequence. Rollback keeps the
+source binding; `rollback_pending` means an active switch worker still needs to
+settle. Errors include profile-aware inspection and rollback commands. Each
+operation uses the selected profile's locally retained session secret, without
+opening a replacement conversation or asking for provider credentials.
