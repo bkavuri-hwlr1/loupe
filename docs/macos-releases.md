@@ -1,6 +1,7 @@
 # macOS releases
 
-Current release candidate: [0.1.0a3 release notes](release-notes/0.1.0a3.md).
+Current release: [0.1.0a3 release notes](release-notes/0.1.0a3.md),
+published October 29, 2026.
 
 The public install command is `brew install bkavuri-hwlr1/tap/loupe`.
 Development happens in the public `bkavuri-hwlr1/loupe` repository, which holds
@@ -16,7 +17,11 @@ move to the new tap.
 1. Update both `project.version` in `pyproject.toml` and `__version__` in
    `src/llm_cli/__init__.py`; refresh `uv.lock` with `uv lock` and commit. Versions
    use `X.Y.Z` or `X.Y.ZaN`, `X.Y.ZbN`, or `X.Y.ZrcN`.
-2. Push a matching `vX.Y.Z` tag on the reviewed commit. The release
+2. Check that `packaging/homebrew/publish.yml` matches
+   `.github/workflows/publish.yml` on the tap's `main`. If it doesn't, apply
+   the difference to the tap's `main` first (see
+   [Failures and retries](#failures-and-retries)), or the handoff is refused.
+   Then push a matching `vX.Y.Z` tag on the reviewed commit. The release
    workflow runs the full CI matrix and builds on native Apple Silicon and
    Intel macOS 15 runners using Python 3.14.
 3. The builder uses `uv build --wheel --no-sources` and verifies an allowlist of
@@ -138,6 +143,13 @@ is unsupported.
   0.1.0a2, the first release with a published version to upgrade from, was
   finished the same way: `brew upgrade` no longer accepts `--build-bottle`, so
   the workflow upgrades as users do and bottles from a fresh install.
+- A publish workflow fix must also reach the tap's `main`, using a
+  maintainer's own credentials. The tap's workflow commits only the formula and
+  README to `main`, and the handoff copies `packaging/homebrew/publish.yml`
+  onto `main`'s tree. GitHub refuses a deploy-key push that creates or changes
+  a workflow file, so a stale `main` blocks the next handoff. The 0.1.0a3
+  handoff was refused this way, because 0.1.0a2's fix never reached `main`.
+  Syncing the tap's `main` and re-running the failed handoff job finished it.
 - If the handoff already pushed its branch, retry the public workflow rather
   than overwriting that branch. Failed or partially published releases retain
   their candidate branch for diagnosis.

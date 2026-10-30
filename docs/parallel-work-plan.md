@@ -1,9 +1,10 @@
 # Parallel work plan
 
-Date: 2026-10-13, extended 2026-10-16, 2026-10-22 and 2026-10-24. Waves 1–3 started from
+Date: 2026-10-13, extended 2026-10-16, 2026-10-22, 2026-10-24 and 2026-10-30. Waves 1–3 started from
 `main` after #38, #39 and #41 and are merged (through #56). Waves 4–7 started
-from `main` at #56 and are merged (through #72). Waves 8–11 start from `main` at
-#72.
+from `main` at #56 and are merged (through #72). Waves 8–11 started from `main`
+at #72 and shipped in 0.1.0a3 (through #85). Wave 12 starts from `main` once
+this plan merges (#86).
 
 The remaining work, split into packages that separate sessions can run at the
 same time. Each package is sized for one session, names the files it may
@@ -49,7 +50,46 @@ experiments in [`implementation-status.md`](implementation-status.md).
   branch from that package's branch, and retarget the PR to `main` as soon as
   the base merges, before its branch is deleted.
 
-## At a glance: Waves 8–11
+## At a glance: Wave 12
+
+Wave 12 takes up everything left open after 0.1.0a3: the former Later list
+and two known limits of the outside catch-up fix (#85).
+
+| ID | Package | Lane | Size | Depends on | Hot files | Wave |
+| --- | --- | --- | --- | --- | --- | --- |
+| C17 | Isolated catch-up follow-ups | Workspace | M | — | — | 12 |
+| C18 | Larger isolated admission | Workspace | L | — | — | 12 |
+| C19 | Outside-scan coverage beyond the read window | Workspace | M | — | — | 12 |
+| C20 | Installer cache for dependency rebuilds | Workspace | M | — | — | 12 |
+| C21 | `loupe session switch` | Workspace | S | — | app.py | 12 |
+| C22 | Patch and bundle exports of candidates and batches | Workspace | M | — | app.py, service.py (one handler) | 12 (after C21) |
+| B7 | Review on natural tasks (*live*) | Harness | M | — | — | 12 |
+| F5 | Offline comparison for semantic retrieval | Knowledge | M | — | — | 12 |
+| F4 | Embeddings with exact scoring | Knowledge | L | F5 recommends it | app.py (`search`) | after F5 |
+| E2 | Live provider checks: Anthropic cache, oversized prompts (*live*) | Reliability | S | your sign-in | — | 12 |
+
+**Wave 12, all at once:** C17, C18, C19, C20, B7, F5, E2, and one session
+running C21 → C22 in order (they share `cli/app.py`). F4 runs only if F5
+recommends it.
+
+**Shared files.** These overlaps are small; resolve them at merge time.
+
+- C18 and C20 both add settings to `src/llm_cli/config/models.py`.
+- C18 and C19 both extend `scripts/scan_scale.py`: C18 the isolated sizes,
+  C19 the outside-scan read set.
+- C22 adds control migration 34. Any other package that needs a migration
+  takes the next free number when it merges.
+
+**Live work.** B7 and E2 (and F5, if it uses a hosted embedding model) make
+billed requests through a profile you sign in yourself before starting.
+Agents never handle keys. Set each run's token cap explicitly.
+
+**Starting a package.** Create its worktree as described above, for example
+`git worktree add -b codex/wave12-c17 ../loupe-c17 origin/main`, and give the
+session: "Implement package C17 from `docs/parallel-work-plan.md` (Wave 12),
+following 'How to run packages in parallel'. Open one PR."
+
+## At a glance: Waves 8–11 (shipped in 0.1.0a3)
 
 | ID | Package | Lane | Size | Depends on | Hot files | Wave |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -75,8 +115,8 @@ implemented; native watchers bring the 20,000-file safe point to 144 ms, under
 E3's threshold.
 
 D4 prepared 0.1.0a3 from Waves 1–7. The tag waited until Waves 8–11 and the
-outside catch-up fix merged, so 0.1.0a3 ships Waves 1–11. The work in
-[Later](#later) stays out of these waves.
+outside catch-up fix merged, so 0.1.0a3 shipped Waves 1–11 on October 29,
+2026. The work in [Later](#later) stays out of these waves.
 
 ### What E3 changed for Waves 9–11 (October 22, 2026)
 
@@ -393,6 +433,51 @@ used 2,317,163/3,000,000 observed tokens; medium effort did not fit the
 remaining budget. The [experiment](experiments/review-corpus-b6-2026-10-17.md)
 records per-case results, latency, usage and exclusions. Review remains off by
 default, with a recommendation to retain that setting.
+
+### B7. Review on natural tasks (*live*)
+
+**Why.** B6 measured the independent review only on planted bugs: on caught
+24 of 24, off caught none, and no clean task was harmed. Planted bugs are
+smaller and more uniform than real ones, so review stays off by default until
+it is measured on natural work.
+
+**Scope.**
+
+- **Corpus.** At least eight natural tasks taken from real bug fixes and
+  features in this repository's history or in small public projects:
+  - each task starts at the fix's parent commit, with the problem described
+    as a user would describe it;
+  - its hidden acceptance tests are the tests the fix added, or later
+    regression tests for it;
+  - keep each fixture small: a trimmed snapshot of the affected code, not a
+    whole repository;
+  - include tasks where an unreviewed first attempt is likely to miss an
+    edge case, and at least two where the obvious change is correct.
+- **Comparison.** Reuse B6's paired harness: `--set review=off` and
+  `--set review=on`, three repeats each, alternating which arm goes first.
+- **Measures, per arm:**
+  - hidden-test pass rate;
+  - real defects the review found that a repair then fixed;
+  - review-driven repairs that broke a correct change;
+  - findings per task and review timeouts;
+  - tokens, the review's share of them, and wall time.
+- **Recommendation.** Record in `implementation-status.md` whether to change
+  the default, with the numbers. Changing it is the user's decision, not part
+  of this package.
+
+**Files.** `scripts/live_benchmark.toml`, `scripts/live_benchmark.py` (only if
+the harness needs it), `scripts/benchmark_fixtures/natural-*/`,
+`scripts/benchmark_acceptance/natural-*/`, `tests/unit/test_review_benchmark.py`,
+`docs/implementation-status.md`, `docs/experiments/`.
+
+**Done when.**
+- Unit tests show each task's hidden tests fail at its starting point and pass
+  with the original fix.
+- The recorded run reports each arm's pass rate, real catches, harmful repairs
+  and cost.
+- The run stays within an explicit `--budget-tokens`. At B6's size (about
+  33,000 tokens per task), eight tasks, two arms and three repeats take about
+  1.6 million tokens; natural tasks will likely use more.
 
 ## Lane C — workspace modes
 
@@ -1149,6 +1234,214 @@ docs, tests.
   passes its original 128 MiB bound for the full hour, and the 7,000→20,000
   file growth run's database size is recorded in the PR.
 
+### C17. Isolated catch-up follow-ups
+
+**Why.** The outside catch-up fix (#85) left two known limits:
+
+- **Directory replaced by a file.** A directory that existed when the
+  workspace opened has no directory marker. If outside work replaces it with
+  a file, catch-up probably reports a conflict on that path even when the
+  private copy is untouched. This was read from the code, not tested.
+- **Publication lock.** A large catch-up, such as after a branch switch,
+  holds the publication lock for its whole duration, so other sessions'
+  publications wait for it.
+
+**Scope.**
+
+- **Directory replaced by a file.** Write the test first. If it conflicts,
+  treat an opened-with directory whose private subtree is unchanged as
+  replaceable: remove the subtree, then create the file in a later journal,
+  as catch-up already does for kind changes. A changed private subtree stays
+  a conflict on that path.
+- **Lock.** Release and reacquire the publication lock between journals so
+  shared publications can run in between. Each journal still starts from the
+  manifest the previous one confirmed. If the primary changed in between, the
+  remaining steps are recomputed rather than replayed from the old plan.
+- **Unchanged:** recovery, chunk limits and publication limits.
+
+**Files.** `src/llm_cli/workspace/isolated_sync.py`,
+`docs/isolated-workspaces.md`, `tests/integration/test_isolated_sync.py`.
+
+**Done when.**
+- An untouched opened-with directory replaced by an outside file arrives at
+  the next safe point. With a private edit inside it, the path is a conflict
+  and later safe points still work.
+- During a 150-file catch-up, another session's publication completes before
+  the catch-up finishes (use a fault hook between journals).
+- A crash between journals, including after an interleaved publication,
+  recovers without re-applying a step. The existing catch-up tests pass
+  unchanged.
+
+### C18. Larger isolated admission
+
+**Why.** E3 found two admission limits that real monorepos exceed:
+
+- a checkout with more than 20,000 source paths cannot open an isolated
+  workspace ("isolated source exceeds its 20,000-path budget" in
+  `workspace/isolated.py`);
+- hydration refuses more than 20,000 inventory entries by default
+  (`HydrationBudgets.max_entries`, whose ceiling is already 100,000).
+
+E3 said to raise these only with their own measurements.
+
+**Scope.**
+
+- **Measure first.** Extend `scripts/scan_scale.py` to open isolated
+  workspaces at 20,000, 50,000 and 100,000 source files with native watchers
+  on. Record creation time, peak memory, database size and safe-point time.
+- **Explicit settings.** Make the source-path budget and hydration entry
+  budget settings, with defaults set from the measurement. A refusal names
+  the setting that would admit the checkout.
+- **Unchanged:** byte, depth and time budgets; no-follow capture; secret
+  screening; the 100,000-entry hydration ceiling.
+
+**Files.** `src/llm_cli/workspace/isolated.py` (source-path budget only),
+`src/llm_cli/workspace/hydration.py`, `src/llm_cli/config/models.py`,
+`scripts/scan_scale.py`, `docs/isolated-workspaces.md`, `docs/experiments/`,
+tests.
+
+**Done when.**
+- A recorded measurement at each size justifies the new defaults.
+- A checkout at the new default opens isolated and completes a safe point
+  within the measured time. One just above it is refused with a message
+  naming the setting.
+- The settings accept values up to the existing ceilings and refuse values
+  beyond them.
+
+### C19. Outside-scan coverage beyond the read window
+
+**Why.** An outside scan covers only the latest 1,000 paths its session has
+read (`MAX_PATHS` in `workspace/external.py`). An outside edit to a file the
+session read earlier is not reported, so the model can keep working from
+stale content until publication's base check refuses it. Since C12, native
+watchers already report which paths changed.
+
+**Scope.**
+
+- **Use watcher changes.** While native watchers are active and have not
+  overflowed, scan every changed path the session has read, not only the
+  latest 1,000. Keep each scan within count, byte and time bounds.
+- **Fallback.** On watcher overflow or the polling fallback, keep today's
+  window, and state the coverage limit in the notice or status.
+- **Storage.** Keep each session's read registrations bounded; measure the
+  cost at 20,000 read paths.
+- **Unchanged:** notices stay path-only and bounded.
+
+**Files.** `src/llm_cli/workspace/external.py`, `src/llm_cli/workspace/watchers.py`
+(read-only additions only), `scripts/scan_scale.py`, `docs/file-watchers.md`,
+tests.
+
+**Done when.**
+- With native watchers active, a session that has read 5,000 files is notified
+  when an outside edit changes the first file it read.
+- On overflow or polling, behavior matches today's window and the limit is
+  reported.
+- The 20,000-file safe point stays under E3's threshold, recorded in the PR.
+
+### C20. Installer cache for dependency rebuilds
+
+**Why.** Each C10 rebuild runs with a fresh, empty installer home
+(`loupe-rebuild-home`, deleted afterwards). So every isolated open downloads
+all dependencies again: slow, dependent on the network, and failing offline
+even right after a successful rebuild.
+
+**Scope.**
+
+- **Opt-in cache.** A setting such as `[isolated.rebuild] cache = true` gives
+  installers a private (0700), per-profile cache directory. The cache is
+  passed through the cache variables (`XDG_CACHE_HOME`, `UV_CACHE_DIR`,
+  `npm_config_cache`, `PIP_CACHE_DIR`). The home itself stays fresh.
+- **Who sees it.** The installer sandbox may write the cache. Model commands,
+  checks and background processes can neither read nor write it.
+- **Integrity.** The cache holds downloaded artifacts, not installed trees.
+  Document that it is safe only with installers that verify lockfile hashes,
+  such as `uv sync --frozen` and `npm ci`.
+- **Bounds.** A size cap, with eviction or pruning when it is exceeded.
+  Concurrent rebuilds share the cache through the installers' own locking.
+- **Unchanged without the setting:** each rebuild gets an empty home.
+
+**Files.** `src/llm_cli/workspace/rebuild.py`, `src/llm_cli/execution/sandbox.py`
+(the cache path allowance only), `src/llm_cli/config/models.py`,
+`docs/isolated-workspaces.md`, `docs/adr/0009-isolated-runtime-hydration.md`,
+tests.
+
+**Done when.**
+- A second open of the same fixture rebuilds with network denied, using what
+  the first open cached (use a local package index fixture, not the internet).
+- Model commands and checks cannot reach the cache.
+- Two concurrent opens both rebuild correctly.
+- The cache stays within its cap, and without the setting nothing changes.
+
+### C21. `loupe session switch`
+
+**Why.** C13 added mode switching only as the chat's `/workspace` command and
+left the CLI command out because it needs `cli/app.py`. Scripts and other
+front ends cannot switch a conversation's mode.
+
+**Scope.**
+
+- **The command.** `loupe session switch SESSION --to shared|isolated`, with
+  `--approve-secret PATH` (repeatable) and the chat's dispositions:
+  `--publish`, `--hold`, `--export`, `--retain` or `--discard`.
+- **Flow.** It uses the existing `workspace.switch_mode`,
+  `workspace.confirm_switch` and `workspace.rollback_switch` RPCs. It shows
+  the private-state classification and requires an explicit disposition
+  before switching to shared. It can confirm or roll back a pending switch.
+- **Output.** `--json`, and the CLI's usual exit codes, including 75 for
+  retryable refusals.
+- **Unchanged:** the daemon. This package adds no RPC.
+
+**Files.** `src/llm_cli/cli/app.py`, `src/llm_cli/cli/session.py` (RPC client,
+if needed), `docs/isolated-workspaces.md`, `README.md`, tests.
+
+**Done when.**
+- Each of C13's switch outcomes works through the CLI: shared to isolated,
+  and isolated to shared with each disposition.
+- A switch during a running task is refused, and a pending switch can be
+  confirmed or rolled back.
+- An unknown or missing disposition is refused before any RPC is sent.
+
+### C22. Patch and bundle exports of candidates and batches
+
+*Run after C21 in the same session: both change `cli/app.py`.*
+
+**Why.** Workspace plan §16.6 calls for explicit exports of a candidate or
+batch. Today only a mode switch's export disposition writes one. Moving work
+to another machine, attaching it to a review or applying it with `git apply`
+means reconstructing it from `task diff`.
+
+**Scope.**
+
+- **Commands.** Export a held proposal or a published batch as `--format
+  patch` (git-apply compatible) or `--format bundle` (content-addressed bodies
+  plus a manifest with exact before identities) to `--to DEST`.
+- **Reuse.** Build on `portable_patch` and `write_export_artifact` in
+  `workspace/patches.py`, which mode switching already uses.
+- **Durability.** `export_intents_v2` (§16.6) records each export, idempotent
+  by intent ID. A crash never leaves a partial file at the destination, and a
+  retry never writes twice.
+- **Destination.** Refuse a destination inside the shared checkout unless
+  `--into-checkout` is given, and never overwrite an existing file.
+- **Privacy.** Runtime files and screened source bytes are never exported. A
+  candidate holding screened content is refused with a path-only reason.
+- **Not included:** internal refs, commits or pull requests (§16.6's later
+  integration adapter).
+
+**Files.** `src/llm_cli/workspace/patches.py`, `src/llm_cli/workspace/exports.py`
+(new), `src/llm_cli/storage/migrations.py` (migration 34),
+`src/llm_cli/daemon/service.py` (one RPC handler), `src/llm_cli/cli/app.py`,
+`docs/isolated-workspaces.md`, tests.
+
+**Done when.**
+- `git apply --check` accepts an exported patch of a held proposal with a
+  binary file, a mode change and a symlink, on a clean checkout of its base.
+- A bundle's manifest identities match the candidate, and every body hash
+  verifies.
+- A crash at each export step leaves either no file or the complete file, and
+  a retry does not write twice.
+- A candidate with screened content is refused, and no exported bytes appear
+  in the database or logs.
+
 ## Lane D — operations
 
 Run D1 → D2 → D3 in one session, in order: they share `cli/app.py`.
@@ -1275,7 +1568,18 @@ and a live oversized-prompt rejection on each provider. Needs a profile signed
 in to Anthropic and to OpenAI with API keys, which only the user can provide.
 Record results in the harness plan.
 
-**On hold** (2026-10-16), at the user's request.
+**Wave 12.** Taken off hold on 2026-10-30 (it was on hold from 2026-10-16 at
+the user's request). Sign both providers in to a profile other than `default`
+before starting.
+
+**Files.** A live check script under `scripts/` (new), `src/llm_cli/providers/`
+only if a check finds a bug, `docs/cli-harness-response-plan.md`.
+
+**Done when.**
+- On each provider, an oversized prompt is reported as
+  `provider_error: context_overflow`.
+- A repeated Anthropic request reports prompt-cache reads.
+- The results are recorded in the harness plan.
 
 ### E3. Long-running soak and scan-cost measurement
 
@@ -1494,8 +1798,8 @@ the older pilot and bounded-attempt records remain unchanged.
 
 ### F4. Embeddings with exact scoring
 
-**Gate.** Run only if F3 shows retrieval helps, or the user asks for semantic
-search.
+**Gate.** F3 showed no benefit from lexical retrieval. Run only if F5's
+offline comparison recommends it, or the user asks for semantic search.
 
 **Scope.**
 
@@ -1522,6 +1826,41 @@ migrations in `src/llm_cli/storage/migrations.py`, `src/llm_cli/config/`, the
 - Deleting `vectors.sqlite3` leaves lexical search working.
 - A recording fake provider shows that no content is sent without the
   policy.
+
+### F5. Offline comparison for semantic retrieval
+
+**Why.** F3's lexical retrieval covered 90 of 102 expected facts against 92
+without it, so F4 is gated until there is a stronger case. Building F4 into the
+product first would be wasted if semantic search doesn't beat lexical search
+either. An offline retrieval comparison answers that cheaply.
+
+**Scope.**
+
+- **Prototype outside the product.** An experiment script chunks a
+  repository, embeds the chunks with one embedding model, scores queries by
+  exact cosine similarity, and fuses the result with the existing lexical
+  index by reciprocal-rank fusion. Nothing under `src/` changes.
+- **Model.** Prefer a local model: no billing, and no code leaves the machine.
+  A hosted model needs a profile the user signs in, and may be sent only
+  public repositories.
+- **Queries lexical search finds hard.** At least 30 "where does X happen"
+  questions phrased without the code's identifiers, each with the files that
+  answer it, over this repository and one larger public repository.
+- **Measures.** Recall@5 and recall@10 of the expected files for lexical,
+  semantic and hybrid search; embedding cost; index build time.
+- **Recommendation.** Open F4 only if hybrid search clearly beats lexical
+  search on these queries. Record the decision and the numbers in F4's gate.
+
+**Files.** `scripts/semantic_retrieval_eval.py` (new),
+`scripts/semantic_retrieval.toml` (new), `tests/unit/test_semantic_retrieval_eval.py`
+(new; scoring and fusion only), `docs/experiments/`,
+`docs/implementation-status.md`, this plan's F4 gate.
+
+**Done when.**
+- Unit tests cover recall scoring and rank fusion on fixed inputs.
+- The recorded run has a recall table for all three arms on both
+  repositories, with cost and build time.
+- F4's gate records go or no-go with those numbers.
 
 ## Lane G — authority across profiles
 
@@ -1772,19 +2111,12 @@ it), `docs/adr/0010-cross-profile-publication-authority.md`,
 
 ## Later
 
-These are deliberately outside Waves 8–11:
+Wave 12 took up the earlier Later list: larger admission (C18) and scan
+coverage (C19), the installer cache (C20), `loupe session switch` (C21),
+patch and bundle exports (C22), review on natural tasks (B7), the case for
+embeddings (F5, then F4) and E2's live checks. These remain outside it:
 
-- **Larger isolated admission and scan coverage.** E3 found 20,000-file
-  hydration admission and 100,000-file isolated capture refused, and outside
-  scans limited to each session's latest 1,000 read paths. Raise these only
-  with their own measurements; C12 does not change them.
-- **F4 embeddings, the `sqlite-vec` accelerator and opt-in task memory.**
-  F3's live comparison showed no benefit from retrieval: 90 of 102 expected
-  facts with it on, 92 with it off. Revisit only with a stronger case.
-- **E2 live provider checks**, on hold.
-- **Patch and bundle exports of candidates and batches** (§16.6).
-- **An installer cache for C10 rebuilds.** Today every isolated open downloads
-  dependencies again into an empty installer home.
-- **Review on natural work.** B6 measured the independent review only on
-  seeded bugs. Measure it on natural tasks before reconsidering its default.
-- **A `loupe session switch` CLI command**, after C13.
+- **The `sqlite-vec` accelerator and opt-in task memory.** Both follow F4 and
+  stay out unless F5 opens it.
+- **Internal refs, commits and pull requests as exports** (§16.6's later
+  integration adapter), after C22.
