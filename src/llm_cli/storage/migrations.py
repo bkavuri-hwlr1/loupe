@@ -1612,6 +1612,62 @@ CREATE INDEX managed_processes_session_idx ON managed_processes(session_id,state
 CREATE INDEX managed_processes_workspace_idx ON managed_processes(workspace_id,state);
 """,
     ),
+    Migration(
+        34,
+        "durable_source_export_intents",
+        """
+CREATE TABLE export_intents_v2 (
+    export_intent_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    canonical_request_hash TEXT NOT NULL CHECK(length(canonical_request_hash)=64),
+    checkout_id TEXT NOT NULL REFERENCES checkouts(checkout_id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    source_workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('proposal','candidate','batch')),
+    source_id TEXT NOT NULL,
+    source_attempt INTEGER,
+    source_root TEXT NOT NULL,
+    runtime_paths_json TEXT NOT NULL,
+    source_manifest_json TEXT NOT NULL,
+    strategy TEXT NOT NULL CHECK(strategy IN ('patch','bundle')),
+    destination TEXT NOT NULL,
+    into_checkout INTEGER NOT NULL CHECK(into_checkout IN (0,1)),
+    state TEXT NOT NULL CHECK(state IN (
+        'requested','artifact_ready','writing','prepared','exported'
+    )),
+    state_version INTEGER NOT NULL DEFAULT 1 CHECK(state_version>0),
+    artifact_hash TEXT CHECK(artifact_hash IS NULL OR length(artifact_hash)=64),
+    artifact_size INTEGER CHECK(artifact_size IS NULL OR artifact_size>=0),
+    stage_parent TEXT,
+    stage_name TEXT,
+    stage_dev INTEGER,
+    stage_ino INTEGER,
+    parent_dev INTEGER,
+    parent_ino INTEGER,
+    destination_dev INTEGER,
+    destination_ino INTEGER,
+    destination_parent_dev INTEGER,
+    destination_parent_ino INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    terminal_at INTEGER,
+    CHECK((stage_dev IS NULL)=(stage_ino IS NULL)),
+    CHECK((parent_dev IS NULL)=(parent_ino IS NULL)),
+    CHECK(state<>'exported' OR (
+        destination_dev IS NOT NULL AND destination_ino IS NOT NULL
+        AND artifact_hash IS NOT NULL AND terminal_at IS NOT NULL
+    ))
+);
+CREATE INDEX export_intents_source_idx
+    ON export_intents_v2(source_kind,source_id,source_attempt);
+CREATE TRIGGER source_export_request_immutable
+BEFORE UPDATE OF idempotency_key,canonical_request_hash,checkout_id,session_id,
+    source_workspace_id,source_kind,source_id,source_attempt,source_root,
+    runtime_paths_json,source_manifest_json,strategy,destination,into_checkout
+ON export_intents_v2
+BEGIN SELECT RAISE(ABORT,'source export request is immutable'); END;
+""",
+    ),
 )
 
 

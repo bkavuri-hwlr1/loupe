@@ -634,3 +634,56 @@ opening a replacement conversation or asking for provider credentials.
 For a session opened under a named profile, include that profile on the switch
 and every retry, for example `loupe --profile work session switch SESSION_ID
 --to isolated`.
+
+
+## Export source changes
+
+Export a held task proposal, a staged workspace candidate, or a published batch
+without publishing it again or creating a Git commit:
+
+```sh
+loupe change export TASK_ID --to /absolute/new-change.patch
+loupe change export CANDIDATE_ID --kind candidate --format bundle --to /absolute/new-change.json
+loupe --json change export BATCH_ID --kind batch --to /absolute/new-batch.patch --intent export-review-1
+```
+
+Loupe infers the source kind when the ID is unambiguous. Use `--kind proposal`,
+`--kind candidate`, or `--kind batch` to disambiguate. Held proposals retain the
+frozen files and original runtime protections of their task attempt, including
+a proposal retained by a workspace switch. Later edits to the shared checkout
+do not change a published batch's exported result.
+
+The default `--format patch` writes a Git binary patch suitable for
+`git apply --check` and `git apply` on the exact base. It preserves binary files,
+executable modes and symlinks. Patch generation requires the exact before bytes;
+if an older receipt cannot supply them, Loupe refuses rather than inventing a
+base. Empty-directory-only changes also require a bundle. Use a bundle with a
+new intent in either case.
+
+`--format bundle` writes one JSON file with `format: loupe-source-bundle`,
+version 1, a `files` manifest and a `bodies` map. Each entry records its relative
+path and exact before/after identities. Body references are SHA-256 keys; values
+in `bodies` are base64 bytes. A missing historical before body is represented by
+its exact before identity and a null body reference. This is an exchange format;
+Loupe does not provide a bundle import command. Each final artifact is limited
+to 64 MiB.
+
+`--to` must name a new file with an existing parent. Loupe never overwrites an
+existing destination, including an unrelated file with identical contents.
+Exporting into any discovered checkout requires `--into-checkout`; temporary
+bytes are staged privately in its Git administration and must be on the same
+filesystem as the destination. Private workspaces, Git administration and Loupe
+storage remain unavailable as destinations. The resulting file is owner-only.
+Runtime files and source containing recognized secrets or retained private
+runtime values are refused with a path-only reason. Exported bodies never enter
+the export journal or operational logs; screened artifacts remain in the
+profile's private export storage.
+
+Use a stable `--intent ID` and the same profile when a script may retry. Retrying
+the same ID, source,
+format and destination resumes its durable receipt and returns metadata for the
+same complete file. A crash leaves either no destination or the complete
+artifact; a matching retry does not replace or write that file again. A refusal
+includes the intent ID for an unchanged retry. Changed arguments require a new
+intent. Changed staging files, destination files or parent identities require
+inspection and are never silently adopted.
