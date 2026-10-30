@@ -111,6 +111,8 @@ class Task:
     seed_before: str | None = None
     seed_after: str | None = None
     acceptance: str | None = None
+    # B7 starts from real historical bugs and never prescribes a planted edit.
+    natural_obvious: bool = False
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,7 @@ def load_suite(path: Path = TASKS) -> Suite:
             seed_before=raw.get("seed_before"),
             seed_after=raw.get("seed_after"),
             acceptance=raw.get("acceptance"),
+            natural_obvious=raw.get("natural_obvious", False),
         )
         _validate(task)
         tasks.append(task)
@@ -222,6 +225,27 @@ def _validate(task: Task) -> None:
         raise refuse("min_review_findings needs an edit mode and a count from 0 to 10")
 
     if task.review_kind is not None:
+        if task.review_kind == "natural":
+            if task.mode != "auto" or task.fixture is None:
+                raise refuse("natural review tasks need an auto-mode fixture")
+            if type(task.natural_obvious) is not bool:
+                raise refuse("natural_obvious must be a boolean")
+            if any((task.seed_path, task.seed_before, task.seed_after)):
+                raise refuse("natural tasks cannot prescribe a planted edit")
+            if (
+                not isinstance(task.acceptance, str)
+                or not task.acceptance.replace("-", "").isalnum()
+            ):
+                raise refuse("natural tasks need hidden acceptance")
+            hidden = Path(__file__).with_name("benchmark_acceptance") / task.acceptance
+            if (
+                not (hidden / "test_acceptance.py").is_file()
+                or not (hidden / "provenance.json").is_file()
+            ):
+                raise refuse("natural tasks need acceptance and pinned provenance")
+            if "\n" in task.prompt or "\r" in task.prompt:
+                raise refuse("piped natural prompts must use one physical line")
+            return
         if task.review_kind not in {"bug", "clean"} or task.mode != "auto":
             raise refuse("review_kind needs bug or clean in auto mode")
         if not all(
@@ -708,6 +732,11 @@ def seed_observed(task: Task, events: Sequence[tuple[str, Mapping[str, Any]]]) -
 
 def review_summary(document: Mapping[str, Any]) -> dict[str, Any]:
     """Report measured repairs, not semantic precision inferred from counts."""
+    natural = [
+        t for t in document.get("tasks", []) if t.get("review_kind") == "natural"
+    ]
+    if natural:
+        return natural_review_summary(natural)
     summaries: dict[str, Any] = {}
     tasks = document.get("tasks", [])
     arms = sorted(
@@ -823,6 +852,257 @@ def review_summary(document: Mapping[str, Any]) -> dict[str, Any]:
     return summaries
 
 
+def valid_natural_measurement(row: Mapping[str, Any]) -> bool:
+    checks = row.get("checks", {})
+    return bool(
+        row.get("initial_acceptance", {}).get("witnessed")
+        and row.get("initial_acceptance", {}).get("ran")
+        and row.get("hidden_acceptance", {}).get("ran")
+        and checks.get("one_task")
+        and checks.get("recorded_once")
+        and not row.get("runner_timed_out")
+        and row.get("failure_code") != "PROVIDER_UNAVAILABLE"
+    )
+
+
+def natural_matched_pairs(rows: Sequence[Mapping[str, Any]]) -> int:
+    pairs: dict[tuple[object, object], set[str]] = {}
+    for row in rows:
+        if valid_natural_measurement(row):
+            pairs.setdefault((row.get("id"), row.get("repetition")), set()).add(
+                str(row.get("review_arm"))
+            )
+    return sum(arms == {"off", "on"} for arms in pairs.values())
+
+
+def natural_review_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Score actual first/final candidates; a finding alone proves no catch."""
+    summaries: dict[str, Any] = {}
+    for arm in ("off", "on"):
+        attempted = [row for row in rows if row.get("review_arm") == arm]
+        if not attempted:
+            continue
+        measured = [row for row in attempted if valid_natural_measurement(row)]
+
+        def repaired(row: Mapping[str, Any]) -> bool:
+            return bool(
+                row.get("review_repair_edits")
+                and any(
+                    review.get("findings", 0) > 0 for review in row.get("reviews", [])
+                )
+            )
+
+        total_tokens = sum(
+            row.get("prompt_tokens", 0) + row.get("output_tokens", 0)
+            for row in attempted
+        )
+        reviewer_tokens = sum(
+            row.get("review_prompt_tokens", 0) + row.get("review_output_tokens", 0)
+            for row in attempted
+        )
+        passed = sum(bool(row["hidden_acceptance"].get("passed")) for row in measured)
+        summaries[arm] = {
+            "runs": len(attempted),
+            "measured_runs": len(measured),
+            "invalid_or_incomplete_runs": len(attempted) - len(measured),
+            "hidden_passes": passed,
+            "hidden_pass_rate": passed / len(attempted),
+            "initial_hidden_passes": sum(
+                bool(row["initial_acceptance"].get("passed")) for row in measured
+            ),
+            "candidate_review_catches": sum(
+                not row["initial_acceptance"].get("passed")
+                and bool(row["hidden_acceptance"].get("passed"))
+                and repaired(row)
+                for row in measured
+            ),
+            "harmful_review_repairs": sum(
+                bool(row["initial_acceptance"].get("passed"))
+                and not row["hidden_acceptance"].get("passed")
+                and repaired(row)
+                for row in measured
+            ),
+            "findings": sum(
+                sum(review.get("findings", 0) for review in row.get("reviews", []))
+                for row in attempted
+            ),
+            "timeouts": sum(row.get("review_timeouts", 0) for row in attempted),
+            "incomplete_reviews": sum(
+                row.get("review_incomplete", 0) for row in attempted
+            ),
+            "prompt_tokens": sum(row.get("prompt_tokens", 0) for row in attempted),
+            "output_tokens": sum(row.get("output_tokens", 0) for row in attempted),
+            "review_prompt_tokens": sum(
+                row.get("review_prompt_tokens", 0) for row in attempted
+            ),
+            "review_output_tokens": sum(
+                row.get("review_output_tokens", 0) for row in attempted
+            ),
+            "review_token_share": reviewer_tokens / total_tokens
+            if total_tokens
+            else None,
+            "usage_accounting_valid": reviewer_tokens <= total_tokens,
+            "median_wall_seconds": statistics.median(
+                row["wall_seconds"] for row in measured
+            )
+            if measured
+            else None,
+            "median_review_seconds": statistics.median(
+                row.get("review_seconds", 0) for row in measured
+            )
+            if measured
+            else None,
+            "cost_usd": None,
+            "per_case": {
+                case: {
+                    "runs": sum(row["id"] == case for row in attempted),
+                    "hidden_passes": sum(
+                        row["id"] == case
+                        and bool(row["hidden_acceptance"].get("passed"))
+                        for row in measured
+                    ),
+                    "initial_hidden_passes": sum(
+                        row["id"] == case
+                        and bool(row["initial_acceptance"].get("passed"))
+                        for row in measured
+                    ),
+                }
+                for case in sorted({row["id"] for row in attempted})
+            },
+        }
+    return summaries
+
+
+def natural_first_acceptance(
+    task: Task,
+    events: Sequence[tuple[str, Mapping[str, Any]]],
+    protected: Sequence[Path],
+) -> dict[str, Any]:
+    """Reconstruct successful edits before review without executing candidate code.
+
+    Unknown or ambiguous mutations make attribution unavailable. Hidden tests
+    still run only through the existing sandboxed, witnessed acceptance runner.
+    """
+    assert task.fixture is not None
+    pending: dict[object, tuple[object, Mapping[str, Any]]] = {}
+    completed: dict[object, object] = {}
+    mutations = _EDIT_TOOLS | {"write_binary", "write_symlink"}
+    with tempfile.TemporaryDirectory(prefix="loupe-natural-first-") as temporary:
+        root = Path(temporary).resolve() / "repo"
+        shutil.copytree(FIXTURES / task.fixture, root)
+
+        def target(value: object) -> Path:
+            if (
+                not isinstance(value, str)
+                or not value
+                or "\\" in value
+                or "\0" in value
+            ):
+                raise ValueError("invalid replay path")
+            path = Path(value)
+            if path.is_absolute() or ".." in path.parts or ".git" in path.parts:
+                raise ValueError("invalid replay path")
+            return root / path
+
+        try:
+            for kind, payload in events:
+                if kind == "review.started":
+                    if pending:
+                        raise ValueError("unfinished mutation before review")
+                    break
+                if kind == "model.tool_call":
+                    tool = payload.get("tool")
+                    if tool not in mutations:
+                        continue
+                    arguments = payload.get("arguments")
+                    call_id = payload.get("call_id")
+                    if (
+                        not isinstance(arguments, Mapping)
+                        or not isinstance(call_id, str)
+                        or not call_id
+                        or call_id in pending
+                    ):
+                        raise ValueError("unwitnessed mutation")
+                    pending[call_id] = (tool, arguments)
+                elif kind == "model.tool_result" and payload.get("tool") in mutations:
+                    call_id = payload.get("call_id")
+                    part = payload.get("part", 0)
+                    if (
+                        type(part) is int
+                        and part > 0
+                        and completed.get(call_id) == payload.get("tool")
+                    ):
+                        continue
+                    if call_id not in pending:
+                        raise ValueError("mutation result without matching call")
+                    tool, arguments = pending.pop(call_id)
+                    if payload.get("tool") != tool:
+                        raise ValueError("mutation tool changed")
+                    completed[call_id] = tool
+                    if payload.get("is_error"):
+                        continue
+                    if tool == "rename_file":
+                        source = target(arguments.get("source"))
+                        destination = target(arguments.get("destination"))
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        source.rename(destination)
+                    elif tool in {
+                        "write_file",
+                        "apply_patch",
+                        "delete_file",
+                        "create_directory",
+                    }:
+                        path = target(arguments.get("path"))
+                        if tool == "create_directory":
+                            path.mkdir(parents=True, exist_ok=True)
+                        elif tool == "delete_file":
+                            path.unlink()
+                        else:
+                            if tool == "write_file":
+                                content = arguments.get("content")
+                                if not isinstance(content, str):
+                                    raise ValueError("nontext replay")
+                            else:
+                                old, new = (
+                                    arguments.get("old_text"),
+                                    arguments.get("new_text"),
+                                )
+                                content = path.read_text()
+                                if (
+                                    not isinstance(old, str)
+                                    or not old
+                                    or not isinstance(new, str)
+                                    or content.count(old) != 1
+                                ):
+                                    raise ValueError("ambiguous replay")
+                                content = content.replace(old, new, 1)
+                            if len(content.encode()) > 1024 * 1024:
+                                raise ValueError("oversized replay")
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            path.write_text(content)
+                    elif tool in {"write_binary", "write_symlink"}:
+                        raise ValueError("unsupported replay")
+                    inventory = [path for path in root.rglob("*") if path.is_file()]
+                    if (
+                        len(inventory) > 256
+                        or sum(path.stat().st_size for path in inventory)
+                        > 8 * 1024 * 1024
+                    ):
+                        raise ValueError("oversized replay inventory")
+            if pending:
+                raise ValueError("unfinished mutation")
+        except (OSError, UnicodeError, ValueError):
+            return {
+                "ran": False,
+                "passed": False,
+                "witnessed": False,
+                "reason": "initial candidate could not be reconstructed exactly",
+            }
+        result = hidden_acceptance(task, root, protected)
+        result["witnessed"] = True
+        return result
+
+
 def retrieval_summary(document: Mapping[str, Any]) -> dict[str, Any]:
     """Matched task arms; include failures rather than cherry-picking answers."""
     rows = document.get("tasks", [])
@@ -921,7 +1201,14 @@ def hidden_acceptance(
         completed = subprocess.run(
             wrap(
                 kind,
-                SandboxPolicy(writable=(root,), protected=tuple(protected)),
+                SandboxPolicy(
+                    writable=(root,),
+                    protected=tuple(protected),
+                    # Worktrees may live below a protected .codex directory.
+                    # Expose the interpreter environment, never its sibling
+                    # source, hidden acceptance corpus or credential stores.
+                    readable=(Path(sys.prefix).resolve(),),
+                ),
                 command,
                 cwd=copy,
             ),
@@ -1220,7 +1507,7 @@ def run(arguments: argparse.Namespace) -> int:
     paired = review_paired or retrieval_paired
     tasks = [t for t in suite.tasks if not arguments.only or t.id in arguments.only]
     if review_paired and not arguments.only:
-        tasks = [t for t in tasks if t.review_kind is not None]
+        tasks = [t for t in tasks if t.review_kind in {"bug", "clean"}]
     if retrieval_paired and not arguments.only:
         tasks = [t for t in tasks if t.id in RETRIEVAL_TASKS]
     if not tasks:
@@ -1229,6 +1516,11 @@ def run(arguments: argparse.Namespace) -> int:
         raise SystemExit("repeat and token budget must be positive")
     if review_paired and any(task.review_kind is None for task in tasks):
         raise SystemExit("--review-paired requires only review corpus tasks")
+    natural = any(task.review_kind == "natural" for task in tasks)
+    if natural and (
+        not review_paired or any(task.review_kind != "natural" for task in tasks)
+    ):
+        raise SystemExit("natural review tasks require a separate paired comparison")
     if any(task.acceptance for task in tasks) and available_sandbox() is None:
         raise SystemExit("hidden acceptance requires a working sandbox")
     paths = AppPaths.resolve(profile)
@@ -1269,14 +1561,20 @@ def run(arguments: argparse.Namespace) -> int:
         }
         document["retrieval_summary"] = retrieval_summary(document)
         document["review_summary"] = review_summary(document)
+        if natural:
+            document["matched_pairs"] = natural_matched_pairs(results)
+            document["expected_pairs"] = len(tasks) * repeat
         document["measurement_complete"] = (
             document["complete"]
             and all(
                 arm["invalid_or_incomplete_runs"] == 0
                 for arm in document["review_summary"].values()
             )
-            and all(result["passed"] for result in results)
+            and (natural or all(result["passed"] for result in results))
+            and (not natural or document["matched_pairs"] == document["expected_pairs"])
         )
+        if natural and status == "finished" and not document["measurement_complete"]:
+            document["status"] = "incomplete"
         target = Path(output)
         target.parent.mkdir(parents=True, exist_ok=True)
         pending = target.with_name(target.name + ".pending")
@@ -1316,6 +1614,7 @@ def run(arguments: argparse.Namespace) -> int:
         spent = 0
         try:
             for repetition, task, review_arm in execution_order(tasks, repeat, paired):
+                wait_between_tasks(getattr(arguments, "pause_file", None))
                 # Keep a conservative measured per-task reserve. Provider usage
                 # is known after requests, so this is admission control rather
                 # than a false claim of a provider-side hard billing limit.
@@ -1483,7 +1782,8 @@ def run(arguments: argparse.Namespace) -> int:
                     result["index_build_seconds"] = round(build_seconds, 3)
                 if task.review_kind is not None:
                     result["review_kind"] = task.review_kind
-                    result["seed_observed"] = seed_observed(task, events)
+                    if task.review_kind != "natural":
+                        result["seed_observed"] = seed_observed(task, events)
                     result["hidden_acceptance"] = hidden_acceptance(
                         task,
                         repository,
@@ -1494,6 +1794,25 @@ def run(arguments: argparse.Namespace) -> int:
                             paths.config_dir,
                         ),
                     )
+                    if task.review_kind == "natural":
+                        result["natural_obvious"] = task.natural_obvious
+                        result["natural_provenance"] = json.loads(
+                            (
+                                Path(__file__).with_name("benchmark_acceptance")
+                                / str(task.acceptance)
+                                / "provenance.json"
+                            ).read_text()
+                        )
+                        result["initial_acceptance"] = natural_first_acceptance(
+                            task,
+                            events,
+                            (
+                                *protected_home_paths(Path.home()),
+                                paths.data_dir,
+                                paths.state_dir,
+                                paths.config_dir,
+                            ),
+                        )
                 # Left waiting on a question after its chat had gone.
                 result["stranded_question"] = stranded
                 result["runner_timed_out"] = state not in _SETTLED
@@ -1519,6 +1838,16 @@ def run(arguments: argparse.Namespace) -> int:
         and all(result["passed"] for result in results)
         else 1
     )
+
+
+def wait_between_tasks(pause_file: Path | None) -> None:
+    """Let offline measurements pause admission without abandoning a live cell."""
+    announced = False
+    while pause_file is not None and pause_file.exists():
+        if not announced:
+            print("Paused between completed benchmark cells.", flush=True)
+            announced = True
+        time.sleep(0.25)
 
 
 def _line(result: Mapping[str, Any]) -> str:
@@ -1566,6 +1895,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--provider")
     parser.add_argument("--model")
     parser.add_argument("--effort")
+    parser.add_argument(
+        "--pause-file",
+        type=Path,
+        help="pause new tasks while this file exists; active cells finish normally",
+    )
     parser.add_argument(
         "--budget-tokens",
         type=int,

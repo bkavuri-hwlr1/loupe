@@ -95,7 +95,255 @@ def test_hidden_acceptance_catches_seed_and_accepts_repair(tmp_path: Path) -> No
 
 
 def _corpus():
-    return [task for task in benchmark.load_suite().tasks if task.review_kind]
+    return [
+        task
+        for task in benchmark.load_suite().tasks
+        if task.review_kind in {"bug", "clean"}
+    ]
+
+
+def _natural_corpus():
+    return [
+        task for task in benchmark.load_suite().tasks if task.review_kind == "natural"
+    ]
+
+
+@pytest.mark.parametrize("task", _natural_corpus(), ids=lambda task: task.id)
+def test_natural_parent_fails_and_original_fix_passes(
+    task, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import json
+    import runpy
+
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    root = tmp_path / "fixture"
+    shutil.copytree(scripts / "benchmark_fixtures" / task.fixture, root)
+    hidden = scripts / "benchmark_acceptance" / task.acceptance
+    provenance = json.loads((hidden / "provenance.json").read_text())
+    assert len(provenance["parent_commit"]) == 40
+    assert len(provenance["fix_commit"]) == 40
+    assert provenance["parent_commit"] != provenance["fix_commit"]
+    source = root / "src/subject.py"
+    assert (
+        hashlib.sha256(source.read_bytes()).hexdigest() == provenance["baseline_sha256"]
+    )
+    reference = (hidden / "reference.py").read_bytes()
+    assert hashlib.sha256(reference).hexdigest() == provenance["reference_sha256"]
+    monkeypatch.setenv("BENCHMARK_REPOSITORY", str(root))
+    namespace = runpy.run_path(str(hidden / "test_acceptance.py"))
+    oracle = namespace["test_contract"]
+
+    def smoke():
+        body = (
+            (root / "tests/test_smoke.py")
+            .read_text()
+            .replace("from src import subject\n", "", 1)
+        )
+        scope = {"subject": namespace["load_subject"]()}
+        exec(compile(body, str(root / "tests/test_smoke.py"), "exec"), scope)
+        scope["test_smoke"]()
+
+    smoke()
+    with pytest.raises(
+        (AssertionError, ValueError, TypeError, AttributeError, RuntimeError)
+    ):
+        oracle()
+    source.write_bytes(reference)
+    smoke()
+    oracle()
+
+
+def test_natural_corpus_does_not_prescribe_a_seed_and_has_obvious_controls() -> None:
+    corpus = _natural_corpus()
+    assert len(corpus) >= 8
+    assert sum(task.natural_obvious for task in corpus) >= 2
+    assert all(
+        not task.seed_before and not task.seed_after and not task.seed_path
+        for task in corpus
+    )
+    assert all("\n" not in task.prompt and "\r" not in task.prompt for task in corpus)
+
+
+def test_natural_summary_requires_first_candidate_failure_to_claim_a_catch() -> None:
+    base = {
+        "id": "natural",
+        "checks": {"one_task": True, "recorded_once": True},
+        "review_kind": "natural",
+        "review_arm": "on",
+        "initial_acceptance": {"ran": True, "witnessed": True, "passed": False},
+        "hidden_acceptance": {"ran": True, "passed": True},
+        "wall_seconds": 10,
+        "reviews": [{"findings": 2}],
+        "review_repair_edits": 1,
+        "prompt_tokens": 100,
+        "output_tokens": 10,
+        "review_prompt_tokens": 20,
+        "review_output_tokens": 5,
+    }
+    no_repair = {
+        **base,
+        "id": "already-correct",
+        "initial_acceptance": {"ran": True, "witnessed": True, "passed": True},
+    }
+    harmed = {
+        **no_repair,
+        "id": "harmed",
+        "hidden_acceptance": {"ran": True, "passed": False},
+    }
+    unknown = {
+        **base,
+        "id": "unknown",
+        "initial_acceptance": {"ran": False, "witnessed": False},
+    }
+    arm = benchmark.review_summary({"tasks": [base, no_repair, harmed, unknown]})["on"]
+    assert arm["runs"] == 4
+    assert arm["measured_runs"] == 3
+    assert arm["invalid_or_incomplete_runs"] == 1
+    assert arm["hidden_pass_rate"] == 2 / 4
+    assert arm["candidate_review_catches"] == 1
+    assert arm["harmful_review_repairs"] == 1
+    assert arm["review_token_share"] == 100 / 440
+    assert (
+        benchmark.natural_matched_pairs(
+            [
+                {**base, "repetition": 1, "review_arm": "off"},
+                {**base, "repetition": 1, "review_arm": "on"},
+                {**base, "repetition": 2, "review_arm": "off"},
+                {
+                    **base,
+                    "repetition": 2,
+                    "review_arm": "on",
+                    "checks": {"one_task": False, "recorded_once": True},
+                },
+            ]
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "unwitnessed", ["missing-call", "unfinished", "missing-arguments"]
+)
+def test_natural_initial_acceptance_refuses_unwitnessed_mutations(
+    unwitnessed: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = _natural_corpus()[0]
+    calls = []
+    monkeypatch.setattr(
+        benchmark,
+        "hidden_acceptance",
+        lambda *args: calls.append(args) or {"ran": True, "passed": True},
+    )
+    result = ("model.tool_result", {"call_id": "edit", "tool": "write_file"})
+    call = (
+        "model.tool_call",
+        {
+            "call_id": "edit",
+            "tool": "write_file",
+            "arguments": {"path": "src/subject.py", "content": "pass\n"},
+        },
+    )
+    events = {
+        "missing-call": [result],
+        "unfinished": [call, ("review.started", {})],
+        "missing-arguments": [
+            ("model.tool_call", {"call_id": "edit", "tool": "write_file"}),
+            result,
+        ],
+    }[unwitnessed]
+    witnessed = benchmark.natural_first_acceptance(task, events, ())
+    assert not witnessed["witnessed"]
+    assert not witnessed["ran"]
+    assert calls == []
+
+
+def test_natural_initial_acceptance_stops_before_review_repairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _natural_corpus()[0]
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    reference = (
+        scripts / "benchmark_acceptance" / task.acceptance / "reference.py"
+    ).read_text()
+    observed = []
+
+    def acceptance(task, repository, protected):
+        observed.append((repository / "src/subject.py").read_text())
+        return {"ran": True, "passed": observed[-1] == reference}
+
+    monkeypatch.setattr(benchmark, "hidden_acceptance", acceptance)
+    events = [
+        (
+            "model.tool_call",
+            {
+                "call_id": "first",
+                "tool": "write_file",
+                "arguments": {"path": "src/subject.py", "content": reference},
+            },
+        ),
+        ("model.tool_result", {"call_id": "first", "tool": "write_file"}),
+        ("review.started", {}),
+        (
+            "model.tool_call",
+            {
+                "call_id": "repair",
+                "tool": "write_file",
+                "arguments": {"path": "src/subject.py", "content": "broken\n"},
+            },
+        ),
+        ("model.tool_result", {"call_id": "repair", "tool": "write_file"}),
+    ]
+    result = benchmark.natural_first_acceptance(task, events, ())
+    assert result == {"ran": True, "passed": True, "witnessed": True}
+    assert observed == [reference]
+
+
+def test_live_measurement_pause_waits_only_between_cells(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flag = tmp_path / "pause"
+    flag.touch()
+    slept = []
+
+    def resume(seconds):
+        slept.append(seconds)
+        flag.unlink()
+
+    monkeypatch.setattr(benchmark.time, "sleep", resume)
+    benchmark.wait_between_tasks(flag)
+    benchmark.wait_between_tasks(flag)
+    benchmark.wait_between_tasks(None)
+    assert slept == [0.25]
+
+
+def test_natural_hidden_runner_can_read_only_its_interpreter_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if benchmark.available_sandbox() is None:
+        pytest.skip("requires a working command sandbox")
+    task = _natural_corpus()[0]
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    root = tmp_path / "fixture"
+    shutil.copytree(scripts / "benchmark_fixtures" / task.fixture, root)
+    (root / "src/subject.py").write_bytes(
+        (
+            scripts / "benchmark_acceptance" / task.acceptance / "reference.py"
+        ).read_bytes()
+    )
+    policies = []
+    original = benchmark.wrap
+
+    def observed(kind, policy, argv, **kwargs):
+        policies.append(policy)
+        return original(kind, policy, argv, **kwargs)
+
+    monkeypatch.setattr(benchmark, "wrap", observed)
+    prefix = Path(sys.prefix).resolve()
+    result = benchmark.hidden_acceptance(task, root, (prefix.parent,))
+    assert result["ran"] and result["passed"]
+    assert policies[-1].protected == (prefix.parent,)
+    assert policies[-1].readable == (prefix,)
 
 
 def test_corpus_has_eight_defects_and_four_correct_controls() -> None:
