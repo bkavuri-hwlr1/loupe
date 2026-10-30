@@ -164,3 +164,13 @@ def test_hydration_preview_uses_profile_limit_with_explicit_flag_precedence(
     result = dispatch(build_parser().parse_args(command), cast(DaemonClient, client))
     assert result["budgets"]["max_entries"] == (20 if explicit else 2)
     assert result["complete"] is explicit
+
+
+def test_count_setting_ceilings_are_accepted(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[isolated]\nsource_max_paths = 100000\nhydration_max_entries = 100000\n"
+    )
+    settings = load_settings(config)
+    assert settings.isolated_source_max_paths == 100_000
+    assert settings.isolated_hydration_max_entries == 100_000

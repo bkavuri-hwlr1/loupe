@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
@@ -20,7 +21,9 @@ from llm_cli.protocol.envelopes import Request
 from llm_cli.workspace.hydration import HydrationBudgets
 
 
-def service_at(tmp_path: Path, *, source: int, entries: int) -> DaemonService:
+def service_at(
+    tmp_path: Path, *, source: int | None = None, entries: int | None = None
+) -> DaemonService:
     paths = AppPaths.resolve(
         "admission-test",
         environ={
@@ -31,13 +34,14 @@ def service_at(tmp_path: Path, *, source: int, entries: int) -> DaemonService:
         },
         home=tmp_path,
     )
+    limits: dict[str, int] = {}
+    if source is not None:
+        limits["isolated_source_max_paths"] = source
+    if entries is not None:
+        limits["isolated_hydration_max_entries"] = entries
     service = DaemonService(
         paths,
-        Settings(
-            profile_id=paths.profile_id,
-            isolated_source_max_paths=source,
-            isolated_hydration_max_entries=entries,
-        ),
+        Settings(profile_id=paths.profile_id, **limits),
         asyncio.Event(),
         boot_id="admission-settings",
         authority_root=tmp_path / "authority" / "v1",
@@ -189,30 +193,46 @@ def test_large_process_workspace_scrubs_private_values_after_restart(
 
     canary = "private violet maple fixture 483526"
     assert not contains_secret_material(canary)
+    count = Settings().isolated_source_max_paths
     root = repository_factory(
         tmp_path,
         {
             ".gitignore": ".env\nbuild/\n",
-            **{f"source/{n // 1000:03}/{n:05}.py": "pass\n" for n in range(20_001)},
+            **{
+                f"source/{n // 1000:03}/{n:05}.py": "pass\n"
+                for n in range(count - 1)
+            },
         },
     )
     (root / ".env").write_text(canary)
-    service = service_at(tmp_path, source=25_000, entries=30_000)
+    service = service_at(tmp_path)
     try:
+        before_open = time.perf_counter()
         opened = asyncio.run(open_isolated(service, root, approved=(".env",)))
+        open_seconds = time.perf_counter() - before_open
         workspace_id = opened["session"]["workspace_id"]
         workspace = service.store.get_workspace(workspace_id)
         assert workspace is not None and workspace.git_dir is not None
         private = Path(workspace.canonical_path)
         admin = Path(workspace.git_dir)
         manager = service.isolated_workspaces
+        state = manager.get(workspace_id)
+        assert state is not None and len(state.source_manifest) == count
+        service.shared_runner._prepare_isolated(workspace_id)
+        safe_samples: list[float] = []
+        for _ in range(6):
+            before_safe = time.perf_counter()
+            report = service.shared_runner.isolated_sync.synchronize(workspace_id)
+            safe_samples.append(time.perf_counter() - before_safe)
+            assert not report.deferred and not report.conflicted
         manager.remember_process_policy(workspace)
         policy = json.loads((admin / "loupe-process-policy.json").read_text())
-        # The optional generated-output classifier deliberately retains its20k
+        # The optional generated-output classifier deliberately retains its 20k
         # bound. That fallback cannot prevent required private-value scrubbing.
         assert policy["eligible"] is False
         manager.remember_process_values(workspace, (canary,))
-        (private / "source/020/generated-private.py").write_text(canary)
+        private_copy = private / f"source/{(count - 2) // 1000:03}/generated-private.py"
+        private_copy.write_text(canary)
         if unknown:
             (private / "build").mkdir()
             (private / "build/ordinary.out").write_text("preserve unclassified output")
@@ -223,14 +243,16 @@ def test_large_process_workspace_scrubs_private_values_after_restart(
             manager.candidate_dir,
             manager.lock,
             lambda _: None,
-            source_max_paths=25_000,
-            hydration_max_entries=30_000,
+            source_max_paths=Settings().isolated_source_max_paths,
+            hydration_max_entries=Settings().isolated_hydration_max_entries,
         )
         restarted.validate(workspace_id)
         service.store.close_session("isolated")
+        before_close = time.perf_counter()
         notices = restarted.cleanup_closed("isolated")
+        close_seconds = time.perf_counter() - before_close
         assert not (private / ".env").exists()
-        assert not (private / "source/020/generated-private.py").exists()
+        assert not private_copy.exists()
         assert not (admin / "loupe-process-private").exists(), notices
         if unknown:
             assert (
@@ -245,5 +267,45 @@ def test_large_process_workspace_scrubs_private_values_after_restart(
             canary.encode() not in path.read_bytes()
             for path in service.paths.data_dir.glob("*.sqlite3*")
         )
+        print(
+            json.dumps(
+                {
+                    "default_source_paths": count,
+                    "default_hydration_entries": Settings().isolated_hydration_max_entries,
+                    "preserved_unknown_output": unknown,
+                    "open_seconds": open_seconds,
+                    "safe_point_cold_seconds": safe_samples[0],
+                    "safe_point_warm_seconds": safe_samples[1:],
+                    "close_seconds": close_seconds,
+                    "private_values_retired": not (
+                        admin / "loupe-process-private"
+                    ).exists(),
+                    "private_root_removed": not private.exists(),
+                }
+            ),
+            flush=True,
+        )
+    finally:
+        service.close()
+
+
+def test_one_source_path_above_the_default_is_refused_with_its_setting(
+    tmp_path: Path, repository_factory: Callable[..., Path]
+) -> None:
+    count = Settings().isolated_source_max_paths
+    root = repository_factory(
+        tmp_path,
+        {f"source/{n // 1000:03}/{n:05}.py": "pass\n" for n in range(count + 1)},
+    )
+    service = service_at(tmp_path)
+    try:
+        with pytest.raises(
+            LlmCoordError, match=rf"isolated\.source_max_paths={count}"
+        ):
+            asyncio.run(open_isolated(service, root))
+        with service.store.connection() as connection:
+            assert connection.execute(
+                "SELECT count(*) FROM isolated_workspaces"
+            ).fetchone()[0] == 0
     finally:
         service.close()
