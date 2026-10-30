@@ -1323,12 +1323,15 @@ watchers already report which paths changed.
   latest 1,000. Keep each scan within count, byte and time bounds.
 - **Fallback.** On watcher overflow or the polling fallback, keep today's
   window, and state the coverage limit in the notice or status.
-- **Storage.** Keep each session's read registrations bounded; measure the
-  cost at 20,000 read paths.
+- **Storage.** Keep each session's advisory outside-read registrations
+  bounded; measure the cost at 20,000 read paths. Canonical last-read
+  publication bases are retained independently and must not be evicted.
 - **Unchanged:** notices stay path-only and bounded.
 
 **Files.** `src/llm_cli/workspace/external.py`, `src/llm_cli/workspace/watchers.py`
 (read-only additions only), `scripts/scan_scale.py`, `docs/file-watchers.md`,
+`src/llm_cli/workspace/external_reads.py` (new), scoped registration hooks in
+`storage/control.py`, memory-only coverage notices in `workspace/context.py`,
 tests.
 
 **Done when.**
@@ -1337,6 +1340,15 @@ tests.
 - On overflow or polling, behavior matches today's window and the limit is
   reported.
 - The 20,000-file safe point stays under E3's threshold, recorded in the PR.
+
+**Implemented (Wave 12).** Healthy native watcher changes select from the
+entire retained advisory registry, capped at 20,000 paths per active session.
+Count, byte and time limits remain per pass; changed paths take priority and
+unfinished work retries with independent session cursors. Polling and overflow
+state the latest-1,000 coverage window, and healthy passes catch up older
+retained paths after loss. Registration uses an in-memory LRU with targeted
+indexed eviction and deterministic startup trimming. Canonical last-read
+publication bases remain untouched. See the [watcher guide](file-watchers.md).
 
 ### C20. Installer cache for dependency rebuilds
 
