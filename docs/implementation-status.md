@@ -113,7 +113,14 @@ the remaining planned capabilities are listed below.
   4 MiB, carries files up to the capture's 256 MiB limit, applies removals
   first, and replaces a path whose kind changed. A private file where a
   directory now belongs defers only that subtree. The safe-point notice lists
-  at most 20 paths per kind. Publication limits are unchanged. See
+  at most 20 paths per kind. Publication limits are unchanged. Wave 12 C17
+  recognizes opening directories from their accepted source children only when
+  a no-follow private-subtree check matches. It journals that provenance before
+  directory-to-file replacement and preserves privately changed subtrees.
+  Ordinary and post-confirmation catch-up release the publication lock between
+  complete journals, receive interleaved batches and recompute current outside
+  source. Confirmed steps survive restart without reapplication. Retained-apply
+  preparation and switch classification retain their atomic barriers. See
   [isolated workspaces](isolated-workspaces.md#receive-and-publish-source).
 
 - Private runtime export (Wave 9 C15): `loupe workspace runtime export PATH

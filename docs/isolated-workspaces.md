@@ -356,6 +356,23 @@ file can become a directory of the same name. If a private file or link sits
 where a directory now belongs, that subtree is deferred with a path-only notice
 until the private path is resolved; the rest of the change still arrives.
 
+A directory present when the isolated workspace opened can also become a file.
+Loupe recognizes its implicit parent directories only from accepted source
+children, after a no-follow check proves the private subtree still matches.
+Unknown private entries stop this check before their bodies or subtrees are
+read. Those directory identities are journaled before removing the subtree, and
+the file arrives in a later journal. Private edits, added files or directories,
+deletions, and changed links keep the directory in conflict. A directory that
+changes after the check is deferred rather than recreated by normalization.
+
+Ordinary safe points and private catch-up after confirmed auto publication or
+held apply release the publication lock between complete journals. The next
+step receives intervening published batches and captures current primary source
+again, so an outside edit or publication replaces the remaining plan. A crash
+between steps resumes from the last confirmed manifest. Retained-proposal
+preparation and workspace-switch classification keep their existing atomic
+barriers.
+
 Screened source fixtures, such as tests containing fake credentials, synchronize
 privately when their local copy is unchanged. Their bodies stay out of ordinary
 source artifacts, proposals, and model file tools. A prepared journal stores only
