@@ -1274,6 +1274,15 @@ docs, tests.
 
 ### C18. Larger isolated admission
 
+**Implemented in Wave 12.** Defaults are 50,000 source paths and 100,000
+hydration entries, with explicit profile settings and named count refusals.
+Compact bounded metadata and streamed tracked/ignored classification preserve
+all non-count bounds; authority observations, switching, refresh and private
+cleanup share the configured counts. 100,000 source files remain refused under
+the unchanged inventory/Git metadata bounds. See
+[the guide](isolated-workspaces.md#admission-counts) and
+[the admission record](experiments/isolated-admission-c18-2026-10-30.md).
+
 **Why.** E3 found two admission limits that real monorepos exceed:
 
 - a checkout with more than 20,000 source paths cannot open an isolated

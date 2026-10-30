@@ -1,0 +1,669 @@
+{
+  "schema_version": 1,
+  "package": "C18",
+  "date": "2026-10-30",
+  "default_source_max_paths": 50000,
+  "default_hydration_max_entries": 100000,
+  "count_ceiling": 100000,
+  "fixture": "scripts/scan_scale.py --admission; 35-byte Python source files, 1,000 files per directory, fresh interpreter per size, native watchers required, unused scripted provider",
+  "reproduce": "uv run python scripts/scan_scale.py --admission --files 20000 50000 100000 --repeats 5 --source-max-paths 100000 --hydration-max-entries 100000 --output admission.json",
+  "final_admission_revision": "08dceb9fb9c0bf02929cd91248f6cd90273f958e",
+  "actual_default_revision": "ef7a32c70cfab535b2e5c900fd186a27ecf09459",
+  "non_count_budgets_changed": false,
+  "attempts": [
+    {
+      "name": "before_compaction",
+      "source_revision": null,
+      "note": "Main hydration representation with count-configuration scaffold and explicit 100,000 limits; this was an uncommitted measurement tree, not an exact frozen revision.",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "python": "3.12.13 (main, Jul 18 2026, 16:55:18) [Clang 22.1.3 ]",
+      "results": [
+        {
+          "files": 20000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 1.4256226670695469,
+          "error": "isolated hydration inventory is incomplete: metadata_budget_exceeded",
+          "isolated_open_seconds": 6.686258957954124,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 65224704,
+          "peak_child_rss_bytes": 13254656
+        },
+        {
+          "files": 50000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 3.978025250020437,
+          "error": "isolated hydration inventory is incomplete: metadata_budget_exceeded",
+          "isolated_open_seconds": 14.563332833000459,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 87867392,
+          "peak_child_rss_bytes": 20414464
+        },
+        {
+          "files": 100000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 10.964830916025676,
+          "error": "isolated hydration inventory is incomplete: metadata_budget_exceeded, time_budget_exceeded",
+          "isolated_open_seconds": 26.601839083014056,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 131334144,
+          "peak_child_rss_bytes": 34095104
+        }
+      ]
+    },
+    {
+      "name": "compact_metadata",
+      "source_revision": "6147b6a763d79c747cd65426224116ae30ca94dc",
+      "note": "Compact metadata with per-directory Git classification.",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "python": "3.12.13 (main, Jul 18 2026, 16:55:18) [Clang 22.1.3 ]",
+      "results": [
+        {
+          "files": 20000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "complete",
+          "fixture_seconds": 1.593280415982008,
+          "isolated_open_seconds": 25.91715524997562,
+          "prepare_seconds": 0.15014649997465312,
+          "safe_point_cold": {
+            "samples_ms": [
+              2811.9588339468464
+            ],
+            "median_ms": 2811.9588339468464,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_warm": {
+            "samples_ms": [
+              193.92370898276567,
+              183.81570896599442,
+              179.7707910882309,
+              192.61508306954056,
+              188.0474160425365
+            ],
+            "median_ms": 188.0474160425365,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_one_change": {
+            "samples_ms": [
+              268.5976669890806
+            ],
+            "median_ms": 268.5976669890806,
+            "result": {
+              "applied": 1,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "admitted_source_paths": 20000,
+          "native_watched_roots": 1,
+          "database_bytes": 20717568,
+          "close_seconds": 2.951406665961258,
+          "closed_workspace_state": "removed",
+          "private_root_removed": true,
+          "peak_parent_rss_bytes": 174161920,
+          "peak_child_rss_bytes": 13287424
+        },
+        {
+          "files": 50000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 4.658571959007531,
+          "error": "isolated hydration inventory is incomplete: time_budget_exceeded",
+          "isolated_open_seconds": 18.21845383301843,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 89735168,
+          "peak_child_rss_bytes": 19857408
+        },
+        {
+          "files": 100000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 10.6139752920717,
+          "error": "isolated hydration inventory is incomplete: time_budget_exceeded",
+          "isolated_open_seconds": 27.093135499977507,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 130367488,
+          "peak_child_rss_bytes": 31539200
+        }
+      ]
+    },
+    {
+      "name": "batched_inventory",
+      "source_revision": "b2344455e37d77265a4578a335a147d4294a5bf2",
+      "note": "Bounded inventory batches; repeated Git processes remain expensive.",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "python": "3.12.13 (main, Jul 18 2026, 16:55:18) [Clang 22.1.3 ]",
+      "results": [
+        {
+          "files": 20000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "complete",
+          "fixture_seconds": 1.4594829579582438,
+          "isolated_open_seconds": 19.79013112501707,
+          "prepare_seconds": 0.13504941703286022,
+          "safe_point_cold": {
+            "samples_ms": [
+              2660.7048329897225
+            ],
+            "median_ms": 2660.7048329897225,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_warm": {
+            "samples_ms": [
+              155.37591592874378,
+              151.056292001158,
+              157.60354208759964,
+              151.94137510843575,
+              164.70916592516005
+            ],
+            "median_ms": 155.37591592874378,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_one_change": {
+            "samples_ms": [
+              238.4020839817822
+            ],
+            "median_ms": 238.4020839817822,
+            "result": {
+              "applied": 1,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "admitted_source_paths": 20000,
+          "native_watched_roots": 1,
+          "database_bytes": 20717568,
+          "close_seconds": 2.9171155829681084,
+          "closed_workspace_state": "removed",
+          "private_root_removed": true,
+          "peak_parent_rss_bytes": 173899776,
+          "peak_child_rss_bytes": 13287424
+        },
+        {
+          "files": 50000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 5.055104458006099,
+          "error": "isolated hydration inventory is incomplete: time_budget_exceeded",
+          "isolated_open_seconds": 17.980952749960124,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 89456640,
+          "peak_child_rss_bytes": 20365312
+        },
+        {
+          "files": 100000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 10.671870457939804,
+          "error": "isolated hydration inventory is incomplete: entry_budget_exceeded, time_budget_exceeded; isolated.hydration_max_entries=100000; increase that setting within its 100000-entry ceiling or reduce inventory entries",
+          "isolated_open_seconds": 26.534902499988675,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 130285568,
+          "peak_child_rss_bytes": 34439168
+        }
+      ]
+    },
+    {
+      "name": "streamed_inventory",
+      "source_revision": "d0622da5a5d190fe6feb75a0c4ff8499429ece24",
+      "note": "Single streamed ignore process per pass; default Git still matches each path against its index.",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "python": "3.12.13 (main, Jul 18 2026, 16:55:18) [Clang 22.1.3 ]",
+      "results": [
+        {
+          "files": 20000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "complete",
+          "fixture_seconds": 1.5690740420250222,
+          "isolated_open_seconds": 19.480185125023127,
+          "prepare_seconds": 0.13337891700211912,
+          "safe_point_cold": {
+            "samples_ms": [
+              2642.8391659865156
+            ],
+            "median_ms": 2642.8391659865156,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_warm": {
+            "samples_ms": [
+              163.71437499765307,
+              150.63045907299966,
+              152.7770000975579,
+              152.44187496136874,
+              156.97229199577123
+            ],
+            "median_ms": 152.7770000975579,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_one_change": {
+            "samples_ms": [
+              239.12020807620138
+            ],
+            "median_ms": 239.12020807620138,
+            "result": {
+              "applied": 1,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "admitted_source_paths": 20000,
+          "native_watched_roots": 1,
+          "database_bytes": 20717568,
+          "close_seconds": 2.891776083037257,
+          "closed_workspace_state": "removed",
+          "private_root_removed": true,
+          "peak_parent_rss_bytes": 174014464,
+          "peak_child_rss_bytes": 13254656
+        },
+        {
+          "files": 50000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 3.6555594169767573,
+          "error": "isolated hydration inventory is incomplete: time_budget_exceeded",
+          "isolated_open_seconds": 16.43553104205057,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 89735168,
+          "peak_child_rss_bytes": 19972096
+        },
+        {
+          "files": 100000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 10.407152708037756,
+          "error": "isolated hydration inventory is incomplete: entry_budget_exceeded, time_budget_exceeded; isolated.hydration_max_entries=100000; increase that setting within its 100000-entry ceiling or reduce inventory entries",
+          "isolated_open_seconds": 26.933312834007666,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 130334720,
+          "peak_child_rss_bytes": 32112640
+        }
+      ]
+    },
+    {
+      "name": "tracked_prefilter",
+      "source_revision": "08dceb9fb9c0bf02929cd91248f6cd90273f958e",
+      "note": "Streamed staged-index catalogue prefilter with exact-spelling checks and bounded ordinary Git fallback for directories and ambiguous prefixes.",
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "python": "3.12.13 (main, Jul 18 2026, 16:55:18) [Clang 22.1.3 ]",
+      "results": [
+        {
+          "files": 20000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "complete",
+          "fixture_seconds": 1.6321122089866549,
+          "isolated_open_seconds": 11.473897250019945,
+          "prepare_seconds": 0.13754116604104638,
+          "safe_point_cold": {
+            "samples_ms": [
+              2687.3737919377163
+            ],
+            "median_ms": 2687.3737919377163,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_warm": {
+            "samples_ms": [
+              160.04795802291483,
+              169.9832499725744,
+              171.00220802240074,
+              168.7907089944929,
+              172.47254203539342
+            ],
+            "median_ms": 169.9832499725744,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_one_change": {
+            "samples_ms": [
+              256.8775831023231
+            ],
+            "median_ms": 256.8775831023231,
+            "result": {
+              "applied": 1,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "admitted_source_paths": 20000,
+          "native_watched_roots": 1,
+          "database_bytes": 20717568,
+          "close_seconds": 2.9300279578892514,
+          "closed_workspace_state": "removed",
+          "private_root_removed": true,
+          "peak_parent_rss_bytes": 174047232,
+          "peak_child_rss_bytes": 13271040
+        },
+        {
+          "files": 50000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "complete",
+          "fixture_seconds": 4.836229000007734,
+          "isolated_open_seconds": 30.4006887919968,
+          "prepare_seconds": 0.21310000005178154,
+          "safe_point_cold": {
+            "samples_ms": [
+              6596.437333966605
+            ],
+            "median_ms": 6596.437333966605,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_warm": {
+            "samples_ms": [
+              250.28470903635025,
+              240.67470896989107,
+              253.43866692855954,
+              242.75020800996572,
+              249.48387499898672
+            ],
+            "median_ms": 249.48387499898672,
+            "result": {
+              "applied": 0,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "safe_point_one_change": {
+            "samples_ms": [
+              399.1478340467438
+            ],
+            "median_ms": 399.1478340467438,
+            "result": {
+              "applied": 1,
+              "deferred": 0,
+              "conflicted": 0
+            }
+          },
+          "admitted_source_paths": 50000,
+          "native_watched_roots": 1,
+          "database_bytes": 50417664,
+          "close_seconds": 7.079113792045973,
+          "closed_workspace_state": "removed",
+          "private_root_removed": true,
+          "peak_parent_rss_bytes": 352698368,
+          "peak_child_rss_bytes": 20414464
+        },
+        {
+          "files": 100000,
+          "file_bytes": 35,
+          "repeats": 5,
+          "watchers": "auto",
+          "source_max_paths": 100000,
+          "hydration_budgets": {
+            "max_entries": 100000,
+            "max_metadata_bytes": 4194304,
+            "max_depth": 64,
+            "max_file_bytes": 268435456,
+            "max_total_bytes": 2147483648,
+            "max_allocated_bytes": 2147483648,
+            "max_seconds": 10.0
+          },
+          "status": "unsupported",
+          "fixture_seconds": 10.618947749957442,
+          "error": "isolated hydration inventory is incomplete: entry_budget_exceeded, git_metadata_budget_exceeded; isolated.hydration_max_entries=100000; increase that setting within its 100000-entry ceiling or reduce inventory entries",
+          "isolated_open_seconds": 17.398845582967624,
+          "native_watched_roots": 1,
+          "database_bytes": 921600,
+          "peak_parent_rss_bytes": 130383872,
+          "peak_child_rss_bytes": 32292864
+        }
+      ]
+    }
+  ],
+  "actual_default_private_value_cleanup": [
+    {
+      "default_source_paths": 50000,
+      "default_hydration_entries": 100000,
+      "preserved_unknown_output": false,
+      "open_seconds": 34.04595695796888,
+      "safe_point_cold_seconds": 8.309566917014308,
+      "safe_point_warm_seconds": [
+        0.23384608305059373,
+        0.2249193749157712,
+        0.23689866706263274,
+        0.22834962501656264,
+        0.2335199590306729
+      ],
+      "close_seconds": 10.72980391595047,
+      "private_values_retired": true,
+      "private_root_removed": true
+    },
+    {
+      "default_source_paths": 50000,
+      "default_hydration_entries": 100000,
+      "preserved_unknown_output": true,
+      "open_seconds": 34.73584795801435,
+      "safe_point_cold_seconds": 8.518726916983724,
+      "safe_point_warm_seconds": [
+        0.23608520906418562,
+        0.23386987508274615,
+        0.23581974999979138,
+        0.23852858296595514,
+        0.23817124997731298
+      ],
+      "close_seconds": 3.152509000035934,
+      "private_values_retired": true,
+      "private_root_removed": false
+    }
+  ],
+  "notes": [
+    "Every final admission attempt uses explicit 100,000 count settings; only 20,000 and 50,000 complete. Directories and administration push 100,000 source files above 100,000 inventory entries; staged Git metadata also exceeds the unchanged output bound.",
+    "Parent and subprocess lifetime RSS peaks are separate; do not add them into an asserted combined peak.",
+    "A completed record verifies an outside edit was installed in the private file, all requested safe points settled, and clean close retired the private root.",
+    "Actual-default cleanup fixtures use 49,999 five-byte ordinary sources plus one .gitignore, exact .env consent and a non-signature private canary. Default Settings() supply counts. Both private seeds retire after manager restart; unknown ordinary build output is preserved in the second case.",
+    "Actual-default open timing includes repository registration and session acknowledgement; the admission benchmark timing measures session.open after repository registration.",
+    "These are small-file synthetic local receipts, not universal latency promises for arbitrary checkout contents or unsupported filesystems."
+  ]
+}
