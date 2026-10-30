@@ -30,6 +30,7 @@ from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.workspace.broker import MAX_SHARED_TEXT_BYTES
+from llm_cli.workspace.external_reads import MAX_READ_REGISTRATIONS, registering_reads
 from llm_cli.workspace.identity import (
     ABSENT,
     EXECUTABLE_MODE,
@@ -41,6 +42,7 @@ from llm_cli.workspace.identity import (
 
 if TYPE_CHECKING:
     from llm_cli.storage.control import ControlStore
+    from llm_cli.workspace.external_reads import ReadRegistration
     from llm_cli.workspace.watchers import Changes, Cursor, WatchRegistry
 
 MAX_PATHS = 1_000
@@ -110,6 +112,8 @@ def register_read(
     session_id: str,
     workspace_id: str,
     relative_path: str,
+    binding_generation: int,
+    registration: ReadRegistration,
 ) -> None:
     """Remember metadata at an actual read without duplicating its digest."""
     row = connection.execute(
@@ -121,6 +125,8 @@ def register_read(
     ).fetchone()
     assert row is not None
     stamp = metadata(Path(row["canonical_path"]), relative_path)
+    registration.bind(connection, (workspace_id, binding_generation))
+    registration.remember(connection, relative_path, actual_read=True)
     connection.execute(
         """INSERT INTO workspace_external_observations(
             session_id, relative_path, generation, stamp, identity_json, sequence
@@ -223,6 +229,28 @@ class ExternalWorkspaceScanner:
         self._last_session = ""
         self._watched: OrderedDict[str, _Watched] = OrderedDict()
         self._watched_lock = threading.Lock()
+        self._coverage: OrderedDict[str, str] = OrderedDict()
+
+    def coverage_notice(self, session_id: str) -> str | None:
+        """The last scan's coverage limit, without querying or advancing state."""
+        with self._watched_lock:
+            return self._coverage.get(session_id)
+
+    def pending_count(self, session_id: str) -> int:
+        """Return queued verification count without advancing a watcher cursor."""
+        with self._watched_lock:
+            watched = self._watched.get(session_id)
+            return len(watched.retry) if watched is not None else 0
+
+    def _set_coverage(self, session_id: str, notice: str | None) -> None:
+        with self._watched_lock:
+            if notice is None:
+                self._coverage.pop(session_id, None)
+                return
+            self._coverage[session_id] = notice
+            self._coverage.move_to_end(session_id)
+            while len(self._coverage) > _WATCHED_SESSIONS:
+                self._coverage.popitem(last=False)
 
     def scan_active(self) -> int:
         with self.store.connection() as connection:
@@ -328,7 +356,8 @@ class ExternalWorkspaceScanner:
 
         with self.store.connection() as connection:
             binding = connection.execute(
-                "SELECT s.workspace_id, s.checkout_id, c.canonical_path, "
+                "SELECT s.workspace_id, s.checkout_id, s.workspace_binding_generation, "
+                "c.canonical_path, "
                 "c.path_case_insensitive, "
                 "w.workspace_revision, h.next_event_sequence FROM sessions s "
                 "JOIN workspaces w ON w.workspace_id=s.workspace_id "
@@ -339,30 +368,92 @@ class ExternalWorkspaceScanner:
                 (session_id,),
             ).fetchone()
             if binding is None:
+                self._set_coverage(session_id, None)
                 return 0
             if self._pending(connection, str(binding["workspace_id"])):
                 if outcome is not None:
                     outcome.settled = False
                 return 0
-            # Read observations last as long as the session; a long conversation
-            # is covered for the files it read most recently.
-            rows = connection.execute(
-                "SELECT r.*, x.generation, x.stamp, x.identity_json, x.sequence "
-                "FROM workspace_read_observations r LEFT JOIN "
-                "workspace_external_observations x "
-                "ON x.session_id=r.session_id AND x.relative_path=r.relative_path "
-                "WHERE r.session_id=? ORDER BY r.observed_at DESC, r.relative_path "
-                "LIMIT ?",
-                (session_id, MAX_PATHS),
-            ).fetchall()
-            if changes is not None:
+            # Canonical read observations retain publication authority. Only
+            # the advisory registrations are capped; healthy watcher evidence
+            # can select an older read from that entire retained registry.
+            native = changes is not None
+            healthy = changes is not None and changes.full is None
+            if native:
+                # CROSS JOIN keeps the bounded advisory registry outermost;
+                # canonical C5 history can grow without enlarging this scan.
+                rows = connection.execute(
+                    "SELECT r.*, x.generation, x.stamp, x.identity_json, x.sequence "
+                    "FROM workspace_external_observations x CROSS JOIN "
+                    "workspace_read_observations r ON "
+                    "x.session_id=r.session_id AND x.relative_path=r.relative_path "
+                    "WHERE x.session_id=? AND r.workspace_id=? "
+                    "ORDER BY r.observed_at DESC,r.relative_path LIMIT ?",
+                    (session_id, binding["workspace_id"], MAX_READ_REGISTRATIONS),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT r.*, x.generation, x.stamp, x.identity_json, x.sequence "
+                    "FROM workspace_read_observations r LEFT JOIN "
+                    "workspace_external_observations x ON "
+                    "x.session_id=r.session_id AND x.relative_path=r.relative_path "
+                    "WHERE r.session_id=? AND r.workspace_id=? "
+                    "ORDER BY r.observed_at DESC,r.relative_path LIMIT ?",
+                    (session_id, binding["workspace_id"], MAX_PATHS + 1),
+                ).fetchall()
+            limited_window = not healthy and len(rows) > MAX_PATHS
+            if healthy:
+                assert changes is not None
+                watcher_changed = {
+                    str(row["relative_path"])
+                    for row in rows
+                    if changes.touches(str(row["relative_path"]))
+                }
                 rows = [
                     row
                     for row in rows
                     if row["identity_json"] is None
                     or row["relative_path"] in retry
-                    or changes.touches(str(row["relative_path"]))
+                    or row["relative_path"] in watcher_changed
                 ]
+                # A changed early read must not wait behind thousands of older
+                # unverified observations. Count/byte/time bounds still apply.
+                rows.sort(
+                    key=lambda row: (
+                        str(row["relative_path"]) not in watcher_changed,
+                        str(row["relative_path"]) not in retry,
+                    )
+                )
+                pending.update(str(row["relative_path"]) for row in rows[MAX_PATHS:])
+            elif native:
+                # Loss or periodic full verification cannot silently claim
+                # broad coverage on the following quiet cursor. Keep older
+                # retained registrations queued for bounded verification.
+                pending.update(str(row["relative_path"]) for row in rows[MAX_PATHS:])
+            rows = rows[:MAX_PATHS]
+            registry = self.store._external_reads
+            registry_limited = registry is not None and registry.truncated(session_id)
+            if limited_window:
+                reason = (
+                    "polling fallback"
+                    if changes is None
+                    else "a full watcher verification (" + str(changes.full) + ")"
+                )
+                self._set_coverage(
+                    session_id,
+                    f"Outside-edit scanning covers only the latest {MAX_PATHS:,} "
+                    f"read paths during {reason}. Re-read older files before "
+                    "relying on them; exact publication-base checks still apply.",
+                )
+            elif registry_limited:
+                self._set_coverage(
+                    session_id,
+                    "Outside-edit watcher coverage retains at most "
+                    f"{MAX_READ_REGISTRATIONS:,} read paths. Re-read older files "
+                    "before relying on them; canonical publication bases are retained.",
+                )
+            else:
+                self._set_coverage(session_id, None)
             if not rows:
                 return 0
             rows.sort(key=lambda row: str(row["relative_path"]))
@@ -455,19 +546,35 @@ class ExternalWorkspaceScanner:
             results.append((row, stamp, identity or "opaque", changed))
         emitted = 0
         git_samples: list[tuple[str, str]] = []
-        with self.store.connection() as connection, immediate_transaction(connection):
+        with (
+            registering_reads(self.store, session_id) as registration,
+            self.store.connection() as connection,
+            immediate_transaction(connection),
+        ):
             current = connection.execute(
-                "SELECT workspace_revision FROM workspaces WHERE workspace_id=?",
-                (binding["workspace_id"],),
+                "SELECT w.workspace_revision,s.workspace_binding_generation "
+                "FROM workspaces w JOIN sessions s ON s.workspace_id=w.workspace_id "
+                "WHERE s.session_id=? AND w.workspace_id=? "
+                "AND s.state IN ('active','disconnected') "
+                "AND w.mode='shared' AND w.state='active'",
+                (session_id, binding["workspace_id"]),
             ).fetchone()
             if (
                 current is None
                 or current[0] != binding["workspace_revision"]
+                or current[1] != binding["workspace_binding_generation"]
                 or self._pending(connection, str(binding["workspace_id"]))
             ):
                 raise _incomplete(
                     "publication changed during external scan; retry context refresh"
                 )
+            registration.bind(
+                connection,
+                (
+                    str(binding["workspace_id"]),
+                    int(binding["workspace_binding_generation"]),
+                ),
+            )
             for row, stamp, identity, changed in results:
                 found = connection.execute(
                     "SELECT generation, stamp, identity_json, sequence FROM "
@@ -512,6 +619,9 @@ class ExternalWorkspaceScanner:
                         now=int(time.time() * 1_000),
                     )
                     emitted += 1
+                registration.remember(
+                    connection, str(row["relative_path"]), actual_read=False
+                )
                 connection.execute(
                     "INSERT INTO workspace_external_observations(session_id, "
                     "relative_path, generation, stamp, identity_json, sequence) "
@@ -531,6 +641,18 @@ class ExternalWorkspaceScanner:
             root,
             git_samples,
         )
+        if healthy and pending:
+            notice = (
+                "Outside-edit verification is catching up across "
+                f"{len(pending):,} registered read paths. Later bounded scans "
+                "retry them; re-read current files before relying on older reads."
+            )
+            if registry_limited:
+                notice += (
+                    " The advisory registry retains at most "
+                    f"{MAX_READ_REGISTRATIONS:,} read paths."
+                )
+            self._set_coverage(session_id, notice)
         return emitted
 
     @staticmethod

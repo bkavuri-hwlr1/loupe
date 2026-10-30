@@ -106,6 +106,15 @@ the remaining planned capabilities are listed below.
   [the design note](file-watchers.md) and
   [measurements](experiments/file-watchers-c12-2026-10-28.md).
 
+- Outside-scan coverage (Wave 12 C19): healthy native watchers check changed
+  paths across up to 20,000 retained advisory read registrations per session,
+  with independent non-consuming cursors. Each pass retains the 1,000-path,
+  16 MiB and five-second limits; unfinished verification retries. Polling and
+  overflow report the latest-1,000 window, and healthy passes revisit older
+  retained paths after event loss. Advisory registration eviction and startup
+  trimming leave canonical last-read publication bases untouched. See
+  [the watcher guide](file-watchers.md).
+
 - Outside catch-up of any size (0.1.0a3 fix): a safe point used to put every
   outside change into one shared-limit batch, so more than 50 changed files, a
   changed file over 256 KiB or a changed path kind failed that and every later
@@ -503,9 +512,14 @@ the path; scanners never change publication bases or terminal cursors. Quiet
 cursor advances require validated irrelevant events and a prior model snapshot.
 Only fresh source captures register observations; private/pinned/diff replays
 cannot reset deduplication. Own confirmed publications are not reported again
-as outside edits. A scan covers the session's 1,000 most recently read paths
-and hashes at most 16 MiB of source (256 KiB per file) in five seconds. A path
-that changes while it is read, or does not fit this scan's budget, keeps its
+as outside edits. With healthy native watchers, changed paths are selected
+from up to 20,000 retained advisory read registrations; polling and a full
+watcher verification keep the latest-1,000 window and state the coverage
+limit. Older retained paths retry once native watcher evidence is healthy.
+Every pass verifies at most 1,000 paths and hashes at most 16 MiB of source
+(256 KiB per file) in five seconds. Canonical publication bases are not
+evicted by the advisory registration cap. A path that changes while it is
+read, or does not fit this scan's budget, keeps its
 previous state for a later scan, so a branch switch catches up over several
 boundaries. Notices are advisory: a scan that cannot complete never fails the
 model turn or the daemon loop; the next update says once that outside edits
