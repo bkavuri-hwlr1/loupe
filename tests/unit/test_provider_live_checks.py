@@ -157,6 +157,8 @@ def test_status_and_missing_credentials_cannot_construct_live_clients(
             "--profile",
             "scripted-e2",
             "--live",
+            "--budget-tokens",
+            "100000000",
             "--anthropic-model",
             "a",
             "--openai-model",
@@ -236,3 +238,116 @@ def test_unexpected_setup_exception_cannot_echo_credentials_or_prompt(
     output = capsys.readouterr()
     assert "synthetic-private-marker" not in output.out + output.err
     assert json.loads(output.out) == {"passed": False, "state": "check_setup_failed"}
+
+
+def test_budget_admission_is_positive_and_never_treats_rejected_usage_as_zero() -> None:
+    planned = checks.admission("prefix", "payload", 100_000_000)
+    assert 0 < planned["planned_token_estimate"] < 100_000_000
+    assert planned["admission_budget_tokens"] == 100_000_000
+    for invalid in (0, -1, True, 1):
+        with pytest.raises(ValueError):
+            checks.admission("prefix", "payload", invalid)
+    provider, _ = _anthropic(
+        _cached(0),
+        _cached(8192),
+        BadRequestError(400, {"error": {"message": "prompt is too long"}}),
+    )
+    openai = OpenAIProvider(
+        model="synthetic-model",
+        client=OpenAIClient(
+            OpenAIStatusError(400, {"error": {"code": "context_length_exceeded"}})
+        ),
+    )
+    result = checks.checks({"anthropic": provider, "openai": openai}, "p", "o")
+    assert result["logical_requests"] == 4
+    assert result["observed_reported_tokens"]["requests_with_unknown_usage"] == 2
+    assert result["observed_reported_tokens"]["requests_with_reported_usage"] == 2
+    assert all(row["usage"] is None for row in result["checks"][1:])
+
+
+def test_successful_usage_survives_later_unexpected_transport_failure() -> None:
+    provider, client = _anthropic(
+        _cached(0), RuntimeError("synthetic-private-marker must not appear")
+    )
+    result = checks.cache_check(provider, "prefix")
+    assert not result["passed"] and len(client.calls) == 2
+    assert result["requests"][0]["usage"]["cache_creation_input_tokens"] == 8192
+    assert result["requests"][1]["usage"] is None
+    assert result["requests"][1]["state"] == "unexpected_failure"
+    assert "synthetic-private-marker" not in json.dumps(result)
+
+
+def test_setup_failure_before_send_is_not_counted_as_a_request() -> None:
+    class Unavailable:
+        def session(self, **kwargs):
+            raise RuntimeError("synthetic-private-marker")
+
+    result = checks.checks(
+        {"anthropic": Unavailable(), "openai": Unavailable()}, "p", "o"
+    )
+    assert not result["passed"] and result["logical_requests"] == 0
+    assert result["observed_reported_tokens"]["prompt_tokens"] is None
+    assert result["observed_reported_tokens"]["output_tokens"] is None
+    assert "synthetic-private-marker" not in json.dumps(result)
+
+
+def test_cleanup_failure_preserves_completed_usage_and_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    def bad_close():
+        raise RuntimeError("synthetic-private-marker")
+
+    fake = SimpleNamespace(_client=SimpleNamespace(close=bad_close))
+    monkeypatch.setattr(
+        checks,
+        "availability",
+        lambda paths: {
+            "anthropic": True,
+            "openai": True,
+        },
+    )
+    monkeypatch.setattr(
+        checks,
+        "live_providers",
+        lambda *args: {
+            "anthropic": fake,
+            "openai": fake,
+        },
+    )
+    prior = {
+        "passed": True,
+        "logical_requests": 4,
+        "checks": [{"usage": {"prompt_tokens": 19}}],
+    }
+    monkeypatch.setattr(checks, "checks", lambda *args: prior)
+    monkeypatch.setattr(checks.importlib.metadata, "version", lambda name: "scripted")
+    monkeypatch.setattr(checks.logging, "disable", lambda level: None)
+    output = tmp_path / "result.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check",
+            "--profile",
+            "scripted-e2",
+            "--live",
+            "--anthropic-model",
+            "a",
+            "--openai-model",
+            "o",
+            "--budget-tokens",
+            "100000000",
+            "--out",
+            str(output),
+            "--overflow-bytes",
+            "4096",
+        ],
+    )
+    assert checks.main() == 1
+    result = json.loads(output.read_text())
+    assert not result["passed"]
+    assert result["checks"][0]["usage"]["prompt_tokens"] == 19
+    assert result["cleanup_failures"] == ["anthropic", "openai"]
+    assert "synthetic-private-marker" not in capsys.readouterr().out

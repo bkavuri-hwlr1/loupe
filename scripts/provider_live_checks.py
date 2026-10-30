@@ -68,6 +68,18 @@ def overflow_prompt(size: int) -> str:
     )[:size]
 
 
+def admission(prefix: str, overflow: str, budget: int) -> dict[str, int]:
+    if type(budget) is not int or budget < 1:
+        raise ValueError("token admission budget must be positive")
+    # ASCII byte counts conservatively cover the synthetic input, with the
+    # largest production adapter output reservation and framing slack per call.
+    planned = 2 * len(prefix.encode()) + 2 * len(overflow.encode())
+    planned += 4 * (len(_SYSTEM.encode()) + 64_000 + 4_096)
+    if planned > budget:
+        raise ValueError("token admission budget is below the planned checks")
+    return {"planned_token_estimate": planned, "admission_budget_tokens": budget}
+
+
 def _usage(turn: Any) -> dict[str, int]:
     return {
         key: value
@@ -88,7 +100,11 @@ def _failure(error: LlmCoordError) -> dict[str, object]:
         "incomplete_response",
     }
     result: dict[str, object] = {
-        "provider_error": category if category in known else "unclassified",
+        "provider_error": (
+            category
+            if isinstance(category, str) and category in known
+            else "unclassified"
+        ),
     }
     status = details.get("status_code")
     if type(status) is int and 100 <= status <= 599:
@@ -100,61 +116,70 @@ def cache_check(provider: Any, prefix: str) -> dict[str, Any]:
     requests = []
     for _ in range(2):
         started = time.monotonic()
+        attempted = False
         try:
-            # Fresh identical histories test a stable prefix rather than any
-            # provider-specific conversation identifier or appended assistant.
-            turn = provider.session(system=_SYSTEM, tools=[]).send_user(prefix)
-        except LlmCoordError as error:
-            requests.append(
-                {
-                    "seconds": time.monotonic() - started,
-                    "state": "rejected",
-                    **_failure(error),
-                }
-            )
-            return {"check": "anthropic_cache", "passed": False, "requests": requests}
-        requests.append(
-            {
-                "seconds": time.monotonic() - started,
+            # Identical fresh histories exercise only the stable prompt prefix.
+            session = provider.session(system=_SYSTEM, tools=[])
+            attempted = True
+            turn = session.send_user(prefix)
+            row = {
                 "state": "completed",
                 "usage": _usage(turn),
                 "answer_complete": turn.answer_complete,
             }
+        except LlmCoordError as error:
+            row = {"state": "rejected", "usage": None, **_failure(error)}
+        except Exception:
+            row = {"state": "unexpected_failure", "usage": None}
+        requests.append(
+            {"seconds": time.monotonic() - started, "attempted": attempted, **row}
         )
-    passed = all(row["answer_complete"] for row in requests) and (
+    passed = all(row.get("answer_complete", False) for row in requests) and (
         requests[1]["usage"].get("cache_read_input_tokens", 0) > 0
     )
     return {"check": "anthropic_cache", "passed": passed, "requests": requests}
 
 
 def overflow_check(name: str, provider: Any, prompt: str) -> dict[str, Any]:
-    session = provider.session(system=_SYSTEM, tools=[])
-    before = session.snapshot()
     started = time.monotonic()
+    attempted = False
+    session = before = None
     try:
+        session = provider.session(system=_SYSTEM, tools=[])
+        before = session.snapshot()
+        attempted = True
         turn = session.send_user(prompt)
+        result = {
+            "passed": False,
+            "state": "unexpected_acceptance",
+            "usage": _usage(turn),
+            "answer_complete": turn.answer_complete,
+        }
     except LlmCoordError as error:
         failure = _failure(error)
         status = failure.get("status_code")
-        unchanged = session.snapshot() == before
-        return {
-            "check": name + "_overflow",
-            "seconds": time.monotonic() - started,
-            "passed": is_context_overflow(error)
+        try:
+            unchanged = session is not None and session.snapshot() == before
+        except Exception:
+            unchanged = None
+        result = {
+            "passed": attempted
+            and is_context_overflow(error)
             and type(status) is int
             and 400 <= status < 500
-            and unchanged,
+            and unchanged is True,
             "state": "rejected",
+            "usage": None,
             "history_unchanged": unchanged,
             **failure,
         }
+    except Exception:
+        result = {"passed": False, "state": "unexpected_failure", "usage": None}
     return {
         "check": name + "_overflow",
         "seconds": time.monotonic() - started,
-        "passed": False,
-        "state": "unexpected_acceptance",
-        "usage": _usage(turn),
-        "answer_complete": turn.answer_complete,
+        "attempted": attempted,
+        **result,
     }
 
 
@@ -164,9 +189,22 @@ def checks(providers: Mapping[str, Any], prefix: str, overflow: str) -> dict[str
         overflow_check(name, providers[name], overflow)
         for name in ("anthropic", "openai")
     )
+    requests = [*rows[0]["requests"], *rows[1:]]
+    attempted_rows = [row for row in requests if row["attempted"]]
+    reported = [
+        row["usage"] for row in attempted_rows if isinstance(row.get("usage"), dict)
+    ]
+    observed = {
+        field: sum(values) if values else None
+        for field in ("prompt_tokens", "output_tokens")
+        for values in [[usage[field] for usage in reported if field in usage]]
+    }
+    observed["requests_with_reported_usage"] = len(reported)
+    observed["requests_with_unknown_usage"] = len(attempted_rows) - len(reported)
     return {
+        "observed_reported_tokens": observed,
         "passed": all(row["passed"] for row in rows),
-        "logical_requests": len(rows[0]["requests"]) + 2,
+        "logical_requests": sum(bool(row["attempted"]) for row in requests),
         "checks": rows,
     }
 
@@ -220,6 +258,7 @@ def main() -> int:
     parser.add_argument("--anthropic-model")
     parser.add_argument("--openai-model")
     parser.add_argument("--overflow-bytes", type=int, default=4 * 1024 * 1024)
+    parser.add_argument("--budget-tokens", type=int)
     parser.add_argument("--out", type=Path)
     options = parser.parse_args()
     if options.profile == "default":
@@ -237,8 +276,14 @@ def main() -> int:
             )
         )
         return 0
-    if not options.out or not options.anthropic_model or not options.openai_model:
-        parser.error("--live requires --out and both explicit model names")
+    if (
+        not options.out
+        or not options.anthropic_model
+        or not options.openai_model
+        or options.budget_tokens is None
+        or options.budget_tokens < 1
+    ):
+        parser.error("--live requires --out, both models and positive --budget-tokens")
     if options.out.exists():
         parser.error("refusing to replace an earlier result")
     if not all(authenticated.values()):
@@ -247,19 +292,26 @@ def main() -> int:
         name: getattr(options, name + "_model") for name in ("anthropic", "openai")
     }
     prefix, overflow = cache_prefix(), overflow_prompt(options.overflow_bytes)
+    planned = admission(prefix, overflow, options.budget_tokens)
     script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     # SDK debug logging may include request metadata. This standalone command
     # emits only its explicit sanitized report, regardless of inherited logs.
     logging.disable(logging.CRITICAL)
     providers = live_providers(paths, models)
-    try:
-        result = checks(providers, prefix, overflow)
-    finally:
-        for provider in providers.values():
+    result = checks(providers, prefix, overflow)
+    cleanup_failures = []
+    for name, provider in providers.items():
+        try:
             provider._client.close()
+        except Exception:
+            cleanup_failures.append(name)
+    if cleanup_failures:
+        result["passed"] = False
+        result["cleanup_failures"] = cleanup_failures
     document = {
         "version": 1,
         "script_sha256": script_hash,
+        **planned,
         "mode": "live",
         "profile": options.profile,
         "models": models,
