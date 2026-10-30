@@ -9,6 +9,7 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1324,3 +1325,333 @@ def test_catch_up_journals_respect_stored_batch_limits() -> None:
     assert [
         [step.path for step in chunk] for chunk in isolated_sync._chunks(large)
     ] == [["a"], ["b"], ["c"], ["d"]]
+
+
+@pytest.mark.parametrize(
+    "private_edit",
+    [None, "content", "new_file", "deleted", "empty_directory", "symlink"],
+)
+def test_opened_directory_replaced_by_outside_file(
+    env: Environment, private_edit: str | None
+) -> None:
+    _real_capture(env)
+    for root in (env.primary, env.local):
+        (root / "opened/nested").mkdir(parents=True)
+        (root / "opened/nested/child.txt").write_text("opened source\n")
+    # Isolated opening captures source leaves, without directory markers.
+    initial = env.sync.capture(env.primary, ())
+    assert "opened" not in initial
+    with env.store.connection() as con:
+        con.execute(
+            "UPDATE isolated_sync_state SET manifest_json=? WHERE workspace_id=?",
+            (json.dumps(initial), env.workspace_id),
+        )
+    child = env.local / "opened/nested/child.txt"
+    if private_edit == "content":
+        child.write_text("private source\n")
+    elif private_edit == "new_file":
+        (env.local / "opened/private.txt").write_text("private addition\n")
+    elif private_edit == "deleted":
+        child.unlink()
+    elif private_edit == "empty_directory":
+        (env.local / "opened/private").mkdir()
+    elif private_edit == "symlink":
+        child.unlink()
+        child.symlink_to("../../b.txt")
+    (env.primary / "opened/nested/child.txt").unlink()
+    (env.primary / "opened/nested").rmdir()
+    (env.primary / "opened").rmdir()
+    (env.primary / "opened").write_text("outside file\n")
+
+    report = env.sync.synchronize(env.workspace_id)
+
+    assert report.deferred == ()
+    if private_edit:
+        assert "opened" in report.conflicted
+        assert (env.local / "opened").is_dir()
+        if private_edit == "content":
+            assert child.read_text() == "private source\n"
+        elif private_edit == "new_file":
+            assert (
+                env.local / "opened/private.txt"
+            ).read_text() == "private addition\n"
+        elif private_edit == "deleted":
+            assert not child.exists()
+        elif private_edit == "empty_directory":
+            assert (env.local / "opened/private").is_dir()
+        elif private_edit == "symlink":
+            assert child.is_symlink()
+            assert os.readlink(child) == "../../b.txt"
+    else:
+        assert report.conflicted == ()
+        assert (env.local / "opened").read_text() == "outside file\n"
+    assert _prepared_journals(env) == 0
+    (env.primary / "b.txt").write_text("later outside change\n")
+    assert env.sync.synchronize(env.workspace_id).applied == ("b.txt",)
+    assert _prepared_journals(env) == 0
+
+
+@pytest.mark.parametrize("outside_only", [False, True])
+def test_large_catch_up_yields_and_recomputes_after_interleaved_changes(
+    env: Environment, monkeypatch: pytest.MonkeyPatch, outside_only: bool
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    paths = [f"outside{number:03}.txt" for number in range(3 * MAX_BATCH_FILES)]
+    for path in paths:
+        (env.primary / path).write_text("outside initial\n")
+    interleaved = False
+    pool = ThreadPoolExecutor(max_workers=1)
+
+    def between_journals(workspace_id: str) -> None:
+        nonlocal interleaved
+        assert workspace_id == env.workspace_id
+        if interleaved:
+            return
+        interleaved = True
+        assert 0 < sum((env.local / path).exists() for path in paths) < len(paths)
+        if outside_only:
+            (env.primary / paths[-1]).write_text("new outside version\n")
+            (env.primary / paths[-2]).unlink()
+        else:
+            future = pool.submit(
+                env.publish,
+                "between-journals",
+                {
+                    "b.txt": b"published between\n",
+                    paths[-1]: b"new published version\n",
+                },
+            )
+            future.result(timeout=3)
+        assert not (env.local / paths[-1]).exists()
+
+    monkeypatch.setattr(env.sync, "_between_journals", between_journals, raising=False)
+    try:
+        report = env.sync.synchronize(env.workspace_id)
+    finally:
+        pool.shutdown(wait=True)
+
+    assert interleaved
+    assert report.conflicted == report.deferred == ()
+    assert all((env.local / path).is_file() for path in paths[:-2])
+    if outside_only:
+        assert not (env.local / paths[-2]).exists()
+        assert (env.local / paths[-1]).read_text() == "new outside version\n"
+    else:
+        assert (env.local / "b.txt").read_text() == "published between\n"
+        assert (env.local / paths[-1]).read_text() == "new published version\n"
+    assert _prepared_journals(env) == 0
+
+
+@pytest.mark.parametrize("publish_before_crash", [False, True])
+def test_crash_between_catch_up_journals_preserves_confirmed_steps(
+    env: Environment, monkeypatch: pytest.MonkeyPatch, publish_before_crash: bool
+) -> None:
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    paths = [f"outside{number:03}.txt" for number in range(3 * MAX_BATCH_FILES)]
+    for path in paths:
+        (env.primary / path).write_text("outside initial\n")
+
+    def crash_between_journals(workspace_id: str) -> None:
+        assert workspace_id == env.workspace_id
+        if publish_before_crash:
+            env.publish(
+                "before-crash",
+                {"b.txt": b"published before crash\n", paths[-1]: b"latest version\n"},
+            )
+        raise OSError("crash between confirmed journals")
+
+    monkeypatch.setattr(
+        env.sync, "_between_journals", crash_between_journals, raising=False
+    )
+    with pytest.raises(OSError, match="crash between confirmed journals"):
+        env.sync.synchronize(env.workspace_id)
+    confirmed = {path for path in paths if (env.local / path).exists()}
+    assert len(confirmed) == MAX_BATCH_FILES
+    assert _prepared_journals(env) == 0
+    replace = isolated_sync.atomic_replace_regular_file
+
+    def no_reapplication(**kwargs: object) -> None:
+        assert kwargs["relative_path"] not in confirmed
+        replace(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(isolated_sync, "atomic_replace_regular_file", no_reapplication)
+    restarted = IsolatedSynchronizer(
+        env.store,
+        env.publisher,
+        env.sync.capture,
+        refresh_capture=env.sync.refresh_capture,
+    )
+    report = restarted.synchronize(env.workspace_id)
+
+    assert report.conflicted == report.deferred == ()
+    assert all((env.local / path).is_file() for path in paths)
+    if publish_before_crash:
+        assert (env.local / "b.txt").read_text() == "published before crash\n"
+        assert (env.local / paths[-1]).read_text() == "latest version\n"
+    assert _prepared_journals(env) == 0
+
+
+def test_opening_directory_normalization_recovers_between_journals(
+    env: Environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _real_capture(env)
+    for root in (env.primary, env.local):
+        (root / "opened/nested").mkdir(parents=True)
+        (root / "opened/nested/child.txt").write_text("opened source\n")
+    initial = env.sync.capture(env.primary, ())
+    with env.store.connection() as con:
+        con.execute(
+            "UPDATE isolated_sync_state SET manifest_json=? WHERE workspace_id=?",
+            (json.dumps(initial), env.workspace_id),
+        )
+    (env.primary / "opened/nested/child.txt").unlink()
+    (env.primary / "opened/nested").rmdir()
+    (env.primary / "opened").rmdir()
+    (env.primary / "opened").write_text("outside file\n")
+
+    def crash_after_normalization(workspace_id: str) -> None:
+        with env.store.connection() as con:
+            state = con.execute(
+                "SELECT manifest_json FROM isolated_sync_state WHERE workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+        manifest = json.loads(state[0])
+        assert manifest["opened"]["kind"] == "directory_marker"
+        assert manifest["opened/nested"]["kind"] == "directory_marker"
+        assert (env.local / "opened/nested/child.txt").read_text() == "opened source\n"
+        raise OSError("crash after directory normalization")
+
+    monkeypatch.setattr(
+        env.sync, "_between_journals", crash_after_normalization, raising=False
+    )
+    with pytest.raises(OSError, match="crash after directory normalization"):
+        env.sync.synchronize(env.workspace_id)
+    assert _prepared_journals(env) == 0
+    restarted = IsolatedSynchronizer(
+        env.store,
+        env.publisher,
+        env.sync.capture,
+        refresh_capture=env.sync.refresh_capture,
+    )
+
+    report = restarted.synchronize(env.workspace_id)
+
+    assert report.conflicted == report.deferred == ()
+    assert (env.local / "opened").read_text() == "outside file\n"
+    assert _prepared_journals(env) == 0
+
+
+@pytest.mark.parametrize("private_file", [False, True])
+def test_opening_directory_changed_after_proof_is_not_recreated(
+    env: Environment, monkeypatch: pytest.MonkeyPatch, private_file: bool
+) -> None:
+    _real_capture(env)
+    for root in (env.primary, env.local):
+        (root / "opened").mkdir()
+        (root / "opened/child.txt").write_text("opened source\n")
+    initial = env.sync.capture(env.primary, ())
+    with env.store.connection() as con:
+        con.execute(
+            "UPDATE isolated_sync_state SET manifest_json=? WHERE workspace_id=?",
+            (json.dumps(initial), env.workspace_id),
+        )
+    (env.primary / "opened/child.txt").unlink()
+    (env.primary / "opened").rmdir()
+    (env.primary / "opened").write_text("outside file\n")
+    prepare = env.sync._prepare
+    private = b"AKIA" + b"EXAMPLE000000000"
+
+    def change_after_proof(*args: Any, **kwargs: Any) -> isolated_sync.SyncResult:
+        if kwargs.get("existing_directories"):
+            (env.local / "opened/child.txt").unlink()
+            (env.local / "opened").rmdir()
+            if private_file:
+                (env.local / "opened").write_bytes(private)
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(env.sync, "_prepare", change_after_proof)
+    report = env.sync.synchronize(env.workspace_id)
+
+    assert report.deferred == ("opened",)
+    assert _prepared_journals(env) == 0
+    if private_file:
+        assert (env.local / "opened").read_bytes() == private
+    else:
+        assert not (env.local / "opened").exists()
+    assert all(
+        private not in path.read_bytes()
+        for path in env.publisher.candidate_dir.rglob("*")
+        if path.is_file()
+    )
+
+
+@pytest.mark.parametrize("unknown_kind", ["large_file", "directory_fanout"])
+def test_opening_directory_proof_never_reads_or_enumerates_unknown_private_data(
+    env: Environment, monkeypatch: pytest.MonkeyPatch, unknown_kind: str
+) -> None:
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    _real_capture(env)
+    for root in (env.primary, env.local):
+        (root / "opened").mkdir()
+        (root / "opened/child.txt").write_text("opened source\n")
+    initial = env.sync.capture(env.primary, ())
+    with env.store.connection() as con:
+        con.execute(
+            "UPDATE isolated_sync_state SET manifest_json=? WHERE workspace_id=?",
+            (json.dumps(initial), env.workspace_id),
+        )
+    (env.primary / "opened/child.txt").unlink()
+    (env.primary / "opened").rmdir()
+    (env.primary / "opened").write_text("outside file\n")
+    unknown = env.local / "opened/generated"
+    if unknown_kind == "large_file":
+        with unknown.open("wb") as stream:
+            stream.truncate(isolated_sync._SOURCE_FILE_BYTES + 1)
+    else:
+        unknown.mkdir()
+        directory = (env.local / "opened").stat()
+        scandir = os.scandir
+
+        @contextmanager
+        def fanout() -> Any:
+            def entries() -> Any:
+                yield SimpleNamespace(name=unknown.name)
+                pytest.fail(
+                    "private fanout was enumerated after its first unknown entry"
+                )
+
+            yield entries()
+
+        def bounded_scandir(path: Any = ".") -> Any:
+            if isinstance(path, int):
+                opened = os.fstat(path)
+                if (opened.st_dev, opened.st_ino) == (
+                    directory.st_dev,
+                    directory.st_ino,
+                ):
+                    return fanout()
+            return scandir(path)
+
+        monkeypatch.setattr(os, "scandir", bounded_scandir)
+    read = isolated_sync.read_candidate_path
+
+    def expected_only(path: Path, **kwargs: Any) -> Any:
+        assert path != unknown and unknown not in path.parents
+        return read(path, **kwargs)
+
+    monkeypatch.setattr(isolated_sync, "read_candidate_path", expected_only)
+
+    report = env.sync.synchronize(env.workspace_id)
+
+    assert "opened" in report.conflicted
+    assert (env.local / "opened").is_dir()
+    assert unknown.exists()
+    assert _prepared_journals(env) == 0
+    (env.primary / "b.txt").write_text("later outside change\n")
+    assert env.sync.synchronize(env.workspace_id).applied == ("b.txt",)
