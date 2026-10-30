@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from llm_cli.config.models import MAX_ISOLATED_SOURCE_PATHS
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
 from llm_cli.workspace.installation import (
@@ -425,7 +426,18 @@ class PhysicalAuthority:
         socket: Path,
         *,
         root: Path | None = None,
+        source_max_paths: int = 20_000,
     ) -> None:
+        if (
+            type(source_max_paths) is not int
+            or not 1 <= source_max_paths <= MAX_ISOLATED_SOURCE_PATHS
+        ):
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "isolated.source_max_paths must be between 1 and "
+                f"{MAX_ISOLATED_SOURCE_PATHS}",
+            )
+        self.source_max_paths = source_max_paths
         self.store, self.profile, self.boot_id, self.socket = (
             store,
             profile,
@@ -1177,7 +1189,7 @@ class PhysicalAuthority:
         scanner = ExternalWorkspaceScanner(self.store)
         from llm_cli.workspace.isolated import _source_paths
 
-        paths = _source_paths(physical.root)
+        paths = _source_paths(physical.root, self.source_max_paths)
 
         def observations() -> dict[str, tuple[int, ...] | None]:
             result: dict[str, tuple[int, ...] | None] = {}
@@ -1200,7 +1212,10 @@ class PhysicalAuthority:
         before = observations()
         for session in self.store.list_sessions(checkout_id=checkout_id):
             scanner._scan_session_owned(session.session_id)
-        if paths != _source_paths(physical.root) or observations() != before:
+        if (
+            paths != _source_paths(physical.root, self.source_max_paths)
+            or observations() != before
+        ):
             raise recovery_error(
                 "source changed during clean handoff; retry after edits settle"
             )

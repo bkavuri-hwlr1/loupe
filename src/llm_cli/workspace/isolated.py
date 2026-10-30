@@ -39,7 +39,12 @@ from llm_cli.agent.source_policy import (
     runtime_path_matches,
     source_private_epoch,
 )
-from llm_cli.config.models import RebuildConfig
+from llm_cli.config.models import (
+    DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES,
+    DEFAULT_ISOLATED_SOURCE_MAX_PATHS,
+    MAX_ISOLATED_SOURCE_PATHS,
+    RebuildConfig,
+)
 from llm_cli.coordination.models import CheckoutRecord, WorkspaceRecord
 from llm_cli.coordination.scopes import normalize_changed_path
 from llm_cli.errors import ErrorCode, LlmCoordError
@@ -56,6 +61,7 @@ from llm_cli.storage.control import ControlStore
 from llm_cli.workspace.broker import validate_symlink_target
 from llm_cli.workspace.external import ExternalWorkspaceScanner
 from llm_cli.workspace.hydration import (
+    HydrationBudgets,
     HydrationEntry,
     _bounded_git,
     _BudgetExceeded,
@@ -181,13 +187,32 @@ def _passive(root: Path, arguments: list[str]) -> bytes:
     return data
 
 
-def _source_paths(root: Path) -> tuple[str, ...]:
+def _source_path_budget(max_paths: int) -> int:
+    if type(max_paths) is not int or not 1 <= max_paths <= MAX_ISOLATED_SOURCE_PATHS:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            "isolated.source_max_paths must be between 1 and "
+            f"{MAX_ISOLATED_SOURCE_PATHS}",
+        )
+    return max_paths
+
+
+def _source_paths(root: Path, max_paths: int = 20_000) -> tuple[str, ...]:
+    _source_path_budget(max_paths)
     raw = _passive(
         root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
     )
     paths = tuple(sorted({os.fsdecode(path) for path in raw.split(b"\0") if path}))
-    if len(paths) > 20_000:
-        raise _error("isolated source exceeds its 20,000-path budget")
+    if len(paths) > max_paths:
+        remedy = (
+            f"raise isolated.source_max_paths (maximum {MAX_ISOLATED_SOURCE_PATHS}) "
+            "or reduce the source path count"
+            if max_paths < MAX_ISOLATED_SOURCE_PATHS
+            else "reduce the source path count; the configured limit is at its ceiling"
+        )
+        raise _error(
+            f"isolated source exceeds isolated.source_max_paths={max_paths}: {remedy}"
+        )
     return paths
 
 
@@ -314,6 +339,7 @@ def capture_source(
     protected_paths: Sequence[str] = (),
     cache: SourceCaptureCache | None = None,
     defer_changed: bool = False,
+    max_paths: int = DEFAULT_ISOLATED_SOURCE_MAX_PATHS,
 ) -> SourceManifest:
     """Capture ordinary current working bytes, including dirty/untracked files.
 
@@ -325,7 +351,7 @@ def capture_source(
     if cache is not None:
         cache.guard(root)
     deferred: list[str] = []
-    source_paths = _source_paths(root)
+    source_paths = _source_paths(root, max_paths)
     excluded = excluded_paths(root, list(source_paths))
     _capture_paths(
         root,
@@ -452,6 +478,7 @@ def capture_watched_source(
     protected_paths: Sequence[str],
     cache: SourceCaptureCache,
     watch: WatchRegistry,
+    max_paths: int = DEFAULT_ISOLATED_SOURCE_MAX_PATHS,
 ) -> SourceManifest:
     """A safe-point capture that rereads only paths a watcher may have seen change.
 
@@ -460,12 +487,14 @@ def capture_watched_source(
     Reused entries were captured after an earlier settled cursor, and every
     path the watcher names since then, plus every retry, is read again.
     """
+    _source_path_budget(max_paths)
     cache.guard(root)
     snapshot_key = (
         root,
         candidate_dir,
         tuple(protected_paths),
         registered_runtime_paths(root),
+        max_paths,
     )
     with cache.lock:
         previous = cache.watched.get(snapshot_key)
@@ -479,6 +508,7 @@ def capture_watched_source(
             protected_paths=protected_paths,
             cache=cache,
             defer_changed=True,
+            max_paths=max_paths,
         )
     epoch = source_private_epoch(root)
     if (
@@ -492,14 +522,14 @@ def capture_watched_source(
         except LlmCoordError:
             files = ()
         policy = _policy_evidence(files) if files else ("unavailable",)
-        source_paths = _source_paths(root)
+        source_paths = _source_paths(root, max_paths)
         excluded = frozenset(excluded_paths(root, list(source_paths)))
         changed = set(source_paths)
         retained: _WatchedCapture | None = None
     else:
         files, policy = previous.policy_files, previous.policy
         if _source_set_may_change(root, changes, previous):
-            source_paths = _source_paths(root)
+            source_paths = _source_paths(root, max_paths)
         else:
             source_paths = previous.paths
         retained = previous
@@ -708,7 +738,12 @@ def _capture_paths(
             cache.remember(key, before, manifest[relative])
 
 
-def source_fingerprint(root: Path, policy_paths: tuple[str, ...] = ()) -> str:
+def source_fingerprint(
+    root: Path,
+    policy_paths: tuple[str, ...] = (),
+    *,
+    max_paths: int = DEFAULT_ISOLATED_SOURCE_MAX_PATHS,
+) -> str:
     """Pin config origins and full ignore/attribute/exclude file identities."""
     config = _passive(root, ["config", "--null", "--show-origin", "--list"])
     parts = config.split(b"\0")
@@ -737,7 +772,7 @@ def source_fingerprint(root: Path, policy_paths: tuple[str, ...] = ()) -> str:
     paths.update(root / path for path in policy_paths)
     paths.update(
         root / path
-        for path in _source_paths(root)
+        for path in _source_paths(root, max_paths)
         if Path(path).name in {".gitignore", ".gitattributes"}
     )
     digest = hashlib.sha256(config)
@@ -939,6 +974,8 @@ class IsolatedWorkspaceManager:
         ensure_available: Callable[[str], None],
         *,
         rebuild: tuple[RebuildConfig, ...] = (),
+        source_max_paths: int = DEFAULT_ISOLATED_SOURCE_MAX_PATHS,
+        hydration_max_entries: int = DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES,
         rebuild_protected: tuple[Path, ...] = (),
     ) -> None:
         self.store = store
@@ -947,6 +984,8 @@ class IsolatedWorkspaceManager:
         self.lock = publication_lock
         self.ensure_available = ensure_available
         self.rebuild = rebuild
+        self.source_max_paths = _source_path_budget(source_max_paths)
+        self.hydration_budgets = HydrationBudgets(max_entries=hydration_max_entries)
         self.rebuild_protected = rebuild_protected
         self._opening_sessions: set[str] = set()
         self._closed_cleanups: set[str] = set()
@@ -955,7 +994,12 @@ class IsolatedWorkspaceManager:
         self.fault: Callable[[str], None] = lambda stage: None
         from llm_cli.workspace.runtime_refresh import RuntimeRefresher
 
-        self.runtime = RuntimeRefresher(store, managed_root, publication_lock)
+        self.runtime = RuntimeRefresher(
+            store,
+            managed_root,
+            publication_lock,
+            hydration_budgets=self.hydration_budgets,
+        )
 
     def get(
         self, workspace_id: str, *, source_manifest: bool = True
@@ -1149,8 +1193,7 @@ class IsolatedWorkspaceManager:
             os.close(descriptor)
         return tuple(sorted(result))
 
-    @staticmethod
-    def _process_opening_policy(root: Path, state: IsolatedState) -> None:
+    def _process_opening_policy(self, root: Path, state: IsolatedState) -> None:
         opening = {
             path
             for path in state.source_manifest
@@ -1158,7 +1201,7 @@ class IsolatedWorkspaceManager:
         }
         current = {
             path
-            for path in _source_paths(root)
+            for path in _source_paths(root, self.source_max_paths)
             if Path(path).name in {".gitignore", ".gitattributes"}
         }
         if current != opening:
@@ -1209,14 +1252,20 @@ class IsolatedWorkspaceManager:
             fingerprint: str | None = None
             initial: tuple[str, ...] = ()
             try:
-                if source_fingerprint(primary) != state.source_fingerprint:
+                if (
+                    source_fingerprint(primary, max_paths=self.source_max_paths)
+                    != state.source_fingerprint
+                ):
                     raise _error("opening source policy changed")
                 self._process_opening_policy(root, state)
-                fingerprint = source_fingerprint(root)
+                fingerprint = source_fingerprint(root, max_paths=self.source_max_paths)
                 initial = self._process_unknown_paths(
                     root, self._process_known_paths(state)
                 )
-                if source_fingerprint(root) != fingerprint:
+                if (
+                    source_fingerprint(root, max_paths=self.source_max_paths)
+                    != fingerprint
+                ):
                     raise _error("source policy changed during process admission")
             except (LlmCoordError, OSError, ValueError, _BudgetExceeded):
                 # Background commands can edit source policy legitimately. Only
@@ -1277,8 +1326,10 @@ class IsolatedWorkspaceManager:
         if receipt.get("eligible") is not True:
             return set()
         if (
-            receipt.get("fingerprint") != source_fingerprint(root)
-            or source_fingerprint(primary) != state.source_fingerprint
+            receipt.get("fingerprint")
+            != source_fingerprint(root, max_paths=self.source_max_paths)
+            or source_fingerprint(primary, max_paths=self.source_max_paths)
+            != state.source_fingerprint
         ):
             raise _error(
                 "process cleanup policy changed; generated files were preserved"
@@ -1339,7 +1390,10 @@ class IsolatedWorkspaceManager:
                 ObjectKind.REGULAR, entry["mode"], body
             ):
                 generated.add(relative)
-        if source_fingerprint(root) != receipt["fingerprint"]:
+        if (
+            source_fingerprint(root, max_paths=self.source_max_paths)
+            != receipt["fingerprint"]
+        ):
             raise _error("process cleanup policy changed during inspection")
         return generated
 
@@ -1951,9 +2005,19 @@ class IsolatedWorkspaceManager:
                     raise
             self._scrub_private(path, state, generated)
             if closed:
-                generated.update(scrub_source_copies(path))
+                generated.update(
+                    scrub_source_copies(
+                        path, max_paths=self.hydration_budgets.max_entries
+                    )
+                )
                 if owner is not None:
-                    generated.update(scrub_source_copies(archive_data, guard_root=path))
+                    generated.update(
+                        scrub_source_copies(
+                            archive_data,
+                            guard_root=path,
+                            max_paths=self.hydration_budgets.max_entries,
+                        )
+                    )
                 # All matching private source is gone; ambiguous ordinary files
                 # may still quarantine the tree, but no private seed remains.
                 retire_values(
@@ -2261,7 +2325,12 @@ class IsolatedWorkspaceManager:
                 self._verify_rebuild_owner(state, workspace, git_dir, primary)
                 register_runtime_paths(private, state.runtime_paths)
                 discard_interrupted(private, git_dir, state.creation_token)
-                if capture_source(private, self.candidate_dir) != state.source_manifest:
+                if (
+                    capture_source(
+                        private, self.candidate_dir, max_paths=self.source_max_paths
+                    )
+                    != state.source_manifest
+                ):
                     raise _error(
                         "isolated source changed before dependency rebuild recovery"
                     )
@@ -2309,7 +2378,12 @@ class IsolatedWorkspaceManager:
                 ):
                     raise _error("dependency rebuild state changed during installation")
                 self._verify_rebuild_owner(current, workspace, git_dir, primary)
-                if capture_source(private, self.candidate_dir) != state.source_manifest:
+                if (
+                    capture_source(
+                        private, self.candidate_dir, max_paths=self.source_max_paths
+                    )
+                    != state.source_manifest
+                ):
                     raise _error("dependency installer changed isolated source")
                 with self.store.connection() as con, immediate_transaction(con):
                     con.execute(
@@ -2522,20 +2596,31 @@ class IsolatedWorkspaceManager:
             assert isinstance(head.stdout, str)
             base_oid = head.stdout.strip()
             plan = plan_hydration(
-                root, approved_secret_paths=approved_secrets, rebuild=self.rebuild
+                root,
+                approved_secret_paths=approved_secrets,
+                rebuild=self.rebuild,
+                budgets=self.hydration_budgets,
             )
             policy_paths = tuple(
                 entry.path
                 for entry in plan.entries
                 if Path(entry.path).name in {".gitignore", ".gitattributes"}
             )
-            fingerprint = source_fingerprint(root, policy_paths)
-            source = capture_source(root, self.candidate_dir)
+            fingerprint = source_fingerprint(
+                root, policy_paths, max_paths=self.source_max_paths
+            )
+            source = capture_source(
+                root, self.candidate_dir, max_paths=self.source_max_paths
+            )
             if not plan.complete:
-                raise _error(
-                    "isolated hydration inventory is incomplete: "
-                    + ", ".join(plan.issues)
-                )
+                detail = ", ".join(plan.issues)
+                if "entry_budget_exceeded" in plan.issues:
+                    detail += (
+                        "; isolated.hydration_max_entries="
+                        f"{self.hydration_budgets.max_entries}; increase that setting "
+                        "within its 100000-entry ceiling or reduce inventory entries"
+                    )
+                raise _error("isolated hydration inventory is incomplete: " + detail)
             consent = {
                 entry.path for entry in plan.entries if entry.action == "private_copy"
             }
@@ -2713,7 +2798,14 @@ class IsolatedWorkspaceManager:
                             os.fsync(parent)
                         else:
                             _write_body(parent, name, body, int(entry["permissions"]))
-                if capture_source(managed.path, self.candidate_dir) != source:
+                if (
+                    capture_source(
+                        managed.path,
+                        self.candidate_dir,
+                        max_paths=self.source_max_paths,
+                    )
+                    != source
+                ):
                     raise _error("isolated materialized source manifest did not match")
                 self._stage(workspace_id, "materialized")
                 allocated = 0
@@ -2742,15 +2834,24 @@ class IsolatedWorkspaceManager:
                         (json.dumps(notices), workspace_id),
                     )
                 if (
-                    source_fingerprint(root, policy_paths) != fingerprint
-                    or capture_source(root, self.candidate_dir) != source
+                    source_fingerprint(
+                        root, policy_paths, max_paths=self.source_max_paths
+                    )
+                    != fingerprint
+                    or capture_source(
+                        root, self.candidate_dir, max_paths=self.source_max_paths
+                    )
+                    != source
                 ):
                     raise _error(
                         "source or ignore/attribute/config policy changed during "
                         "isolated creation"
                     )
                 fresh = plan_hydration(
-                    root, approved_secret_paths=approved_secrets, rebuild=self.rebuild
+                    root,
+                    approved_secret_paths=approved_secrets,
+                    rebuild=self.rebuild,
+                    budgets=self.hydration_budgets,
                 )
                 if not fresh.complete or [
                     entry

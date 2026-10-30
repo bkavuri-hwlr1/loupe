@@ -18,6 +18,7 @@ from llm_cli.agent.source_policy import (
     has_private_source_values,
     register_source_private_values,
 )
+from llm_cli.config.models import MAX_HYDRATION_ENTRIES
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.workspace.broker import (
     atomic_delete_file,
@@ -219,8 +220,15 @@ def remember_values(
         register_source_private_values(root, merged, public_values=tuple(public))
 
 
-def scrub_source_copies(root: Path, *, guard_root: Path | None = None) -> set[str]:
+def scrub_source_copies(
+    root: Path, *, guard_root: Path | None = None, max_paths: int = 20_000
+) -> set[str]:
     """Remove private-value leaves without following links or retaining bytes."""
+    if type(max_paths) is not int or not 1 <= max_paths <= MAX_HYDRATION_ENTRIES:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            "isolated.hydration_max_entries must be between 1 and 100000",
+        )
     protected = root if guard_root is None else guard_root
     if not has_private_source_values(protected) or not root.exists():
         return set()
@@ -239,7 +247,15 @@ def scrub_source_copies(root: Path, *, guard_root: Path | None = None) -> set[st
             if name == ".git":
                 continue
             count += 1
-            if count > 20_000 or time.monotonic() > deadline:
+            if count > max_paths:
+                raise LlmCoordError(
+                    ErrorCode.REPOSITORY_UNSAFE,
+                    "private source cleanup exceeds "
+                    f"isolated.hydration_max_entries={max_paths}; "
+                    "increase that setting "
+                    "within its 100000-entry ceiling or reduce private entries",
+                )
+            if time.monotonic() > deadline:
                 raise _error()
             relative = (base / name).relative_to(root).as_posix()
             identity, body = read_candidate_path(

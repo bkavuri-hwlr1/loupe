@@ -20,7 +20,7 @@ from llm_cli.agent.source_policy import register_runtime_paths
 from llm_cli.ids import new_id
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.storage.control import ControlStore
-from llm_cli.workspace.hydration import _evidence, plan_hydration
+from llm_cli.workspace.hydration import HydrationBudgets, _evidence, plan_hydration
 
 
 def _json(value: object) -> str:
@@ -89,8 +89,16 @@ _REFRESHING: set[tuple[Path, str]] = set()
 class RuntimeRefresher:
     """One daemon-owned manager; activity locks never hold the publication lock."""
 
-    def __init__(self, store: ControlStore, managed_root: Path, lock: Any) -> None:
+    def __init__(
+        self,
+        store: ControlStore,
+        managed_root: Path,
+        lock: Any,
+        *,
+        hydration_budgets: HydrationBudgets | None = None,
+    ) -> None:
         self.store, self.managed_root, self.lock = store, managed_root, lock
+        self.hydration_budgets = hydration_budgets or HydrationBudgets()
         self.fault: Callable[[str], None] = lambda stage: None
         self._activity_lock = _ACTIVITY_LOCK
         # Daemon-owned, memory-only process fences. No process-table scans run
@@ -335,6 +343,7 @@ class RuntimeRefresher:
             primary,
             approved_secret_paths=approved,
             frozen_rebuild_roots=rebuilt,
+            budgets=self.hydration_budgets,
         )
         if not plan.complete:
             return ("Runtime refresh deferred; hydration inventory is incomplete.",)

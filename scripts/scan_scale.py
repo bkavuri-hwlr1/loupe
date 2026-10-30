@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Measure production outside-edit and isolated safe-point scans without billing.
 
-Caps are never raised for the benchmark. By default each size is measured with
-native file watchers off and on. A rejected 100,000-file isolated
-workspace is reported as unsupported, not as a completed fast scan.
+Ordinary scan mode uses production defaults with native file watchers off and
+on. Admission mode records its explicitly configured count limits, retaining
+all production byte, depth and time budgets. Each admission size runs in a fresh
+process. A refused open is unsupported, never a completed fast safe point.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import hashlib
 import json
 import os
 import platform
+import resource
 import shutil
 import statistics
 import subprocess
@@ -24,12 +26,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from llm_cli.config.models import Settings
+from llm_cli.config.models import (
+    MAX_HYDRATION_ENTRIES,
+    MAX_ISOLATED_SOURCE_PATHS,
+    Settings,
+)
 from llm_cli.daemon.service import DaemonService
 from llm_cli.errors import LlmCoordError
 from llm_cli.paths import AppPaths
 from llm_cli.protocol.envelopes import Request
 from llm_cli.workspace.external import MAX_PATHS
+from llm_cli.workspace.hydration import HydrationBudgets
 from llm_cli.workspace.identity import ObjectKind, content_identity
 from llm_cli.workspace.isolated import (
     SourceCaptureCache,
@@ -106,7 +113,7 @@ async def measure(
         "repeats": repeats,
         "watchers": watchers,
         "outside_path_cap": MAX_PATHS,
-        "isolated_path_cap": 20000,
+        "isolated_path_cap": Settings().isolated_source_max_paths,
     }
     try:
         before = time.perf_counter()
@@ -227,7 +234,7 @@ async def measure(
             record["isolated_capture_cold"] = timing(capture, 1)
             record["isolated_capture_warm"] = timing(capture, repeats)
         except LlmCoordError as exc:
-            if "20,000-path budget" not in exc.message:
+            if "isolated.source_max_paths=" not in exc.message:
                 raise
             record["isolated_capture"] = {
                 "status": "unsupported",
@@ -249,7 +256,7 @@ async def measure(
             )
         except LlmCoordError as exc:
             if (
-                "20,000-path budget" not in exc.message
+                "isolated.source_max_paths=" not in exc.message
                 and "isolated hydration inventory is incomplete:" not in exc.message
             ):
                 raise
@@ -437,9 +444,186 @@ async def measure_growth(
     return record
 
 
+async def measure_admission(
+    count: int,
+    repeats: int,
+    *,
+    source_max_paths: int,
+    hydration_max_entries: int,
+) -> dict[str, Any]:
+    """Measure an actual isolated open, preserving all non-count budgets.
+
+    The CLI runs each size in a fresh interpreter, so lifetime peak RSS is not
+    inherited from an earlier, larger fixture. Parent and child-process peaks
+    are reported separately; they are not added into a fictional combined peak.
+    """
+    root = Path(
+        tempfile.mkdtemp(
+            prefix="loupe-admission-",
+            dir=("/private/tmp" if sys.platform == "darwin" else None),
+        )
+    ).resolve()
+    os.chmod(root, 0o700)
+    service: DaemonService | None = None
+    paths = AppPaths.resolve(
+        "admission-scale",
+        environ={
+            "LLM_COORD_CONFIG_HOME": str(root / "config"),
+            "LLM_COORD_DATA_HOME": str(root / "data"),
+            "LLM_COORD_STATE_HOME": str(root / "state"),
+            "LLM_COORD_RUNTIME_DIR": str(root / "run"),
+        },
+        home=root,
+    )
+    record: dict[str, Any] = {
+        "files": count,
+        "file_bytes": len(BODY),
+        "repeats": repeats,
+        "watchers": "auto",
+        "source_max_paths": source_max_paths,
+        "hydration_budgets": vars_budgets(hydration_max_entries),
+        "status": "failed",
+    }
+    opened = False
+    try:
+        repository = root / "repository"
+        before = time.perf_counter()
+        source_paths = fixture(repository, count)
+        record["fixture_seconds"] = time.perf_counter() - before
+        settings = Settings(
+            profile_id=paths.profile_id,
+            workspace_watchers="auto",
+            isolated_source_max_paths=source_max_paths,
+            isolated_hydration_max_entries=hydration_max_entries,
+        )
+        service = DaemonService(
+            paths,
+            settings,
+            asyncio.Event(),
+            boot_id="admission-scale",
+            authority_root=root / "authority" / "v1",
+        )
+        service.providers.register(
+            "unused-scripted",
+            lambda model: SimpleNamespace(name="unused-scripted", model=model),
+        )
+        service.initialize()
+
+        async def rpc(method: str, **params: Any) -> Any:
+            assert service is not None
+            return await service.handle(
+                Request.create(
+                    request_id="admission-" + method,
+                    method=method,
+                    params=params,
+                    profile_id=paths.profile_id,
+                )
+            )
+
+        await rpc("repo.add", path=str(repository))
+        if service.watchers.changes(repository, None) is None:
+            record.update(
+                status="watchers_unavailable", error="native watcher unavailable"
+            )
+            return record
+        secret = "admission-disposable-resume"
+        before = time.perf_counter()
+        try:
+            result = await rpc(
+                "session.open",
+                path=str(repository),
+                session_id="isolated",
+                resume_token_hash=hashlib.sha256(secret.encode()).hexdigest(),
+                provider="unused-scripted",
+                model="unused",
+                workspace="isolated",
+            )
+        except LlmCoordError as exc:
+            record.update(status="unsupported", error=exc.message)
+        else:
+            opened = True
+            workspace_id = result["session"]["workspace_id"]
+            record["isolated_open_seconds"] = time.perf_counter() - before
+            before_prepare = time.perf_counter()
+            service.shared_runner._prepare_isolated(workspace_id)
+            record["prepare_seconds"] = time.perf_counter() - before_prepare
+
+            def synchronize() -> dict[str, int]:
+                assert service is not None
+                report = service.shared_runner.isolated_sync.synchronize(workspace_id)
+                if report.deferred or report.conflicted:
+                    raise RuntimeError("admission safe point deferred or conflicted")
+                return {"applied": len(report.applied), "deferred": 0, "conflicted": 0}
+
+            record["safe_point_cold"] = timing(synchronize, 1)
+            record["safe_point_warm"] = timing(synchronize, repeats)
+            (repository / source_paths[-1]).write_bytes(BODY + b"# admission edit\n")
+            record["safe_point_one_change"] = timing(synchronize, 1)
+            private = Path(result["workspace"]["canonical_path"])
+            if (
+                private / source_paths[-1]
+            ).read_bytes() != BODY + b"# admission edit\n":
+                raise RuntimeError("admission safe point did not install the edit")
+            record.update(status="complete", admitted_source_paths=count)
+        if "isolated_open_seconds" not in record:
+            record["isolated_open_seconds"] = time.perf_counter() - before
+        record["native_watched_roots"] = len(service.watchers.watching())
+        record["database_bytes"] = sum(
+            file.stat().st_size for file in paths.data_dir.glob("*.sqlite3*")
+        )
+        if opened:
+            before_close = time.perf_counter()
+            await rpc("session.close", session_id="isolated", resume_secret=secret)
+            record["close_seconds"] = time.perf_counter() - before_close
+            closed_workspace = service.store.get_workspace(workspace_id)
+            record["closed_workspace_state"] = (
+                closed_workspace.state if closed_workspace is not None else "missing"
+            )
+            record["private_root_removed"] = not private.exists()
+            if record["closed_workspace_state"] != "removed" or private.exists():
+                record.update(
+                    status="failed",
+                    error="clean admitted workspace did not retire after close",
+                )
+    except (LlmCoordError, RuntimeError, ValueError) as exc:
+        record.update(status="failed", error=str(exc))
+    finally:
+        factor = 1 if sys.platform == "darwin" else 1024
+        record["peak_parent_rss_bytes"] = (
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * factor
+        )
+        record["peak_child_rss_bytes"] = (
+            resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * factor
+        )
+        if service is not None:
+            service.close()
+        shutil.rmtree(root)
+    return record
+
+
+def vars_budgets(max_entries: int) -> dict[str, Any]:
+    from dataclasses import asdict
+
+    return asdict(HydrationBudgets(max_entries=max_entries))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--files", type=int, nargs="+", default=[20000, 100000])
+    parser.add_argument("--files", type=int, nargs="+")
+    parser.add_argument(
+        "--admission",
+        action="store_true",
+        help="measure isolated admission in fresh processes",
+    )
+    parser.add_argument(
+        "--admission-worker", action="store_true", help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--source-max-paths", type=int, default=MAX_ISOLATED_SOURCE_PATHS
+    )
+    parser.add_argument(
+        "--hydration-max-entries", type=int, default=MAX_HYDRATION_ENTRIES
+    )
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument(
         "--watchers",
@@ -449,8 +633,62 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path, default=Path("scan-scale-result.json"))
     options = parser.parse_args()
+    options.files = options.files or (
+        [20000, 50000, 100000] if options.admission else [20000, 100000]
+    )
     if any(count < 1 for count in options.files) or options.repeats < 1:
         parser.error("file counts and repeats must be positive")
+    if not 1 <= options.source_max_paths <= MAX_ISOLATED_SOURCE_PATHS:
+        parser.error("source-max-paths must be between 1 and 100000")
+    if not 1 <= options.hydration_max_entries <= MAX_HYDRATION_ENTRIES:
+        parser.error("hydration-max-entries must be between 1 and 100000")
+    if options.admission and options.watchers == "off":
+        parser.error("admission measurements require native watchers")
+    if options.admission_worker:
+        if len(options.files) != 1:
+            parser.error("an admission worker needs one file count")
+        print(
+            json.dumps(
+                asyncio.run(
+                    measure_admission(
+                        options.files[0],
+                        options.repeats,
+                        source_max_paths=options.source_max_paths,
+                        hydration_max_entries=options.hydration_max_entries,
+                    )
+                )
+            ),
+            flush=True,
+        )
+        return 0
+    if options.admission:
+        record = {"platform": platform.platform(), "python": sys.version, "results": []}
+        for count in options.files:
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--admission-worker",
+                    "--files",
+                    str(count),
+                    "--repeats",
+                    str(options.repeats),
+                    "--source-max-paths",
+                    str(options.source_max_paths),
+                    "--hydration-max-entries",
+                    str(options.hydration_max_entries),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=600,
+            )
+            result = json.loads(child.stdout)
+            record["results"].append(result)
+            options.output.parent.mkdir(parents=True, exist_ok=True)
+            options.output.write_text(json.dumps(record, indent=2) + "\n")
+            print(json.dumps(result, indent=2), flush=True)
+        return 0
     modes = ("off", "auto") if options.watchers == "both" else (options.watchers,)
     record = {"platform": platform.platform(), "python": sys.version, "results": []}
     for count in options.files:

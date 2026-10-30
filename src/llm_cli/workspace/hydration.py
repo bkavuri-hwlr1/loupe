@@ -2,7 +2,9 @@
 
 This module never opens runtime file contents, follows descendant symlinks,
 copies bytes, creates a worktree, or persists consent. A plan is diagnostic
-evidence for the operator, not authorization or an executable snapshot.
+evidence for the operator, not authorization or an executable snapshot. A
+private bounded catalogue holds path metadata only during the preview and is
+removed before it returns.
 """
 
 from __future__ import annotations
@@ -14,15 +16,19 @@ import selectors
 import stat
 import subprocess
 import time
-import unicodedata
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from llm_cli.config.models import RebuildConfig
+from llm_cli.config.models import (
+    DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES,
+    MAX_HYDRATION_ENTRIES,
+    RebuildConfig,
+)
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import sanitized_git_environment
+from llm_cli.workspace.hydration_catalogue import CatalogueLimit, PathCatalogue
 
 _ADMIN_NAMES = frozenset({".git", ".loupe", ".llm-coord", ".codex", ".agents"})
 _SECRET_DIRECTORIES = frozenset({".ssh", ".aws", ".azure", ".gnupg"})
@@ -47,14 +53,15 @@ _SECRET_NAMES = frozenset(
     }
 )
 _COPY_ACTIONS = frozenset({"clone_or_copy", "private_copy", "private_tree"})
-_CHECK_BATCH = 256
+_CHECK_BATCH = 4096
+_CHECK_INPUT_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True, slots=True)
 class HydrationBudgets:
     """Limits apply to the entire inventory, including ordinary source paths."""
 
-    max_entries: int = 20_000
+    max_entries: int = DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES
     max_metadata_bytes: int = 4 * 1024 * 1024
     max_depth: int = 64
     max_file_bytes: int = 256 * 1024 * 1024
@@ -64,7 +71,7 @@ class HydrationBudgets:
 
     def __post_init__(self) -> None:
         ceilings = {
-            "max_entries": 100_000,
+            "max_entries": MAX_HYDRATION_ENTRIES,
             "max_metadata_bytes": 16 * 1024 * 1024,
             "max_depth": 128,
             "max_file_bytes": 1024**4,
@@ -239,8 +246,24 @@ def _ignored_paths(
     root: Path, paths: Sequence[str], *, deadline: float, limit: int
 ) -> set[str]:
     ignored: set[str] = set()
-    for start in range(0, len(paths), _CHECK_BATCH):
-        batch = paths[start : start + _CHECK_BATCH]
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    byte_count = 0
+    for path in paths:
+        cost = len(os.fsencode(path)) + 1
+        if cost > min(limit, _CHECK_INPUT_BYTES):
+            raise _BudgetExceeded("git_metadata_budget_exceeded")
+        if batch and (
+            len(batch) == _CHECK_BATCH
+            or byte_count + cost > min(limit, _CHECK_INPUT_BYTES)
+        ):
+            batches.append(batch)
+            batch, byte_count = [], 0
+        batch.append(path)
+        byte_count += cost
+    if batch:
+        batches.append(batch)
+    for batch in batches:
         code, output = _bounded_git(
             root,
             ["check-ignore", "-z", "--stdin"],
@@ -329,8 +352,98 @@ class _Inventory:
         self.issues: list[str] = []
         self.scanned = 0
         self.metadata_bytes = 0
-        self.aliases: dict[str, _Observed] = {}
+        self.retained_metadata_bytes = 0
+        self.temporary_metadata_bytes = 0
+        self.retained: dict[str, _Observed] = {}
+        self.catalogue: PathCatalogue | None = None
         self.deferred_ignored_paths: set[str] = set()
+
+    def metadata(self) -> None:
+        allocated = self.catalogue.allocated_bytes if self.catalogue is not None else 0
+        current = (
+            self.retained_metadata_bytes + self.temporary_metadata_bytes + allocated
+        )
+        self.metadata_bytes = max(self.metadata_bytes, current)
+        if current > self.budgets.max_metadata_bytes:
+            raise _BudgetExceeded("metadata_budget_exceeded")
+
+    def retain(self, entry: _Observed) -> None:
+        if entry.path not in self.retained:
+            self.retained_metadata_bytes += len(entry.path.encode("utf-8")) + 256
+            self.metadata()
+            self.entries.append(entry)
+            self.retained[entry.path] = entry
+
+    def observe(self, entry: _Observed, *, ignored: bool, administration: bool) -> None:
+        try:
+            if self.catalogue is None:
+                self.catalogue = PathCatalogue(self.budgets.max_metadata_bytes)
+            previous_path = self.catalogue.add(
+                entry.path, ignored=ignored, administration=administration
+            )
+        except CatalogueLimit:
+            raise _BudgetExceeded("metadata_budget_exceeded") from None
+        self.metadata()
+        if previous_path is not None:
+            previous = self.retained.get(previous_path)
+            for collision in (entry, previous):
+                if collision is not None:
+                    collision.refusal = "refuse_path_alias"
+                    collision.reason = "case or Unicode destination alias"
+            self.issues.append("path_alias_requires_decision")
+
+    def ignored_paths(self) -> set[str]:
+        """Recheck all classifications in batches that share the live byte cap."""
+        if self.catalogue is None:
+            return set()
+        result: set[str] = set()
+        batch: list[str] = []
+        expected: set[str] = set()
+        cost = 0
+
+        def flush() -> None:
+            nonlocal cost
+            if not batch:
+                return
+            self.temporary_metadata_bytes += cost
+            self.metadata()
+            try:
+                actual = _ignored_paths(
+                    self.root,
+                    batch,
+                    deadline=self.deadline,
+                    limit=self.budgets.max_metadata_bytes,
+                )
+                if actual != expected:
+                    self.issues.append("ignore_policy_changed")
+                result.update(actual)
+            finally:
+                self.temporary_metadata_bytes -= cost
+            batch.clear()
+            expected.clear()
+            cost = 0
+
+        for path, ignored in self.catalogue.records():
+            self.remaining()
+            needed = len(path.encode("utf-8")) + 256
+            available = (
+                self.budgets.max_metadata_bytes
+                - self.retained_metadata_bytes
+                - self.catalogue.allocated_bytes
+            )
+            if batch and (cost + needed > available or len(batch) >= _CHECK_BATCH):
+                flush()
+            batch.append(path)
+            cost += needed
+            if ignored:
+                expected.add(path)
+        flush()
+        return result
+
+    def close(self) -> None:
+        if self.catalogue is not None:
+            self.catalogue.close()
+            self.catalogue = None
 
     def remaining(self) -> None:
         if time.monotonic() >= self.deadline:
@@ -348,9 +461,8 @@ class _Inventory:
                     encoded = relative.encode("utf-8")
                 except UnicodeError as exc:
                     raise _BudgetExceeded("unsupported_path_encoding_budget") from exc
-                self.metadata_bytes += len(encoded) + 256
-                if self.metadata_bytes > self.budgets.max_metadata_bytes:
-                    raise _BudgetExceeded("metadata_budget_exceeded")
+                self.temporary_metadata_bytes += len(encoded) + 256
+                self.metadata()
                 names.append(entry.name)
         self.scanned += len(names)
         return sorted(names)
@@ -359,9 +471,20 @@ class _Inventory:
         self.remaining()
         before = _evidence(os.fstat(descriptor))
         child_count: int | None = None
+        previous_temporary = self.temporary_metadata_bytes
         try:
             names = self.names(descriptor, prefix)
             child_count = len(names)
+            ignored_here = _ignored_paths(
+                self.root,
+                [
+                    f"{prefix}/{name}" if prefix else name
+                    for name in names
+                    if name.casefold() not in _ADMIN_NAMES
+                ],
+                deadline=self.deadline,
+                limit=self.budgets.max_metadata_bytes,
+            )
             for name in names:
                 self.remaining()
                 relative = f"{prefix}/{name}" if prefix else name
@@ -369,16 +492,19 @@ class _Inventory:
                 try:
                     status = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
                     entry = _Observed(relative, status)
-                    self.entries.append(entry)
-                    alias = unicodedata.normalize("NFC", relative).casefold()
-                    previous = self.aliases.get(alias)
-                    if previous is not None:
-                        for collision in (entry, previous):
-                            collision.refusal = "refuse_path_alias"
-                            collision.reason = "case or Unicode destination alias"
-                        self.issues.append("path_alias_requires_decision")
-                    else:
-                        self.aliases[alias] = entry
+                    ignored = relative in ignored_here
+                    self.observe(
+                        entry,
+                        ignored=ignored,
+                        administration=name.casefold() in _ADMIN_NAMES,
+                    )
+                    if (
+                        ignored
+                        or not stat.S_ISREG(status.st_mode)
+                        or name in {".gitignore", ".gitattributes"}
+                        or entry.refusal is not None
+                    ):
+                        self.retain(entry)
                     if name.casefold() in _ADMIN_NAMES:
                         entry.refusal = "exclude_administration"
                         entry.reason = (
@@ -417,11 +543,13 @@ class _Inventory:
                         entry.reason = "special files cannot be safely hydrated"
                     after = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
                     if _evidence(status) != _evidence(after):
+                        self.retain(entry)
                         entry.refusal = "needs_rescan"
                         entry.reason = "entry changed during metadata observation"
                         self.issues.append("entry_changed_during_inventory")
                 except OSError:
                     if entry is not None:
+                        self.retain(entry)
                         entry.refusal = "needs_rescan"
                         entry.reason = "entry changed or could not be safely observed"
                         if stat.S_ISDIR(entry.status.st_mode):
@@ -432,6 +560,9 @@ class _Inventory:
         except _BudgetExceeded as exc:
             self.issues.append(str(exc))
         finally:
+            # Parent name lists stay reserved across recursion. This directory's
+            # names are released when its real list is no longer needed.
+            self.temporary_metadata_bytes = previous_temporary
             if before != _evidence(os.fstat(descriptor)):
                 self.issues.append("directory_changed_during_inventory")
         return child_count
@@ -625,7 +756,7 @@ def plan_hydration(
     rebuild: Sequence[RebuildConfig] = (),
     frozen_rebuild_roots: Sequence[str] = (),
 ) -> HydrationPlan:
-    """Preview current ignored entries; no bytes, consent, or state are written.
+    """Preview ignored entries without reading their contents or saving consent.
 
     Refused directories explicitly mark descendants as unexamined. A truncated
     or changing inventory disables all candidate copy actions. Even a complete
@@ -695,19 +826,10 @@ def plan_hydration(
         try:
             root_evidence = _evidence(os.fstat(descriptor))
             inventory.walk(descriptor)
-            paths = [
-                entry.path
-                for entry in inventory.entries
-                if entry.refusal != "exclude_administration"
-            ]
-            ignored = _ignored_paths(
-                root, paths, deadline=deadline, limit=limits.max_metadata_bytes
-            )
-            # A second passive classification plus rule metadata catches a
-            # changing ignore policy. No rule text or content digest is exposed.
-            repeated = _ignored_paths(
-                root, paths, deadline=deadline, limit=limits.max_metadata_bytes
-            )
+            # Every path remains in the bounded catalogue, including ordinary
+            # source whose full stat record is no longer retained for hydration.
+            ignored = inventory.ignored_paths()
+            repeated = inventory.ignored_paths()
             rules_changed = any(
                 _safe_stat(descriptor, entry.path) != _evidence(entry.status)
                 for entry in inventory.entries
@@ -780,6 +902,8 @@ def plan_hydration(
             ErrorCode.REPOSITORY_UNSAFE,
             "checkout could not be safely inventoried; retry the preview",
         ) from exc
+    finally:
+        inventory.close()
     issues = tuple(sorted(set(inventory.issues)))
     complete = not issues
     if not complete:

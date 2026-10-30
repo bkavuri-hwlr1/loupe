@@ -47,7 +47,7 @@ def _error(code: ErrorCode, message: str) -> LlmCoordError:
     return LlmCoordError(code, message)
 
 
-def _source_checkpoint(physical: PhysicalCheckout) -> str:
+def _source_checkpoint(physical: PhysicalCheckout, *, max_paths: int = 20_000) -> str:
     """One bounded stable snapshot; no source or individual digests are exported."""
     from llm_cli.agent.source_policy import contains_secret_material, excluded_paths
     from llm_cli.workspace.external import metadata
@@ -66,7 +66,7 @@ def _source_checkpoint(physical: PhysicalCheckout) -> str:
 
     root = physical.root
     try:
-        paths = _source_paths(root)
+        paths = _source_paths(root, max_paths)
         excluded = excluded_paths(root, list(paths), remaining=remaining)
         index = _passive(root, ["ls-files", "--stage", "-v", "-z"])
         before = {path: metadata(root, path) for path in paths if path not in excluded}
@@ -90,7 +90,7 @@ def _source_checkpoint(physical: PhysicalCheckout) -> str:
             records.append((path, stamp, digest))
         remaining()
         if (
-            paths != _source_paths(root)
+            paths != _source_paths(root, max_paths)
             or excluded != excluded_paths(root, list(paths), remaining=remaining)
             or index != _passive(root, ["ls-files", "--stage", "-v", "-z"])
             or any(metadata(root, path) != stamp for path, stamp in before.items())
@@ -701,7 +701,10 @@ class CutoverManager:
                 _digest(
                     {
                         "manifest": checkpoint_evidence,
-                        "source": source_checkpoint or _source_checkpoint(physical),
+                        "source": source_checkpoint
+                        or _source_checkpoint(
+                            physical, max_paths=self.authority.source_max_paths
+                        ),
                     }
                 )
                 if observe_source
@@ -844,7 +847,9 @@ class CutoverManager:
                 )
             # Hash source before taking the write lock; this scan can take
             # seconds, and every other daemon writer would wait behind it.
-            source = _source_checkpoint(pin.owner.physical)
+            source = _source_checkpoint(
+                pin.owner.physical, max_paths=self.authority.source_max_paths
+            )
             with self.store.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 try:
