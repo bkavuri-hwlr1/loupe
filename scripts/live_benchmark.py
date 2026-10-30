@@ -973,6 +973,72 @@ def natural_review_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return summaries
 
 
+@dataclass
+class _NaturalArgumentParts:
+    tool: str
+    parts: list[str] = field(default_factory=list)
+    size: int = 0
+
+
+def _natural_arguments(
+    payload: Mapping[str, Any],
+    fragments: dict[tuple[str | None, str], _NaturalArgumentParts],
+) -> Mapping[str, Any] | None:
+    """Reassemble the runner's exact numbered JSON frames, never partial JSON."""
+    tool, call_id, turn_id = (
+        payload.get("tool"),
+        payload.get("call_id"),
+        payload.get("turn_id"),
+    )
+    if (
+        not isinstance(tool, str)
+        or not isinstance(call_id, str)
+        or not call_id
+        or (turn_id is not None and not isinstance(turn_id, str))
+    ):
+        raise ValueError("invalid mutation transcript identity")
+    key = (turn_id, call_id)
+    arguments, text = payload.get("arguments"), payload.get("arguments_text")
+    if isinstance(arguments, Mapping):
+        if text is not None or any(existing[1] == call_id for existing in fragments):
+            raise ValueError("ambiguous mutation argument representations")
+        return arguments
+    part, final = payload.get("part"), payload.get("final")
+    if (
+        not isinstance(text, str)
+        or type(part) is not int
+        or not 0 <= part < 1024
+        or type(final) is not bool
+        or len(text.encode()) > 64 * 1024
+    ):
+        raise ValueError("invalid mutation argument frame")
+    if part == 0:
+        if key in fragments or len(fragments) >= 128:
+            raise ValueError("duplicate or excessive mutation argument streams")
+        fragments[key] = _NaturalArgumentParts(tool)
+    assembly = fragments.get(key)
+    if assembly is None or assembly.tool != tool or part != len(assembly.parts):
+        raise ValueError("missing, repeated or mismatched mutation argument frame")
+    size = len(text.encode())
+    if (
+        sum(item.size for item in fragments.values()) + size
+        > 2 * 1024 * 1024 + 64 * 1024
+    ):
+        raise ValueError("mutation argument stream exceeds its replay budget")
+    assembly.parts.append(text)
+    assembly.size += size
+    if not final:
+        return None
+    del fragments[key]
+    try:
+        decoded = json.loads("".join(assembly.parts))
+    except (ValueError, RecursionError) as exc:
+        raise ValueError("mutation argument stream is not complete JSON") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("mutation arguments are not an object")
+    return decoded
+
+
 def natural_first_acceptance(
     task: Task,
     events: Sequence[tuple[str, Mapping[str, Any]]],
@@ -986,6 +1052,7 @@ def natural_first_acceptance(
     assert task.fixture is not None
     pending: dict[object, tuple[object, Mapping[str, Any]]] = {}
     completed: dict[object, object] = {}
+    fragments: dict[tuple[str | None, str], _NaturalArgumentParts] = {}
     mutations = _EDIT_TOOLS | {"write_binary", "write_symlink"}
     with tempfile.TemporaryDirectory(prefix="loupe-natural-first-") as temporary:
         root = Path(temporary).resolve() / "repo"
@@ -1007,14 +1074,23 @@ def natural_first_acceptance(
         try:
             for kind, payload in events:
                 if kind == "review.started":
-                    if pending:
+                    if pending or fragments:
                         raise ValueError("unfinished mutation before review")
                     break
+                if kind == "review.finished":
+                    raise ValueError("review boundary is missing")
+                if kind == "model.tool_interrupted" and (
+                    payload.get("tool") in mutations
+                    or payload.get("call_id") in pending
+                ):
+                    raise ValueError("interrupted mutation has an unknown outcome")
                 if kind == "model.tool_call":
                     tool = payload.get("tool")
-                    if tool not in mutations:
+                    if not isinstance(tool, str) or tool not in mutations:
                         continue
-                    arguments = payload.get("arguments")
+                    arguments = _natural_arguments(payload, fragments)
+                    if arguments is None:
+                        continue
                     call_id = payload.get("call_id")
                     if (
                         not isinstance(arguments, Mapping)
@@ -1089,9 +1165,9 @@ def natural_first_acceptance(
                         > 8 * 1024 * 1024
                     ):
                         raise ValueError("oversized replay inventory")
-            if pending:
+            if pending or fragments:
                 raise ValueError("unfinished mutation")
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, UnicodeError, ValueError, TypeError):
             return {
                 "ran": False,
                 "passed": False,

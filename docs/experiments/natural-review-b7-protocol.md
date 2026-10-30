@@ -62,6 +62,12 @@ transition after a review-driven repair is a harmful repair. Finding counts
 alone are not semantic precision. Correct first proposals provide an observed
 clean denominator in both obvious and harder tasks.
 
+Large tool arguments use the production transcript's numbered JSON chunks.
+Replay requires contiguous parts, matching call/tool/turn identity, an explicit
+final part and complete JSON, with a shared bounded assembly buffer. Interrupted
+mutations have unknown outcomes and invalidate attribution. A finished review
+without its starting boundary also makes the first-proposal witness unavailable.
+
 Retain quality failures and publish their denominators. Setup or provider
 failures remain in an attempt/cost ledger; replacements must be identified,
 never silently substituted. Completion requires all planned cells and matched

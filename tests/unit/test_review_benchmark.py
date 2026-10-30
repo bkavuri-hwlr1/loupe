@@ -346,6 +346,151 @@ def test_natural_hidden_runner_can_read_only_its_interpreter_environment(
     assert policies[-1].readable == (prefix,)
 
 
+def _large_natural_mutation():
+    from llm_cli.agent.harness import _emit_transcript
+
+    events = []
+
+    class Recorder:
+        def emit(self, kind, payload):
+            events.append((kind, payload))
+
+    content = "# " + "é" * 5000 + "\nvalue = 7\n"
+    _emit_transcript(
+        Recorder(),
+        "model.tool_call",
+        {
+            "tool": "write_file",
+            "call_id": "large",
+            "turn_id": "turn-one",
+            "arguments": {"path": "src/subject.py", "content": content},
+        },
+    )
+    assert len(events) >= 2 and all(
+        "arguments_text" in payload for _, payload in events
+    )
+    return content, events
+
+
+def test_natural_first_candidate_reassembles_real_transcript_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content, events = _large_natural_mutation()
+    observed = []
+
+    def acceptance(task, repository, protected):
+        observed.append((repository / "src/subject.py").read_text())
+        return {"ran": True, "passed": observed[-1] == content}
+
+    monkeypatch.setattr(benchmark, "hidden_acceptance", acceptance)
+    result = benchmark.natural_first_acceptance(
+        _natural_corpus()[0],
+        [
+            *events,
+            ("model.tool_result", {"tool": "write_file", "call_id": "large"}),
+            ("review.started", {}),
+        ],
+        (),
+    )
+    assert result == {"ran": True, "passed": True, "witnessed": True}
+    assert observed == [content]
+
+
+@pytest.mark.parametrize(
+    "damage", ["duplicate", "gap", "turn", "tool", "unfinished", "json"]
+)
+def test_natural_replay_rejects_damaged_argument_streams(
+    damage: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, events = _large_natural_mutation()
+    if damage == "duplicate":
+        events.insert(1, events[0])
+    elif damage == "gap":
+        events[1][1]["part"] += 1
+    elif damage == "turn":
+        events[1][1]["turn_id"] = "different"
+    elif damage == "tool":
+        events[1][1]["tool"] = "delete_file"
+    elif damage == "unfinished":
+        events[-1][1]["final"] = False
+    else:
+        events[-1][1]["arguments_text"] += "{}"
+    monkeypatch.setattr(
+        benchmark,
+        "hidden_acceptance",
+        lambda *args: pytest.fail("unwitnessed source reached oracle"),
+    )
+    result = benchmark.natural_first_acceptance(
+        _natural_corpus()[0],
+        [
+            *events,
+            ("model.tool_result", {"tool": "write_file", "call_id": "large"}),
+            ("review.started", {}),
+        ],
+        (),
+    )
+    assert not result["witnessed"] and not result["ran"]
+
+
+@pytest.mark.parametrize("unknown", ["interrupted", "missing-review-start"])
+def test_natural_replay_refuses_unknown_mutation_or_missing_review_boundary(
+    unknown: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [
+        (
+            "model.tool_call",
+            {
+                "tool": "write_file",
+                "call_id": "edit",
+                "arguments": {"path": "src/subject.py", "content": "value = 8\n"},
+            },
+        )
+    ]
+    if unknown == "interrupted":
+        events.extend(
+            [
+                ("model.tool_interrupted", {"tool": "write_file"}),
+                (
+                    "model.tool_result",
+                    {"tool": "write_file", "call_id": "edit", "is_error": True},
+                ),
+                ("review.started", {}),
+            ]
+        )
+    else:
+        events.extend(
+            [
+                ("model.tool_result", {"tool": "write_file", "call_id": "edit"}),
+                ("review.finished", {"state": "completed", "findings": 1}),
+            ]
+        )
+    monkeypatch.setattr(
+        benchmark,
+        "hidden_acceptance",
+        lambda *args: pytest.fail("unknown source reached oracle"),
+    )
+    result = benchmark.natural_first_acceptance(_natural_corpus()[0], events, ())
+    assert not result["witnessed"] and not result["ran"]
+
+
+def test_natural_argument_assembly_has_a_shared_byte_budget() -> None:
+    fragments = {}
+    with pytest.raises(ValueError, match="replay budget"):
+        for part in range(40):
+            benchmark._natural_arguments(
+                {
+                    "tool": "write_file",
+                    "call_id": "large",
+                    "part": part,
+                    "final": False,
+                    "arguments_text": "x" * (64 * 1024),
+                },
+                fragments,
+            )
+
+
 def test_corpus_has_eight_defects_and_four_correct_controls() -> None:
     corpus = _corpus()
     assert len([t for t in corpus if t.review_kind == "bug"]) == 8
