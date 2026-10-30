@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import uuid
+from bisect import bisect_left
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -163,6 +164,11 @@ def _listed(paths: Sequence[str], limit: int = 20) -> str:
     return shown + (f" and {len(paths) - limit} more" if len(paths) > limit else "")
 
 
+class _OpeningDirectoryChanged(Exception):
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+
 @dataclass(frozen=True, slots=True)
 class _CatchUp:
     """One path's outside change, loaded as a BatchFile only when journaled."""
@@ -238,6 +244,101 @@ def _chunks(steps: Sequence[_CatchUp]) -> list[list[_CatchUp]]:
         chunks[-1].append(step)
         total += step.size
     return chunks
+
+
+def _unchanged_opening_directory(
+    root: Path, relative: str, expected: Manifest
+) -> tuple[str, ...] | None:
+    """Prove the private subtree still equals its accepted source descendants."""
+    directories = {relative}
+    for path, entry in expected.items():
+        if _identity(entry).kind is ObjectKind.DIRECTORY_MARKER:
+            directories.add(path)
+        for parent in Path(path).parents:
+            name = parent.as_posix()
+            if name == relative or name.startswith(relative + "/"):
+                directories.add(name)
+    pending = [relative]
+    seen: set[str] = set()
+    try:
+        while pending:
+            path = pending.pop()
+            if path not in directories and path not in expected:
+                return None
+            target = candidate_target(root, path)
+            current, _ = read_candidate_path(target, max_bytes=_SOURCE_FILE_BYTES)
+            if path in directories:
+                if current.kind is not ObjectKind.DIRECTORY_MARKER:
+                    return None
+                descriptor = os.open(
+                    target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                )
+                try:
+                    opened, live = os.fstat(descriptor), target.lstat()
+                    if (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino):
+                        return None
+                    with os.scandir(descriptor) as entries:
+                        for child_entry in entries:
+                            child = path + "/" + child_entry.name
+                            if child not in directories and child not in expected:
+                                return None
+                            pending.append(child)
+                finally:
+                    os.close(descriptor)
+            elif path not in expected or current != _identity(expected[path]):
+                return None
+            seen.add(path)
+    except (OSError, ValueError, LlmCoordError):
+        return None
+    if seen != expected.keys() | directories:
+        return None
+    return tuple(directories)
+
+
+def _opening_directories(
+    state: Mapping[str, Any], primary: Manifest
+) -> tuple[_CatchUp, ...]:
+    """Recover implicit opening parents only from matching accepted descendants.
+
+    This proof runs outside the publication lock. Each later journal still
+    validates its exact private before-state and protects newly added children.
+    """
+    baseline: Manifest = json.loads(state["manifest_json"])
+    runtime_paths = json.loads(state["runtime_paths_json"])
+    candidates = [
+        path
+        for path, entry in primary.items()
+        if path not in baseline
+        and _identity(entry).kind
+        not in {ObjectKind.ABSENT, ObjectKind.DIRECTORY_MARKER}
+        and not runtime_path_matches(path, runtime_paths)
+    ]
+    if not candidates:
+        return ()
+    accepted_paths = sorted(baseline)
+    implicit: set[str] = set()
+    for path in candidates:
+        prefix = path + "/"
+        index = bisect_left(accepted_paths, prefix)
+        descendants: Manifest = {}
+        while index < len(accepted_paths) and accepted_paths[index].startswith(prefix):
+            descendant = accepted_paths[index]
+            if not _identity(baseline[descendant]).absent:
+                descendants[descendant] = baseline[descendant]
+            index += 1
+        if not descendants:
+            continue
+        unchanged = _unchanged_opening_directory(
+            Path(state["canonical_path"]), path, descendants
+        )
+        if unchanged is not None:
+            implicit.update(name for name in unchanged if name not in baseline)
+    # Confirm descendants before their root marker. A crash between chunks
+    # leaves that root implicit, so the next safe point can finish normalization.
+    return tuple(
+        _CatchUp(path, None, None, directory=True)
+        for path in sorted(implicit, key=lambda path: (-len(Path(path).parts), path))
+    )
 
 
 @dataclass(frozen=True)
@@ -412,6 +513,9 @@ class IsolatedSynchronizer:
                 refresh_runtime=refresh_runtime,
             )
 
+    def _between_journals(self, workspace_id: str) -> None:
+        """Fault hook after a confirmed journal and outside our publication lock."""
+
     def _synchronize(
         self,
         workspace_id: str,
@@ -419,11 +523,52 @@ class IsolatedSynchronizer:
         refresh_source: bool = True,
         refresh_runtime: bool = False,
     ) -> SyncResult:
-        """Apply complete ordered incoming batches at a caller-owned safe point."""
+        applied: list[str] = []
+        opaque_applied: list[str] = []
+        merged: list[str] = []
+        conflicted: list[str] = []
+        runtime_notices: list[str] = []
+        while True:
+            report, more, opaque = self._synchronize_pass(
+                workspace_id,
+                refresh_source=refresh_source,
+                refresh_runtime=refresh_runtime,
+            )
+            (opaque_applied if opaque else applied).extend(report.applied)
+            merged.extend(report.merged)
+            conflicted.extend(report.conflicted)
+            runtime_notices.extend(report.runtime_notices)
+            if not more:
+                conflicts = tuple(dict.fromkeys(conflicted))
+                return SyncResult(
+                    tuple(
+                        path
+                        for path in dict.fromkeys((*applied, *opaque_applied))
+                        if path not in conflicts
+                    ),
+                    tuple(dict.fromkeys(merged)),
+                    conflicts,
+                    report.sequence,
+                    report.deferred,
+                    tuple(dict.fromkeys(runtime_notices)),
+                )
+            # The next pass starts from the manifest this journal confirmed and
+            # consumes any intervening publication before recapturing source.
+            self._between_journals(workspace_id)
+            refresh_runtime = False
+
+    def _synchronize_pass(
+        self,
+        workspace_id: str,
+        *,
+        refresh_source: bool,
+        refresh_runtime: bool,
+    ) -> tuple[SyncResult, bool, bool]:
+        """Confirm at most one journal before yielding the publication lock."""
         with self.publisher.lock:
             deferred_process = self._process_deferred(workspace_id)
             if deferred_process is not None:
-                return deferred_process
+                return deferred_process, False, False
         runtime_notices = (
             self.runtime_refresh(workspace_id)
             if self.runtime_refresh and refresh_source and refresh_runtime
@@ -432,12 +577,12 @@ class IsolatedSynchronizer:
         with self.publisher.lock:
             deferred_process = self._process_deferred(workspace_id)
             if deferred_process is not None:
-                return deferred_process
+                return deferred_process, False, False
+            # A previous pass yielded the lock; validate its private binding
+            # before recovery or another journal can write to it.
+            self._state(workspace_id, revalidate=True)
             self.recover(workspace_id)
             state = self._state(workspace_id)
-            applied: list[str] = []
-            merged: list[str] = []
-            conflicted: list[str] = []
             sequence = int(state["source_sequence"])
             with self.store.connection() as con:
                 latest = con.execute(
@@ -462,7 +607,6 @@ class IsolatedSynchronizer:
                         )
                     sequence += 1
                     if row["event_type"] != "workspace.batch_published":
-                        # Exact source comparison below also catches outside writes.
                         with self.store.connection() as con:
                             con.execute(
                                 "UPDATE isolated_sync_state SET "
@@ -486,71 +630,104 @@ class IsolatedSynchronizer:
                         workspace_id, sequence, str(batch["request_json"])
                     )
                     self.recover(workspace_id)
-                    applied.extend(report.applied)
-                    merged.extend(report.merged)
-                    conflicted.extend(report.conflicted)
+                    waiting = self._pending_journal(workspace_id)
+                    return (
+                        SyncResult(
+                            report.applied,
+                            report.merged,
+                            report.conflicted,
+                            sequence,
+                            runtime_notices=runtime_notices,
+                        ),
+                        not waiting and (sequence < upper_bound or refresh_source),
+                        False,
+                    )
             state = self._state(workspace_id)
-        # Filesystem scanning, screening and artifact writes must not monopolize
-        # the same lock that every shared session needs to publish.
-        if refresh_source:
-            try:
-                primary = self.refresh_capture(
-                    Path(state["source_path"]),
-                    tuple(json.loads(state["runtime_paths_json"])),
-                )
-            except (LlmCoordError, OSError, ValueError):
-                primary = None
-            with self.publisher.lock:
-                deferred_process = self._process_deferred(workspace_id)
-                if deferred_process is not None:
-                    return SyncResult(
-                        tuple(applied),
-                        tuple(merged),
-                        tuple(conflicted),
-                        sequence,
+        if not refresh_source:
+            return (
+                SyncResult(sequence=sequence, runtime_notices=runtime_notices),
+                False,
+                False,
+            )
+        # Scanning, screening and proving implicit opening directories must not
+        # monopolize the same lock that every shared session needs to publish.
+        try:
+            primary = self.refresh_capture(
+                Path(state["source_path"]),
+                tuple(json.loads(state["runtime_paths_json"])),
+            )
+            directories = _opening_directories(state, primary)
+        except (LlmCoordError, OSError, ValueError):
+            primary = None
+            directories = ()
+        with self.publisher.lock:
+            deferred_process = self._process_deferred(workspace_id)
+            if deferred_process is not None:
+                return (
+                    SyncResult(
+                        sequence=sequence,
                         runtime_notices=(
                             *runtime_notices,
                             *deferred_process.runtime_notices,
                         ),
-                    )
-                # The capture ran unlocked; check the worktree binding again.
-                current = self._state(workspace_id, revalidate=True)
-                with self.store.connection() as con:
-                    latest = con.execute(
-                        "SELECT MAX(sequence) FROM checkout_events WHERE checkout_id=?",
-                        (state["checkout_id"],),
-                    ).fetchone()[0]
-                if (
-                    primary is None
-                    or current["generation"] != state["generation"]
-                    or current["source_sequence"] != state["source_sequence"]
-                    or int(latest or 0) != upper_bound
-                ):
-                    return SyncResult(
-                        tuple(applied),
-                        tuple(merged),
-                        tuple(conflicted),
-                        sequence,
-                        ("checkout snapshot",),
-                        runtime_notices,
-                    )
-                report = self._refresh_primary(workspace_id, primary)
-                applied.extend(report.applied)
-                merged.extend(report.merged)
-                conflicted.extend(report.conflicted)
-                deferred = report.deferred
-        else:
-            deferred = ()
-        return SyncResult(
-            tuple(applied),
-            tuple(merged),
-            tuple(conflicted),
-            sequence,
-            deferred,
-            runtime_notices,
-        )
+                    ),
+                    False,
+                    False,
+                )
+            current = self._state(workspace_id, revalidate=True)
+            with self.store.connection() as con:
+                latest = con.execute(
+                    "SELECT MAX(sequence) FROM checkout_events WHERE checkout_id=?",
+                    (state["checkout_id"],),
+                ).fetchone()[0]
+            if (
+                primary is None
+                or current["generation"] != state["generation"]
+                or current["source_sequence"] != state["source_sequence"]
+                or int(latest or 0) != upper_bound
+            ):
+                return (
+                    SyncResult(
+                        sequence=sequence,
+                        deferred=("checkout snapshot",),
+                        runtime_notices=runtime_notices,
+                    ),
+                    False,
+                    False,
+                )
+            report, more, opaque = self._refresh_primary(
+                workspace_id, primary, directories
+            )
+            return (
+                SyncResult(
+                    report.applied,
+                    report.merged,
+                    report.conflicted,
+                    sequence,
+                    report.deferred,
+                    runtime_notices,
+                ),
+                more,
+                opaque,
+            )
 
-    def _refresh_primary(self, workspace_id: str, primary: Manifest) -> SyncResult:
+    def _pending_journal(self, workspace_id: str) -> bool:
+        with self.store.connection() as con:
+            return (
+                con.execute(
+                    "SELECT 1 FROM isolated_sync_journal "
+                    "WHERE workspace_id=? AND state='prepared' LIMIT 1",
+                    (workspace_id,),
+                ).fetchone()
+                is not None
+            )
+
+    def _refresh_primary(
+        self,
+        workspace_id: str,
+        primary: Manifest,
+        opening_directories: Sequence[_CatchUp] = (),
+    ) -> tuple[SyncResult, bool, bool]:
         """Reconcile a source snapshot captured without the publication lock."""
         state = self._state(workspace_id)
         baseline: Manifest = json.loads(state["manifest_json"])
@@ -566,6 +743,36 @@ class IsolatedSynchronizer:
             for path in baseline.keys() | primary.keys()
             if (entry := baseline.get(path)) is None or entry != primary.get(path)
         ]
+        if opening_directories:
+            store_candidate_content(self.publisher.candidate_dir, b"")
+            chunk = _chunks(opening_directories)[0]
+            try:
+                report, _ = self._journal(
+                    workspace_id,
+                    int(state["source_sequence"]),
+                    chunk,
+                    existing_directories=True,
+                )
+            except _OpeningDirectoryChanged as exc:
+                return (
+                    SyncResult(
+                        sequence=int(state["source_sequence"]), deferred=(exc.path,)
+                    ),
+                    False,
+                    False,
+                )
+            normalization_waiting = self._pending_journal(workspace_id)
+            return (
+                SyncResult(
+                    report.applied,
+                    report.merged,
+                    report.conflicted,
+                    report.sequence,
+                    tuple(differing) if normalization_waiting else (),
+                ),
+                not normalization_waiting,
+                False,
+            )
         for path in sorted(differing):
             if runtime_path_matches(path, runtime_paths):
                 continue
@@ -577,8 +784,13 @@ class IsolatedSynchronizer:
                     screened.append(path)
                 continue
             if _identity(before).kind is ObjectKind.DIRECTORY_MARKER:
-                target = candidate_target(Path(state["source_path"]), path)
-                if target.is_dir() and not target.is_symlink():
+                try:
+                    target = candidate_target(Path(state["source_path"]), path)
+                except WorkspaceBrokerError:
+                    # A source ancestor may now be a file or link. Its old
+                    # directory descendants still need deepest-first removal.
+                    target = None
+                if target is not None and target.is_dir() and not target.is_symlink():
                     continue
             base, result = _identity(before), _identity(after)
             if base == result:
@@ -610,10 +822,24 @@ class IsolatedSynchronizer:
         # Bodies already live in the capture cache's immutable artifact store.
         if directories:
             store_candidate_content(self.publisher.candidate_dir, b"")
-        # Retire opaque leaves before their ordinary directory operations, so
-        # an unchanged private fixture does not create a false container conflict.
+        # Retire opaque leaves before ordinary directory operations. It is a
+        # complete journal too, so yield before preparing an ordinary one.
         opaque = self._prepare_screened(workspace_id, primary, screened)
         self.recover(workspace_id)
+        if self._pending_journal(workspace_id):
+            return (
+                SyncResult(
+                    opaque.applied,
+                    opaque.merged,
+                    opaque.conflicted,
+                    int(state["source_sequence"]),
+                    tuple(sorted(deferred | set(opaque.deferred) | set(differing))),
+                ),
+                False,
+                True,
+            )
+        if self._state(workspace_id)["generation"] != state["generation"]:
+            return opaque, True, True
         waiting = deferred | set(opaque.deferred)
         removals = [
             step
@@ -623,9 +849,6 @@ class IsolatedSynchronizer:
                 and any(path.startswith(step.path + "/") for path in waiting)
             )
         ]
-        # A branch switch can change more paths than one stored batch holds.
-        # Removals go first, deepest first, so a directory empties before it
-        # goes and a file can give way to a directory of the same name.
         sequence = int(state["source_sequence"])
         root = Path(state["canonical_path"])
         removals, blocked = _placeable(
@@ -633,13 +856,11 @@ class IsolatedSynchronizer:
             sorted(removals, key=lambda step: (-len(Path(step.path).parts), step.path)),
             creating=False,
         )
-        report, pending = self._journal(workspace_id, sequence, removals)
-        if pending:
-            pending = (*pending, *(step.path for step in creations))
+        if removals:
+            steps = removals
+            more_after = bool(creations or directories)
         else:
-            # A path whose removal waits cannot take its new kind or become a
-            # directory yet.
-            creations, waiting_creations = _placeable(
+            steps, waiting_creations = _placeable(
                 root,
                 sorted(
                     [*directories, *creations],
@@ -650,31 +871,45 @@ class IsolatedSynchronizer:
                     ),
                 ),
                 creating=True,
-                held=removed - {step.path for step in removals},
+                held=removed,
             )
             blocked |= waiting_creations
-            added, pending = self._journal(workspace_id, sequence, creations)
-            report = SyncResult(
-                (*report.applied, *added.applied),
-                (*report.merged, *added.merged),
-                (*report.conflicted, *added.conflicted),
-                sequence,
+            more_after = False
+        if not steps:
+            return (
+                SyncResult(
+                    sequence=sequence,
+                    deferred=tuple(sorted(waiting | blocked)),
+                ),
+                False,
+                False,
             )
+        chunk = _chunks(steps)[0]
+        report, _ = self._journal(workspace_id, sequence, chunk)
+        pending = self._pending_journal(workspace_id)
+        remaining = {step.path for step in steps[len(chunk) :]}
+        if pending and removals:
+            remaining.update(step.path for step in creations)
         conflicted = tuple(dict.fromkeys((*report.conflicted, *opaque.conflicted)))
-        return SyncResult(
-            tuple(
-                path
-                for path in dict.fromkeys((*report.applied, *opaque.applied))
-                if path not in conflicted
+        return (
+            SyncResult(
+                tuple(path for path in report.applied if path not in conflicted),
+                report.merged,
+                conflicted,
+                sequence,
+                tuple(sorted(waiting | blocked | (remaining if pending else set()))),
             ),
-            tuple(dict.fromkeys(report.merged)),
-            conflicted,
-            sequence,
-            tuple(sorted(deferred | set(opaque.deferred) | blocked | set(pending))),
+            not pending and (bool(remaining) or more_after),
+            False,
         )
 
     def _journal(
-        self, workspace_id: str, sequence: int, steps: Sequence[_CatchUp]
+        self,
+        workspace_id: str,
+        sequence: int,
+        steps: Sequence[_CatchUp],
+        *,
+        existing_directories: bool = False,
     ) -> tuple[SyncResult, tuple[str, ...]]:
         """Apply ordered catch-up steps as consecutive stored-batch journals.
 
@@ -698,7 +933,13 @@ class IsolatedSynchronizer:
                 # file and its original travel alone.
                 max_total_bytes=2 * _SOURCE_FILE_BYTES,
             )
-            report = self._prepare(workspace_id, sequence, request)
+            report = (
+                self._prepare(
+                    workspace_id, sequence, request, existing_directories=True
+                )
+                if existing_directories
+                else self._prepare(workspace_id, sequence, request)
+            )
             self.recover(workspace_id)
             applied.extend(report.applied)
             merged.extend(report.merged)
@@ -918,7 +1159,12 @@ class IsolatedSynchronizer:
         return {row["path"]: json.loads(row["step_json"]) for row in rows}
 
     def _prepare(
-        self, workspace_id: str, sequence: int, request_json: str
+        self,
+        workspace_id: str,
+        sequence: int,
+        request_json: str,
+        *,
+        existing_directories: bool = False,
     ) -> SyncResult:
         state = self._state(workspace_id)
         root = Path(state["canonical_path"])
@@ -947,6 +1193,11 @@ class IsolatedSynchronizer:
                 candidate_target(root, path),
                 max_bytes=_SOURCE_FILE_BYTES,
             )
+            if existing_directories and current.kind is not ObjectKind.DIRECTORY_MARKER:
+                # Normalization records an already-existing directory. It must
+                # never recreate a subtree removed after the unlocked proof, or
+                # store bytes from a private file that replaced that directory.
+                raise _OpeningDirectoryChanged(path)
             if ours is not None:
                 ensure_safe_content(ours)
             local_hash = (
@@ -1395,11 +1646,11 @@ class IsolatedSynchronizer:
             publication = self.publisher.publish(
                 batch_id, session_id, files, scopes, case_insensitive_filesystem
             )
-            if publication.state == "published":
-                session = self.store.get_session(session_id)
-                assert session is not None and session.workspace_id is not None
-                self.after_publication(batch_id, session.workspace_id)
-            return publication
+            session = self.store.get_session(session_id)
+        if publication.state == "published":
+            assert session is not None and session.workspace_id is not None
+            self.after_publication(batch_id, session.workspace_id)
+        return publication
 
     def after_publication(self, batch_id: str, workspace_id: str) -> None:
         """Private catch-up cannot turn a confirmed shared publication into failure."""

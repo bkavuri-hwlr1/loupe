@@ -57,7 +57,7 @@ and two known limits of the outside catch-up fix (#85).
 
 | ID | Package | Lane | Size | Depends on | Hot files | Wave |
 | --- | --- | --- | --- | --- | --- | --- |
-| C17 | Isolated catch-up follow-ups | Workspace | M | — | — | 12 |
+| C17 | Isolated catch-up follow-ups | Workspace | M | — | shared.py (post-confirmation only) | 12 |
 | C18 | Larger isolated admission | Workspace | L | — | — | 12 |
 | C19 | Outside-scan coverage beyond the read window | Workspace | M | — | — | 12 |
 | C20 | Installer cache for dependency rebuilds | Workspace | M | — | — | 12 |
@@ -1260,7 +1260,9 @@ docs, tests.
 - **Unchanged:** recovery, chunk limits and publication limits.
 
 **Files.** `src/llm_cli/workspace/isolated_sync.py`,
-`docs/isolated-workspaces.md`, `tests/integration/test_isolated_sync.py`.
+`src/llm_cli/execution/shared.py` and `src/llm_cli/workspace/workflow.py`
+(post-confirmation catch-up only), `docs/isolated-workspaces.md`,
+`tests/integration/test_isolated_sync.py`, and focused publication tests.
 
 **Done when.**
 - An untouched opened-with directory replaced by an outside file arrives at
@@ -1271,6 +1273,17 @@ docs, tests.
 - A crash between journals, including after an interleaved publication,
   recovers without re-applying a step. The existing catch-up tests pass
   unchanged.
+
+**Implementation (Wave 12).** Accepted opening source children establish implicit
+parent provenance only after a no-follow private-subtree equality check.
+Metadata-only directory journals make replacement crash-recoverable; a crossing
+private change defers normalization, and changed private subtrees remain
+conflicts. Ordinary safe points and confirmed auto/held-apply publication
+follow-ups confirm one journal per publication-lock scope, receive intervening
+batches and recapture primary source before the next step. Confirmed steps are
+not reapplied after restart. Retained-apply preparation and workspace-switch
+classification keep their existing atomic barriers; recovery, chunk and
+publication limits stay unchanged.
 
 ### C18. Larger isolated admission
 
