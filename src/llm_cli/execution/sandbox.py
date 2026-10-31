@@ -191,6 +191,83 @@ def wrap(
     raise ValueError(f"unsupported sandbox {kind!r}")
 
 
+def wrap_cache_guard(
+    kind: str, cache_root: Path, argv: Sequence[str], *, cwd: Path
+) -> list[str]:
+    """Deny cache access while preserving configured checks' other permissions.
+
+    These are trusted configured commands, rather than model-chosen commands.
+    Their guard executes argv directly: the general Seatbelt launcher relies on
+    a stricter signal policy and must never run under this allow-default policy.
+    """
+    if kind not in {SEATBELT, BUBBLEWRAP}:
+        raise ValueError(f"unsupported sandbox {kind!r}")
+    try:
+        descriptor = os.open(
+            cache_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        try:
+            opened = os.fstat(descriptor)
+            canonical = cache_root.resolve(strict=True)
+            named = canonical.lstat()
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or opened.st_uid != os.geteuid()
+                or opened.st_mode & 0o077
+                or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+                or not stat.S_ISDIR(named.st_mode)
+                or named.st_uid != os.geteuid()
+                or named.st_mode & 0o077
+            ):
+                raise ValueError("installer cache guard requires a stable private root")
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ValueError("installer cache guard boundary is unavailable") from exc
+    if kind == SEATBELT:
+        path = '(subpath (param "CACHE_ROOT"))'
+        parameters = ["-D", f"CACHE_ROOT={canonical}"]
+        ancestors = []
+        for index, parent in enumerate(canonical.parents):
+            name = f"CACHE_PARENT_{index}"
+            parameters.extend(("-D", f"{name}={parent}"))
+            ancestors.append(f'(literal (param "{name}"))')
+        profile = (
+            "(version 1)\n(allow default)\n"
+            f"(deny file-read* file-write* {path})\n"
+            f"(deny network-bind (local unix-socket {path}))\n"
+            f"(deny network-inbound (local unix-socket {path}))\n"
+            f"(deny network-outbound (remote unix-socket {path}))\n"
+            # Renaming an ancestor must not move cache bytes outside the deny.
+            f"(deny file-write-unlink {' '.join(ancestors)})\n"
+        )
+        return [_SANDBOX_EXEC, "-p", profile, *parameters, "--", *argv]
+    # A private PID/proc namespace closes /proc/<host-pid>/root aliases. The host
+    # filesystem and network remain available; only cache contents are masked.
+    return [
+        "bwrap",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-user",
+        "--unshare-pid",
+        "--dev-bind",
+        "/",
+        "/",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        str(canonical),
+        "--remount-ro",
+        str(canonical),
+        "--cap-drop",
+        "ALL",
+        "--chdir",
+        str(cwd),
+        "--",
+        *argv,
+    ]
+
+
 def uses_reaper(kind: str) -> bool:
     """Whether wrapped commands expect the supervisor's reaper descriptors."""
 
@@ -372,4 +449,5 @@ __all__ = [
     "sandbox_kind",
     "uses_reaper",
     "wrap",
+    "wrap_cache_guard",
 ]
