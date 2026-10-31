@@ -301,6 +301,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workspace_status = workspace_commands.add_parser("status")
     workspace_status.add_argument("path", nargs="?", default=".")
+    cache = workspace_commands.add_parser(
+        "cache", help="prune private installer artifacts"
+    )
+    cache_actions = cache.add_subparsers(dest="cache_command", required=True)
+    cache_prune = cache_actions.add_parser(
+        "prune", help="prune only while installers are idle"
+    )
+    cache_prune.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_artifacts",
+        help="clear artifact generations and recover cache metadata",
+    )
     authority = workspace_commands.add_parser(
         "authority", help="inspect or explicitly prune stale physical ownership records"
     )
@@ -960,6 +973,13 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             return _watch(client, task_id, 0, arguments.as_json, arguments.plain)
         return result
     if command == "workspace":
+        if arguments.workspace_command == "cache":
+            result = _patient(client, 120).call(
+                "workspace.cache.prune", {"all": arguments.all_artifacts}
+            )
+            if arguments.as_json:
+                return result
+            return "Installer cache pruned." if result["pruned"] else result["notice"]
         if arguments.workspace_command == "authority":
             prune = arguments.authority_command == "prune"
             result = client.call(

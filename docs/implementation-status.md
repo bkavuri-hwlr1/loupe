@@ -167,6 +167,22 @@ the remaining planned capabilities are listed below.
   these exclude changed-tree copying. See the
   [measurement record](experiments/runtime-refresh-c8-2026-10-18.json).
 
+- Private installer artifact cache (Wave 12 C20): explicit
+  `[isolated.rebuild] cache = true` shares bounded per-profile artifacts while
+  keeping installer homes fresh. Same-namespace installers serialize outside
+  daemon/publication locks; different namespaces can build concurrently.
+  Supervisor-held leases exclude pruning through daemon-death teardown,
+  including prompt Linux namespace containment; settled no-follow hardlink
+  checks precede readiness. Cache namespaces change
+  with all actual private output values and never reactivate after rotation;
+  waiting installers revalidate after acquiring their namespace lock.
+  Model commands/processes and configured checks cannot access artifacts;
+  cache-only check guards preserve other filesystem and network permissions.
+  `loupe workspace cache prune [--all]` provides idle eviction and corrupt
+  metadata recovery, with durable protection through partial cleanup and
+  prepared rebuilds. See [the cache guide](isolated-workspaces.md#private-installer-cache)
+  and [ADR 0009](adr/0009-isolated-runtime-hydration.md#c20-follow-up-decision-wave-12).
+
 - Explicit dependency rebuild adapters (Wave 6 C10): `[isolated.rebuild]`
   approves installer argv per ignored dependency root; hydration previews mark
   `rebuild` and avoid reading its primary contents. Real command sandboxes keep

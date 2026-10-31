@@ -12,7 +12,7 @@ import logging
 import sqlite3
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import asdict, dataclass, field, replace
@@ -260,6 +260,8 @@ class DaemonService:
             self.workspace_batches.lock,
             self.shared_runner.ensure_available,
             rebuild=settings.isolated_rebuild,
+            rebuild_cache=settings.isolated_rebuild_cache,
+            rebuild_cache_max_bytes=settings.isolated_rebuild_cache_max_bytes,
             rebuild_protected=(
                 paths.config_dir,
                 paths.data_dir,
@@ -370,6 +372,8 @@ class DaemonService:
         self._next_external_scan_at = 0.0
         self._authority_lock = asyncio.Lock()
         self._pending_session_opens: set[str] = set()
+        self._cache_guard_release: Callable[[], None] | None = None
+        self._cache_guard_closing = False
         self._pending_session_switches: set[str] = set()
         self._pending_session_closes: set[str] = set()
         self._background_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
@@ -391,6 +395,13 @@ class DaemonService:
 
     def initialize(self) -> None:
         self.paths.ensure()
+        from llm_cli.workspace.installer_cache import register_guard
+
+        if self._cache_guard_release is None:
+            self._cache_guard_release = register_guard(
+                self.paths.data_dir / "installer-cache",
+                enabled=self.settings.isolated_rebuild_cache,
+            )
         self.store.initialize()
         # Old groups are fenced/stopped before any private source or runtime
         # recovery and before ordinary snapshot cleanup can remove inputs.
@@ -530,6 +541,10 @@ class DaemonService:
         self.managed_processes.stop_all()
         self.watchers.close()
         self.physical_authority.close()
+        self._cache_guard_closing = True
+        if not self._pending_session_opens and self._cache_guard_release is not None:
+            self._cache_guard_release()
+            self._cache_guard_release = None
 
     def _start_ownership_idle_worker(self) -> None:
         if self._ownership_idle_task is not None:
@@ -784,6 +799,13 @@ class DaemonService:
                     # Only the event loop touches this reservation. Keep it
                     # through registration, including the worker-return gap.
                     self._pending_session_opens.discard(session_id)
+                    if (
+                        self._cache_guard_closing
+                        and not self._pending_session_opens
+                        and self._cache_guard_release is not None
+                    ):
+                        self._cache_guard_release()
+                        self._cache_guard_release = None
             if request.method == "workspace.switch_mode":
                 return await self._workspace_switch_mode(request.params)
             if request.method == "session.close":
@@ -801,6 +823,15 @@ class DaemonService:
                     self.managed_processes.stop,
                     _string(request.params, "process_id"),
                     session.session_id,
+                )
+            if request.method == "workspace.cache.prune":
+                from llm_cli.workspace.installer_cache import prune_profile_cache
+
+                return await asyncio.to_thread(
+                    prune_profile_cache,
+                    self.paths.data_dir / "installer-cache",
+                    self.settings.isolated_rebuild_cache_max_bytes,
+                    request.params.get("all", False),
                 )
             if request.method == "session.compact":
                 # The summary is a model request. Hold the authority lock only

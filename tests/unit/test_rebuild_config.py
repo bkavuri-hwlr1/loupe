@@ -110,3 +110,48 @@ def test_rebuild_argument_budget_counts_encoded_bytes(tmp_path: Path) -> None:
     )
     with pytest.raises(LlmCoordError, match="argv"):
         load_settings(config)
+
+
+def test_installer_cache_is_explicit_and_has_bounded_visible_settings(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "cache.toml"
+    defaults = load_settings(config)
+    assert defaults.isolated_rebuild_cache is False
+    assert defaults.isolated_rebuild_cache_max_bytes == 512 * 1024**2
+    config.write_text("""[isolated.rebuild]
+cache = true
+cache_max_bytes = 123456
+".venv" = ["uv", "sync", "--frozen"]
+""")
+    settings = load_settings(config)
+    assert settings.isolated_rebuild_cache is True
+    assert settings.isolated_rebuild_cache_max_bytes == 123456
+    assert len(settings.isolated_rebuild) == 1
+    view = {
+        entry["key"]: entry
+        for entry in settings_view(settings, initial_sources(config, settings))
+    }
+    assert view["isolated.rebuild.cache"]["value"] is True
+    assert view["isolated.rebuild.cache_max_bytes"]["value"] == 123456
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        'cache = "yes"',
+        "cache = 1",
+        "cache_max_bytes = true",
+        "cache_max_bytes = 0",
+        "cache_max_bytes = 65535",
+        f"cache_max_bytes = {5 * 1024**3 + 1}",
+    ],
+)
+def test_installer_cache_rejects_invalid_consent_or_size(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    config = tmp_path / "cache.toml"
+    config.write_text("[isolated.rebuild]\n" + value)
+    with pytest.raises(LlmCoordError):
+        load_settings(config)
