@@ -973,6 +973,30 @@ explicit opt-in at a measurable cost; changing the default remains the user's
 decision. The [experiment](experiments/review-corpus-b6-2026-10-17.md) records
 per-case outcomes, cache usage, provenance, excluded attempts and limitations.
 
+### Wave 12 B7: review on natural tasks (October 30, 2026)
+
+The fixed eight-task historical corpus completed **48 cells and 24 valid matched
+pairs**, three repeats per arm with Codex `gpt-6-sol`, high task effort, low review
+effort and exploration disabled. Hidden checks passed **21/24 with review off**
+and **21/24 with review on**. No failed-first/pass-final review catch or harmful
+scored repair occurred. All six credential-screening failures remain in the
+quality denominator, including the review timeout.
+
+Manual sandboxed adjudication found six clear additional repairs outside the
+frozen oracle, one malformed-input robustness repair and one supported-runtime
+false positive. These are unscored findings, not a revised success rate or a
+semantic precision estimate. The observed tokens total **4,432,368**: 1,918,878 off
+and 2,513,490 on, a 30.99% increase; direct reviewer tokens are 3.20% of the on arm.
+Two suspension-affected cells remain in quality and usage. Excluding their whole
+matched pair leaves 23 comparable timing pairs, with raw wall medians 67.4 s off
+and 88.1 s on. Suspension time is not subtracted.
+
+**Recommendation: retain review off by default and available as an opt-in.**
+Eight trimmed tasks do not establish general effectiveness. The
+[dated experiment](experiments/natural-review-b7-2026-10-30.md) retains per-case
+outcomes, unmodified results, usage/cache subsets, manual evidence and limitations.
+No product setting changes.
+
 ### Original review gate and Wave 2 acceptance
 
 The runner supplies the exact pending diff and complete original/candidate

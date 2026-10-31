@@ -479,6 +479,18 @@ the harness needs it), `scripts/benchmark_fixtures/natural-*/`,
   33,000 tokens per task), eight tasks, two arms and three repeats take about
   1.6 million tokens; natural tasks will likely use more.
 
+**Result (October 30, 2026).** The frozen natural-task comparison completed
+48 cells and 24 valid matched pairs. Both arms passed 21/24 hidden checks; there
+were no scored review catches or harmful scored repairs. Manual sandboxed checks
+verified six additional unscored repairs, one malformed-input robustness repair
+and one supported-runtime false positive. All six quality failures remain.
+Observed tokens were 1,918,878 off and 2,513,490 on (4,432,368 total); direct review
+was 3.20% of the on arm. Two suspension-affected cells remain in quality and usage;
+23 whole matched pairs provide comparable raw wall medians of 67.4 s off and
+88.1 s on. Keep review off by default and available as an opt-in, bounded by this
+eight-task corpus. The [dated report](experiments/natural-review-b7-2026-10-30.md)
+records all outcomes, adjudications and limitations; no product default changes.
+
 ## Lane C — workspace modes
 
 ### C1. Isolated mode: design and hydration planner
