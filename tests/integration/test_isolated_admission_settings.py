@@ -179,6 +179,7 @@ def test_refresh_and_switch_preserve_the_configured_admission_limits(
         service.close()
 
 
+@pytest.mark.admission_scale
 @pytest.mark.parametrize("unknown", [False, True])
 def test_large_process_workspace_scrubs_private_values_after_restart(
     tmp_path: Path, repository_factory: Callable[..., Path], unknown: bool
@@ -291,6 +292,7 @@ def test_large_process_workspace_scrubs_private_values_after_restart(
         service.close()
 
 
+@pytest.mark.admission_scale
 def test_one_source_path_above_the_default_is_refused_with_its_setting(
     tmp_path: Path, repository_factory: Callable[..., Path]
 ) -> None:
