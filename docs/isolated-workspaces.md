@@ -156,7 +156,8 @@ The preview shows `rebuild` without traversing or copying the primary root,
 including a missing root or an escaping primary symlink. Opening first pins and
 validates ordinary source and copied runtime, then runs the explicit argv with
 the private worktree as its current directory. The command sandbox permits
-writes only under that dependency root and a disposable private home/cache.
+writes only under that dependency root, a disposable private home/cache and
+the explicitly enabled installer-cache namespace described below.
 Source, the primary checkout, provider credentials and Loupe state remain
 protected. Installers that need other writable build outputs must be configured
 for an appropriate dependency-root layout. Opening consent still controls any
@@ -200,8 +201,78 @@ workspace for recovery; edits in the primary checkout arrive through normal
 incoming synchronization. Isolated opening/resume waits for the active daemon's
 configured installer budget plus a bounded creation margin; other RPC timeouts
 are unchanged. Every installer still has its configured time cap. Each open
-uses a disposable installer home/cache; a persistent package cache is not
-configured automatically.
+uses a disposable installer home. Without the cache setting below its cache
+is also disposable.
+
+### Private installer cache
+
+A profile can reuse downloaded artifacts between fresh isolated worktrees:
+
+```toml
+[isolated.rebuild]
+cache = true
+cache_max_bytes = 536870912
+".venv" = ["uv", "sync", "--frozen"]
+```
+
+The cache is opt-in and private to the profile. The installer receives
+`XDG_CACHE_HOME`, `UV_CACHE_DIR`, `npm_config_cache` and `PIP_CACHE_DIR` under
+its selected namespace in the profile data directory. Its home still starts
+empty and is removed afterwards. `UV_LINK_MODE=copy` prevents uv from linking
+installed files to cached artifacts; completed cache artifacts and installed
+trees with shared hardlinks are refused. Use only installers that verify the
+lockfile and artifact hashes, such as `uv sync --frozen` and `npm ci`. A cache
+does not grant network access or replace lockfile verification.
+
+The default cap is 512 MiB, configurable from 64 KiB through 5 GiB. Cache
+observations are bounded to 200,000 entries, depth 64 and five seconds; at most
+32 namespaces remain after idle pruning. Oldest namespaces are retired first
+when the byte or namespace cap is exceeded. These are observed limits, not a
+filesystem quota. An installer can briefly exceed them before being stopped.
+
+Installers sharing a namespace run one at a time, so one cannot consume a
+second installer's temporary hardlinks. Different namespaces can build
+concurrently. Shared lifetime leases keep pruning out until every installer
+has stopped; after execution, a bounded exclusive validation must finish
+before the workspace becomes ready. Waiting and installation hold neither
+the daemon dispatch lock nor the publication lock. The configured positive
+installer timeout also bounds cache admission and postflight waits; a
+busy-cache failure removes the partial dependency root and names the prune
+or disable command. The trusted supervisor retains the leases through
+daemon-death teardown, including a TERM-ignoring installer; installers never
+inherit lease FDs. A queued installer rechecks the requested private-input
+identity after acquiring its namespace lock, and reselects if a preceding
+writer invalidated or rotated that namespace while it waited.
+
+Model commands, managed background processes and configured checks cannot
+read or write this cache. Checks retain their existing access outside the
+cache, including network policy and ordinary output writes. A profile with
+cache material or enabled caching requires a working command sandbox for
+checks. That protection lasts through the daemon lifetime, including an
+explicit cache purge and a later installer. Cache-off profiles with no cache
+material keep the previous check behavior.
+
+All actual private output values, including ordinary values under non-secret
+keys, contribute to a private HMAC input identity. A changed input set selects
+a fresh namespace; rotating back never selects an older namespace. Private
+values and cache bodies are absent from SQLite and recovery receipts. The
+HMAC key and cache metadata stay in private profile files. Changed inputs
+during an install invalidate its reusable head.
+
+Use `loupe workspace cache prune` to prune within the cap while installers
+are idle, or `loupe workspace cache prune --all` to clear downloaded artifacts
+and reset corrupt head/key metadata. A busy cache is preserved with an exact
+retry command. Global lock files keep their inode identities. Durable
+protection survives incomplete cleanup and prepared/replayed cache-enabled
+rebuilds. To return fully to cache-off check behavior, disable the setting,
+restart, purge and restart again:
+
+```sh
+loupe config set isolated.rebuild.cache false
+loupe daemon restart
+loupe workspace cache prune --all
+loupe daemon restart
+```
 
 ## Tasks and checks
 

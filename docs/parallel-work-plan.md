@@ -1357,7 +1357,10 @@ even right after a successful rebuild.
   Document that it is safe only with installers that verify lockfile hashes,
   such as `uv sync --frozen` and `npm ci`.
 - **Bounds.** A size cap, with eviction or pruning when it is exceeded.
-  Concurrent rebuilds share the cache through the installers' own locking.
+  Same-namespace installers serialize under a private lease; different
+  namespaces can build concurrently. All waits remain outside daemon and
+  publication locks. This prevents live temporary hardlink aliases from
+  reaching another installer.
 - **Unchanged without the setting:** each rebuild gets an empty home.
 
 **Files.** `src/llm_cli/workspace/rebuild.py`, `src/llm_cli/execution/sandbox.py`
@@ -1371,6 +1374,20 @@ tests.
 - Model commands and checks cannot reach the cache.
 - Two concurrent opens both rebuild correctly.
 - The cache stays within its cap, and without the setting nothing changes.
+
+**Implemented behavior.** Opt-in private cache variables, byte/generation caps
+and idle eviction retain fresh installer homes. Private HMAC input identities
+cover all actual output-redaction values; rotations never reopen an older
+namespace, and waiting installers revalidate after taking the namespace lock.
+Cache and installed-tree hardlinks are refused, with uv copy mode.
+Supervisor-only lease FDs exclude pruning through daemon-death teardown.
+Configured checks use a cache-only guard without changing their other
+permissions; enabled-service protection survives purge and future installs.
+`loupe workspace cache prune [--all]` recovers known corrupt metadata, preserves
+lock inodes and retains durable protection through partial cleanup/prepared
+rebuilds. See [the guide](isolated-workspaces.md#private-installer-cache) for
+configuration, hash-verifying installers and the explicit disable/reset flow.
+The standalone package awaits required PR CI.
 
 ### C21. `loupe session switch`
 
