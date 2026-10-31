@@ -139,10 +139,15 @@ while True:
                 # The supervisor's inherited lease must still exclude pruning.
                 before = heartbeat.stat().st_size
                 assert not store.prune(all_artifacts=True)
-                deadline = time.monotonic() + 1
-                while heartbeat.stat().st_size == before:
-                    assert time.monotonic() < deadline, "no live post-death writer"
-                    time.sleep(0.01)
+                if sys.platform == "darwin":
+                    # Seatbelt keeps the TERM-ignoring writer alive during the
+                    # supervisor grace period. Bubblewrap may instead tear down
+                    # its private PID namespace promptly; both must retain the
+                    # trusted supervisor's lease until teardown is complete.
+                    deadline = time.monotonic() + 1
+                    while heartbeat.stat().st_size == before:
+                        assert time.monotonic() < deadline, "no live post-death writer"
+                        time.sleep(0.01)
                 assert not store.prune(all_artifacts=True)
                 deadline = time.monotonic() + 10
                 while not store.prune(all_artifacts=True):
