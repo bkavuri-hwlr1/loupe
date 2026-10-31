@@ -104,7 +104,7 @@ def test_same_input_installers_serialize_but_different_inputs_can_progress(
             assert not store.prune()
         finally:
             release.set()
-    assert same.result(timeout=10) == initial
+    assert same.result(timeout=10) != different.result(timeout=10)
     assert different.result(timeout=10) != initial
     assert store.prune()
 
@@ -377,3 +377,35 @@ def test_enabled_service_purge_keeps_checks_guarded_until_explicit_disabled_rese
     never_enabled = register_guard(store.root, enabled=False)
     assert not requires_guard(store.root)
     never_enabled()
+
+
+def test_waiting_installer_reselects_after_prior_writer_invalidates_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = cache(tmp_path)
+    waiting = Event()
+    select = InstallerCache._select
+
+    def selected(store: InstallerCache, values: tuple[str, ...]) -> Path:
+        result = select(store, values)
+        if current_thread().name != "MainThread":
+            waiting.set()
+        return result
+
+    monkeypatch.setattr(InstallerCache, "_select", selected)
+
+    def waiter() -> Path:
+        with store.lease(("opening value",), timeout=2) as lease:
+            assert not (lease.path / "contaminated").exists()
+            return lease.path
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as pool,
+        store.activity(("opening value",)) as old,
+    ):
+        (old / "contaminated").write_text("changed private input during prior install")
+        queued = pool.submit(waiter)
+        assert waiting.wait(5)
+        store.invalidate(old)
+    assert queued.result(timeout=5) != old

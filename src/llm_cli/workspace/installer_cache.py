@@ -309,29 +309,53 @@ class InstallerCache:
             )
         _directory(self.root)
         self.prune()
+        deadline = time.monotonic() + timeout
         try:
-            with _lock(self.root / "leases.lock", shared=True) as descriptor:
+            with _lock(
+                self.root / "leases.lock", shared=True, timeout=timeout
+            ) as descriptor:
                 assert descriptor is not None
-                with _lock(self.root / "metadata.lock"):
-                    target = self._select(values)
-                # Same-input installers share artifacts serially: a live
-                # builder may temporarily create aliases, so another writer
-                # must validate only after that builder has fully stopped.
-                with _lock(
-                    self.root / ("install-" + target.name + ".lock"), timeout=timeout
-                ) as selected:
-                    assert selected is not None
-                    _inventory(target, reject_hardlinks=True)
-                    # Keep both leases alive in the supervisor after daemon
-                    # death. The installer itself must not inherit either FD.
-                    retained: list[int] = []
-                    try:
-                        for fd in (descriptor, selected):
-                            retained.append(fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 64))
-                        yield CacheLease(target, tuple(retained))
-                    finally:
-                        for fd in retained:
-                            os.close(fd)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise CacheError(
+                            "installer cache is busy; retry after other rebuilds "
+                            "finish or disable isolated.rebuild.cache"
+                        )
+                    with _lock(self.root / "metadata.lock", timeout=remaining):
+                        target = self._select(values)
+                        expected_head = self._head()
+                    # Same-input installers share artifacts serially: a live
+                    # builder may temporarily create aliases, so another writer
+                    # must validate only after that builder has fully stopped.
+                    with _lock(
+                        self.root / ("install-" + target.name + ".lock"),
+                        timeout=max(0.001, deadline - time.monotonic()),
+                    ) as selected:
+                        assert selected is not None
+                        with _lock(
+                            self.root / "metadata.lock",
+                            timeout=max(0.001, deadline - time.monotonic()),
+                        ):
+                            # _select proved the requested private-value HMAC.
+                            # A preceding writer can invalidate/rotate this head
+                            # while we wait; never hand its old artifacts back.
+                            if self._head() != expected_head:
+                                continue
+                        _inventory(target, reject_hardlinks=True)
+                        # Keep both leases alive in the supervisor after daemon
+                        # death. The installer itself must not inherit either FD.
+                        retained: list[int] = []
+                        try:
+                            for fd in (descriptor, selected):
+                                retained.append(
+                                    fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 64)
+                                )
+                            yield CacheLease(target, tuple(retained))
+                        finally:
+                            for fd in retained:
+                                os.close(fd)
+                        break
         finally:
             # Release SH before waiting for EX. Other installers do likewise,
             # so all writers can finish without a lock-upgrade deadlock.
