@@ -93,3 +93,32 @@ The actual-default boundary control attempts a 50,001-source opening and require
 refusal naming `isolated.source_max_paths=50000` before any isolated-workspace
 record is created. Configured ceilings remain 100,000, and byte/time/depth limits
 still take precedence when they cannot admit a particular checkout.
+
+
+## Bounded cleanup follow-up
+
+A later quiet combined run without coverage exhausted the unchanged five-second
+private-source sweep after deleting known canary copies, so its protected seed
+correctly remained for recovery. A direct diagnostic reached the deadline at
+5.00009 seconds. Moving relative-path calculation to matching leaves reduced
+redundant work, but one of two actual-default cleanup flows still refused; that
+partial improvement was not accepted as the final result.
+
+Revision `a56e1246c955e720732743b3ac243625b1864cfc` also excludes only stable
+ordinary leaves whose byte length proves they cannot contain any retained
+private value. The conservative minimum uses character counts: replacement
+UTF-8 decoding cannot produce more code points than input bytes. No-follow
+metadata pinned before and after the observation must agree. Changed leaves,
+symlinks and blocked guards retain validated full reads; a changed private-value
+epoch prevents retirement. Every leaf still charges its count and actual byte
+length, under the original per-file, 1 GiB and five-second limits. The exclusion
+creates no content identity or receipt.
+
+Two fresh actual-default 50,000-source flows completed. Their full private sweeps
+were 1.15333 and 1.16881 seconds, leaving 3.84667 and 3.83119 seconds under the
+existing cap. Both removed the approved `.env` and later source canary and
+retired protected seeds after restart. The clean worktree was removed; ordinary
+unknown build output remained in the other worktree. Opens took 34.628/34.727
+seconds and closes 9.291/1.751 seconds. Warm safe points were 222.23–234.05 ms
+and 231.43–241.06 ms. These receipts describe this fixture and hardware; all
+other count, byte, depth and time refusals remain in force.

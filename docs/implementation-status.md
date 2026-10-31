@@ -62,7 +62,9 @@ the remaining planned capabilities are listed below.
   setting; previews honor the profile default and explicit flag precedence.
   Larger process workspaces still retain ordinary unknown output when the
   separately bounded classifier cannot prove cleanup authority, while known
-  private copies and value seeds retire. 100,000 source files remain refused.
+  private copies and value seeds retire only after complete bounded scrubbing.
+  Stable short regular leaves use a no-follow length proof while preserving
+  actual byte/count charges. 100,000 source files remain refused.
   See [the guide](isolated-workspaces.md#admission-counts) and
   [admission measurements](experiments/isolated-admission-c18-2026-10-30.md).
 

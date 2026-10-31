@@ -1278,7 +1278,9 @@ docs, tests.
 hydration entries, with explicit profile settings and named count refusals.
 Compact bounded metadata and streamed tracked/ignored classification preserve
 all non-count bounds; authority observations, switching, refresh and private
-cleanup share the configured counts. 100,000 source files remain refused under
+cleanup share the configured counts. Cleanup can exclude stable regular leaves
+only with a pinned length proof, retaining actual byte/count charges and the
+original deadline. 100,000 source files remain refused under
 the unchanged inventory/Git metadata bounds. See
 [the guide](isolated-workspaces.md#admission-counts) and
 [the admission record](experiments/isolated-admission-c18-2026-10-30.md).

@@ -69,6 +69,9 @@ output as recovery evidence. Private-source scrubbing keeps its five-second and
 1 GiB bounds and uses the configured inventory count. Protected value receipts
 retire only after the whole scrub completes; an incomplete scrub preserves the
 worktree and receipt for a later recovery attempt and reports that deferral.
+A stable ordinary leaf can be ruled out from its pinned byte length only when
+it is too short to contain any retained private value. Other leaves retain
+validated screening; all leaves charge their actual size and inventory count.
 
 ### Runtime copies
 

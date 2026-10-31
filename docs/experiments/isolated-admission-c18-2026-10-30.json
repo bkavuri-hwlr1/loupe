@@ -665,5 +665,70 @@
     "Actual-default cleanup fixtures use 49,999 five-byte ordinary sources plus one .gitignore, exact .env consent and a non-signature private canary. Default Settings() supply counts. Both private seeds retire after manager restart; unknown ordinary build output is preserved in the second case.",
     "Actual-default open timing includes repository registration and session acknowledgement; the admission benchmark timing measures session.open after repository registration.",
     "These are small-file synthetic local receipts, not universal latency promises for arbitrary checkout contents or unsupported filesystems."
-  ]
+  ],
+  "privacy_cleanup_followup": {
+    "fix_revision": "a56e1246c955e720732743b3ac243625b1864cfc",
+    "all_non_count_budgets_unchanged": true,
+    "original_five_second_deadline_refusal_seconds": 5.00009083293844,
+    "lazy_relative_only_reproduction": {
+      "result": "one_failed_one_passed",
+      "elapsed_seconds": 112.07,
+      "remaining_failure": "private seed retained after incomplete sweep"
+    },
+    "bounded_short_regular_proof": "all retained strings conservatively bound the code-point minimum; UTF-8 replacement output has no more code points than input bytes; pinned no-follow regular metadata must remain exact; counts and actual sizes still charged; changing guard epochs refuse completion",
+    "cases": [
+      {
+        "default_source_paths": 50000,
+        "default_hydration_entries": 100000,
+        "preserved_unknown_output": false,
+        "open_seconds": 34.6277724589454,
+        "safe_point_cold_seconds": 8.004414792056195,
+        "safe_point_warm_seconds": [
+          0.23404670890886337,
+          0.2222328750649467,
+          0.2305842920904979,
+          0.22930125007405877,
+          0.23400108295027167
+        ],
+        "close_seconds": 9.291192416916601,
+        "private_values_retired": true,
+        "private_root_removed": true,
+        "full_private_sweep": {
+          "completed": true,
+          "five_second_margin": 3.8466684579616413,
+          "max_paths": 100000,
+          "private_guard_present": true,
+          "removed_count": 1,
+          "root_existed": true,
+          "seconds": 1.1533315420383587
+        }
+      },
+      {
+        "default_source_paths": 50000,
+        "default_hydration_entries": 100000,
+        "preserved_unknown_output": true,
+        "open_seconds": 34.72703479102347,
+        "safe_point_cold_seconds": 8.059669166919775,
+        "safe_point_warm_seconds": [
+          0.2365719999652356,
+          0.23544883308932185,
+          0.23143016698304564,
+          0.24105545796919614,
+          0.2357130830641836
+        ],
+        "close_seconds": 1.750893082935363,
+        "private_values_retired": true,
+        "private_root_removed": false,
+        "full_private_sweep": {
+          "completed": true,
+          "five_second_margin": 3.831194333964959,
+          "max_paths": 100000,
+          "private_guard_present": true,
+          "removed_count": 1,
+          "root_existed": true,
+          "seconds": 1.1688056660350412
+        }
+      }
+    ]
+  }
 }
