@@ -65,8 +65,10 @@ explains the defaults and the remaining 100,000-file refusal. These are count
 limits, not promises that every checkout layout or body size fits other bounds.
 The existing 20,000-entry optional generated-process-output classifier remains
 bounded separately. Larger process workspaces can retain ordinary unknown build
-output as recovery evidence; closing still scrubs known private copies and
-protected value receipts before retiring or preserving that tree.
+output as recovery evidence. Private-source scrubbing keeps its five-second and
+1 GiB bounds and uses the configured inventory count. Protected value receipts
+retire only after the whole scrub completes; an incomplete scrub preserves the
+worktree and receipt for a later recovery attempt and reports that deferral.
 
 ### Runtime copies
 
