@@ -32,6 +32,8 @@ _ALIASES = {
     "knowledge_index": "knowledge.index",
     "workspace_watchers": "workspace.watchers",
     "isolated_rebuild": "isolated.rebuild",
+    "isolated_rebuild_cache": "isolated.rebuild.cache",
+    "isolated_rebuild_cache_max_bytes": "isolated.rebuild.cache_max_bytes",
     "launch_lease_ms": "leases.launch_ms",
     "work_lease_ms": "leases.work_ms",
     "renewal_interval_ms": "leases.renewal_interval_ms",

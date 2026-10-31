@@ -260,6 +260,8 @@ class DaemonService:
             self.workspace_batches.lock,
             self.shared_runner.ensure_available,
             rebuild=settings.isolated_rebuild,
+            rebuild_cache=settings.isolated_rebuild_cache,
+            rebuild_cache_max_bytes=settings.isolated_rebuild_cache_max_bytes,
             rebuild_protected=(
                 paths.config_dir,
                 paths.data_dir,

@@ -13,7 +13,7 @@ import posixpath
 import stat
 import time
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -83,16 +83,34 @@ def read_journal(git_dir: Path, token: str) -> dict[str, Any] | None:
         raise _error("dependency rebuild journal is invalid") from exc
     if len(parsed) != len(specs) or not isinstance(value.get("results"), dict):
         raise _error("dependency rebuild journal is invalid")
+    cache = value.get("cache", {"enabled": False, "max_bytes": 512 * 1024**2})
+    if (
+        not isinstance(cache, dict)
+        or set(cache) != {"enabled", "max_bytes"}
+        or type(cache["enabled"]) is not bool
+        or type(cache["max_bytes"]) is not int
+        or not 64 * 1024 <= cache["max_bytes"] <= 5 * 1024**3
+    ):
+        raise _error("dependency rebuild cache journal is invalid")
+    value["cache"] = cache
     return value
 
 
-def prepare(git_dir: Path, token: str, specs: Sequence[RebuildConfig]) -> None:
+def prepare(
+    git_dir: Path,
+    token: str,
+    specs: Sequence[RebuildConfig],
+    *,
+    cache: bool = False,
+    cache_max_bytes: int = 512 * 1024**2,
+) -> None:
     write_journal(
         git_dir,
         {
             "token": token,
             "home": INSTALLER_HOME,
             "specs": [asdict(spec) for spec in specs],
+            "cache": {"enabled": cache, "max_bytes": cache_max_bytes},
             "results": {},
         },
     )
@@ -141,7 +159,7 @@ def _installer_home(git_dir: Path) -> Iterator[Path]:
 
 
 def inspect_tree(
-    private: Path, relative: str, *, validate: bool
+    private: Path, relative: str, *, validate: bool, reject_hardlinks: bool = False
 ) -> dict[str, str | int]:
     """Count sizes without following links; validate final dependency links."""
     from llm_cli.workspace.isolated import _error, _parent
@@ -164,6 +182,8 @@ def inspect_tree(
         if before.st_dev != device or name.casefold() in _ADMIN:
             raise _error("dependency rebuild contains a mount or administration")
         if stat.S_ISREG(before.st_mode):
+            if validate and reject_hardlinks and before.st_nlink != 1:
+                raise _error("dependency rebuild contains a shared hardlink")
             logical += before.st_size
             allocated += getattr(before, "st_blocks", 0) * 512
             if before.st_size > _MAX_FILE or max(logical, allocated) > _MAX_BYTES:
@@ -244,6 +264,7 @@ def run_pending(
     source_paths: tuple[str, ...],
     fault: Callable[[str], None],
     protected: tuple[Path, ...] = (),
+    cache_root: Path | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     from llm_cli.execution.checks import supervised_run
     from llm_cli.execution.sandbox import (
@@ -260,6 +281,14 @@ def run_pending(
     if journal is None:
         return (), ()
     _remove(git_dir, INSTALLER_HOME)
+    cache_enabled = bool(journal["cache"]["enabled"])
+    from llm_cli.workspace.installer_cache import InstallerCache
+
+    cache = (
+        InstallerCache(cache_root, journal["cache"]["max_bytes"])
+        if cache_enabled and cache_root is not None
+        else None
+    )
     successful: list[str] = []
     notices: list[str] = []
     for raw in journal["specs"]:
@@ -269,7 +298,15 @@ def run_pending(
         prior = journal["results"].get(spec.root)
         if prior is not None:
             if prior["state"] == "succeeded":
-                if inspect_tree(private, spec.root, validate=True) != prior["receipt"]:
+                if (
+                    inspect_tree(
+                        private,
+                        spec.root,
+                        validate=True,
+                        reject_hardlinks=cache_enabled,
+                    )
+                    != prior["receipt"]
+                ):
                     raise _error("completed dependency rebuild changed before recovery")
                 successful.append(spec.root)
                 notices.append("Dependency rebuilt privately: " + spec.root)
@@ -293,9 +330,20 @@ def run_pending(
                 failure_reason = "command sandbox unavailable"
                 raise _error(failure_reason)
             values = private_output_values(
-                private, runtime_files, source_paths=source_paths
+                private,
+                runtime_files,
+                source_paths=source_paths,
+                strict_private=cache_enabled,
             )
-            with _installer_home(git_dir) as home:
+            with _installer_home(git_dir) as home, ExitStack() as resources:
+                if cache_enabled and cache is None:
+                    failure_reason = (
+                        "installer cache unavailable; disable isolated.rebuild.cache"
+                    )
+                    raise _error(failure_reason)
+                cache_path = (
+                    resources.enter_context(cache.activity(values)) if cache else None
+                )
                 home = home.resolve()
                 home.chmod(0o700)
                 (home / "tmp").mkdir(mode=0o700)
@@ -312,6 +360,17 @@ def run_pending(
                     "PYTHONNOUSERSITE": "1",
                     "PYTHONDONTWRITEBYTECODE": "1",
                 }
+                if cache_path is not None:
+                    for key, directory in (
+                        ("XDG_CACHE_HOME", "xdg"),
+                        ("UV_CACHE_DIR", "uv"),
+                        ("npm_config_cache", "npm"),
+                        ("PIP_CACHE_DIR", "pip"),
+                    ):
+                        target = cache_path / directory
+                        target.mkdir(mode=0o700, exist_ok=True)
+                        env[key] = str(target)
+                    env["UV_LINK_MODE"] = "copy"
                 limit_error: list[str] = []
                 next_observation = 0.0
 
@@ -324,6 +383,8 @@ def run_pending(
                     started = time.monotonic()
                     try:
                         inspect_tree(private, root, validate=False)
+                        if cache is not None and cache.over_limit():
+                            errors.append("cache")
                     except OSError:
                         # Package managers atomically rename intermediate files.
                         # Retry live observations; the final tree must validate.
@@ -338,10 +399,19 @@ def run_pending(
                     return bool(errors)
 
                 policy = SandboxPolicy(
-                    writable=(private / spec.root, home),
+                    writable=(
+                        private / spec.root,
+                        home,
+                        *((cache_path,) if cache_path else ()),
+                    ),
                     protected=(
                         primary,
                         git_dir,
+                        *(
+                            (cache_root,)
+                            if cache_enabled and cache_root is not None
+                            else ()
+                        ),
                         *protected_home_paths(Path.home()),
                         *protected,
                     ),
@@ -365,8 +435,17 @@ def run_pending(
                 # notice, including copied values edited privately during a run.
                 captured, output = output, ""
                 current_values = private_output_values(
-                    private, runtime_files, source_paths=source_paths
+                    private,
+                    runtime_files,
+                    source_paths=source_paths,
+                    strict_private=cache_enabled,
                 )
+                if (
+                    cache is not None
+                    and cache_path is not None
+                    and set(values) != set(current_values)
+                ):
+                    cache.invalidate(cache_path)
                 for value in sorted(
                     set((*values, *current_values)), key=len, reverse=True
                 ):
@@ -382,8 +461,10 @@ def run_pending(
                         else "installer exited unsuccessfully"
                     )
                     raise _error(failure_reason)
-            failure_reason = "installed tree failed dependency validation"
-            receipt = inspect_tree(private, spec.root, validate=True)
+                failure_reason = "installed tree failed dependency validation"
+                receipt = inspect_tree(
+                    private, spec.root, validate=True, reject_hardlinks=cache_enabled
+                )
             fault("rebuild_installed:" + spec.root)
             journal["results"][spec.root] = {"state": "succeeded", "receipt": receipt}
             successful.append(spec.root)
