@@ -212,7 +212,8 @@ class DaemonService:
         self.boot_id = boot_id
         self.store = ControlStore(paths.control_db)
         self.physical_authority = PhysicalAuthority(
-            self.store, paths.profile_id, boot_id, paths.socket, root=authority_root
+            self.store, paths.profile_id, boot_id, paths.socket, root=authority_root,
+            source_max_paths=settings.isolated_source_max_paths,
         )
         self.store.authority = self.physical_authority
         self.cutovers = CutoverManager(self.store, self.physical_authority)
@@ -251,7 +252,9 @@ class DaemonService:
         )
         self.workspace_batches.refuse_staged_paths = settings.refuse_staged_paths
         self.shared_runner = SharedTaskExecutionRunner(
-            self.runner, self.workspace_batches
+            self.runner,
+            self.workspace_batches,
+            source_max_paths=settings.isolated_source_max_paths,
         )
         self.isolated_workspaces = IsolatedWorkspaceManager(
             self.store,
@@ -260,6 +263,8 @@ class DaemonService:
             self.workspace_batches.lock,
             self.shared_runner.ensure_available,
             rebuild=settings.isolated_rebuild,
+            source_max_paths=settings.isolated_source_max_paths,
+            hydration_max_entries=settings.isolated_hydration_max_entries,
             rebuild_protected=(
                 paths.config_dir,
                 paths.data_dir,

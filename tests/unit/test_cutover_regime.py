@@ -656,7 +656,7 @@ def test_status_and_inventory_never_observe_source_or_issue_a_fresh_checkpoint(
     completed = manager.begin(repository, plan["checkpoint"])
     calls: list[str] = []
 
-    def unavailable(physical: Any) -> str:
+    def unavailable(physical: Any, *, max_paths: int = 20_000) -> str:
         calls.append(physical.key)
         raise LlmCoordError(ErrorCode.CUTOVER_BLOCKED, "source is being edited")
 
@@ -800,13 +800,13 @@ def test_apply_hashes_source_outside_the_write_transaction(
     original = regime_module._source_checkpoint
     writable: list[bool] = []
 
-    def observed(physical: Any) -> str:
+    def observed(physical: Any, *, max_paths: int = 20_000) -> str:
         # Another daemon writer must not wait behind the source scan.
         with closing(sqlite3.connect(authority.store.path, timeout=0.1)) as other:
             other.execute("BEGIN IMMEDIATE")
             other.rollback()
         writable.append(True)
-        return original(physical)
+        return original(physical, max_paths=max_paths)
 
     monkeypatch.setattr(regime_module, "_source_checkpoint", observed)
     manager.begin(repository, plan["checkpoint"])

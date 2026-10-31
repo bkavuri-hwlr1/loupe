@@ -93,9 +93,11 @@ same scanner code as before watchers.
 ## Limits watchers do not change
 
 - Outside-edit scans cover each session's latest 1,000 read paths.
-- Isolated hydration admission refuses checkouts its 20,000-entry inventory
-  budget cannot cover, and isolated capture refuses more than 20,000 source
-  paths, so a 100,000-file checkout cannot open an isolated session.
+- Isolated admission uses the configured `isolated.source_max_paths`
+  (50,000 by default) and `isolated.hydration_max_entries` (100,000 by default),
+  each capped at 100,000. Inventory also counts directories and administration;
+  a 100,000-file checkout still cannot fit its entry ceiling. Other byte, depth
+  and time bounds still apply. See [admission counts](isolated-workspaces.md#admission-counts).
 - Global Git config is followed through its main files; settings reached only
   through `include` directives are caught by the five-minute verification.
 - inotify needs a watch per directory. A checkout with more than 50,000

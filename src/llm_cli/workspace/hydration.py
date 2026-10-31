@@ -2,27 +2,36 @@
 
 This module never opens runtime file contents, follows descendant symlinks,
 copies bytes, creates a worktree, or persists consent. A plan is diagnostic
-evidence for the operator, not authorization or an executable snapshot.
+evidence for the operator, not authorization or an executable snapshot. A
+private bounded catalogue holds path metadata only during the preview and is
+removed before it returns.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import posixpath
+import re
 import selectors
 import stat
 import subprocess
+import sys
 import time
-import unicodedata
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from llm_cli.config.models import RebuildConfig
+from llm_cli.config.models import (
+    DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES,
+    MAX_HYDRATION_ENTRIES,
+    RebuildConfig,
+)
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import sanitized_git_environment
+from llm_cli.workspace.hydration_catalogue import CatalogueLimit, PathCatalogue
 
 _ADMIN_NAMES = frozenset({".git", ".loupe", ".llm-coord", ".codex", ".agents"})
 _SECRET_DIRECTORIES = frozenset({".ssh", ".aws", ".azure", ".gnupg"})
@@ -47,14 +56,15 @@ _SECRET_NAMES = frozenset(
     }
 )
 _COPY_ACTIONS = frozenset({"clone_or_copy", "private_copy", "private_tree"})
-_CHECK_BATCH = 256
+_CHECK_INPUT_BYTES = 256 * 1024
+_PIPE_BYTES = 8192
 
 
 @dataclass(frozen=True, slots=True)
 class HydrationBudgets:
     """Limits apply to the entire inventory, including ordinary source paths."""
 
-    max_entries: int = 20_000
+    max_entries: int = DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES
     max_metadata_bytes: int = 4 * 1024 * 1024
     max_depth: int = 64
     max_file_bytes: int = 256 * 1024 * 1024
@@ -64,7 +74,7 @@ class HydrationBudgets:
 
     def __post_init__(self) -> None:
         ceilings = {
-            "max_entries": 100_000,
+            "max_entries": MAX_HYDRATION_ENTRIES,
             "max_metadata_bytes": 16 * 1024 * 1024,
             "max_depth": 128,
             "max_file_bytes": 1024**4,
@@ -139,6 +149,8 @@ def _bounded_git(
     deadline: float,
     limit: int,
     input_data: bytes = b"",
+    input_chunks: Iterable[bytes | bytearray] | None = None,
+    output_chunk: Callable[[bytes], None] | None = None,
 ) -> tuple[int, bytes]:
     """Bound pipe storage as well as Git runtime; never run a hook or filter.
 
@@ -168,6 +180,17 @@ def _bounded_git(
     output = bytearray()
     total = 0
     sent = 0
+    chunks = iter(input_chunks if input_chunks is not None else (input_data,))
+    pending: bytes | bytearray = b""
+
+    def advance() -> bytes | bytearray:
+        for chunk in chunks:
+            if time.monotonic() >= deadline:
+                raise _BudgetExceeded("time_budget_exceeded")
+            if chunk:
+                return chunk
+        return b""
+
     try:
         process = subprocess.Popen(
             command,
@@ -185,11 +208,12 @@ def _bounded_git(
     assert process.stdout is not None
     assert process.stderr is not None
     try:
+        pending = advance()
         with selectors.DefaultSelector() as selector:
             for stream in (process.stdout, process.stderr):
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, selectors.EVENT_READ)
-            if input_data:
+            if pending:
                 os.set_blocking(process.stdin.fileno(), False)
                 selector.register(process.stdin, selectors.EVENT_WRITE)
             else:
@@ -203,16 +227,30 @@ def _bounded_git(
                     if selected_stream is process.stdin:
                         try:
                             sent += os.write(
-                                process.stdin.fileno(), input_data[sent : sent + 8192]
+                                process.stdin.fileno(),
+                                pending[sent : sent + _PIPE_BYTES],
                             )
-                        except BrokenPipeError:
-                            sent = len(input_data)
-                        if sent == len(input_data):
-                            selector.unregister(process.stdin)
-                            process.stdin.close()
+                        except (BlockingIOError, InterruptedError):
+                            continue
+                        except BrokenPipeError as exc:
+                            raise LlmCoordError(
+                                ErrorCode.REPOSITORY_UNSAFE,
+                                "Git did not consume its complete metadata input",
+                            ) from exc
+                        if sent == len(pending):
+                            pending = b""
+                            pending = advance()
+                            sent = 0
+                            if not pending:
+                                selector.unregister(process.stdin)
+                                process.stdin.close()
                         continue
                     descriptor = key.fd
-                    chunk = os.read(descriptor, min(65_536, limit - total + 1))
+                    read_limit = _PIPE_BYTES if output_chunk is not None else 65_536
+                    try:
+                        chunk = os.read(descriptor, min(read_limit, limit - total + 1))
+                    except (BlockingIOError, InterruptedError):
+                        continue
                     if not chunk:
                         selector.unregister(selected_stream)
                         continue
@@ -220,7 +258,10 @@ def _bounded_git(
                     if total > limit:
                         raise _BudgetExceeded("git_metadata_budget_exceeded")
                     if selected_stream is process.stdout:
-                        output.extend(chunk)
+                        if output_chunk is None:
+                            output.extend(chunk)
+                        else:
+                            output_chunk(chunk)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise _BudgetExceeded("time_budget_exceeded")
@@ -233,33 +274,122 @@ def _bounded_git(
         process.wait()
         for stream in (process.stdin, process.stdout, process.stderr):
             stream.close()
+        close_input = getattr(chunks, "close", None)
+        if close_input is not None:
+            close_input()
 
 
 def _ignored_paths(
-    root: Path, paths: Sequence[str], *, deadline: float, limit: int
+    root: Path,
+    paths: Iterable[str],
+    *,
+    deadline: float,
+    limit: int,
+    includes: Callable[[str], bool] | None = None,
+    account: Callable[[int], None] | None = None,
+    no_index: bool = False,
 ) -> set[str]:
+    """Classify one bounded stream without repeatedly loading Git's index.
+
+    Only the active stdin chunk, an incomplete stdout record and matched paths
+    stay live. The inventory accounts those against its shared metadata budget.
+    """
+    if includes is None:
+        expected = set(paths)
+        paths = expected
+        includes = expected.__contains__
+
+    def charge(amount: int) -> None:
+        if account is not None:
+            account(amount)
+
+    def inputs() -> Iterable[bytes | bytearray]:
+        buffer = bytearray()
+        held = 0
+        try:
+            for path in paths:
+                if time.monotonic() >= deadline:
+                    raise _BudgetExceeded("time_budget_exceeded")
+                encoded = os.fsencode(path) + b"\x00"
+                if len(encoded) > min(limit, _CHECK_INPUT_BYTES):
+                    raise _BudgetExceeded("git_metadata_budget_exceeded")
+                # A decoded catalogue row and its encoding can remain live
+                # while a previous full pipe buffer is yielded to the child.
+                row_cost = len(encoded) * 2 + 256
+                try:
+                    charge(row_cost)
+                    if buffer and len(buffer) + len(encoded) > _PIPE_BYTES:
+                        yield buffer
+                        buffer = bytearray()
+                        charge(-held)
+                        held = 0
+                    held += len(encoded)
+                    charge(len(encoded))
+                    buffer.extend(encoded)
+                finally:
+                    charge(-row_cost)
+            if buffer:
+                yield buffer
+        finally:
+            charge(-held)
+
     ignored: set[str] = set()
-    for start in range(0, len(paths), _CHECK_BATCH):
-        batch = paths[start : start + _CHECK_BATCH]
-        code, output = _bounded_git(
+    tail = bytearray()
+    tail_cost = result_cost = 0
+    completed = False
+
+    def receive(chunk: bytes) -> None:
+        nonlocal tail_cost, result_cost
+        tail_cost += len(chunk)
+        charge(len(chunk))
+        tail.extend(chunk)
+        while (end := tail.find(b"\x00")) >= 0:
+            decoding_cost = (end + 1) * 2 + 256
+            try:
+                charge(decoding_cost)
+                path = tail[:end].decode(
+                    sys.getfilesystemencoding(), errors="surrogateescape"
+                )
+                if not path or not includes(path):
+                    raise LlmCoordError(
+                        ErrorCode.REPOSITORY_UNSAFE,
+                        "Git returned unexpected ignore metadata",
+                    )
+                if path not in ignored:
+                    needed = len(os.fsencode(path)) + 256
+                    result_cost += needed
+                    charge(needed)
+                    ignored.add(path)
+                del tail[: end + 1]
+                tail_cost -= end + 1
+                charge(-(end + 1))
+            finally:
+                charge(-decoding_cost)
+
+    # Reserve read/write slices and bytearray allocation slack in addition to
+    # accounted stdin/stdout contents. No complete raw stdout stream is retained.
+    pipe_cost = _PIPE_BYTES * 4
+    try:
+        charge(pipe_cost)
+        code, _ = _bounded_git(
             root,
-            ["check-ignore", "-z", "--stdin"],
+            ["check-ignore", *(["--no-index"] if no_index else []), "-z", "--stdin"],
             deadline=deadline,
             limit=limit,
-            input_data=b"\x00".join(map(os.fsencode, batch)) + b"\x00",
+            input_chunks=inputs(),
+            output_chunk=receive,
         )
-        if code not in {0, 1}:
+        if code not in {0, 1} or tail:
             raise LlmCoordError(
                 ErrorCode.REPOSITORY_UNSAFE,
                 "Git could not classify ignored runtime paths",
             )
-        matches = {os.fsdecode(path) for path in output.split(b"\x00") if path}
-        if not matches.issubset(batch):
-            raise LlmCoordError(
-                ErrorCode.REPOSITORY_UNSAFE, "Git returned unexpected ignore metadata"
-            )
-        ignored.update(matches)
-    return ignored
+        completed = True
+        return ignored
+    finally:
+        charge(-pipe_cost - tail_cost)
+        if not completed:
+            charge(-result_cost)
 
 
 def _evidence(status: os.stat_result) -> dict[str, int]:
@@ -329,8 +459,192 @@ class _Inventory:
         self.issues: list[str] = []
         self.scanned = 0
         self.metadata_bytes = 0
-        self.aliases: dict[str, _Observed] = {}
+        self.retained_metadata_bytes = 0
+        self.temporary_metadata_bytes = 0
+        self.retained: dict[str, _Observed] = {}
+        self.catalogue: PathCatalogue | None = None
         self.deferred_ignored_paths: set[str] = set()
+        self.index_fingerprint: str | None = None
+
+    def metadata(self) -> None:
+        allocated = self.catalogue.allocated_bytes if self.catalogue is not None else 0
+        current = (
+            self.retained_metadata_bytes + self.temporary_metadata_bytes + allocated
+        )
+        self.metadata_bytes = max(self.metadata_bytes, current)
+        if current > self.budgets.max_metadata_bytes:
+            raise _BudgetExceeded("metadata_budget_exceeded")
+
+    def retain(self, entry: _Observed) -> None:
+        if entry.path not in self.retained:
+            self.retained_metadata_bytes += len(entry.path.encode("utf-8")) + 256
+            self.metadata()
+            self.entries.append(entry)
+            self.retained[entry.path] = entry
+
+    def observe(self, entry: _Observed, *, administration: bool) -> None:
+        try:
+            if self.catalogue is None:
+                self.catalogue = PathCatalogue(self.budgets.max_metadata_bytes)
+            previous_path = self.catalogue.add(
+                entry.path,
+                administration=administration,
+                directory=stat.S_ISDIR(entry.status.st_mode),
+            )
+        except CatalogueLimit:
+            raise _BudgetExceeded("metadata_budget_exceeded") from None
+        self.metadata()
+        if previous_path is not None:
+            previous = self.retained.get(previous_path)
+            for collision in (entry, previous):
+                if collision is not None:
+                    collision.refusal = "refuse_path_alias"
+                    collision.reason = "case or Unicode destination alias"
+            self.issues.append("path_alias_requires_decision")
+
+    def ignored_paths(self) -> set[str]:
+        """Stream classifications through one child with bounded live metadata."""
+        if self.catalogue is None:
+            return set()
+
+        def account(amount: int) -> None:
+            self.temporary_metadata_bytes += amount
+            if amount > 0:
+                self.metadata()
+
+        try:
+            self.catalogue.reset_tracked()
+        except CatalogueLimit:
+            raise _BudgetExceeded("metadata_budget_exceeded") from None
+        tail = bytearray()
+        tail_cost = 0
+        fingerprint = hashlib.sha256()
+
+        def receive(chunk: bytes) -> None:
+            nonlocal tail_cost
+            fingerprint.update(chunk)
+            tail_cost += len(chunk)
+            account(len(chunk))
+            tail.extend(chunk)
+            while (end := tail.find(b"\x00")) >= 0:
+                row_cost = (end + 1) * 2 + 256
+                try:
+                    account(row_cost)
+                    record = tail[:end].decode(
+                        sys.getfilesystemencoding(), errors="surrogateescape"
+                    )
+                    prefix, separator, path = record.partition("\t")
+                    if not separator or not path or not re.fullmatch(
+                        r"[0-7]{6} (?:[0-9a-f]{40}|[0-9a-f]{64}) [0-3]", prefix
+                    ):
+                        raise LlmCoordError(
+                            ErrorCode.REPOSITORY_UNSAFE,
+                            "Git returned invalid tracked path metadata",
+                        )
+                    try:
+                        path.encode("utf-8")
+                    except UnicodeError as exc:
+                        raise _BudgetExceeded(
+                            "unsupported_path_encoding_budget"
+                        ) from exc
+                    assert self.catalogue is not None
+                    try:
+                        self.catalogue.mark_tracked(path)
+                    except CatalogueLimit:
+                        raise _BudgetExceeded("metadata_budget_exceeded") from None
+                    self.metadata()
+                    del tail[: end + 1]
+                    tail_cost -= end + 1
+                    account(-(end + 1))
+                finally:
+                    account(-row_cost)
+
+        pipe_cost = _PIPE_BYTES * 4
+        try:
+            account(pipe_cost)
+            code, _ = _bounded_git(
+                self.root,
+                ["ls-files", "--cached", "--stage", "-z"],
+                deadline=self.deadline,
+                limit=self.budgets.max_metadata_bytes,
+                output_chunk=receive,
+            )
+            if code or tail:
+                raise LlmCoordError(
+                    ErrorCode.REPOSITORY_UNSAFE,
+                    "Git could not inspect tracked path metadata",
+                )
+        finally:
+            account(-pipe_cost - tail_cost)
+        observed_index = fingerprint.hexdigest()
+        if (
+            self.index_fingerprint is not None
+            and observed_index != self.index_fingerprint
+        ):
+            self.issues.append("tracked_index_changed")
+        self.index_fingerprint = observed_index
+        ignored = _ignored_paths(
+            self.root,
+            self.catalogue.untracked(),
+            deadline=self.deadline,
+            limit=self.budgets.max_metadata_bytes,
+            includes=self.catalogue.includes,
+            account=account,
+            no_index=True,
+        )
+        ignored.update(
+            _ignored_paths(
+                self.root,
+                self.catalogue.ambiguous(),
+                deadline=self.deadline,
+                limit=self.budgets.max_metadata_bytes,
+                includes=self.catalogue.includes,
+                account=account,
+            )
+        )
+        return ignored
+
+    def promote(self, root: int, ignored: set[str]) -> None:
+        """Retain stat receipts only after a bounded full-path classification.
+
+        Every entry was observed without following links during the walk. A
+        second no-follow observation pins an ignored regular file's current
+        receipt; a changed kind or an unstable receipt makes the plan incomplete.
+        """
+        if self.catalogue is None:
+            return
+        for path in sorted(ignored | set(self.catalogue.collisions())):
+            self.remaining()
+            if path in self.retained:
+                continue
+            before = _safe_status(root, path)
+            if before is None:
+                self.issues.append(
+                    "entry_changed_or_unreadable_during_inventory:" + path
+                )
+                continue
+            entry = _Observed(path, before)
+            if not stat.S_ISREG(before.st_mode):
+                entry.refusal = "needs_rescan"
+                entry.reason = "entry kind changed during metadata observation"
+                entry.descendants_inventoried = (
+                    False if stat.S_ISDIR(before.st_mode) else None
+                )
+                self.issues.append("entry_changed_during_inventory")
+            elif self.catalogue.collided(path):
+                entry.refusal = "refuse_path_alias"
+                entry.reason = "case or Unicode destination alias"
+            self.retain(entry)
+            after = _safe_status(root, path)
+            if after is None or _evidence(before) != _evidence(after):
+                entry.refusal = "needs_rescan"
+                entry.reason = "entry changed during metadata observation"
+                self.issues.append("entry_changed_during_inventory")
+
+    def close(self) -> None:
+        if self.catalogue is not None:
+            self.catalogue.close()
+            self.catalogue = None
 
     def remaining(self) -> None:
         if time.monotonic() >= self.deadline:
@@ -348,9 +662,8 @@ class _Inventory:
                     encoded = relative.encode("utf-8")
                 except UnicodeError as exc:
                     raise _BudgetExceeded("unsupported_path_encoding_budget") from exc
-                self.metadata_bytes += len(encoded) + 256
-                if self.metadata_bytes > self.budgets.max_metadata_bytes:
-                    raise _BudgetExceeded("metadata_budget_exceeded")
+                self.temporary_metadata_bytes += len(encoded) + 256
+                self.metadata()
                 names.append(entry.name)
         self.scanned += len(names)
         return sorted(names)
@@ -359,6 +672,7 @@ class _Inventory:
         self.remaining()
         before = _evidence(os.fstat(descriptor))
         child_count: int | None = None
+        previous_temporary = self.temporary_metadata_bytes
         try:
             names = self.names(descriptor, prefix)
             child_count = len(names)
@@ -369,16 +683,16 @@ class _Inventory:
                 try:
                     status = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
                     entry = _Observed(relative, status)
-                    self.entries.append(entry)
-                    alias = unicodedata.normalize("NFC", relative).casefold()
-                    previous = self.aliases.get(alias)
-                    if previous is not None:
-                        for collision in (entry, previous):
-                            collision.refusal = "refuse_path_alias"
-                            collision.reason = "case or Unicode destination alias"
-                        self.issues.append("path_alias_requires_decision")
-                    else:
-                        self.aliases[alias] = entry
+                    self.observe(
+                        entry,
+                        administration=name.casefold() in _ADMIN_NAMES,
+                    )
+                    if (
+                        not stat.S_ISREG(status.st_mode)
+                        or name in {".gitignore", ".gitattributes"}
+                        or entry.refusal is not None
+                    ):
+                        self.retain(entry)
                     if name.casefold() in _ADMIN_NAMES:
                         entry.refusal = "exclude_administration"
                         entry.reason = (
@@ -417,11 +731,13 @@ class _Inventory:
                         entry.reason = "special files cannot be safely hydrated"
                     after = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
                     if _evidence(status) != _evidence(after):
+                        self.retain(entry)
                         entry.refusal = "needs_rescan"
                         entry.reason = "entry changed during metadata observation"
                         self.issues.append("entry_changed_during_inventory")
                 except OSError:
                     if entry is not None:
+                        self.retain(entry)
                         entry.refusal = "needs_rescan"
                         entry.reason = "entry changed or could not be safely observed"
                         if stat.S_ISDIR(entry.status.st_mode):
@@ -432,6 +748,9 @@ class _Inventory:
         except _BudgetExceeded as exc:
             self.issues.append(str(exc))
         finally:
+            # Parent name lists stay reserved across recursion. This directory's
+            # names are released when its real list is no longer needed.
+            self.temporary_metadata_bytes = previous_temporary
             if before != _evidence(os.fstat(descriptor)):
                 self.issues.append("directory_changed_during_inventory")
         return child_count
@@ -510,7 +829,7 @@ class _Inventory:
         )
 
 
-def _safe_stat(root: int, relative: str) -> dict[str, int] | None:
+def _safe_status(root: int, relative: str) -> os.stat_result | None:
     parts = PurePosixPath(relative).parts
     descriptor = os.dup(root)
     try:
@@ -520,11 +839,16 @@ def _safe_stat(root: int, relative: str) -> dict[str, int] | None:
             )
             os.close(descriptor)
             descriptor = child
-        return _evidence(os.stat(parts[-1], dir_fd=descriptor, follow_symlinks=False))
+        return os.stat(parts[-1], dir_fd=descriptor, follow_symlinks=False)
     except OSError:
         return None
     finally:
         os.close(descriptor)
+
+
+def _safe_stat(root: int, relative: str) -> dict[str, int] | None:
+    status = _safe_status(root, relative)
+    return _evidence(status) if status is not None else None
 
 
 def _root_is_symlink(root: Path, relative: str) -> bool:
@@ -625,7 +949,7 @@ def plan_hydration(
     rebuild: Sequence[RebuildConfig] = (),
     frozen_rebuild_roots: Sequence[str] = (),
 ) -> HydrationPlan:
-    """Preview current ignored entries; no bytes, consent, or state are written.
+    """Preview ignored entries without reading their contents or saving consent.
 
     Refused directories explicitly mark descendants as unexamined. A truncated
     or changing inventory disables all candidate copy actions. Even a complete
@@ -695,19 +1019,11 @@ def plan_hydration(
         try:
             root_evidence = _evidence(os.fstat(descriptor))
             inventory.walk(descriptor)
-            paths = [
-                entry.path
-                for entry in inventory.entries
-                if entry.refusal != "exclude_administration"
-            ]
-            ignored = _ignored_paths(
-                root, paths, deadline=deadline, limit=limits.max_metadata_bytes
-            )
-            # A second passive classification plus rule metadata catches a
-            # changing ignore policy. No rule text or content digest is exposed.
-            repeated = _ignored_paths(
-                root, paths, deadline=deadline, limit=limits.max_metadata_bytes
-            )
+            # Every path remains in the bounded catalogue, including ordinary
+            # source whose full stat record is no longer retained for hydration.
+            ignored = inventory.ignored_paths()
+            inventory.promote(descriptor, ignored)
+            repeated = inventory.ignored_paths()
             rules_changed = any(
                 _safe_stat(descriptor, entry.path) != _evidence(entry.status)
                 for entry in inventory.entries
@@ -780,6 +1096,8 @@ def plan_hydration(
             ErrorCode.REPOSITORY_UNSAFE,
             "checkout could not be safely inventoried; retry the preview",
         ) from exc
+    finally:
+        inventory.close()
     issues = tuple(sorted(set(inventory.issues)))
     complete = not issues
     if not complete:

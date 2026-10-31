@@ -32,7 +32,11 @@ from llm_cli.agent.hooks import HookRunner
 from llm_cli.agent.shared_tools import CATCH_UP_ROUNDS, SharedToolBroker
 from llm_cli.agent.source_policy import ensure_safe_content
 from llm_cli.agent.tools import TaskCancelled, ToolOutcome
-from llm_cli.config.models import HookConfig, McpServerConfig
+from llm_cli.config.models import (
+    DEFAULT_ISOLATED_SOURCE_MAX_PATHS,
+    HookConfig,
+    McpServerConfig,
+)
 from llm_cli.coordination.models import (
     ClaimConflict,
     ClaimRecord,
@@ -91,7 +95,11 @@ class SharedTaskExecutionRunner:
     """
 
     def __init__(
-        self, lifecycle: TaskExecutionRunner, publisher: SharedBatchPublisher
+        self,
+        lifecycle: TaskExecutionRunner,
+        publisher: SharedBatchPublisher,
+        *,
+        source_max_paths: int = DEFAULT_ISOLATED_SOURCE_MAX_PATHS,
     ) -> None:
         self.lifecycle = lifecycle
         self.store = lifecycle.store
@@ -112,6 +120,7 @@ class SharedTaskExecutionRunner:
                 publisher.candidate_dir,
                 protected_paths=protected,
                 cache=capture_cache,
+                max_paths=source_max_paths,
             ),
             self._validate_isolated,
             refresh_capture=lambda root, protected: (
@@ -120,6 +129,7 @@ class SharedTaskExecutionRunner:
                     publisher.candidate_dir,
                     protected_paths=protected,
                     cache=capture_cache,
+                    max_paths=source_max_paths,
                     defer_changed=True,
                 )
                 if self.watchers is None
@@ -128,6 +138,7 @@ class SharedTaskExecutionRunner:
                     publisher.candidate_dir,
                     protected_paths=protected,
                     cache=capture_cache,
+                    max_paths=source_max_paths,
                     watch=self.watchers,
                 )
             ),

@@ -370,7 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="preview consent for this exact runtime file; never recursive or saved",
     )
-    hydrate.add_argument("--max-entries", type=int, default=20_000)
+    hydrate.add_argument("--max-entries", type=int, default=None)
     hydrate.add_argument("--max-metadata-bytes", type=int, default=4 * 1024 * 1024)
     hydrate.add_argument("--max-depth", type=int, default=64)
     hydrate.add_argument("--max-file-bytes", type=int, default=256 * 1024 * 1024)
@@ -1041,13 +1041,25 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 return text
             return result
         if arguments.workspace_command == "hydrate":
+            from llm_cli.config.models import Settings
             from llm_cli.workspace.hydration import HydrationBudgets, plan_hydration
 
             profile_paths = getattr(client, "paths", None)
+            settings = (
+                load_settings(
+                    profile_paths.config_file, profile_id=profile_paths.profile_id
+                )
+                if profile_paths is not None
+                else Settings()
+            )
             plan = plan_hydration(
                 Path(arguments.path),
                 budgets=HydrationBudgets(
-                    max_entries=arguments.max_entries,
+                    max_entries=(
+                        arguments.max_entries
+                        if arguments.max_entries is not None
+                        else settings.isolated_hydration_max_entries
+                    ),
                     max_metadata_bytes=arguments.max_metadata_bytes,
                     max_depth=arguments.max_depth,
                     max_file_bytes=arguments.max_file_bytes,
@@ -1056,13 +1068,7 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                     max_seconds=arguments.max_seconds,
                 ),
                 approved_secret_paths=arguments.approve_secret,
-                rebuild=(
-                    load_settings(
-                        profile_paths.config_file, profile_id=profile_paths.profile_id
-                    ).isolated_rebuild
-                    if profile_paths is not None
-                    else ()
-                ),
+                rebuild=settings.isolated_rebuild,
             )
             return (
                 plan.to_dict() if arguments.as_json else _hydration_preview_text(plan)

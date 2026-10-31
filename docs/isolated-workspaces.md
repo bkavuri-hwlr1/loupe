@@ -34,6 +34,47 @@ creation. Git filters, submodules, protected source files, and unborn repositori
 require an explicit supported adapter or an initial commit; this implementation
 refuses them instead of running a filter or fetching objects.
 
+### Admission counts
+
+The defaults admit up to 50,000 source paths and inventory up to 100,000 entries:
+
+```toml
+[isolated]
+source_max_paths = 50000
+hydration_max_entries = 100000
+```
+
+Both settings accept positive integers up to 100,000. Count refusals name
+`isolated.source_max_paths` or `isolated.hydration_max_entries` and the active
+limit. Inventory counts include ordinary source, directories and administration;
+100,000 source files therefore cannot fit the 100,000-entry ceiling. The 4 MiB
+metadata, depth 64 and 10-second inventory limits still apply. Source capture
+retains its 256 MiB per-file and 1 GiB total bounds; hydration copies retain the
+limits below. Increasing a count never bypasses another bound, source identity
+checks, no-follow traversal, secret screening or exact-file consent.
+
+The preview uses the selected profile's saved hydration count; explicit
+`--max-entries` wins. Restart the daemon after changing these settings so new
+opens, safe points, runtime discovery, switching, ownership observations and
+cutover checkpoints use the same effective counts. Shared authority observations
+also use the configured source count, preserving full-checkout ownership/restart
+checks for an admitted checkout without changing filesystem or identity policy.
+
+The [recorded synthetic admission experiment](experiments/isolated-admission-c18-2026-10-30.md)
+explains the defaults and the remaining 100,000-file refusal. These are count
+limits, not promises that every checkout layout or body size fits other bounds.
+The existing 20,000-entry optional generated-process-output classifier remains
+bounded separately. Larger process workspaces can retain ordinary unknown build
+output as recovery evidence. Private-source scrubbing keeps its five-second and
+1 GiB bounds and uses the configured inventory count. Protected value receipts
+retire only after the whole scrub completes; an incomplete scrub preserves the
+worktree and receipt for a later recovery attempt and reports that deferral.
+A stable ordinary leaf can be ruled out from its pinned byte length only when
+it is too short to contain any retained private value. Other leaves retain
+validated screening; all leaves charge their actual size and inventory count.
+
+### Runtime copies
+
 Ignored runtime is copied privately under the hydration policy:
 
 - An ignored ordinary regular file receives a verified COW clone on a supported
@@ -495,9 +536,9 @@ unchanged. Editing both copies keeps the private version and reports
 `Runtime conflict; preserved private copy: local.data` once for that primary
 change, including across restart.
 
-Discovery retains the hydration inventory defaults: 20,000 entries, 4 MiB of
-metadata, depth 64, and 10 seconds. Each runtime root's recursive stat scan is
-separately bounded to 200,000 entries, depth 64, and 60 seconds. New regular-file
+Discovery uses the configured hydration count (100,000 entries by default),
+with 4 MiB of metadata, depth 64, and 10 seconds. Each runtime root's recursive
+stat scan is separately bounded to 200,000 entries, depth 64, and 60 seconds. New regular-file
 copies retain the 256 MiB per-file and 2 GiB aggregate apparent/allocation budgets;
 dependency copies retain the adapter limits described above. See
 [ADR 0009](adr/0009-isolated-runtime-hydration.md) for the full copy policy.

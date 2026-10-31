@@ -52,6 +52,22 @@ the remaining planned capabilities are listed below.
   Incoming journals recognize exact before/after states, and a private catch-up
   failure cannot turn confirmed primary publication into a failed task.
 
+- Larger isolated admission (Wave 12 C18): source and hydration counts are
+  explicit profile settings, defaulting to 50,000 source paths and 100,000
+  inventory entries, with 100,000 ceilings. Compact bounded path metadata and
+  streamed Git classification preserve complete inventory/alias/runtime
+  evidence without raising byte, depth or time limits. Count settings also
+  govern safe points, refresh/switch snapshots, authority handoff/cutover
+  observations and mandatory private-value cleanup. Count refusals name the
+  setting; previews honor the profile default and explicit flag precedence.
+  Larger process workspaces still retain ordinary unknown output when the
+  separately bounded classifier cannot prove cleanup authority, while known
+  private copies and value seeds retire only after complete bounded scrubbing.
+  Stable short regular leaves use a no-follow length proof while preserving
+  actual byte/count charges. 100,000 source files remain refused.
+  See [the guide](isolated-workspaces.md#admission-counts) and
+  [admission measurements](experiments/isolated-admission-c18-2026-10-30.md).
+
 - Conversation workspace switching (Wave 9 C13): `/workspace isolated` and
   `/workspace shared` preserve the durable conversation and native provider
   history between tasks. A fresh target bootstrap and binding generation replace
@@ -1227,7 +1243,8 @@ candidate is frozen for covered correctness and separate unchanged-limit scales.
 
 C14 implements managed background processes in Wave 10, with stop-on-close and
 explicit switch refusal while processes remain. C12 adds native file watchers in
-Wave 11; hydration admission and outside-scan coverage limits remain.
+Wave 11. C18 now makes admission counts explicit and raises measured defaults;
+outside-scan coverage is handled separately by C19.
 
 0.1.0a3 shipped Waves 1–11 to Homebrew on October 29, 2026. The `v0.1.0a3`
 tag is on `4b96151`, and the tap's workflow upgraded from 0.1.0a2 and passed
@@ -1338,5 +1355,6 @@ lost-write control. No model API calls or credentials were used.
   1.94 seconds median, above C12's 250 ms gate. C12's watchers bring it under
   the gate; see [its measurements](experiments/file-watchers-c12-2026-10-28.md).
   Outside scans cover only each session's latest 1,000 read paths; 20,000-file
-  hydration admission and 100,000-file isolated capture remain refused. None of
-  these limits is presented as completed coverage.
+  hydration admission and 100,000-file isolated capture were refused in E3.
+  C18 now admits the measured 20,000/50,000-file fixtures while retaining the
+  100,000-file refusal; see [its record](experiments/isolated-admission-c18-2026-10-30.md).
