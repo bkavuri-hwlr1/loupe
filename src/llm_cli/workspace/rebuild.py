@@ -282,7 +282,7 @@ def run_pending(
         return (), ()
     _remove(git_dir, INSTALLER_HOME)
     cache_enabled = bool(journal["cache"]["enabled"])
-    from llm_cli.workspace.installer_cache import InstallerCache
+    from llm_cli.workspace.installer_cache import CacheError, CacheLimit, InstallerCache
 
     cache = (
         InstallerCache(cache_root, journal["cache"]["max_bytes"])
@@ -341,9 +341,14 @@ def run_pending(
                         "installer cache unavailable; disable isolated.rebuild.cache"
                     )
                     raise _error(failure_reason)
-                cache_path = (
-                    resources.enter_context(cache.activity(values)) if cache else None
+                cache_lease = (
+                    resources.enter_context(
+                        cache.lease(values, timeout=spec.timeout_seconds)
+                    )
+                    if cache
+                    else None
                 )
+                cache_path = cache_lease.path if cache_lease else None
                 home = home.resolve()
                 home.chmod(0o700)
                 (home / "tmp").mkdir(mode=0o700)
@@ -430,6 +435,7 @@ def run_pending(
                     on_output=lambda text: None,
                     reaper=uses_reaper(sandbox),
                     sensitive_values=values,
+                    supervisor_fds=cache_lease.supervisor_fds if cache_lease else (),
                 )
                 # Nothing streams from installers. Re-screen before retaining a
                 # notice, including copied values edited privately during a run.
@@ -469,7 +475,13 @@ def run_pending(
             journal["results"][spec.root] = {"state": "succeeded", "receipt": receipt}
             successful.append(spec.root)
             notices.append("Dependency rebuilt privately: " + spec.root)
-        except Exception:
+        except Exception as error:
+            if isinstance(error, (CacheError, CacheLimit)):
+                failure_reason = (
+                    "installer cache needs recovery; run "
+                    "loupe workspace cache prune --all "
+                    "or disable isolated.rebuild.cache and retry"
+                )
             _remove(private, spec.root)
             failure = (
                 "Dependency rebuild failed; partial tree removed: "

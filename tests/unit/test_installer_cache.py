@@ -6,7 +6,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Event, current_thread
 
 import pytest
 
@@ -69,23 +69,44 @@ def test_input_change_during_rebuild_invalidates_the_selected_namespace(
         assert after != selected
 
 
-def test_shared_active_leases_block_prune_but_not_another_installer(
+def test_same_input_installers_serialize_but_different_inputs_can_progress(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = cache(tmp_path)
-    barrier = Barrier(2)
+    entered, release, other_entered, selected_same = Event(), Event(), Event(), Event()
+    select = InstallerCache._select
 
-    def install() -> Path:
-        with cache(tmp_path).activity(()) as selected:
-            barrier.wait(timeout=10)
-            assert store.prune() is False
-            barrier.wait(timeout=10)
+    def selected(store: InstallerCache, values: tuple[str, ...]) -> Path:
+        result = select(store, values)
+        if not values and current_thread().name != "MainThread":
+            selected_same.set()
+        return result
+
+    monkeypatch.setattr(InstallerCache, "_select", selected)
+
+    def install(values: tuple[str, ...]) -> Path:
+        with cache(tmp_path).activity(values) as selected:
+            if values == ():
+                entered.set()
+                assert release.wait(10)
+            else:
+                other_entered.set()
             return selected
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        first, second = pool.submit(install), pool.submit(install)
-        assert first.result(timeout=15) == second.result(timeout=15)
-    assert store.prune() is True
+    with ThreadPoolExecutor(max_workers=2) as pool, store.activity(()) as initial:
+        same = pool.submit(install, ())
+        assert selected_same.wait(10)
+        different = pool.submit(install, ("changed input",))
+        try:
+            assert other_entered.wait(10), "different namespace was serialized"
+            assert not entered.is_set(), "same namespace admitted two live writers"
+            assert not store.prune()
+        finally:
+            release.set()
+    assert same.result(timeout=10) == initial
+    assert different.result(timeout=10) != initial
+    assert store.prune()
 
 
 def test_cache_growth_is_detected_and_pruned_only_after_lease_exit(
@@ -186,3 +207,173 @@ def test_rebuild_journal_freezes_cache_consent_and_rejects_corrupt_bounds(
     (tmp_path / "loupe-rebuild.json").write_text(json.dumps(journal))
     with pytest.raises(LlmCoordError, match="cache journal"):
         read_journal(tmp_path, "owned")
+
+
+def test_preexisting_cache_hardlink_is_refused_before_installer_can_write(
+    tmp_path: Path,
+) -> None:
+    store = cache(tmp_path)
+    with store.activity(()) as selected:
+        pass
+    outside = tmp_path / "outside-sentinel"
+    outside.write_text("external original")
+    os.link(outside, selected / "aliased-wheel")
+    with pytest.raises(CacheError, match="hardlink"), store.activity(()):
+        (selected / "aliased-wheel").write_text("must never run")
+    assert outside.read_text() == "external original"
+    assert store.prune(all_artifacts=True)
+    assert outside.read_text() == "external original"
+    with store.activity(()) as recovered:
+        assert recovered != selected
+
+
+def test_installer_created_cache_hardlink_fails_settled_handback(
+    tmp_path: Path,
+) -> None:
+    store = cache(tmp_path)
+    outside = tmp_path / "outside-sentinel"
+    outside.write_text("unchanged")
+    with pytest.raises(CacheError, match="hardlink"), store.activity(()) as selected:
+        os.link(outside, selected / "bad-download")
+    assert outside.read_text() == "unchanged"
+
+
+def test_same_namespace_wait_has_positive_bound_and_operator_guidance(
+    tmp_path: Path,
+) -> None:
+    store = cache(tmp_path)
+    with store.activity(()), ThreadPoolExecutor(max_workers=1) as pool:
+        waiting = pool.submit(lambda: _brief_lease(store))
+        with pytest.raises(CacheError, match=r"retry.*disable"):
+            waiting.result(timeout=5)
+
+
+def _brief_lease(store: InstallerCache) -> None:
+    with store.lease((), timeout=0.05):
+        pytest.fail("same-namespace lease ignored its lock")
+
+
+@pytest.mark.parametrize("corrupt", ["head.json", "namespace.key"])
+def test_explicit_all_purge_recovers_corrupt_metadata_and_preserves_lock_inodes(
+    tmp_path: Path, corrupt: str
+) -> None:
+    from llm_cli.workspace.installer_cache import requires_guard
+
+    store = cache(tmp_path)
+    with store.activity(()) as selected:
+        (selected / "private-artifact").write_text("cached body")
+    locks = {
+        name: (store.root / name).stat().st_ino
+        for name in ("leases.lock", "metadata.lock")
+    }
+    (store.root / corrupt).write_bytes(b"malformed")
+    assert requires_guard(store.root)
+    assert store.prune(all_artifacts=True)
+    assert not selected.exists()
+    assert not requires_guard(store.root)
+    assert {name: (store.root / name).stat().st_ino for name in locks} == locks
+    with store.activity(()) as recovered:
+        assert recovered != selected
+    assert requires_guard(store.root)
+
+
+def test_partial_purge_retains_durable_protection_until_complete_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import installer_cache
+
+    store = cache(tmp_path)
+    for value in ("first", "second"):
+        with store.activity((value,)) as selected:
+            (selected / "artifact").write_text(value)
+    remove = installer_cache._remove
+    deleted = []
+
+    def interrupted(root: Path, name: str) -> None:
+        if deleted:
+            raise OSError("simulated interrupted cleanup")
+        remove(root, name)
+        deleted.append(name)
+
+    monkeypatch.setattr(installer_cache, "_remove", interrupted)
+    with pytest.raises(OSError, match="interrupted"):
+        store.prune(all_artifacts=True)
+    assert deleted
+    assert (store.root / "protection.required").read_bytes() == b"1\n"
+    assert installer_cache.requires_guard(store.root)
+    monkeypatch.setattr(installer_cache, "_remove", remove)
+    assert store.prune(all_artifacts=True)
+    assert not installer_cache.requires_guard(store.root)
+
+
+@pytest.mark.parametrize(
+    "shape", ["marker", "dangling", "unknown", "legacy", "unsafe-lock"]
+)
+def test_unknown_or_malformed_cache_state_requires_guard(
+    tmp_path: Path, shape: str
+) -> None:
+    from llm_cli.workspace.installer_cache import requires_guard
+
+    store = cache(tmp_path)
+    assert not requires_guard(store.root)
+    store.root.mkdir(parents=True, mode=0o700)
+    assert not requires_guard(store.root)
+    if shape == "marker":
+        (store.root / "protection.required").write_text("malformed")
+    elif shape == "dangling":
+        (store.root / "protection.required").symlink_to(tmp_path / "missing")
+    elif shape == "unknown":
+        (store.root / "unknown").mkdir()
+    elif shape == "legacy":
+        (store.root / "namespace.key").write_bytes(b"old state")
+    else:
+        (store.root / "leases.lock").symlink_to(tmp_path / "missing")
+    assert requires_guard(store.root)
+
+
+def test_prune_absent_cache_does_not_create_profile_state(tmp_path: Path) -> None:
+    from llm_cli.workspace.installer_cache import prune_profile_cache
+
+    store = cache(tmp_path)
+    assert prune_profile_cache(store.root, DEFAULT_MAX_BYTES, True) == {
+        "state": "empty",
+        "pruned": True,
+        "all": True,
+    }
+    assert not store.root.exists()
+
+
+def test_enabled_service_purge_keeps_checks_guarded_until_explicit_disabled_reset(
+    tmp_path: Path,
+) -> None:
+    from llm_cli.workspace.installer_cache import register_guard, requires_guard
+
+    store = cache(tmp_path)
+    release = register_guard(store.root, enabled=True)
+    try:
+        assert requires_guard(store.root)
+        assert store.prune(all_artifacts=True)
+        assert (store.root / "protection.required").exists()
+        assert requires_guard(store.root)
+        with store.activity(()) as selected:
+            (selected / "artifact").write_text("new cache after purge")
+        assert requires_guard(store.root)
+        assert store.prune(all_artifacts=True)
+    finally:
+        release()
+    # Restart with caching disabled observes prior protection. Explicit purge
+    # can now clear the durable marker, but this daemon stays guarded until its
+    # own lifetime ends; registrations cannot release another service's guard.
+    disabled = register_guard(store.root, enabled=False)
+    second = register_guard(store.root, enabled=False)
+    assert store.prune(all_artifacts=True)
+    assert not (store.root / "protection.required").exists()
+    assert requires_guard(store.root)
+    disabled()
+    disabled()
+    assert requires_guard(store.root)
+    second()
+    assert not requires_guard(store.root)
+    never_enabled = register_guard(store.root, enabled=False)
+    assert not requires_guard(store.root)
+    never_enabled()
