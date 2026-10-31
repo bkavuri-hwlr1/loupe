@@ -171,8 +171,9 @@ the remaining planned capabilities are listed below.
   `[isolated.rebuild] cache = true` shares bounded per-profile artifacts while
   keeping installer homes fresh. Same-namespace installers serialize outside
   daemon/publication locks; different namespaces can build concurrently.
-  Supervisor-held leases exclude pruning through daemon-death teardown, and
-  settled no-follow hardlink checks precede readiness. Cache namespaces change
+  Supervisor-held leases exclude pruning through daemon-death teardown,
+  including prompt Linux namespace containment; settled no-follow hardlink
+  checks precede readiness. Cache namespaces change
   with all actual private output values and never reactivate after rotation;
   waiting installers revalidate after acquiring their namespace lock.
   Model commands/processes and configured checks cannot access artifacts;

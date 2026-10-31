@@ -1380,7 +1380,8 @@ and idle eviction retain fresh installer homes. Private HMAC input identities
 cover all actual output-redaction values; rotations never reopen an older
 namespace, and waiting installers revalidate after taking the namespace lock.
 Cache and installed-tree hardlinks are refused, with uv copy mode.
-Supervisor-only lease FDs exclude pruning through daemon-death teardown.
+Supervisor-only lease FDs exclude pruning through daemon-death teardown,
+including when Linux namespace containment stops the writer immediately.
 Configured checks use a cache-only guard without changing their other
 permissions; enabled-service protection survives purge and future installs.
 `loupe workspace cache prune [--all]` recovers known corrupt metadata, preserves

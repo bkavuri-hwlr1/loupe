@@ -279,7 +279,8 @@ installers such as `uv sync --frozen` or `npm ci`.
 
 Global shared leases and per-namespace exclusive leases outlive daemon death
 in the trusted command supervisor until its whole installer group/reaper
-teardown completes. The installer cannot access these FDs. Pruning requires
+teardown completes, including when Linux namespace containment stops its
+writer immediately. The installer cannot access these FDs. Pruning requires
 exclusive idle ownership. Postflight validation and lock waits have positive
 bounds and precede readiness; no daemon/publication lock spans either wait.
 A queued installer revalidates its requested private-input head under the

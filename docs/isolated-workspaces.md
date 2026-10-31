@@ -240,7 +240,9 @@ installer timeout also bounds cache admission and postflight waits; a
 busy-cache failure removes the partial dependency root and names the prune
 or disable command. The trusted supervisor retains the leases through
 daemon-death teardown, including a TERM-ignoring installer; installers never
-inherit lease FDs. A queued installer rechecks the requested private-input
+inherit lease FDs. Linux namespace containment may stop the writer promptly;
+the lease still lasts until trusted supervisor teardown completes. A queued
+installer rechecks the requested private-input
 identity after acquiring its namespace lock, and reselects if a preceding
 writer invalidated or rotated that namespace while it waited.
 
