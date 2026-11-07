@@ -806,6 +806,16 @@ class DaemonService:
                 # The summary is a model request. Hold the authority lock only
                 # to read and to save, never while the provider responds.
                 return await self._session_compact(request.params)
+            if request.method == "change.export":
+                from llm_cli.workspace.exports import export_source
+
+                return await asyncio.to_thread(
+                    export_source,
+                    self.store,
+                    self.paths,
+                    request.params,
+                    self.isolated_workspaces,
+                )
             if request.method == "workspace.runtime.export":
                 # Local byte copying must not pin the daemon-wide RPC barrier.
                 return await asyncio.to_thread(

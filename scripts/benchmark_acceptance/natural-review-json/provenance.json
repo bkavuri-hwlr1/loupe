@@ -1,0 +1,17 @@
+{
+  "repository": "bkavuri-hwlr1/loupe",
+  "fix_commit": "8a366abc46289e9a292d95edfe28ce60f516e77d",
+  "parent_commit": "2839acd31e9bdfe59e375a3b1d90263f5a135c77",
+  "source_path": "src/llm_cli/agent/reviewer.py",
+  "original_regression_tests": [
+    "tests/unit/test_reviewer.py"
+  ],
+  "symbols": [
+    "ReviewResult",
+    "_parse"
+  ],
+  "adaptation": "Only imports and minimal dependency adapters were lifted; changed source symbols are verbatim.",
+  "obvious_control": false,
+  "baseline_sha256": "067ccdcd04bcd830cf1dbfc6bdf2898718f302d9dc0204b227960158060cf767",
+  "reference_sha256": "332673bf28d795a6d40ae40423e804d0398248325cf5d0df6a2005ce97dae352"
+}

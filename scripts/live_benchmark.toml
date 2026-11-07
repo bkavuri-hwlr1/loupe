@@ -21,7 +21,7 @@
 #                          interpreter, which has pytest
 # Bump `version` whenever the tasks, facts, fixtures, or revision change, so
 # results from different task sets are not compared.
-version = 5
+version = 6
 revision = "6e5d65d148d6b4ac92fc849cb4fd861c63f8b5c3"
 
 [[tasks]]
@@ -570,3 +570,115 @@ facts = [
     ["checkpoint"],
     ["finalization_failed", "missing"],
 ]
+
+[[tasks]]
+id = "natural-review-json"
+fixture = "natural-review-json"
+mode = "auto"
+review_kind = "natural"
+natural_obvious = false
+acceptance = "natural-review-json"
+prompt = "Fix src/subject.py: our independent reviewer sometimes returns a JSON Markdown fence, and one bad line number currently loses the other useful findings. Accept the fenced report, retain individually valid findings, and still reject a nonempty report when none of its findings are valid. Keep the existing explicit empty-report and size protections."
+outcomes = ["completed"]
+edits = "some"
+questions = 0
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "tests"]
+
+[[tasks]]
+id = "natural-config-errors"
+fixture = "natural-config-errors"
+mode = "auto"
+review_kind = "natural"
+natural_obvious = true
+acceptance = "natural-config-errors"
+prompt = "Fix src/subject.py: configuration values that contain TOML dates or times inside arrays leak a serializer TypeError. Unsupported values must produce the normal ConfigError, including when nested, while supported strings, booleans, integers and arrays still serialize normally."
+outcomes = ["completed"]
+edits = "some"
+questions = 0
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "tests"]
+
+[[tasks]]
+id = "natural-heading-links"
+fixture = "natural-heading-links"
+mode = "auto"
+review_kind = "natural"
+natural_obvious = false
+acceptance = "natural-heading-links"
+prompt = "Fix src/subject.py: documentation pages converted to text include noisy paragraph-sign and hash permalink markers after headings. Remove marker-only links to a fragment, but preserve readable internal links, numbered footnotes, ordinary punctuation, external URLs and skipped script content behavior."
+outcomes = ["completed"]
+edits = "some"
+questions = 0
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "tests"]
+
+[[tasks]]
+id = "natural-proxy-ipv6"
+fixture = "natural-proxy-ipv6"
+mode = "auto"
+review_kind = "natural"
+natural_obvious = false
+acceptance = "natural-proxy-ipv6"
+prompt = "Fix src/subject.py: the HTTP CONNECT proxy client creates invalid authorities for IPv6 target addresses on supported Python versions. Both the CONNECT target and its Host header must use bracketed IPv6 with the port; retain IPv4 behavior, proxy selection and TLS verification against the original hostname. No network call is needed to test construction."
+outcomes = ["completed"]
+edits = "some"
+questions = 0
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "tests"]
+
+[[tasks]]
+id = "natural-runtime-aliases"
+fixture = "natural-runtime-aliases"
+mode = "auto"
+review_kind = "natural"
+natural_obvious = false
+acceptance = "natural-runtime-aliases"
+prompt = "Fix src/subject.py: registered private runtime paths can be read through differently cased or Unicode-normalized spellings. Reserve those aliases and their descendants on every filesystem, but keep unrelated similarly prefixed paths readable. Do not rely on filesystem probes or mutable Git configuration."
+outcomes = ["completed"]
+edits = "some"
+questions = 0
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "tests"]
+
+[[tasks]]
+id = "natural-prompt-framing"
+fixture = "natural-prompt-framing"
+mode = "auto"
+review_kind = "natural"
+natural_obvious = true
+acceptance = "natural-prompt-framing"
+prompt = "Fix src/subject.py: plain chat submits one task per physical input line, so multiline benchmark prompts accidentally create several tasks. Send the entire prompt as one physical line followed by exactly one newline, handling LF, CRLF and bare CR consistently, and close the input stream afterwards."
+outcomes = ["completed"]
+edits = "some"
+questions = 0
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "tests"]
+
+[[tasks]]
+id = "natural-env-secrets"
+fixture = "natural-env-secrets"
+mode = "auto"
+review_kind = "natural"
+natural_obvious = false
+acceptance = "natural-env-secrets"
+prompt = "Fix src/subject.py: output screening misses common project credential variable names such as DB_PASS, MAIL_PWD, SENTRY_DSN, WEBHOOK_URL, SIGNING_KEY, STRIPE_SK and DOCKER_AUTH_CONFIG. Include credentials embedded in URL userinfo under arbitrary variable names, including percent-encoded passwords and several package-index URLs. Preserve screening of complete values and their nonempty logical lines, and do not mark ordinary environment settings as secret."
+outcomes = ["completed"]
+edits = "some"
+questions = 0
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "tests"]
+
+[[tasks]]
+id = "natural-intel-filesystem"
+fixture = "natural-intel-filesystem"
+mode = "auto"
+review_kind = "natural"
+natural_obvious = false
+acceptance = "natural-intel-filesystem"
+prompt = "Fix src/subject.py: managed operations refuse APFS checkouts on Intel Macs because the legacy statfs ABI exposes the filesystem name at a different offset. Select the modern statfs ABI on Intel while retaining arm64 behavior and fail-closed handling for missing symbols or failed calls. Keep Linux mount lookup unchanged. Test through a fake C library rather than depending on the test machine architecture."
+outcomes = ["completed"]
+edits = "some"
+questions = 0
+[tasks.checks.smoke]
+argv = ["{python}", "-m", "pytest", "-q", "tests"]

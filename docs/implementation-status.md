@@ -69,6 +69,29 @@ the remaining planned capabilities are listed below.
   [the guide](isolated-workspaces.md#change-a-conversations-workspace) and
   [verification](experiments/wave9-c13-workspace-switching-2026-10-24.md).
 
+- Standalone workspace switching (Wave 12 C21): `loupe session switch SESSION
+  --to shared|isolated` uses the existing prepare/confirm/rollback RPCs and the
+  selected profile's retained session secret; retries use the same profile.
+  Shared targets require one explicit
+  disposition before any RPC; isolated targets accept repeatable exact-file
+  runtime consent. Results include private-state classification and binding
+  generation, with global `--json` and the usual retryable exit codes. Stable
+  intent IDs allow idempotent retries; pending switches require the exact
+  bootstrap sequence to confirm or can be rolled back explicitly. No daemon or
+  protocol change is needed. See
+  [the CLI flow](isolated-workspaces.md#switch-from-scripts-or-another-terminal).
+
+- Source change exports (Wave 12 C22): `loupe change export ID --to DEST`
+  exports held task proposals, staged candidates and published batches as Git
+  binary patches or self-contained content-addressed JSON bundles. Exact source
+  identities and runtime exclusions remain attached to the original work.
+  Migration 34 stores profile-local metadata-only durable intents, with private
+  staging,
+  no-overwrite publication and identity-checked retry after a crash. Existing
+  checkout destinations require explicit `--into-checkout`; runtime files and
+  screened source never enter artifacts. No Git commit, reference or pull request
+  is created. See [source exports](isolated-workspaces.md#export-source-changes).
+
 - Managed background processes (Wave 10 C14): isolated agents can start,
   inspect screened bounded output, and stop long-lived process groups. Shared
   mode refuses starts. Existing command approval, sandbox, network and C9
@@ -105,6 +128,15 @@ the remaining planned capabilities are listed below.
   outside edit **215 ms**, down from 1.94 and 2.38 seconds. See
   [the design note](file-watchers.md) and
   [measurements](experiments/file-watchers-c12-2026-10-28.md).
+
+- Outside-scan coverage (Wave 12 C19): healthy native watchers check changed
+  paths across up to 20,000 retained advisory read registrations per session,
+  with independent non-consuming cursors. Each pass retains the 1,000-path,
+  16 MiB and five-second limits; unfinished verification retries. Polling and
+  overflow report the latest-1,000 window, and healthy passes revisit older
+  retained paths after event loss. Advisory registration eviction and startup
+  trimming leave canonical last-read publication bases untouched. See
+  [the watcher guide](file-watchers.md).
 
 - Outside catch-up of any size (0.1.0a3 fix): a safe point used to put every
   outside change into one shared-limit batch, so more than 50 changed files, a
@@ -510,9 +542,14 @@ the path; scanners never change publication bases or terminal cursors. Quiet
 cursor advances require validated irrelevant events and a prior model snapshot.
 Only fresh source captures register observations; private/pinned/diff replays
 cannot reset deduplication. Own confirmed publications are not reported again
-as outside edits. A scan covers the session's 1,000 most recently read paths
-and hashes at most 16 MiB of source (256 KiB per file) in five seconds. A path
-that changes while it is read, or does not fit this scan's budget, keeps its
+as outside edits. With healthy native watchers, changed paths are selected
+from up to 20,000 retained advisory read registrations; polling and a full
+watcher verification keep the latest-1,000 window and state the coverage
+limit. Older retained paths retry once native watcher evidence is healthy.
+Every pass verifies at most 1,000 paths and hashes at most 16 MiB of source
+(256 KiB per file) in five seconds. Canonical publication bases are not
+evicted by the advisory registration cap. A path that changes while it is
+read, or does not fit this scan's budget, keeps its
 previous state for a later scan, so a branch switch catches up over several
 boundaries. Notices are advisory: a scan that cannot complete never fails the
 model turn or the daemon loop; the next update says once that outside edits
@@ -979,6 +1016,30 @@ medium-effort comparison did not fit the remaining measured-cost budget.
 explicit opt-in at a measurable cost; changing the default remains the user's
 decision. The [experiment](experiments/review-corpus-b6-2026-10-17.md) records
 per-case outcomes, cache usage, provenance, excluded attempts and limitations.
+
+### Wave 12 B7: review on natural tasks (October 30, 2026)
+
+The fixed eight-task historical corpus completed **48 cells and 24 valid matched
+pairs**, three repeats per arm with Codex `gpt-6-sol`, high task effort, low review
+effort and exploration disabled. Hidden checks passed **21/24 with review off**
+and **21/24 with review on**. No failed-first/pass-final review catch or harmful
+scored repair occurred. All six credential-screening failures remain in the
+quality denominator, including the review timeout.
+
+Manual sandboxed adjudication found six clear additional repairs outside the
+frozen oracle, one malformed-input robustness repair and one supported-runtime
+false positive. These are unscored findings, not a revised success rate or a
+semantic precision estimate. The observed tokens total **4,432,368**: 1,918,878 off
+and 2,513,490 on, a 30.99% increase; direct reviewer tokens are 3.20% of the on arm.
+Two suspension-affected cells remain in quality and usage. Excluding their whole
+matched pair leaves 23 comparable timing pairs, with raw wall medians 67.4 s off
+and 88.1 s on. Suspension time is not subtracted.
+
+**Recommendation: retain review off by default and available as an opt-in.**
+Eight trimmed tasks do not establish general effectiveness. The
+[dated experiment](experiments/natural-review-b7-2026-10-30.md) retains per-case
+outcomes, unmodified results, usage/cache subsets, manual evidence and limitations.
+No product setting changes.
 
 ### Original review gate and Wave 2 acceptance
 

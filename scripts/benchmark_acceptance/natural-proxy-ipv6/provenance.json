@@ -1,0 +1,16 @@
+{
+  "repository": "bkavuri-hwlr1/loupe",
+  "fix_commit": "fb1b3bdb4bf4440c8971bd32446f61ed267372eb",
+  "parent_commit": "a29538629de342d316bef73b873994c4278f1ab7",
+  "source_path": "src/llm_cli/web/fetch.py",
+  "original_regression_tests": [
+    "tests/unit/test_web_fetch.py"
+  ],
+  "symbols": [
+    "_TunnelConnection"
+  ],
+  "adaptation": "Only imports and minimal dependency adapters were lifted; changed source symbols are verbatim.",
+  "obvious_control": false,
+  "baseline_sha256": "f589fb8178f33124200ea632e7f0472e87a51ee19cecc8ffa8ae508f81dd8117",
+  "reference_sha256": "ce0c141dc7fe6d355e6c79a78fc3a89d2ddd68960cb57ba98fbfc125cfe805f5"
+}

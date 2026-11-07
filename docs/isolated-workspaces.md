@@ -606,3 +606,101 @@ abandoned target for inspection. Confirmed switches cannot reopen their source
 binding; make a new switch instead. Clean and disposed workspaces remain eligible
 for safe close-time cleanup; only deliberately retained or still-needed proposal
 runtime stays pinned.
+
+### Switch from scripts or another terminal
+
+The standalone command uses the same conversation and mode-switch RPCs as chat:
+
+```sh
+loupe session switch SESSION_ID --to isolated
+loupe session switch SESSION_ID --to isolated --approve-secret .env
+loupe session switch SESSION_ID --to shared --hold
+loupe --json session switch SESSION_ID --to shared --retain
+```
+
+Every `--to shared` invocation requires exactly one of `--publish`, `--hold`,
+`--export`, `--retain`, or `--discard`, including a clean private workspace.
+The dispositions have the same meaning and restrictions as the chat command
+above. Dispositions apply only to shared targets; exact-file `--approve-secret`
+consent applies only to a new isolated target. Invalid or missing choices are
+refused locally before contacting the daemon. The result includes the private
+state classification, runtime summary, binding generation, and any retained
+proposal or export paths. Existing retryable refusals retain exit status 75.
+
+The command prepares and confirms one exact target bootstrap. Supply
+`--switch-intent-id ID` with `--to` to give a script a stable request identity;
+retrying the same intent and arguments returns the recorded switch rather than
+creating another worktree or publishing twice. A recorded result describes that
+intent, even if a later switch has changed the conversation again.
+
+After an interrupted request, inspect the pending intent and its
+`bootstrap_sequence`, then acknowledge that exact sequence or roll it back:
+
+```sh
+loupe --json session resume SESSION_ID
+loupe session switch SESSION_ID --confirm SWITCH_INTENT_ID --sequence SEQUENCE
+loupe session switch SESSION_ID --rollback SWITCH_INTENT_ID
+```
+
+`session resume` exposes pending state without confirming it. Confirmation needs
+both the intent ID and its exact target bootstrap sequence. Rollback keeps the
+source binding; `rollback_pending` means an active switch worker still needs to
+settle. Errors include profile-aware inspection and rollback commands. Each
+operation uses the selected profile's locally retained session secret, without
+opening a replacement conversation or asking for provider credentials.
+For a session opened under a named profile, include that profile on the switch
+and every retry, for example `loupe --profile work session switch SESSION_ID
+--to isolated`.
+
+
+## Export source changes
+
+Export a held task proposal, a staged workspace candidate, or a published batch
+without publishing it again or creating a Git commit:
+
+```sh
+loupe change export TASK_ID --to /absolute/new-change.patch
+loupe change export CANDIDATE_ID --kind candidate --format bundle --to /absolute/new-change.json
+loupe --json change export BATCH_ID --kind batch --to /absolute/new-batch.patch --intent export-review-1
+```
+
+Loupe infers the source kind when the ID is unambiguous. Use `--kind proposal`,
+`--kind candidate`, or `--kind batch` to disambiguate. Held proposals retain the
+frozen files and original runtime protections of their task attempt, including
+a proposal retained by a workspace switch. Later edits to the shared checkout
+do not change a published batch's exported result.
+
+The default `--format patch` writes a Git binary patch suitable for
+`git apply --check` and `git apply` on the exact base. It preserves binary files,
+executable modes and symlinks. Patch generation requires the exact before bytes;
+if an older receipt cannot supply them, Loupe refuses rather than inventing a
+base. Empty-directory-only changes also require a bundle. Use a bundle with a
+new intent in either case.
+
+`--format bundle` writes one JSON file with `format: loupe-source-bundle`,
+version 1, a `files` manifest and a `bodies` map. Each entry records its relative
+path and exact before/after identities. Body references are SHA-256 keys; values
+in `bodies` are base64 bytes. A missing historical before body is represented by
+its exact before identity and a null body reference. This is an exchange format;
+Loupe does not provide a bundle import command. Each final artifact is limited
+to 64 MiB.
+
+`--to` must name a new file with an existing parent. Loupe never overwrites an
+existing destination, including an unrelated file with identical contents.
+Exporting into any discovered checkout requires `--into-checkout`; temporary
+bytes are staged privately in its Git administration and must be on the same
+filesystem as the destination. Private workspaces, Git administration and Loupe
+storage remain unavailable as destinations. The resulting file is owner-only.
+Runtime files and source containing recognized secrets or retained private
+runtime values are refused with a path-only reason. Exported bodies never enter
+the export journal or operational logs; screened artifacts remain in the
+profile's private export storage.
+
+Use a stable `--intent ID` and the same profile when a script may retry. Retrying
+the same ID, source,
+format and destination resumes its durable receipt and returns metadata for the
+same complete file. A crash leaves either no destination or the complete
+artifact; a matching retry does not replace or write that file again. A refusal
+includes the intent ID for an unchanged retry. Changed arguments require a new
+intent. Changed staging files, destination files or parent identities require
+inspection and are never silently adopted.
