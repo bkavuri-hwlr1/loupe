@@ -71,6 +71,9 @@ Manifest = dict[str, dict[str, Any]]
 # Applied steps are diagnostic only; unresolved evidence has its own durable row.
 _APPLIED_JOURNAL_WINDOW = 8
 
+# Each pass may recapture the checkout; a moving source must still yield a safe point.
+_MAX_CATCH_UP_PASSES = 16
+
 # The isolated capture's per-file limit. Outside edits are the user's own
 # source, so catch-up carries files a shared edit cannot, such as lockfiles.
 _SOURCE_FILE_BYTES = 256 * 1024 * 1024
@@ -528,7 +531,7 @@ class IsolatedSynchronizer:
         merged: list[str] = []
         conflicted: list[str] = []
         runtime_notices: list[str] = []
-        while True:
+        for pass_number in range(_MAX_CATCH_UP_PASSES):
             report, more, opaque = self._synchronize_pass(
                 workspace_id,
                 refresh_source=refresh_source,
@@ -538,24 +541,30 @@ class IsolatedSynchronizer:
             merged.extend(report.merged)
             conflicted.extend(report.conflicted)
             runtime_notices.extend(report.runtime_notices)
-            if not more:
-                conflicts = tuple(dict.fromkeys(conflicted))
-                return SyncResult(
-                    tuple(
-                        path
-                        for path in dict.fromkeys((*applied, *opaque_applied))
-                        if path not in conflicts
-                    ),
-                    tuple(dict.fromkeys(merged)),
-                    conflicts,
-                    report.sequence,
-                    report.deferred,
-                    tuple(dict.fromkeys(runtime_notices)),
-                )
+            if not more or pass_number + 1 == _MAX_CATCH_UP_PASSES:
+                break
             # The next pass starts from the manifest this journal confirmed and
             # consumes any intervening publication before recapturing source.
             self._between_journals(workspace_id)
             refresh_runtime = False
+        conflicts = tuple(dict.fromkeys(conflicted))
+        deferred = report.deferred
+        if more:
+            # Preserve confirmed progress and retry the remaining snapshot at
+            # the next safe point, just as for an unstable source capture.
+            deferred = tuple(dict.fromkeys((*deferred, "checkout snapshot")))
+        return SyncResult(
+            tuple(
+                path
+                for path in dict.fromkeys((*applied, *opaque_applied))
+                if path not in conflicts
+            ),
+            tuple(dict.fromkeys(merged)),
+            conflicts,
+            report.sequence,
+            deferred,
+            tuple(dict.fromkeys(runtime_notices)),
+        )
 
     def _synchronize_pass(
         self,

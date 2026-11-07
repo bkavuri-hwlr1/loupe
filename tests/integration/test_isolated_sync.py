@@ -1445,6 +1445,55 @@ def test_large_catch_up_yields_and_recomputes_after_interleaved_changes(
     assert _prepared_journals(env) == 0
 
 
+@pytest.mark.parametrize("pass_limit", [1, 3])
+def test_continuously_changing_primary_defers_after_catch_up_pass_limit(
+    env: Environment, monkeypatch: pytest.MonkeyPatch, pass_limit: int
+) -> None:
+    _real_capture(env)
+    env.sync.synchronize(env.workspace_id)
+    monkeypatch.setattr(isolated_sync, "_MAX_CATCH_UP_PASSES", pass_limit)
+    capture = env.sync.refresh_capture
+    captures = 0
+    paths: list[str] = []
+
+    def changing_primary(root: Path, protected: Sequence[str]) -> Manifest:
+        nonlocal captures
+        captures += 1
+        assert captures <= pass_limit, "catch-up exceeded its pass limit"
+        for number in range(MAX_BATCH_FILES + 1):
+            path = f"outside{captures:03}-{number:03}.txt"
+            paths.append(path)
+            (root / path).write_text(path + "\n")
+        return capture(root, protected)
+
+    monkeypatch.setattr(env.sync, "refresh_capture", changing_primary)
+
+    report = env.sync.synchronize(env.workspace_id)
+
+    assert captures == pass_limit
+    assert len(report.applied) == pass_limit * MAX_BATCH_FILES
+    assert report.conflicted == report.merged == ()
+    assert report.deferred == ("checkout snapshot",)
+    assert "retrying at the next safe point" in report.note()
+    assert _prepared_journals(env) == 0
+    remaining = {path for path in paths if not (env.local / path).exists()}
+    assert len(remaining) == pass_limit
+    with env.store.connection() as con:
+        manifest = json.loads(
+            con.execute("SELECT manifest_json FROM isolated_sync_state").fetchone()[0]
+        )
+    assert set(report.applied) <= manifest.keys()
+    assert remaining.isdisjoint(manifest)
+
+    monkeypatch.setattr(env.sync, "refresh_capture", capture)
+    report = env.sync.synchronize(env.workspace_id)
+
+    assert set(report.applied) == remaining
+    assert report.conflicted == report.deferred == ()
+    assert all((env.local / path).read_text() == path + "\n" for path in paths)
+    assert _prepared_journals(env) == 0
+
+
 @pytest.mark.parametrize("publish_before_crash", [False, True])
 def test_crash_between_catch_up_journals_preserves_confirmed_steps(
     env: Environment, monkeypatch: pytest.MonkeyPatch, publish_before_crash: bool
