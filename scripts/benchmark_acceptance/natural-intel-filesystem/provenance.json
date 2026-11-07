@@ -1,0 +1,16 @@
+{
+  "repository": "bkavuri-hwlr1/loupe",
+  "fix_commit": "129a0a715821f4d8cdb35109ae4b9f852b8b2630",
+  "parent_commit": "e40693d76201617ab27bf2b3946125022903403a",
+  "source_path": "src/llm_cli/workspace/authority.py",
+  "original_regression_tests": [
+    "tests/unit/test_authority_filesystem.py"
+  ],
+  "symbols": [
+    "_filesystem"
+  ],
+  "adaptation": "Only imports and minimal dependency adapters were lifted; changed source symbols are verbatim.",
+  "obvious_control": false,
+  "baseline_sha256": "66aeafaea04e5d13606cd4b2f5a38233132deb7451edf8af275d295f147a1ec0",
+  "reference_sha256": "747623c96acde74b2b241205c01d12121e85eb51b749fa5573af4fd9d867a80a"
+}
