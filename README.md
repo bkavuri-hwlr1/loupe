@@ -877,6 +877,19 @@ journal; normal mode retains them for `/apply`. Runtime files remain private.
 files. See [isolated workspaces](docs/isolated-workspaces.md) for exact-file secret
 consent, conflict resolution, recovery, and current runtime limits.
 
+Scripts and other terminals can change an existing conversation's workspace:
+
+```sh
+loupe session switch SESSION_ID --to isolated --approve-secret .env
+loupe session switch SESSION_ID --to shared --hold
+```
+
+Returning to shared mode requires an explicit `--publish`, `--hold`, `--export`,
+`--retain`, or `--discard` choice. Global `--json` reports the switch classification
+and resulting binding. Pending switches can be confirmed with their exact
+bootstrap sequence or rolled back; see the
+[workspace-switching guide](docs/isolated-workspaces.md#switch-from-scripts-or-another-terminal).
+
 The initial broker commands make that boundary inspectable:
 
 ```console

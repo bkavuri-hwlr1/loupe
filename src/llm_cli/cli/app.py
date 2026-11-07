@@ -29,6 +29,7 @@ from llm_cli.cli.session import (
     remove_session_secret,
     run_session,
     session_resume_secret,
+    switch_session_workspace,
 )
 from llm_cli.cli.terminal import TerminalUI
 from llm_cli.config.loader import load_settings
@@ -77,7 +78,7 @@ def _runtime_consent_argument(parser: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help=(
             "allow a private copy of this exact ignored runtime file in one new "
-            "isolated session; repeat for more files (never recursive)"
+            "isolated workspace; repeat for more files (never recursive)"
         ),
     )
 
@@ -447,6 +448,38 @@ def build_parser() -> argparse.ArgumentParser:
     show_session.add_argument("session_id")
     resume_session = session_commands.add_parser("resume")
     resume_session.add_argument("session_id")
+    switch_session = session_commands.add_parser(
+        "switch", help="change a conversation's workspace or recover a pending switch"
+    )
+    switch_session.add_argument("session_id")
+    switch_action = switch_session.add_mutually_exclusive_group(required=True)
+    switch_action.add_argument("--to", choices=("shared", "isolated"), dest="workspace")
+    switch_action.add_argument("--confirm", metavar="SWITCH_INTENT_ID")
+    switch_action.add_argument("--rollback", metavar="SWITCH_INTENT_ID")
+    disposition = switch_session.add_mutually_exclusive_group()
+    for choice in ("publish", "hold", "export", "retain", "discard"):
+        disposition.add_argument(
+            "--" + choice,
+            action="store_const",
+            dest="disposition",
+            const=choice,
+            help="explicit disposition of private state when returning to shared mode",
+        )
+    _runtime_consent_argument(switch_session)
+    switch_session.add_argument(
+        "--switch-intent-id",
+        metavar="ID",
+        help="stable ID for an idempotent --to request or retry",
+    )
+    switch_session.add_argument(
+        "--sequence",
+        type=int,
+        metavar="SEQUENCE",
+        help=(
+            "exact target bootstrap sequence from session resume; "
+            "required with --confirm"
+        ),
+    )
     close_session = session_commands.add_parser("close")
     close_session.add_argument("session_id")
     close_session.add_argument("--reason", default="operator_exit")
@@ -1432,6 +1465,18 @@ def _dispatch_session(arguments: argparse.Namespace, client: DaemonClient) -> An
         return client.call("session.list", params)
     if action == "show":
         return client.call("session.show", {"session_id": arguments.session_id})
+    if action == "switch":
+        return switch_session_workspace(
+            client,
+            arguments.session_id,
+            workspace=arguments.workspace,
+            disposition=arguments.disposition,
+            approved_runtime_files=tuple(arguments.approve_secret),
+            switch_intent_id=arguments.switch_intent_id,
+            confirm_intent_id=arguments.confirm,
+            rollback_intent_id=arguments.rollback,
+            sequence=arguments.sequence,
+        )
     secret = session_resume_secret(client.paths, arguments.session_id)
     authenticated = {
         "session_id": arguments.session_id,
