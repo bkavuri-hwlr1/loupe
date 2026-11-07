@@ -800,13 +800,13 @@ def test_apply_hashes_source_outside_the_write_transaction(
     original = regime_module._source_checkpoint
     writable: list[bool] = []
 
-    def observed(physical: Any, *, max_paths: int = 20_000) -> str:
+    def observed(physical: Any) -> str:
         # Another daemon writer must not wait behind the source scan.
         with closing(sqlite3.connect(authority.store.path, timeout=0.1)) as other:
             other.execute("BEGIN IMMEDIATE")
             other.rollback()
         writable.append(True)
-        return original(physical, max_paths=max_paths)
+        return original(physical)
 
     monkeypatch.setattr(regime_module, "_source_checkpoint", observed)
     manager.begin(repository, plan["checkpoint"])

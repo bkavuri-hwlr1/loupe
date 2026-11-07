@@ -132,6 +132,35 @@ def test_real_open_names_the_configured_hydration_entry_boundary(
         service.close()
 
 
+@pytest.mark.parametrize("source", [1, 50_000])
+def test_admission_setting_does_not_change_handoff_or_cutover_checkpoints(
+    tmp_path: Path, repository_factory: Callable[..., Path], source: int
+) -> None:
+    root = repository_factory(tmp_path, {"a.py": "pass\n", "b.py": "pass\n"})
+    service = service_at(tmp_path, source=source)
+    try:
+        asyncio.run(rpc(service, "repo.add", path=str(root)))
+        with service.physical_authority.pin(root):
+            pass
+        service.physical_authority.release_idle(force=True)
+        with service.physical_authority.pin(root):
+            pass
+        with service.store.connection() as connection:
+            assert (
+                connection.execute(
+                    "SELECT count(*) FROM checkout_events "
+                    "WHERE event_type='checkout.authority_handoff'"
+                ).fetchone()[0]
+                == 1
+            )
+        plan = service.cutovers.preview(root)
+        assert plan["checkpoint_observed"]
+        result = service.cutovers.begin(root, plan["checkpoint"])
+        assert result["regime"] == "workspace"
+    finally:
+        service.close()
+
+
 def test_refresh_and_switch_preserve_the_configured_admission_limits(
     tmp_path: Path,
     repository_factory: Callable[..., Path],
@@ -199,10 +228,7 @@ def test_large_process_workspace_scrubs_private_values_after_restart(
         tmp_path,
         {
             ".gitignore": ".env\nbuild/\n",
-            **{
-                f"source/{n // 1000:03}/{n:05}.py": "pass\n"
-                for n in range(count - 1)
-            },
+            **{f"source/{n // 1000:03}/{n:05}.py": "pass\n" for n in range(count - 1)},
         },
     )
     (root / ".env").write_text(canary)
@@ -303,13 +329,14 @@ def test_one_source_path_above_the_default_is_refused_with_its_setting(
     )
     service = service_at(tmp_path)
     try:
-        with pytest.raises(
-            LlmCoordError, match=rf"isolated\.source_max_paths={count}"
-        ):
+        with pytest.raises(LlmCoordError, match=rf"isolated\.source_max_paths={count}"):
             asyncio.run(open_isolated(service, root))
         with service.store.connection() as connection:
-            assert connection.execute(
-                "SELECT count(*) FROM isolated_workspaces"
-            ).fetchone()[0] == 0
+            assert (
+                connection.execute(
+                    "SELECT count(*) FROM isolated_workspaces"
+                ).fetchone()[0]
+                == 0
+            )
     finally:
         service.close()

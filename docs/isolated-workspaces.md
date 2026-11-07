@@ -55,10 +55,12 @@ checks, no-follow traversal, secret screening or exact-file consent.
 
 The preview uses the selected profile's saved hydration count; explicit
 `--max-entries` wins. Restart the daemon after changing these settings so new
-opens, safe points, runtime discovery, switching, ownership observations and
-cutover checkpoints use the same effective counts. Shared authority observations
-also use the configured source count, preserving full-checkout ownership/restart
-checks for an admitted checkout without changing filesystem or identity policy.
+opens, safe points, runtime discovery and switching use the same effective
+admission counts. Cutover source checkpoints and clean-handoff observations
+retain a separate fixed limit of 20,000 source paths. A larger checkout can be
+admitted to an isolated session, but its cutover or clean handoff refuses until
+the source count fits that checkpoint limit. Raising `isolated.source_max_paths`
+does not raise the checkpoint limit.
 
 The [recorded synthetic admission experiment](experiments/isolated-admission-c18-2026-10-30.md)
 explains the defaults and the remaining 100,000-file refusal. These are count

@@ -44,3 +44,21 @@ def test_a_refused_admission_never_claims_a_successful_safe_point() -> None:
     assert "safe_point_warm" not in result
     assert result["isolated_open_seconds"] > 0
     assert result["peak_parent_rss_bytes"] > 0
+
+
+def test_outside_only_measurement_keeps_registration_and_scan_metrics() -> None:
+    script = load_script("scan_scale")
+    result = asyncio.run(script.measure(5, 1, outside_only=True))
+    assert result["outside_registration"]["paths"] == 5
+    assert result["outside_registration"]["seconds"] > 0
+    assert result["outside_observed_paths"] == 5
+    assert result["outside_verified_paths"] == 5
+    assert result["outside_initial_verification"]["pending_paths"] == 0
+    assert result["outside_cold"]["result"] == 0
+    assert result["outside_oldest_read_change"]["result"] == 1
+    assert result["outside_one_change"]["result"] == 1
+    assert result["outside_after_extra_read"]["advisory_registrations"] == 6
+    assert result["outside_after_extra_read"]["canonical_bases"] == 6
+    assert "isolated_capture_cold" not in result
+    assert "isolated" not in result
+    assert "isolated_open_seconds" not in result

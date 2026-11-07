@@ -212,8 +212,11 @@ class DaemonService:
         self.boot_id = boot_id
         self.store = ControlStore(paths.control_db)
         self.physical_authority = PhysicalAuthority(
-            self.store, paths.profile_id, boot_id, paths.socket, root=authority_root,
-            source_max_paths=settings.isolated_source_max_paths,
+            self.store,
+            paths.profile_id,
+            boot_id,
+            paths.socket,
+            root=authority_root,
         )
         self.store.authority = self.physical_authority
         self.cutovers = CutoverManager(self.store, self.physical_authority)
@@ -1433,8 +1436,7 @@ class DaemonService:
                 intent_id = pending["switch_intent_id"]
                 raise ValueError(
                     f"Workspace switch {intent_id} must settle "
-                    "before starting a process. "
-                    + rollback_hint(intent_id)
+                    "before starting a process. " + rollback_hint(intent_id)
                 )
 
     async def _session_close(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -2043,6 +2045,7 @@ class DaemonService:
                 or any(not isinstance(path, str) for path in approved)
             ):
                 raise ValueError("runtime consent must name exact relative paths")
+
             def switch_pinned() -> dict[str, Any]:
                 # The actual worker owns this lifetime even if its RPC waiter
                 # is cancelled while hydration or required checks still run.
