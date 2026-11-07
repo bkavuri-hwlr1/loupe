@@ -1,0 +1,16 @@
+{
+  "repository": "bkavuri-hwlr1/loupe",
+  "fix_commit": "755c76459100c734020dbfeccfcd14034d018979",
+  "parent_commit": "b7b503c652dc2b9ff319692deb141a6ff41c5d0e",
+  "source_path": "scripts/live_benchmark.py",
+  "original_regression_tests": [
+    "tests/unit/test_live_benchmark.py"
+  ],
+  "symbols": [
+    "run input framing"
+  ],
+  "adaptation": "A narrow original statement block was lifted into a callable adapter; original before/after expressions and their ordering are preserved.",
+  "obvious_control": true,
+  "baseline_sha256": "7e7db2a6c79d9fe7ad1a46f3daac1819b049dec3fdca4b13887a1a70348d8b81",
+  "reference_sha256": "769299b808eedd82ad6023eb946abf8feffdb9e4e2fb19840d4243f491f821fd"
+}

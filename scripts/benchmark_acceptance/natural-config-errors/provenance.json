@@ -1,0 +1,16 @@
+{
+  "repository": "bkavuri-hwlr1/loupe",
+  "fix_commit": "5589b4aa6d4882c18268845cb47df5adffa3c5dc",
+  "parent_commit": "dae33dfa3956c61a360da563c9012924db857891",
+  "source_path": "src/llm_cli/config/operations.py",
+  "original_regression_tests": [
+    "tests/unit/test_config_operations.py"
+  ],
+  "symbols": [
+    "_toml_value"
+  ],
+  "adaptation": "Only imports and minimal dependency adapters were lifted; changed source symbols are verbatim.",
+  "obvious_control": true,
+  "baseline_sha256": "b7ea64ae3b236c8c473cd4f9e953a694a6eef38b49c1030965d129db43b941f4",
+  "reference_sha256": "5da4f2dc663b560000285c0729d6c6f89b18f56d12d324bca830a8cfa2f22501"
+}

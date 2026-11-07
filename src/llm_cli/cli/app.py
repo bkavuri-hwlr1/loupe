@@ -29,6 +29,7 @@ from llm_cli.cli.session import (
     remove_session_secret,
     run_session,
     session_resume_secret,
+    switch_session_workspace,
 )
 from llm_cli.cli.terminal import TerminalUI
 from llm_cli.config.loader import load_settings
@@ -77,7 +78,7 @@ def _runtime_consent_argument(parser: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help=(
             "allow a private copy of this exact ignored runtime file in one new "
-            "isolated session; repeat for more files (never recursive)"
+            "isolated workspace; repeat for more files (never recursive)"
         ),
     )
 
@@ -292,6 +293,20 @@ def build_parser() -> argparse.ArgumentParser:
         if action == "configure":
             sub.add_argument("--file", required=True)
 
+    change = commands.add_parser(
+        "change", help="export frozen source proposals, candidates, and batches"
+    )
+    change_commands = change.add_subparsers(dest="change_command", required=True)
+    export_change = change_commands.add_parser(
+        "export", help="write a portable patch or content-addressed source bundle"
+    )
+    export_change.add_argument("identifier", metavar="ID")
+    export_change.add_argument("--kind", choices=("proposal", "candidate", "batch"))
+    export_change.add_argument("--format", choices=("patch", "bundle"), default="patch")
+    export_change.add_argument("--to", required=True, type=Path, dest="destination")
+    export_change.add_argument("--intent", dest="export_intent_id", metavar="ID")
+    export_change.add_argument("--into-checkout", action="store_true")
+
     workspace = commands.add_parser(
         "workspace",
         help="inspect and operate the workspace a checkout coordinates through",
@@ -447,6 +462,38 @@ def build_parser() -> argparse.ArgumentParser:
     show_session.add_argument("session_id")
     resume_session = session_commands.add_parser("resume")
     resume_session.add_argument("session_id")
+    switch_session = session_commands.add_parser(
+        "switch", help="change a conversation's workspace or recover a pending switch"
+    )
+    switch_session.add_argument("session_id")
+    switch_action = switch_session.add_mutually_exclusive_group(required=True)
+    switch_action.add_argument("--to", choices=("shared", "isolated"), dest="workspace")
+    switch_action.add_argument("--confirm", metavar="SWITCH_INTENT_ID")
+    switch_action.add_argument("--rollback", metavar="SWITCH_INTENT_ID")
+    disposition = switch_session.add_mutually_exclusive_group()
+    for choice in ("publish", "hold", "export", "retain", "discard"):
+        disposition.add_argument(
+            "--" + choice,
+            action="store_const",
+            dest="disposition",
+            const=choice,
+            help="explicit disposition of private state when returning to shared mode",
+        )
+    _runtime_consent_argument(switch_session)
+    switch_session.add_argument(
+        "--switch-intent-id",
+        metavar="ID",
+        help="stable ID for an idempotent --to request or retry",
+    )
+    switch_session.add_argument(
+        "--sequence",
+        type=int,
+        metavar="SEQUENCE",
+        help=(
+            "exact target bootstrap sequence from session resume; "
+            "required with --confirm"
+        ),
+    )
     close_session = session_commands.add_parser("close")
     close_session.add_argument("session_id")
     close_session.add_argument("--reason", default="operator_exit")
@@ -959,6 +1006,46 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 )
             return _watch(client, task_id, 0, arguments.as_json, arguments.plain)
         return result
+    if command == "change":
+        destination = arguments.destination.expanduser()
+        try:
+            destination = destination.parent.resolve(strict=True) / destination.name
+        except OSError as exc:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "source export destination parent must already exist",
+            ) from exc
+        intent_id = (
+            arguments.export_intent_id
+            if arguments.export_intent_id is not None
+            else new_id("export")
+        )
+        if not intent_id or len(intent_id) > 128:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, "export intent ID needs 1 to 128 characters"
+            )
+        try:
+            return _patient(client, 120).call(
+                "change.export",
+                {
+                    "identifier": arguments.identifier,
+                    "kind": arguments.kind,
+                    "format": arguments.format,
+                    "destination": str(destination),
+                    "export_intent_id": intent_id,
+                    "into_checkout": arguments.into_checkout,
+                },
+                idempotency_key=intent_id,
+            )
+        except LlmCoordError as exc:
+            raise LlmCoordError(
+                exc.code,
+                exc.message
+                + " Export intent: --intent "
+                + intent_id
+                + ". Keep this ID for unchanged retries.",
+                {**(exc.details or {}), "export_intent_id": intent_id},
+            ) from exc
     if command == "workspace":
         if arguments.workspace_command == "authority":
             prune = arguments.authority_command == "prune"
@@ -1438,6 +1525,18 @@ def _dispatch_session(arguments: argparse.Namespace, client: DaemonClient) -> An
         return client.call("session.list", params)
     if action == "show":
         return client.call("session.show", {"session_id": arguments.session_id})
+    if action == "switch":
+        return switch_session_workspace(
+            client,
+            arguments.session_id,
+            workspace=arguments.workspace,
+            disposition=arguments.disposition,
+            approved_runtime_files=tuple(arguments.approve_secret),
+            switch_intent_id=arguments.switch_intent_id,
+            confirm_intent_id=arguments.confirm,
+            rollback_intent_id=arguments.rollback,
+            sequence=arguments.sequence,
+        )
     secret = session_resume_secret(client.paths, arguments.session_id)
     authenticated = {
         "session_id": arguments.session_id,
