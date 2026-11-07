@@ -1,0 +1,19 @@
+{
+  "repository": "bkavuri-hwlr1/loupe",
+  "fix_commit": "03092e1e2412bd1614f94b2de01e8a4b44c3bb59",
+  "parent_commit": "3f8a3de1b00f3a00444cf3973dc478dbc8f4263c",
+  "source_path": "src/llm_cli/execution/environment.py",
+  "original_regression_tests": [
+    "tests/unit/test_session_environment.py",
+    "tests/integration/test_command_environment_sessions.py"
+  ],
+  "symbols": [
+    "_SECRET_NAME",
+    "_screening_values",
+    "_sensitive_values"
+  ],
+  "adaptation": "A narrow original statement block was lifted into a callable adapter; original before/after expressions and their ordering are preserved.",
+  "obvious_control": false,
+  "baseline_sha256": "13619b89d9d14375a342449a9153e3b384c153a51793d063dcdfaed6f66430b5",
+  "reference_sha256": "c02d2c3d4c537f5f49dbb10fa700e3f506fb44eeba8db992c0d9d659de76c31e"
+}

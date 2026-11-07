@@ -254,12 +254,13 @@ def _seatbelt(policy: SandboxPolicy, argv: Sequence[str]) -> list[str]:
             rules.append(
                 f"(allow network-outbound (remote unix-socket {socket_path}))"
             )
-        # A writable path can sit inside a protected one, as command snapshots
-        # sit in Loupe's data directory. Tools such as pytest stat the
-        # directories above their working directory and stop at "operation
-        # not permitted", so those directories, and only they, can be stat'ed.
-        # Their contents stay unreadable and unlisted.
-        ancestors = sorted({a for path in policy.writable for a in path.parents})
+    if policy.writable or policy.readable:
+        # Snapshots and explicitly readable runtimes can sit inside protected
+        # parents. Pytest and Framework Python inspect ancestor metadata before
+        # starting. Grant only exact ancestors; contents and listings stay denied.
+        ancestors = sorted(
+            {a for path in (*policy.writable, *policy.readable) for a in path.parents}
+        )
         rules.append(
             f"(allow file-read-metadata {filters('ANCESTOR', ancestors, 'literal')})"
         )
