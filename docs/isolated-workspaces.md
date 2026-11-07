@@ -226,13 +226,15 @@ does not grant network access or replace lockfile verification.
 
 The default cap is 512 MiB, configurable from 64 KiB through 5 GiB. Cache
 observations are bounded to 200,000 entries, depth 64 and five seconds; at most
-32 namespaces remain after idle pruning. Oldest namespaces are retired first
-when the byte or namespace cap is exceeded. These are observed limits, not a
-filesystem quota. An installer can briefly exceed them before being stopped.
+32 namespaces remain after idle pruning. Least recently used namespaces are
+retired first when the byte or namespace cap is exceeded. These are observed
+limits, not a filesystem quota. An installer can briefly exceed them before
+being stopped.
 
 Installers sharing a namespace run one at a time, so one cannot consume a
 second installer's temporary hardlinks. Different namespaces can build
-concurrently. Shared lifetime leases keep pruning out until every installer
+concurrently. At namespace capacity, a new input waits for idle eviction before
+installation. Shared lifetime leases keep pruning out until every installer
 has stopped; after execution, a bounded exclusive validation must finish
 before the workspace becomes ready. Waiting and installation hold neither
 the daemon dispatch lock nor the publication lock. The configured positive
@@ -250,16 +252,21 @@ Model commands, managed background processes and configured checks cannot
 read or write this cache. Checks retain their existing access outside the
 cache, including network policy and ordinary output writes. A profile with
 cache material or enabled caching requires a working command sandbox for
-checks. That protection lasts through the daemon lifetime, including an
-explicit cache purge and a later installer. Cache-off profiles with no cache
+checks. If no sandbox is available, checks intentionally refuse to run so that
+downloaded artifacts remain private. Turning caching off alone does not remove
+this requirement while cache material remains. That protection lasts through
+the daemon lifetime, including an explicit cache purge and a later installer.
+Restore a working sandbox, or follow the disable, restart, purge and restart
+steps below to resume checks without one. Cache-off profiles with no cache
 material keep the previous check behavior.
 
 All actual private output values, including ordinary values under non-secret
 keys, contribute to a private HMAC input identity. A changed input set selects
-a fresh namespace; rotating back never selects an older namespace. Private
-values and cache bodies are absent from SQLite and recovery receipts. The
-HMAC key and cache metadata stay in private profile files. Changed inputs
-during an install invalidate its reusable head.
+its own namespace; returning to an earlier input set reuses its namespace if
+it has not been invalidated or evicted. Private values and cache bodies are
+absent from SQLite and recovery receipts. The HMAC key and cache metadata stay
+in private profile files. Changed inputs during an install invalidate that
+namespace's reusable identity.
 
 Use `loupe workspace cache prune` to prune within the cap while installers
 are idle, or `loupe workspace cache prune --all` to clear downloaded artifacts
