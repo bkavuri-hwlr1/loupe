@@ -180,7 +180,7 @@ Path('.venv/installed').write_text('independent dependency')
     assert store.prune()
 
 
-def test_rotated_non_signature_private_input_cannot_return_from_old_cache(
+def test_alternating_private_inputs_reuse_only_the_matching_cache(
     batch_env: BatchEnvironment,
     tmp_path: Path,
 ) -> None:
@@ -192,8 +192,9 @@ cache = Path(os.environ['XDG_CACHE_HOME'])
 value = Path('.env').read_text().partition('=')[2]
 marker = cache / 'private-artifact'
 if value.startswith('ordinary'):
+    hit = marker.exists() and marker.read_text() == value
     marker.write_text(value)
-    Path('.venv/installed').write_text('ready')
+    Path('.venv/installed').write_text('hit' if hit else 'miss')
 else:
     print(marker.read_text() if marker.exists() else 'old cache namespace unavailable')
     raise SystemExit(7)
@@ -204,6 +205,7 @@ else:
     first, _ = isolate.open(
         checkout(batch_env), "cache-private-first", approved_secrets=(".env",)
     )
+    assert (Path(first.canonical_path) / ".venv/installed").read_text() == "miss"
     (batch_env.repository / ".env").write_text("MARKER=" + new)
     second, notices = isolate.open(
         checkout(batch_env), "cache-private-second", approved_secrets=(".env",)
@@ -211,10 +213,16 @@ else:
     assert not (Path(second.canonical_path) / ".venv").exists()
     assert "old cache namespace unavailable" in "\n".join(notices)
     assert old not in repr(notices) and new not in repr(notices)
+    (batch_env.repository / ".env").write_text("MARKER=" + old)
+    third, notices = isolate.open(
+        checkout(batch_env), "cache-private-third", approved_secrets=(".env",)
+    )
+    assert notices == ("Dependency rebuilt privately: .venv",), notices
+    assert (Path(third.canonical_path) / ".venv/installed").read_text() == "hit"
     with batch_env.store.connection() as connection:
         database = "\n".join(connection.iterdump())
     assert old not in database and new not in database
-    for workspace in (first, second):
+    for workspace in (first, second, third):
         journal = Path(workspace.git_dir) / "loupe-rebuild.json"
         assert old not in journal.read_text() and new not in journal.read_text()
     for path in batch_env.publisher.candidate_dir.iterdir():

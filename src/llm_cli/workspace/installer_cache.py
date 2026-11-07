@@ -1,7 +1,7 @@
 """Opt-in private installer artifacts, shared leases and idle-only eviction.
 
 No cache body or private value enters SQLite. A private HMAC distinguishes input
-sets; each change advances a namespace that is never reused after rotation.
+sets; a bounded least recently used index retains their reusable namespaces.
 """
 
 from __future__ import annotations
@@ -37,6 +37,10 @@ class CacheLimit(ValueError):
 
 class CacheError(ValueError):
     """A cache failure contains only an operator-safe explanation."""
+
+
+class _NamespaceFull(Exception):
+    """Admission needs an exclusive idle lease to make room."""
 
 
 @dataclass(frozen=True)
@@ -247,23 +251,46 @@ class InstallerCache:
             raise CacheError("installer cache byte cap must be 64 KiB..5 GiB")
         self.root, self.maximum_bytes = root, maximum_bytes
 
-    def _head(self) -> dict[str, str] | None:
+    def _heads(self) -> list[dict[str, str]]:
         try:
-            value = json.loads(_read(self.root / "head.json", 1024))
+            value = json.loads(_read(self.root / "head.json", 16 * 1024))
         except FileNotFoundError:
-            return None
+            return []
         except (ValueError, UnicodeError) as exc:
             raise CacheError("installer cache metadata needs recovery") from exc
+        # Preserve the reusable namespace from the former single-head format.
+        if isinstance(value, dict):
+            value = [value]
         if (
-            not isinstance(value, dict)
-            or set(value) != {"fingerprint", "namespace"}
-            or not _namespace(value["namespace"])
-            or not isinstance(value["fingerprint"], str)
-            or len(value["fingerprint"]) != 64
-            or any(c not in "0123456789abcdef" for c in value["fingerprint"])
+            not isinstance(value, list)
+            or len(value) > MAX_NAMESPACES
+            or any(
+                not isinstance(head, dict)
+                or set(head) != {"fingerprint", "namespace"}
+                or not _namespace(head["namespace"])
+                or not isinstance(head["fingerprint"], str)
+                or len(head["fingerprint"]) != 64
+                or any(c not in "0123456789abcdef" for c in head["fingerprint"])
+                for head in value
+            )
+            or len({head["fingerprint"] for head in value}) != len(value)
+            or len({head["namespace"] for head in value}) != len(value)
         ):
             raise CacheError("installer cache metadata needs recovery")
-        return value
+        return [dict(head) for head in value]
+
+    def _write_heads(self, heads: list[dict[str, str]]) -> None:
+        if heads:
+            _atomic(self.root / "head.json", json.dumps(heads).encode())
+        else:
+            (self.root / "head.json").unlink(missing_ok=True)
+            descriptor = os.open(
+                self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
 
     def _select(self, values: tuple[str, ...]) -> Path:
         marker = self.root / "protection.required"
@@ -282,16 +309,29 @@ class InstallerCache:
         fingerprint = hmac.new(
             key, json.dumps(sorted(set(values))).encode(), hashlib.sha256
         ).hexdigest()
-        head = self._head()
-        if head is None or head["fingerprint"] != fingerprint:
+        heads = self._heads()
+        head = next(
+            (head for head in heads if head["fingerprint"] == fingerprint), None
+        )
+        if head is None:
+            with os.scandir(self.root) as entries:
+                if (
+                    len(heads) >= MAX_NAMESPACES
+                    or sum(_namespace(entry.name) for entry in entries)
+                    >= MAX_NAMESPACES
+                ):
+                    raise _NamespaceFull
             head = {
                 "fingerprint": fingerprint,
                 "namespace": "ns-" + secrets.token_hex(16),
             }
-            _directory(self.root / head["namespace"])
-            _atomic(self.root / "head.json", json.dumps(head).encode())
         target = self.root / head["namespace"]
         _directory(target)
+        # Metadata order records use, independent of artifact modification times.
+        updated = [entry for entry in heads if entry != head]
+        updated.append(head)
+        if updated != heads:
+            self._write_heads(updated)
         return target
 
     @contextmanager
@@ -311,51 +351,87 @@ class InstallerCache:
         self.prune()
         deadline = time.monotonic() + timeout
         try:
-            with _lock(
-                self.root / "leases.lock", shared=True, timeout=timeout
-            ) as descriptor:
-                assert descriptor is not None
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise CacheError(
-                            "installer cache is busy; retry after other rebuilds "
-                            "finish or disable isolated.rebuild.cache"
-                        )
-                    with _lock(self.root / "metadata.lock", timeout=remaining):
-                        target = self._select(values)
-                        expected_head = self._head()
-                    # Same-input installers share artifacts serially: a live
-                    # builder may temporarily create aliases, so another writer
-                    # must validate only after that builder has fully stopped.
+            while True:
+                try:
                     with _lock(
-                        self.root / ("install-" + target.name + ".lock"),
+                        self.root / "leases.lock",
+                        shared=True,
                         timeout=max(0.001, deadline - time.monotonic()),
-                    ) as selected:
-                        assert selected is not None
-                        with _lock(
+                    ) as descriptor:
+                        assert descriptor is not None
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise CacheError(
+                                    "installer cache is busy; retry after other "
+                                    "rebuilds finish or disable isolated.rebuild.cache"
+                                )
+                            with _lock(self.root / "metadata.lock", timeout=remaining):
+                                target = self._select(values)
+                            # Same-input writers validate only after the preceding
+                            # builder has stopped creating temporary aliases.
+                            with _lock(
+                                self.root / ("install-" + target.name + ".lock"),
+                                timeout=max(0.001, deadline - time.monotonic()),
+                            ) as selected:
+                                assert selected is not None
+                                with _lock(
+                                    self.root / "metadata.lock",
+                                    timeout=max(0.001, deadline - time.monotonic()),
+                                ):
+                                    # Only invalidation of this namespace fences
+                                    # its waiter; unrelated selections are safe.
+                                    heads = self._heads()
+                                    head = next(
+                                        (
+                                            head
+                                            for head in heads
+                                            if head["namespace"] == target.name
+                                        ),
+                                        None,
+                                    )
+                                    if head is None:
+                                        continue
+                                    # Waiting for an earlier writer is also use:
+                                    # refresh at handoff, after unrelated hits.
+                                    if heads[-1] != head:
+                                        self._write_heads(
+                                            [entry for entry in heads if entry != head]
+                                            + [head]
+                                        )
+                                _inventory(target, reject_hardlinks=True)
+                                # The trusted supervisor retains both leases
+                                # through daemon death; installers inherit none.
+                                retained: list[int] = []
+                                try:
+                                    for fd in (descriptor, selected):
+                                        retained.append(
+                                            fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 64)
+                                        )
+                                    yield CacheLease(target, tuple(retained))
+                                finally:
+                                    for fd in retained:
+                                        os.close(fd)
+                                return
+                except _NamespaceFull:
+                    # Drop SH before requesting EX; never upgrade a live lease.
+                    # Keep the physical namespace bound during installation too.
+                    with (
+                        _lock(
+                            self.root / "leases.lock",
+                            timeout=max(0.001, deadline - time.monotonic()),
+                        ),
+                        _lock(
                             self.root / "metadata.lock",
                             timeout=max(0.001, deadline - time.monotonic()),
-                        ):
-                            # _select proved the requested private-value HMAC.
-                            # A preceding writer can invalidate/rotate this head
-                            # while we wait; never hand its old artifacts back.
-                            if self._head() != expected_head:
-                                continue
-                        _inventory(target, reject_hardlinks=True)
-                        # Keep both leases alive in the supervisor after daemon
-                        # death. The installer itself must not inherit either FD.
-                        retained: list[int] = []
+                        ),
+                    ):
+                        # Another admitted writer may have populated this input
+                        # while we waited; preserve it instead of evicting it.
                         try:
-                            for fd in (descriptor, selected):
-                                retained.append(
-                                    fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 64)
-                                )
-                            yield CacheLease(target, tuple(retained))
-                        finally:
-                            for fd in retained:
-                                os.close(fd)
-                        break
+                            self._select(values)
+                        except _NamespaceFull:
+                            self._prune_owned(maximum_namespaces=MAX_NAMESPACES - 1)
         finally:
             # Release SH before waiting for EX. Other installers do likewise,
             # so all writers can finish without a lock-upgrade deadlock.
@@ -368,18 +444,12 @@ class InstallerCache:
                 self._prune_owned()
 
     def invalidate(self, target: Path) -> None:
-        """A changed input set cannot leave a reusable contaminated head."""
+        """A changed input set cannot leave a reusable contaminated namespace."""
         with _lock(self.root / "metadata.lock"):
-            head = self._head()
-            if head is not None and head["namespace"] == target.name:
-                (self.root / "head.json").unlink()
-                descriptor = os.open(
-                    self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                )
-                try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
+            heads = self._heads()
+            retained = [head for head in heads if head["namespace"] != target.name]
+            if retained != heads:
+                self._write_heads(retained)
 
     def over_limit(self) -> bool:
         """Observe cache growth alongside the existing installer size checks."""
@@ -397,7 +467,13 @@ class InstallerCache:
                 self._prune_owned(all_artifacts=all_artifacts)
                 return True
 
-    def _prune_owned(self, *, all_artifacts: bool = False) -> None:
+    def _prune_owned(
+        self, *, all_artifacts: bool = False, maximum_namespaces: int | None = None
+    ) -> None:
+        if maximum_namespaces is None:
+            maximum_namespaces = MAX_NAMESPACES
+        heads = [] if all_artifacts else self._heads()
+        order = {head["namespace"]: index for index, head in enumerate(heads)}
         directories = []
         namespace_locks: list[str] = []
         with os.scandir(self.root) as entries:
@@ -406,7 +482,9 @@ class InstallerCache:
                     info = entry.stat(follow_symlinks=False)
                     if not stat.S_ISDIR(info.st_mode) and not all_artifacts:
                         raise CacheError("installer cache namespace identity changed")
-                    directories.append((info.st_mtime_ns, entry.name))
+                    # Unindexed crash leftovers and invalidated artifacts go
+                    # before reusable namespaces, ordered from least used.
+                    directories.append((order.get(entry.name, -1), entry.name))
                 elif (
                     entry.name.startswith("install-")
                     and entry.name.endswith(".lock")
@@ -433,6 +511,12 @@ class InstallerCache:
                 }:
                     raise CacheError("installer cache contains unknown metadata")
         remaining = len(directories)
+        if not all_artifacts:
+            present = {name for _, name in directories}
+            retained = [head for head in heads if head["namespace"] in present]
+            if retained != heads:
+                self._write_heads(retained)
+                heads = retained
         if all_artifacts:
             marker = self.root / "protection.required"
             if not marker.exists() and not marker.is_symlink():
@@ -448,14 +532,17 @@ class InstallerCache:
                 total = self.maximum_bytes + 1
             if (
                 not all_artifacts
+                and name in order
                 and total <= self.maximum_bytes
-                and remaining <= MAX_NAMESPACES
+                and remaining <= maximum_namespaces
             ):
                 break
             if not all_artifacts:
-                head = self._head()
-                if head is not None and head["namespace"] == name:
-                    (self.root / "head.json").unlink()
+                retained = [head for head in heads if head["namespace"] != name]
+                if retained != heads:
+                    # Fence reuse before deletion, including interrupted prune.
+                    self._write_heads(retained)
+                    heads = retained
             _remove(self.root, name)
             (self.root / ("install-" + name + ".lock")).unlink(missing_ok=True)
             remaining -= 1

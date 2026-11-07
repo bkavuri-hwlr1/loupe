@@ -14,6 +14,7 @@ from llm_cli.agent.source_policy import contains_secret_material
 from llm_cli.errors import LlmCoordError
 from llm_cli.workspace.installer_cache import (
     DEFAULT_MAX_BYTES,
+    MAX_NAMESPACES,
     CacheError,
     InstallerCache,
 )
@@ -44,19 +45,22 @@ def test_two_instances_share_artifacts_and_metadata_contains_no_private_value(
             assert path.stat().st_mode & 0o077 == 0
 
 
-def test_rotating_back_never_reuses_a_former_private_value_namespace(
+def test_alternating_workspaces_reuses_the_matching_private_value_namespace(
     tmp_path: Path,
 ) -> None:
-    store = cache(tmp_path)
-    with store.activity(("old ordinary marker",)) as old:
-        (old / "private-cached-value").write_text("old ordinary marker")
-    with store.activity(("new ordinary marker",)) as changed:
-        assert changed != old
-        assert not (changed / "private-cached-value").exists()
-    with store.activity(("old ordinary marker",)) as returned:
-        assert returned not in {old, changed}
-        assert not (returned / "private-cached-value").exists()
-    assert (old / "private-cached-value").exists()
+    with cache(tmp_path).activity(("workspace A ordinary marker",)) as first:
+        (first / "private-cached-value").write_text("workspace A artifact")
+    with cache(tmp_path).activity(("workspace B ordinary marker",)) as second:
+        assert second != first
+        assert not (second / "private-cached-value").exists()
+        (second / "private-cached-value").write_text("workspace B artifact")
+    # A fresh instance must recover both fingerprints and their artifacts.
+    with cache(tmp_path).activity(("workspace A ordinary marker",)) as returned:
+        assert returned == first
+        assert (returned / "private-cached-value").read_text() == "workspace A artifact"
+    with cache(tmp_path).activity(("workspace B ordinary marker",)) as returned:
+        assert returned == second
+        assert (returned / "private-cached-value").read_text() == "workspace B artifact"
 
 
 def test_input_change_during_rebuild_invalidates_the_selected_namespace(
@@ -104,9 +108,58 @@ def test_same_input_installers_serialize_but_different_inputs_can_progress(
             assert not store.prune()
         finally:
             release.set()
+    assert same.result(timeout=10) == initial
     assert same.result(timeout=10) != different.result(timeout=10)
     assert different.result(timeout=10) != initial
     assert store.prune()
+
+
+def test_waiting_writer_refreshes_recency_when_its_namespace_is_handed_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import installer_cache
+
+    monkeypatch.setattr(installer_cache, "MAX_NAMESPACES", 2)
+    store = cache(tmp_path)
+    with store.activity(("first",)) as first:
+        (first / "artifact").write_text("first artifact")
+    with store.activity(("second",)) as second:
+        (second / "artifact").write_text("second artifact")
+    waiting, second_entered = Event(), Event()
+    select = InstallerCache._select
+
+    def selected(store: InstallerCache, values: tuple[str, ...]) -> Path:
+        result = select(store, values)
+        if values == ("first",) and current_thread().name != "MainThread":
+            waiting.set()
+        return result
+
+    monkeypatch.setattr(InstallerCache, "_select", selected)
+
+    def install(values: tuple[str, ...]) -> Path:
+        with store.activity(values) as selected:
+            if values == ("second",):
+                second_entered.set()
+            return selected
+
+    with ThreadPoolExecutor(max_workers=2) as pool, store.activity(("first",)):
+        queued = pool.submit(install, ("first",))
+        assert waiting.wait(5)
+        # This hit happens after the waiter selected first, but before it can
+        # acquire first's writer lock. The eventual handoff must refresh first.
+        other = pool.submit(install, ("second",))
+        assert second_entered.wait(5)
+        assert not queued.done()
+    assert queued.result(timeout=5) == first
+    assert other.result(timeout=5) == second
+
+    with store.activity(("third",)):
+        assert not store.over_limit()
+    assert first.exists()
+    assert not second.exists()
+    with store.activity(("first",)) as returned:
+        assert returned == first
+        assert (returned / "artifact").read_text() == "first artifact"
 
 
 def test_cache_growth_is_detected_and_pruned_only_after_lease_exit(
@@ -123,18 +176,201 @@ def test_cache_growth_is_detected_and_pruned_only_after_lease_exit(
     assert not store.over_limit()
 
 
-def test_namespace_count_is_bounded_even_for_empty_old_generations(
+def test_namespace_limit_evicts_least_recently_used_after_32_inputs(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = cache(tmp_path)
+    retained = []
+    for number in range(MAX_NAMESPACES):
+        with store.activity((f"value-{number}",)) as selected:
+            (selected / "artifact").write_text(f"artifact-{number}")
+            retained.append(selected)
+    assert len(list(store.root.glob("ns-*"))) == MAX_NAMESPACES == 32
+
+    # Refresh the oldest fingerprint without mutating its artifacts. Filesystem
+    # mtimes must not turn a recently used namespace into the eviction victim.
+    with cache(tmp_path).activity(("value-0",)) as selected:
+        assert selected == retained[0]
+        assert (selected / "artifact").read_text() == "artifact-0"
+    os.utime(retained[0], ns=(1, 1))
+    os.utime(retained[1], ns=(2**62, 2**62))
+
+    with cache(tmp_path).activity(("value-32",)) as newest:
+        assert not store.over_limit()
+        (newest / "artifact").write_text("new artifact")
+    assert len(list(store.root.glob("ns-*"))) == MAX_NAMESPACES
+    assert retained[0].exists()
+    assert not retained[1].exists()
+    assert all(path.exists() for path in retained[2:])
+    assert not (store.root / ("install-" + retained[1].name + ".lock")).exists()
+    assert not store.over_limit()
+
+    with cache(tmp_path).activity(("value-1",)) as replaced:
+        assert not store.over_limit()
+        assert replaced not in retained
+        assert not (replaced / "artifact").exists()
+    assert len(list(store.root.glob("ns-*"))) == MAX_NAMESPACES
+    assert not retained[2].exists()
+    with cache(tmp_path).activity(("value-0",)) as selected:
+        assert selected == retained[0]
+        assert (selected / "artifact").read_text() == "artifact-0"
+
+
+def test_namespace_eviction_waits_for_live_leases_to_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from llm_cli.workspace import installer_cache
 
     monkeypatch.setattr(installer_cache, "MAX_NAMESPACES", 2)
     store = cache(tmp_path)
-    for number in range(5):
-        with store.activity((f"value-{number}",)):
+    for value in ("first", "second"):
+        with store.activity((value,)):
             pass
+    attempted = Event()
+    select = InstallerCache._select
+
+    def selected(store: InstallerCache, values: tuple[str, ...]) -> Path:
+        if values == ("third",):
+            attempted.set()
+        return select(store, values)
+
+    monkeypatch.setattr(InstallerCache, "_select", selected)
+
+    def at_capacity() -> None:
+        with store.lease(("third",), timeout=0.1):
+            pytest.fail("namespace eviction bypassed a live lease")
+
+    with store.activity(("first",)) as live, ThreadPoolExecutor(max_workers=1) as pool:
+        artifact = live / "artifact"
+        artifact.write_text("live artifact")
+        pending = pool.submit(at_capacity)
+        assert attempted.wait(5)
+        with pytest.raises(CacheError, match=r"retry.*disable"):
+            pending.result(timeout=5)
+        assert artifact.read_text() == "live artifact"
+        assert len(list(store.root.glob("ns-*"))) == 2
+        assert not store.over_limit()
+    with store.activity(("third",)):
+        assert not store.over_limit()
+    assert live.exists()
     assert len(list(store.root.glob("ns-*"))) == 2
+
+
+def test_invalidating_one_fingerprint_preserves_other_cached_inputs(
+    tmp_path: Path,
+) -> None:
+    store = cache(tmp_path)
+    with store.activity(("first input",)) as first:
+        (first / "artifact").write_text("first artifact")
+    with store.activity(("second input",)) as second:
+        (second / "artifact").write_text("second artifact")
+    store.invalidate(first)
+    with cache(tmp_path).activity(("second input",)) as returned:
+        assert returned == second
+        assert (returned / "artifact").read_text() == "second artifact"
+    with cache(tmp_path).activity(("first input",)) as replaced:
+        assert replaced != first
+        assert not (replaced / "artifact").exists()
+
+
+def test_legacy_single_head_migrates_without_losing_cached_artifacts(
+    tmp_path: Path,
+) -> None:
+    store = cache(tmp_path)
+    with store.activity(("legacy input",)) as original:
+        (original / "artifact").write_text("legacy artifact")
+    metadata = store.root / "head.json"
+    legacy = json.loads(metadata.read_text())[0]
+    metadata.write_text(json.dumps(legacy))
+
+    with cache(tmp_path).activity(("legacy input",)) as returned:
+        assert returned == original
+        assert (returned / "artifact").read_text() == "legacy artifact"
+    with cache(tmp_path).activity(("new input",)) as added:
+        assert added != original
+    assert legacy in json.loads(metadata.read_text())
+    with cache(tmp_path).activity(("legacy input",)) as returned:
+        assert returned == original
+        assert (returned / "artifact").read_text() == "legacy artifact"
+
+
+@pytest.mark.parametrize("duplicate", ["fingerprint", "namespace"])
+def test_duplicate_namespace_index_entries_require_explicit_recovery(
+    tmp_path: Path, duplicate: str
+) -> None:
+    store = cache(tmp_path)
+    originals = []
+    for value in ("first", "second"):
+        with store.activity((value,)) as selected:
+            (selected / "artifact").write_text(value)
+            originals.append(selected)
+    metadata = store.root / "head.json"
+    heads = json.loads(metadata.read_text())
+    heads[1][duplicate] = heads[0][duplicate]
+    metadata.write_text(json.dumps(heads))
+
+    with pytest.raises(CacheError, match="needs recovery"), store.activity(("first",)):
+        pytest.fail("ambiguous namespace index admitted an installer")
+    assert all((original / "artifact").exists() for original in originals)
+    assert store.prune(all_artifacts=True)
+    assert not list(store.root.glob("ns-*"))
+    with cache(tmp_path).activity(("first",)) as recovered:
+        assert recovered not in originals
+        assert not (recovered / "artifact").exists()
+
+
+def test_interrupted_namespace_index_write_removes_only_the_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import installer_cache
+
+    monkeypatch.setattr(installer_cache, "MAX_NAMESPACES", 2)
+    store = cache(tmp_path)
+    retained = []
+    for value in ("first", "second"):
+        with store.activity((value,)) as selected:
+            (selected / "artifact").write_text(value)
+            retained.append(selected)
+    # A crash after mkdir but before the atomic index update leaves an unindexed
+    # namespace. It must be discarded before either reusable indexed namespace.
+    orphan = store.root / ("ns-" + "f" * 32)
+    orphan.mkdir(mode=0o700)
+    (orphan / "artifact").write_text("interrupted artifact")
+    orphan_lock = store.root / ("install-" + orphan.name + ".lock")
+    orphan_lock.touch(mode=0o600)
+    assert store.prune()
+    assert not orphan.exists()
+    assert not orphan_lock.exists()
+    assert len(list(store.root.glob("ns-*"))) == 2
+    for value, original in zip(("first", "second"), retained, strict=True):
+        with cache(tmp_path).activity((value,)) as returned:
+            assert returned == original
+            assert (returned / "artifact").read_text() == value
+
+
+def test_missing_indexed_namespace_does_not_block_admission_at_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm_cli.workspace import installer_cache
+
+    monkeypatch.setattr(installer_cache, "MAX_NAMESPACES", 2)
+    store = cache(tmp_path)
+    with store.activity(("missing",)) as missing:
+        pass
+    with store.activity(("retained",)) as retained:
+        (retained / "artifact").write_text("retained artifact")
+    missing.rmdir()
+
+    with cache(tmp_path).activity(("new",)) as added:
+        assert added not in {missing, retained}
+        assert not store.over_limit()
+    assert len(list(store.root.glob("ns-*"))) == 2
+    assert not (store.root / ("install-" + missing.name + ".lock")).exists()
+    heads = json.loads((store.root / "head.json").read_text())
+    assert {head["namespace"] for head in heads} == {retained.name, added.name}
+    with cache(tmp_path).activity(("retained",)) as returned:
+        assert returned == retained
+        assert (returned / "artifact").read_text() == "retained artifact"
 
 
 def test_cache_key_alias_and_unsafe_permissions_are_never_repaired_silently(
@@ -379,17 +615,19 @@ def test_enabled_service_purge_keeps_checks_guarded_until_explicit_disabled_rese
     never_enabled()
 
 
-def test_waiting_installer_reselects_after_prior_writer_invalidates_head(
+@pytest.mark.parametrize("open_unrelated", [False, True])
+def test_waiting_installer_reselects_after_prior_writer_invalidates_namespace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    open_unrelated: bool,
 ) -> None:
     store = cache(tmp_path)
-    waiting = Event()
+    waiting, unrelated_entered = Event(), Event()
     select = InstallerCache._select
 
     def selected(store: InstallerCache, values: tuple[str, ...]) -> Path:
         result = select(store, values)
-        if current_thread().name != "MainThread":
+        if values == ("opening value",) and current_thread().name != "MainThread":
             waiting.set()
         return result
 
@@ -400,12 +638,25 @@ def test_waiting_installer_reselects_after_prior_writer_invalidates_head(
             assert not (lease.path / "contaminated").exists()
             return lease.path
 
+    def unrelated() -> Path:
+        with store.activity(("unrelated value",)) as selected:
+            (selected / "artifact").write_text("unrelated artifact")
+            unrelated_entered.set()
+            return selected
+
     with (
-        ThreadPoolExecutor(max_workers=1) as pool,
+        ThreadPoolExecutor(max_workers=2) as pool,
         store.activity(("opening value",)) as old,
     ):
         (old / "contaminated").write_text("changed private input during prior install")
         queued = pool.submit(waiter)
         assert waiting.wait(5)
+        other = pool.submit(unrelated) if open_unrelated else None
+        if other is not None:
+            assert unrelated_entered.wait(5)
         store.invalidate(old)
     assert queued.result(timeout=5) != old
+    if other is not None:
+        with store.activity(("unrelated value",)) as selected:
+            assert selected == other.result(timeout=5)
+            assert (selected / "artifact").read_text() == "unrelated artifact"
