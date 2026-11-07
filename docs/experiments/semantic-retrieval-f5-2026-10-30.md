@@ -1,10 +1,13 @@
 # Offline semantic retrieval comparison (F5), October 30, 2026
 
-**Decision: keep F4 gated.** Hybrid retrieval improved Recall@10 by 3.33
-percentage points on each repository, below the fixed thresholds, and lost one
-Loupe answer at Recall@5. This is a result for the selected model and questions;
-it is not evidence that semantic retrieval is generally ineffective. Product
-code, dependencies and retrieval defaults are unchanged.
+**F4 gate: inconclusive under F5.** The lexical baseline answered 55 of 60
+questions at Recall@10, leaving at most 8.33 points of gain against a 10-point
+threshold, and the model's 256-token input window truncated 95.95% of Loupe
+chunks. Hybrid retrieval's net Recall@10 gain was 3.33 points on each repository;
+at Recall@5 it gained four Loupe answers and lost five. A conclusive rerun needs
+questions that lexical search misses, with enough headroom to meet the gate,
+and a model with a longer input window or smaller chunks. Product code,
+dependencies and retrieval defaults are unchanged.
 
 The [protocol](semantic-retrieval-f5-protocol.md), sixty questions and experiment
 script were committed at `3df2c0d50cee07085bd83b0abd5ccbf54647ecbc` before any
@@ -15,6 +18,11 @@ in the [unmodified result](semantic-retrieval-f5-2026-10-30.json), with
 read-only recalculation found no mismatch in any recorded Recall@5 or Recall@10
 score. No questions, model settings or gate thresholds were changed after ranks
 were seen.
+
+The result JSON retains the script's original `"no-go"` threshold decision as
+run evidence. The gate's interpretation is **inconclusive under F5** because
+this question list could not meet the macro threshold even with perfect hybrid
+retrieval.
 
 ## Recall
 
@@ -33,6 +41,21 @@ unique files. Repository means have equal weight in the macro result.
 | Macro | Lexical | 85.00% | 91.67% |
 | Macro | Semantic | 83.33% | 88.33% |
 | Macro | Hybrid | 86.67% | 95.00% |
+
+The following per-question churn compares hybrid with lexical search at each
+reported cutoff. A gain means the expected file was absent from lexical's first
+`k` unique files and present in hybrid's; a loss is the reverse. Counts were
+recomputed from the recorded expected files and rankings, with all 360 recorded
+recall values independently checked. Net changes alone hide this churn.
+
+| Repository | Cutoff | Answers gained | Answers lost | Net answers |
+| --- | --- | ---: | ---: | ---: |
+| Loupe | Recall@5 | 4 | 5 | −1 |
+| Django | Recall@5 | 2 | 0 | +2 |
+| Both (60 questions) | Recall@5 | 6 | 5 | +1 |
+| Loupe | Recall@10 | 3 | 2 | +1 |
+| Django | Recall@10 | 1 | 0 | +1 |
+| Both (60 questions) | Recall@10 | 4 | 2 | +2 |
 
 | Predeclared condition | Observed | Result |
 | --- | --- | --- |
@@ -54,9 +77,8 @@ The lexical baseline was unexpectedly strong. At Recall@10 it already answered
 8.33 points. **Even perfect hybrid retrieval could not meet the predeclared
 10-point macro threshold on this frozen question list.** Identifier-free
 wording did not make these questions sufficiently difficult for lexical search.
-This limits the gate's ability to distinguish a useful embedding backend. We
-retain the threshold and report the ceiling rather than selecting harder
-questions after seeing ranks.
+This makes F4's gate **inconclusive under F5**. We retain the threshold and
+report the ceiling rather than selecting harder questions after seeing ranks.
 
 The fixed sentence model also has a short input window: 1,375 of 1,433 Loupe
 chunks (95.95%) and 3,259 of 3,615 Django chunks (90.15%) exceeded 256
@@ -66,11 +88,13 @@ input limit. The experiment deliberately preserves that chunker; it does not
 measure a longer-context or code-specific model.
 
 Semantic-only search was weaker than lexical on Loupe and stronger on Django.
-Hybrid recovered one additional answer at ten on each repository, while its
-Loupe ranking lost an answer at five. These mixed observations and the missed
-conditions do not justify opening F4 under this protocol. A different model,
-chunking scheme or difficulty-calibrated corpus would require a separately
-fixed experiment.
+Hybrid's net gain of one answer at ten on each repository came from three gains
+and two losses on Loupe, and one gain with no losses on Django. Its net loss of
+one Loupe answer at five came from four gains and five losses. F4's gate is
+inconclusive under F5. A conclusive rerun needs a separately fixed question set
+containing questions lexical search misses, with
+enough headroom to meet the unchanged thresholds, and a model with a longer
+input window or smaller chunks that fit the model's window.
 
 ## Inputs, implementation and local cost
 
