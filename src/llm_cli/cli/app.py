@@ -293,6 +293,20 @@ def build_parser() -> argparse.ArgumentParser:
         if action == "configure":
             sub.add_argument("--file", required=True)
 
+    change = commands.add_parser(
+        "change", help="export frozen source proposals, candidates, and batches"
+    )
+    change_commands = change.add_subparsers(dest="change_command", required=True)
+    export_change = change_commands.add_parser(
+        "export", help="write a portable patch or content-addressed source bundle"
+    )
+    export_change.add_argument("identifier", metavar="ID")
+    export_change.add_argument("--kind", choices=("proposal", "candidate", "batch"))
+    export_change.add_argument("--format", choices=("patch", "bundle"), default="patch")
+    export_change.add_argument("--to", required=True, type=Path, dest="destination")
+    export_change.add_argument("--intent", dest="export_intent_id", metavar="ID")
+    export_change.add_argument("--into-checkout", action="store_true")
+
     workspace = commands.add_parser(
         "workspace",
         help="inspect and operate the workspace a checkout coordinates through",
@@ -992,6 +1006,46 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                 )
             return _watch(client, task_id, 0, arguments.as_json, arguments.plain)
         return result
+    if command == "change":
+        destination = arguments.destination.expanduser()
+        try:
+            destination = destination.parent.resolve(strict=True) / destination.name
+        except OSError as exc:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                "source export destination parent must already exist",
+            ) from exc
+        intent_id = (
+            arguments.export_intent_id
+            if arguments.export_intent_id is not None
+            else new_id("export")
+        )
+        if not intent_id or len(intent_id) > 128:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID, "export intent ID needs 1 to 128 characters"
+            )
+        try:
+            return _patient(client, 120).call(
+                "change.export",
+                {
+                    "identifier": arguments.identifier,
+                    "kind": arguments.kind,
+                    "format": arguments.format,
+                    "destination": str(destination),
+                    "export_intent_id": intent_id,
+                    "into_checkout": arguments.into_checkout,
+                },
+                idempotency_key=intent_id,
+            )
+        except LlmCoordError as exc:
+            raise LlmCoordError(
+                exc.code,
+                exc.message
+                + " Export intent: --intent "
+                + intent_id
+                + ". Keep this ID for unchanged retries.",
+                {**(exc.details or {}), "export_intent_id": intent_id},
+            ) from exc
     if command == "workspace":
         if arguments.workspace_command == "authority":
             prune = arguments.authority_command == "prune"
