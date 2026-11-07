@@ -47,7 +47,9 @@ def test_cache_bubblewrap_preserves_network_and_writes_beyond_mask(
         sandbox.BUBBLEWRAP, cache_root, ["echo", "ready"], cwd=tmp_path
     )
     assert command[command.index("--dev-bind") : command.index("--dev-bind") + 3] == [
-        "--dev-bind", "/", "/"
+        "--dev-bind",
+        "/",
+        "/",
     ]
     assert "--unshare-net" not in command and "--unshare-all" not in command
     assert "--unshare-pid" in command
@@ -147,8 +149,13 @@ with socket.create_connection(('127.0.0.1',int(sys.argv[3])),timeout=2) as conne
                 kind,
                 cache_root,
                 [
-                    sys.executable, "-I", "-c", script,
-                    str(accessed), str(outside), str(port),
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    script,
+                    str(accessed),
+                    str(outside),
+                    str(port),
                 ],
                 cwd=tmp_path,
             ),
@@ -189,7 +196,9 @@ with socket.socket(socket.AF_UNIX) as connection:
 """
             completed = subprocess.run(
                 wrap_cache_guard(
-                    kind, cache, [sys.executable, "-I", "-c", script, str(path)],
+                    kind,
+                    cache,
+                    [sys.executable, "-I", "-c", script, str(path)],
                     cwd=root,
                 ),
                 cwd=root,
