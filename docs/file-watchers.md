@@ -16,8 +16,11 @@ every publication still checks its exact bases on disk.
 - **Outside-edit scans.** Shared sessions get notices when files they read
   change outside Loupe. A narrowed scan checks reads the watcher names, reads
   whose identity was never verified, and reads an earlier scan could not settle.
-  Model boundaries use the daemon's scanner, so its cursors persist between
-  turns.
+  Healthy native watchers select changed paths from up to 20,000 retained
+  advisory read registrations, including older reads beyond the polling
+  window. Each session has its own cursor; scanning one does not consume
+  another session's changes. Model boundaries use the daemon's scanner, so
+  cursors persist between turns.
 - **Background scans.** A watcher wakes the daemon's existing background scan,
   still at most once every two seconds. No new daemon loop is added.
 
@@ -59,7 +62,12 @@ event with code `CONTEXT_RESYNC_REQUIRED` to every active session on the
 checkout. The terminal shows "File watching lost changes here; Loupe rescanned
 the checkout." The model's next coordination packet carries a
 `context_resync` entry asking it to re-read files before relying on earlier
-reads. Changes found by the full scan produce ordinary outside-edit notices.
+reads. Changes found by the full scan produce ordinary outside-edit notices. Shared
+outside-edit scans still verify at most the latest 1,000 reads in one full
+pass. Their next healthy watcher passes revisit older retained registrations
+in bounded steps; the model receives a coverage notice while that work is
+pending. Polling fallback stays within the latest 1,000 reads and reports
+that limit explicitly.
 
 Publication does not pause during a resync. The workspace plan's pause
 (§17.6) protected external batches built from scans. Loupe publishes only after
@@ -90,9 +98,20 @@ watchers = "auto"   # or "off"
 `"off"` starts no watcher. Every scan is then a full periodic one, with the
 same scanner code as before watchers.
 
-## Limits watchers do not change
+## Coverage and limits
 
-- Outside-edit scans cover each session's latest 1,000 read paths.
+- Each outside-edit scan verifies at most 1,000 paths, 16 MiB total and
+  256 KiB per file, within five seconds. Changed watcher paths take priority;
+  unfinished paths retry at later boundaries. Notices contain paths only.
+- Advisory outside-edit registrations retain at most 20,000 paths per active
+  session. Reading another path evicts the least recently read advisory
+  registration. Restart trims legacy registrations once, before requests.
+  A model coordination notice states the coverage limit after eviction.
+  Canonical last-read publication bases remain intact: this cap does not
+  bound or discard the authority used to reject stale writes.
+- On polling fallback, only the latest 1,000 read paths are checked; re-read
+  older files before relying on them. Watcher overflow also starts with that
+  window, then healthy passes catch up older retained registrations.
 - Isolated hydration admission refuses checkouts its 20,000-entry inventory
   budget cannot cover, and isolated capture refuses more than 20,000 source
   paths, so a 100,000-file checkout cannot open an isolated session.

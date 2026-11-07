@@ -77,16 +77,25 @@ class SharedCoordinationContext:
         # Whether the last outside-edit scan failed, and an undelivered notice.
         self._scan_failing = False
         self._scan_notice: str | None = None
+        self._coverage_notice: str | None = None
+        self._last_coverage_notice: str | None = None
 
     def __call__(self, after_sequence: int | None) -> CoordinationUpdate:
         if after_sequence is not None and (
             type(after_sequence) is not int or after_sequence < 0
         ):
             raise _too_large("the saved coordination cursor is invalid")
+        coverage: str | None = None
+        scanned = False
+        self._coverage_notice = None
         try:
             if self.scan_external:
                 scanner = self.scanner or ExternalWorkspaceScanner(self.store)
                 scanner.scan_session(self.session_id)
+                coverage = scanner.coverage_notice(self.session_id)
+                scanned = True
+                if coverage != self._last_coverage_notice:
+                    self._coverage_notice = coverage
         except (LlmCoordError, OSError, ValueError) as exc:
             # Outside-edit notices are advisory and must never fail the model
             # turn. Say so once per failure run; exact-base checks still guard
@@ -241,16 +250,22 @@ class SharedCoordinationContext:
                 start == head
                 and self._last_sequence == head
                 and self._scan_notice is None
+                and self._coverage_notice is None
             ):
+                if scanned:
+                    self._last_coverage_notice = coverage
                 return CoordinationUpdate(sequence=head, text=None)
             if (
                 self._scan_notice is None
+                and self._coverage_notice is None
                 and after_sequence is not None
                 and self._last_sequence is not None
                 and unrelated_external == head - start
                 and unrelated_external > 0
             ):
                 self._last_sequence = head
+                if scanned:
+                    self._last_coverage_notice = coverage
                 return CoordinationUpdate(
                     sequence=head, text=None, facts_unchanged=True
                 )
@@ -308,6 +323,8 @@ class SharedCoordinationContext:
                 )
             if bootstrap is not None:
                 packet["bootstrap"] = bootstrap
+            if self._coverage_notice is not None:
+                packet["external_coverage"] = self._coverage_notice
             if self._scan_notice is not None:
                 packet["external_changes"] = (
                     "Outside edits could not be checked "
@@ -320,6 +337,9 @@ class SharedCoordinationContext:
                 )
         self._last_sequence = head
         self._scan_notice = None
+        self._coverage_notice = None
+        if scanned:
+            self._last_coverage_notice = coverage
         return CoordinationUpdate(sequence=head, text=text)
 
     @staticmethod
