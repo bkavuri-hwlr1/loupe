@@ -479,6 +479,18 @@ the harness needs it), `scripts/benchmark_fixtures/natural-*/`,
   33,000 tokens per task), eight tasks, two arms and three repeats take about
   1.6 million tokens; natural tasks will likely use more.
 
+**Result (October 30, 2026).** The frozen natural-task comparison completed
+48 cells and 24 valid matched pairs. Both arms passed 21/24 hidden checks; there
+were no scored review catches or harmful scored repairs. Manual sandboxed checks
+verified six additional unscored repairs, one malformed-input robustness repair
+and one supported-runtime false positive. All six quality failures remain.
+Observed tokens were 1,918,878 off and 2,513,490 on (4,432,368 total); direct review
+was 3.20% of the on arm. Two suspension-affected cells remain in quality and usage;
+23 whole matched pairs provide comparable raw wall medians of 67.4 s off and
+88.1 s on. Keep review off by default and available as an opt-in, bounded by this
+eight-task corpus. The [dated report](experiments/natural-review-b7-2026-10-30.md)
+records all outcomes, adjudications and limitations; no product default changes.
+
 ## Lane C — workspace modes
 
 ### C1. Isolated mode: design and hydration planner
@@ -1323,12 +1335,15 @@ watchers already report which paths changed.
   latest 1,000. Keep each scan within count, byte and time bounds.
 - **Fallback.** On watcher overflow or the polling fallback, keep today's
   window, and state the coverage limit in the notice or status.
-- **Storage.** Keep each session's read registrations bounded; measure the
-  cost at 20,000 read paths.
+- **Storage.** Keep each session's advisory outside-read registrations
+  bounded; measure the cost at 20,000 read paths. Canonical last-read
+  publication bases are retained independently and must not be evicted.
 - **Unchanged:** notices stay path-only and bounded.
 
 **Files.** `src/llm_cli/workspace/external.py`, `src/llm_cli/workspace/watchers.py`
 (read-only additions only), `scripts/scan_scale.py`, `docs/file-watchers.md`,
+`src/llm_cli/workspace/external_reads.py` (new), scoped registration hooks in
+`storage/control.py`, memory-only coverage notices in `workspace/context.py`,
 tests.
 
 **Done when.**
@@ -1337,6 +1352,15 @@ tests.
 - On overflow or polling, behavior matches today's window and the limit is
   reported.
 - The 20,000-file safe point stays under E3's threshold, recorded in the PR.
+
+**Implemented (Wave 12).** Healthy native watcher changes select from the
+entire retained advisory registry, capped at 20,000 paths per active session.
+Count, byte and time limits remain per pass; changed paths take priority and
+unfinished work retries with independent session cursors. Polling and overflow
+state the latest-1,000 coverage window, and healthy passes catch up older
+retained paths after loss. Registration uses an in-memory LRU with targeted
+indexed eviction and deterministic startup trimming. Canonical last-read
+publication bases remain untouched. See the [watcher guide](file-watchers.md).
 
 ### C20. Installer cache for dependency rebuilds
 
@@ -1419,6 +1443,15 @@ if needed), `docs/isolated-workspaces.md`, `README.md`, tests.
   confirmed or rolled back.
 - An unknown or missing disposition is refused before any RPC is sent.
 
+**Implemented (Wave 12).** The standalone command prepares and confirms one
+exact target bootstrap and reports classification, runtime summary and retained
+work. Shared targets require an explicit disposition before any RPC; isolated
+targets accept exact-file consent. `--switch-intent-id` makes retries idempotent,
+`--confirm ID --sequence N` acknowledges a pending target, and `--rollback ID`
+keeps the source binding. Session lookup and retries use the selected profile.
+Existing daemon guards and retry exit codes are
+preserved. See the [CLI guide](isolated-workspaces.md#switch-from-scripts-or-another-terminal).
+
 ### C22. Patch and bundle exports of candidates and batches
 
 *Run after C21 in the same session: both change `cli/app.py`.*
@@ -1459,6 +1492,16 @@ means reconstructing it from `task diff`.
   a retry does not write twice.
 - A candidate with screened content is refused, and no exported bytes appear
   in the database or logs.
+
+**Implemented (Wave 12).** `loupe change export` selects a held proposal,
+staged candidate or published batch, with optional explicit source kind. Patches
+preserve Git binary, mode and symlink changes; bundles retain exact before/after
+identities and SHA-256 addressed bodies. Migration 34 journals immutable request
+metadata and filesystem receipts, with private staging, no-replace publication
+and safe same-intent crash replay within the selected profile. Runtime and
+screened bytes are refused, and
+checkout destinations require explicit consent. Existing daemon and publication
+locks do not cover export I/O. See [source exports](isolated-workspaces.md#export-source-changes).
 
 ## Lane D — operations
 
