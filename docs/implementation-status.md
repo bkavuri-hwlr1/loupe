@@ -655,6 +655,20 @@ documents replace their graph facts atomically; unchanged graph rows remain.
 F3 adds optional agent/helper retrieval; its 30-cell live comparison is complete,
 with indexing kept off and F4 gated by the recorded result.
 Embedding providers, semantic retrieval and `sqlite-vec` remain planned.
+F5's [offline comparison](experiments/semantic-retrieval-f5-2026-10-30.md) records
+F4's gate as **inconclusive under F5**. Hybrid's net Recall@10 gain was 3.33
+points per repository: Loupe gained three answers and lost two; Django gained
+one and lost none. At Recall@5, Loupe gained four and lost five (net −3.33
+points), while Django gained two and lost none (net +6.67 points). The paired
+bootstrap interval crossed zero. The lexical baseline answered 55 of 60
+questions at Recall@10, leaving at most 8.33 macro points of gain against a 10-point
+threshold, and the model's 256-token window truncated 95.95% of Loupe chunks.
+A conclusive rerun needs questions that lexical search misses, with enough
+headroom to meet the unchanged gate, and a model with a longer input window or
+smaller chunks.
+All sixty questions, three arms' results, local costs and exact input hashes
+are retained. The prototype changes no product code or dependencies, makes no
+hosted embedding requests and leaves retrieval defaults unchanged.
 
 F2 validation at `0ab3fcd` passed 2,824 tests, with one case-sensitive-filesystem
 skip and the existing G1 cross-profile expected failure. Ruff, mypy over 119 source
@@ -1298,7 +1312,9 @@ Wave 12 takes up everything still open: catch-up follow-ups (C17), larger
 isolated admission (C18) and outside-scan coverage (C19), an installer cache
 (C20), `loupe session switch` (C21), patch and bundle exports (C22), review on
 natural tasks (B7), an offline comparison for semantic retrieval (F5) and E2's
-live provider checks. F4 embeddings stay gated, now by F5's result.
+live provider checks. F4's gate is **inconclusive under F5**; a conclusive rerun
+needs questions lexical search misses and a model with a longer input window or
+smaller chunks.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).

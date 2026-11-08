@@ -1,0 +1,23 @@
+{
+  "preregistered_commit": "3df2c0d50cee07085bd83b0abd5ccbf54647ecbc",
+  "result_sha256": "fa45354d1438c3d54d74b253bf229c7b3ccaa7abbd5318ec553c87faf9f6870e",
+  "started_at_utc": "2026-10-30T23:41:26.428393+00:00",
+  "finished_at_utc": "2026-10-30T23:42:43.206642+00:00",
+  "command_wall_seconds_approx": 76.77824902534485,
+  "wall_timing_method": "shell log creation to final script write (filesystem birth/mtime)",
+  "runtime_controls": {
+    "onnx_intra_op_threads": 1,
+    "onnx_inter_op_threads": 1,
+    "TOKENIZERS_PARALLELISM": "false",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1"
+  },
+  "sleep_prevented": true,
+  "coordinated_quiet_window": true,
+  "command_template": "python -u scripts/semantic_retrieval_eval.py --repo loupe=. --repo django=/path/to/django.git --model-dir /path/to/pinned-model --out /new/results.json",
+  "retained_queries": 60,
+  "independent_result_recalculation": "all60 unique rows and every Recall@5/@10 score recomputed without mismatch",
+  "maximum_attainable_macro_recall10_gain": 0.08333333333333333,
+  "predeclared_macro_recall10_gain_threshold": 0.1
+}

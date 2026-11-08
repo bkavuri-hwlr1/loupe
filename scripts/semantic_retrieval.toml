@@ -1,0 +1,450 @@
+# Questions and gate are frozen before the first embedding rank is computed.
+version = 1
+model_id = "sentence-transformers/all-MiniLM-L6-v2"
+model_revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+max_wordpieces = 256
+file_result_limit = 20
+chunk_candidate_pool = 80
+rrf_constant = 60
+
+[model_files]
+"tokenizer.json" = { bytes = 466247, git_blob = "cb202bfe2e3c98645018a6d12f182a434c9d3e02" }
+"onnx/model.onnx" = { bytes = 90405214, sha256 = "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452" }
+
+[gate]
+minimum_queries_per_repository = 30
+minimum_macro_delta_at_10 = 0.10
+minimum_repository_delta_at_10 = 0.05
+bootstrap_seed = 20261030
+bootstrap_samples = 10000
+
+[repositories.loupe]
+url = "https://github.com/bkavuri-hwlr1/loupe"
+revision = "69b8bcfcdf5091dc3f76674cd93318ae6fa86213"
+prefix = "src/llm_cli/"
+
+[repositories.django]
+url = "https://github.com/django/django"
+revision = "f4c65fd6a517dd32bd2e732ae3543e550e56f206"
+prefix = "django/"
+
+
+[[queries]]
+id = "loupe-01"
+repository = "loupe"
+question = "Where does opening a private conversation decide which ignored local inputs need consent before they are copied?"
+expected = ["src/llm_cli/workspace/hydration.py"]
+evidence = ["src/llm_cli/workspace/hydration.py::plan_hydration"]
+
+[[queries]]
+id = "loupe-02"
+repository = "loupe"
+question = "Where is a saved proposed edit combined with changes somebody made to the checkout since the proposal was prepared?"
+expected = ["src/llm_cli/workspace/workflow.py"]
+evidence = ["src/llm_cli/workspace/workflow.py::TaskWorkflow.apply"]
+
+[[queries]]
+id = "loupe-03"
+repository = "loupe"
+question = "Where is removing a source file refused if its current contents no longer match the version the editor observed?"
+expected = ["src/llm_cli/workspace/broker.py"]
+evidence = ["src/llm_cli/workspace/broker.py::atomic_delete_file"]
+
+[[queries]]
+id = "loupe-04"
+repository = "loupe"
+question = "Where are changes made by an external editor turned into notices for conversations that already inspected those files?"
+expected = ["src/llm_cli/workspace/external.py"]
+evidence = ["src/llm_cli/workspace/external.py::ExternalWorkspaceScanner._scan_session_owned"]
+
+[[queries]]
+id = "loupe-05"
+repository = "loupe"
+question = "Where is one physical checkout prevented from being owned by two different user profiles at the same time?"
+expected = ["src/llm_cli/workspace/authority.py"]
+evidence = ["src/llm_cli/workspace/authority.py::PhysicalAuthority._acquire"]
+
+[[queries]]
+id = "loupe-06"
+repository = "loupe"
+question = "Where must an operator acknowledge changed historical evidence before resuming an interrupted ownership conversion?"
+expected = ["src/llm_cli/workspace/regime.py"]
+evidence = ["src/llm_cli/workspace/regime.py::CutoverManager._accept_recovery"]
+
+[[queries]]
+id = "loupe-07"
+repository = "loupe"
+question = "Where are ignored local dependencies replaced safely while older held work keeps its original private inputs?"
+expected = ["src/llm_cli/workspace/runtime_refresh.py"]
+evidence = ["src/llm_cli/workspace/runtime_refresh.py::RuntimeRefresher._refresh"]
+
+[[queries]]
+id = "loupe-08"
+repository = "loupe"
+question = "Where does a restarted background service refuse to kill a surviving worker when its numeric process identifier has been reused?"
+expected = ["src/llm_cli/execution/processes.py"]
+evidence = ["src/llm_cli/execution/processes.py::ManagedProcessManager._recover_one"]
+
+[[queries]]
+id = "loupe-09"
+repository = "loupe"
+question = "Where can one malformed review finding be discarded while useful findings from the same response survive?"
+expected = ["src/llm_cli/agent/reviewer.py"]
+evidence = ["src/llm_cli/agent/reviewer.py::_parse"]
+
+[[queries]]
+id = "loupe-10"
+repository = "loupe"
+question = "Where is a long conversation replaced by a bounded summary while the current task and pending tool results are preserved?"
+expected = ["src/llm_cli/agent/harness.py"]
+evidence = ["src/llm_cli/agent/harness.py::CodingAgentHarness._compact"]
+
+[[queries]]
+id = "loupe-11"
+repository = "loupe"
+question = "Where are checkout paths in inherited process variables translated into the temporary tree used to verify a proposed change?"
+expected = ["src/llm_cli/execution/environment.py"]
+evidence = ["src/llm_cli/execution/environment.py::CommandEnvironment.prepare"]
+
+[[queries]]
+id = "loupe-12"
+repository = "loupe"
+question = "Where is an incoming local message refused when its advertised byte length exceeds the allowed frame size?"
+expected = ["src/llm_cli/protocol/framing.py"]
+evidence = ["src/llm_cli/protocol/framing.py::read_frame"]
+
+[[queries]]
+id = "loupe-13"
+repository = "loupe"
+question = "Where are already completed provider response items retained when the final streamed event omits their list?"
+expected = ["src/llm_cli/providers/codex_provider.py"]
+evidence = ["src/llm_cli/providers/codex_provider.py::_SubscriptionStream.__iter__"]
+
+[[queries]]
+id = "loupe-14"
+repository = "loupe"
+question = "Where do two helpers requesting the same web page wait for one shared download without holding the cache lock during human approval?"
+expected = ["src/llm_cli/web/access.py"]
+evidence = ["src/llm_cli/web/access.py::WebAccess.page"]
+
+[[queries]]
+id = "loupe-15"
+repository = "loupe"
+question = "Where are public page downloads protected against a hostname that resolves to a private network address?"
+expected = ["src/llm_cli/web/fetch.py"]
+evidence = ["src/llm_cli/web/fetch.py::public_addresses"]
+
+[[queries]]
+id = "loupe-16"
+repository = "loupe"
+question = "Where are differently cased or differently normalized spellings of private runtime paths kept out of model-visible source?"
+expected = ["src/llm_cli/agent/source_policy.py"]
+evidence = ["src/llm_cli/agent/source_policy.py::runtime_path_matches"]
+
+[[queries]]
+id = "loupe-17"
+repository = "loupe"
+question = "Where are search citations checked against the current file before they are labelled as current or stale?"
+expected = ["src/llm_cli/knowledge/search.py"]
+evidence = ["src/llm_cli/knowledge/search.py::current_state"]
+
+[[queries]]
+id = "loupe-18"
+repository = "loupe"
+question = "Where are source declarations and import relationships extracted without running the project being inspected?"
+expected = ["src/llm_cli/knowledge/parsers.py"]
+evidence = ["src/llm_cli/knowledge/parsers.py::_python"]
+
+[[queries]]
+id = "loupe-19"
+repository = "loupe"
+question = "Where is source text split into overlapping line windows with stable identities and a byte ceiling?"
+expected = ["src/llm_cli/knowledge/chunker.py"]
+evidence = ["src/llm_cli/knowledge/chunker.py::chunks"]
+
+[[queries]]
+id = "loupe-20"
+repository = "loupe"
+question = "Where are newly published documents applied to the search projection without rewriting all the unchanged documents?"
+expected = ["src/llm_cli/knowledge/indexer.py"]
+evidence = ["src/llm_cli/knowledge/indexer.py::KnowledgeIndex.process_pending"]
+
+[[queries]]
+id = "loupe-21"
+repository = "loupe"
+question = "Where are retrieved snippets shortened to a caller budget while retaining their file and version citations?"
+expected = ["src/llm_cli/knowledge/retrieval.py"]
+evidence = ["src/llm_cli/knowledge/retrieval.py::render_retrieval"]
+
+[[queries]]
+id = "loupe-22"
+repository = "loupe"
+question = "Where is a consistent database copy made while another process may still be writing to the live database?"
+expected = ["src/llm_cli/storage/backup.py"]
+evidence = ["src/llm_cli/storage/backup.py::_copy_and_validate"]
+
+[[queries]]
+id = "loupe-23"
+repository = "loupe"
+question = "Where can old streaming output be pruned without deleting settled answers or information needed to recover unfinished work?"
+expected = ["src/llm_cli/storage/retention.py"]
+evidence = ["src/llm_cli/storage/retention.py::prune_task_output"]
+
+[[queries]]
+id = "loupe-24"
+repository = "loupe"
+question = "Where does opening an existing database reject a numbered upgrade whose previously applied definition was changed?"
+expected = ["src/llm_cli/storage/migrations.py"]
+evidence = ["src/llm_cli/storage/migrations.py::apply_migrations"]
+
+[[queries]]
+id = "loupe-25"
+repository = "loupe"
+question = "Where are operating system restrictions assembled so a subprocess can write only to approved trees and cannot read credential directories?"
+expected = ["src/llm_cli/execution/sandbox.py"]
+evidence = ["src/llm_cli/execution/sandbox.py::wrap"]
+
+[[queries]]
+id = "loupe-26"
+repository = "loupe"
+question = "Where is test output screened line by line before it can be emitted or retained by the background service?"
+expected = ["src/llm_cli/execution/checks.py"]
+evidence = ["src/llm_cli/execution/checks.py::supervised_run"]
+
+[[queries]]
+id = "loupe-27"
+repository = "loupe"
+question = "Where do earlier queued overlapping reservations prevent later exclusive work from jumping ahead of them?"
+expected = ["src/llm_cli/coordination/coordinator.py"]
+evidence = ["src/llm_cli/coordination/coordinator.py::RepositoryCoordinator.request_claim"]
+
+[[queries]]
+id = "loupe-28"
+repository = "loupe"
+question = "Where does the interactive input editor offer slash-command suggestions and distinguish submitting text from inserting another line?"
+expected = ["src/llm_cli/cli/composer.py"]
+evidence = ["src/llm_cli/cli/composer.py::Composer.__init__"]
+
+[[queries]]
+id = "loupe-29"
+repository = "loupe"
+question = "Where is publishing paused when version-control operations such as a merge or rebase are still in progress?"
+expected = ["src/llm_cli/workspace/gitstate.py"]
+evidence = ["src/llm_cli/workspace/gitstate.py::preflight"]
+
+[[queries]]
+id = "loupe-30"
+repository = "loupe"
+question = "Where are repository guidance files found from broad to narrow directories and framed so they cannot expand an agent authority?"
+expected = ["src/llm_cli/agent/instructions.py"]
+evidence = ["src/llm_cli/agent/instructions.py::discover_instructions"]
+
+[[queries]]
+id = "django-01"
+repository = "django"
+question = "Where is application startup ordered so configuration is registered before models and final initialization hooks run?"
+expected = ["django/apps/registry.py"]
+evidence = ["django/apps/registry.py::Apps.populate"]
+
+[[queries]]
+id = "django-02"
+repository = "django"
+question = "Where is the current authenticated person attached to a request lazily instead of querying the database immediately?"
+expected = ["django/contrib/auth/middleware.py"]
+evidence = ["django/contrib/auth/middleware.py::AuthenticationMiddleware.process_request"]
+
+[[queries]]
+id = "django-03"
+repository = "django"
+question = "Where can a side effect be deferred until the surrounding database transaction has committed successfully?"
+expected = ["django/db/transaction.py"]
+evidence = ["django/db/transaction.py::on_commit"]
+
+[[queries]]
+id = "django-04"
+repository = "django"
+question = "Where are address patterns matched recursively and captured path values collected for the selected view?"
+expected = ["django/urls/resolvers.py"]
+evidence = ["django/urls/resolvers.py::URLResolver.resolve"]
+
+[[queries]]
+id = "django-05"
+repository = "django"
+question = "Where does a large incoming file upload use a temporary disk file instead of keeping all its bytes in memory?"
+expected = ["django/core/files/uploadhandler.py"]
+evidence = ["django/core/files/uploadhandler.py::MemoryFileUploadHandler.handle_raw_input"]
+
+[[queries]]
+id = "django-06"
+repository = "django"
+question = "Where is a stored upload given a different available name when the requested filename already exists?"
+expected = ["django/core/files/storage/base.py"]
+evidence = ["django/core/files/storage/base.py::Storage.get_available_name"]
+
+[[queries]]
+id = "django-07"
+repository = "django"
+question = "Where are substituted template values escaped before they are inserted into rendered markup?"
+expected = ["django/template/base.py"]
+evidence = ["django/template/base.py::render_value_in_context"]
+
+[[queries]]
+id = "django-08"
+repository = "django"
+question = "Where are unsafe requests rejected when the browser origin or secure referrer does not match the trusted site?"
+expected = ["django/middleware/csrf.py"]
+evidence = ["django/middleware/csrf.py::CsrfViewMiddleware.process_view"]
+
+[[queries]]
+id = "django-09"
+repository = "django"
+question = "Where is a new browser-session key generated until it avoids a collision with an existing stored session?"
+expected = ["django/contrib/sessions/backends/base.py"]
+evidence = ["django/contrib/sessions/backends/base.py::SessionBase._get_new_session_key"]
+
+[[queries]]
+id = "django-10"
+repository = "django"
+question = "Where is a stored login password checked and upgraded to the preferred hashing scheme after successful verification?"
+expected = ["django/contrib/auth/hashers.py"]
+evidence = ["django/contrib/auth/hashers.py::check_password"]
+
+[[queries]]
+id = "django-11"
+repository = "django"
+question = "Where can signed data carry an age limit so an otherwise valid signature is refused after it expires?"
+expected = ["django/core/signing.py"]
+evidence = ["django/core/signing.py::TimestampSigner.unsign"]
+
+[[queries]]
+id = "django-12"
+repository = "django"
+question = "Where are circular database schema dependencies detected before an ordered upgrade plan can be produced?"
+expected = ["django/db/migrations/graph.py"]
+evidence = ["django/db/migrations/graph.py::MigrationGraph.ensure_not_cyclic"]
+
+[[queries]]
+id = "django-13"
+repository = "django"
+question = "Where does saving an existing database object try an update and fall back to insertion when no row was affected?"
+expected = ["django/db/models/base.py"]
+evidence = ["django/db/models/base.py::Model._save_table"]
+
+[[queries]]
+id = "django-14"
+repository = "django"
+question = "Where are database query results cached so repeated iteration does not issue the same query again?"
+expected = ["django/db/models/query.py"]
+evidence = ["django/db/models/query.py::QuerySet._fetch_all"]
+
+[[queries]]
+id = "django-15"
+repository = "django"
+question = "Where is a disposable database created and populated for the test suite before it is destroyed afterwards?"
+expected = ["django/db/backends/base/creation.py"]
+evidence = ["django/db/backends/base/creation.py::BaseDatabaseCreation.create_test_db"]
+
+[[queries]]
+id = "django-16"
+repository = "django"
+question = "Where is a database connection prevented from crossing thread boundaries unless sharing was explicitly enabled?"
+expected = ["django/db/backends/base/base.py"]
+evidence = ["django/db/backends/base/base.py::BaseDatabaseWrapper.validate_thread_sharing"]
+
+[[queries]]
+id = "django-17"
+repository = "django"
+question = "Where are request-handling exceptions converted into the appropriate error responses without exposing debug details in production?"
+expected = ["django/core/handlers/exception.py"]
+evidence = ["django/core/handlers/exception.py::response_for_exception"]
+
+[[queries]]
+id = "django-18"
+repository = "django"
+question = "Where are synchronous and asynchronous request middleware adapted so either style can surround a view safely?"
+expected = ["django/core/handlers/base.py"]
+evidence = ["django/core/handlers/base.py::BaseHandler.adapt_method_mode"]
+
+[[queries]]
+id = "django-19"
+repository = "django"
+question = "Where does the development server intercept asset requests before passing ordinary requests to the application?"
+expected = ["django/contrib/staticfiles/handlers.py"]
+evidence = ["django/contrib/staticfiles/handlers.py::StaticFilesHandler.__call__"]
+
+[[queries]]
+id = "django-20"
+repository = "django"
+question = "Where are user-input errors collected from individual fields before whole-form validation is performed?"
+expected = ["django/forms/forms.py"]
+evidence = ["django/forms/forms.py::BaseForm.full_clean"]
+
+[[queries]]
+id = "django-21"
+repository = "django"
+question = "Where are textual form values converted to their intended data type and checked with validators?"
+expected = ["django/forms/fields.py"]
+evidence = ["django/forms/fields.py::Field.clean"]
+
+[[queries]]
+id = "django-22"
+repository = "django"
+question = "Where are dates, decimal numbers and universally unique identifiers converted to values that a JSON response can encode?"
+expected = ["django/core/serializers/json.py"]
+evidence = ["django/core/serializers/json.py::DjangoJSONEncoder.default"]
+
+[[queries]]
+id = "django-23"
+repository = "django"
+question = "Where are calendar dates from an HTTP header parsed into seconds while malformed dates can be rejected?"
+expected = ["django/utils/http.py"]
+evidence = ["django/utils/http.py::parse_http_date"]
+
+[[queries]]
+id = "django-24"
+repository = "django"
+question = "Where are naive date-time values made aware of a selected time zone rather than silently assuming the operating system zone?"
+expected = ["django/utils/timezone.py"]
+evidence = ["django/utils/timezone.py::make_aware"]
+
+[[queries]]
+id = "django-25"
+repository = "django"
+question = "Where are asset filenames rewritten with content hashes and recorded in a manifest for later lookup?"
+expected = ["django/contrib/staticfiles/storage.py"]
+evidence = ["django/contrib/staticfiles/storage.py::ManifestFilesMixin"]
+
+[[queries]]
+id = "django-26"
+repository = "django"
+question = "Where is the preferred request language selected and the response marked so caches vary on language preferences?"
+expected = ["django/middleware/locale.py"]
+evidence = ["django/middleware/locale.py::LocaleMiddleware"]
+
+[[queries]]
+id = "django-27"
+repository = "django"
+question = "Where are outgoing messages sent through a mail server connection with optional encryption and authentication?"
+expected = ["django/core/mail/backends/smtp.py"]
+evidence = ["django/core/mail/backends/smtp.py::EmailBackend.open"]
+
+[[queries]]
+id = "django-28"
+repository = "django"
+question = "Where are management commands given consistent argument parsing, error reporting and output styling?"
+expected = ["django/core/management/base.py"]
+evidence = ["django/core/management/base.py::BaseCommand.run_from_argv"]
+
+[[queries]]
+id = "django-29"
+repository = "django"
+question = "Where can a test client construct a browser-like request without opening a real network socket?"
+expected = ["django/test/client.py"]
+evidence = ["django/test/client.py::Client.request"]
+
+[[queries]]
+id = "django-30"
+repository = "django"
+question = "Where are address fragments converted into typed values such as integers before view dispatch?"
+expected = ["django/urls/converters.py"]
+evidence = ["django/urls/converters.py::IntConverter"]
