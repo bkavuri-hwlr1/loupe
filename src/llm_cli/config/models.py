@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+DEFAULT_ISOLATED_SOURCE_MAX_PATHS = 50_000
+DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES = 100_000
+MAX_ISOLATED_SOURCE_PATHS = 100_000
+MAX_HYDRATION_ENTRIES = 100_000
+
 
 @dataclass(frozen=True, slots=True)
 class McpServerConfig:
@@ -74,6 +79,8 @@ class Settings:
     agent_commands: str = "ask"
     # Forward only the opening/resuming terminal, ephemerally and opt-in.
     agent_command_environment: str = "minimal"
+    isolated_source_max_paths: int = DEFAULT_ISOLATED_SOURCE_MAX_PATHS
+    isolated_hydration_max_entries: int = DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES
     isolated_rebuild: tuple[RebuildConfig, ...] = ()
     # Offer the explore tool, whose read-only helpers spend extra model tokens.
     agent_explore: bool = True

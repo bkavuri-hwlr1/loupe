@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
-from llm_cli.workspace.authority import Mutation, PhysicalAuthority, PhysicalCheckout
+from llm_cli.workspace.authority import (
+    Mutation,
+    PhysicalAuthority,
+    PhysicalCheckout,
+    checkpoint_source_paths,
+)
 from llm_cli.workspace.installation import private_read
 
 if TYPE_CHECKING:
@@ -51,7 +56,7 @@ def _source_checkpoint(physical: PhysicalCheckout) -> str:
     """One bounded stable snapshot; no source or individual digests are exported."""
     from llm_cli.agent.source_policy import contains_secret_material, excluded_paths
     from llm_cli.workspace.external import metadata
-    from llm_cli.workspace.isolated import _passive, _read, _source, _source_paths
+    from llm_cli.workspace.isolated import _passive, _read, _source
 
     deadline = time.monotonic() + 30.0
 
@@ -65,8 +70,18 @@ def _source_checkpoint(physical: PhysicalCheckout) -> str:
         return value
 
     root = physical.root
+
+    def source_paths() -> tuple[str, ...]:
+        try:
+            return checkpoint_source_paths(root)
+        except LlmCoordError as exc:
+            raise _error(
+                ErrorCode.CUTOVER_BLOCKED,
+                f"cutover source checkpoint unavailable: {exc.message}",
+            ) from exc
+
     try:
-        paths = _source_paths(root)
+        paths = source_paths()
         excluded = excluded_paths(root, list(paths), remaining=remaining)
         index = _passive(root, ["ls-files", "--stage", "-v", "-z"])
         before = {path: metadata(root, path) for path in paths if path not in excluded}
@@ -90,7 +105,7 @@ def _source_checkpoint(physical: PhysicalCheckout) -> str:
             records.append((path, stamp, digest))
         remaining()
         if (
-            paths != _source_paths(root)
+            paths != source_paths()
             or excluded != excluded_paths(root, list(paths), remaining=remaining)
             or index != _passive(root, ["ls-files", "--stage", "-v", "-z"])
             or any(metadata(root, path) != stamp for path, stamp in before.items())

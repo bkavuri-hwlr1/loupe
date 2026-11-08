@@ -153,6 +153,7 @@ class WorkspaceModeSwitcher:
                         root,
                         self.publisher.candidate_dir,
                         protected_paths=state.runtime_paths,
+                        max_paths=self.isolated.source_max_paths,
                     )
                 ).encode()
             ).hexdigest()

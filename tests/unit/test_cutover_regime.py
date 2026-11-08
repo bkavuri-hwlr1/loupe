@@ -656,7 +656,7 @@ def test_status_and_inventory_never_observe_source_or_issue_a_fresh_checkpoint(
     completed = manager.begin(repository, plan["checkpoint"])
     calls: list[str] = []
 
-    def unavailable(physical: Any) -> str:
+    def unavailable(physical: Any, *, max_paths: int = 20_000) -> str:
         calls.append(physical.key)
         raise LlmCoordError(ErrorCode.CUTOVER_BLOCKED, "source is being edited")
 

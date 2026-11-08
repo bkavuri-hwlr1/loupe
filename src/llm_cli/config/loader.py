@@ -11,7 +11,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
-from llm_cli.config.models import HookConfig, McpServerConfig, RebuildConfig, Settings
+from llm_cli.config.models import (
+    MAX_HYDRATION_ENTRIES,
+    MAX_ISOLATED_SOURCE_PATHS,
+    HookConfig,
+    McpServerConfig,
+    RebuildConfig,
+    Settings,
+)
 from llm_cli.coordination.models import EFFORT_LEVELS
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.web.fetch import WebFetchError, check_proxy
@@ -229,6 +236,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "agent_commands": commands,
         "agent_command_environment": command_environment,
         "isolated_rebuild": _rebuild(_table(data, "isolated")),
+        **_isolated_count_limits(_table(data, "isolated"), settings),
         "agent_explore": explore,
         "agent_explore_effort": explore_effort,
         "agent_review": review,
@@ -262,9 +270,29 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
     return candidate
 
 
+def _isolated_count_limits(
+    isolated: dict[str, Any], defaults: Settings
+) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for name, maximum in (
+        ("source_max_paths", MAX_ISOLATED_SOURCE_PATHS),
+        ("hydration_max_entries", MAX_HYDRATION_ENTRIES),
+    ):
+        attribute = "isolated_" + name
+        value = isolated.get(name, getattr(defaults, attribute))
+        if type(value) is not int or not 1 <= value <= maximum:
+            raise LlmCoordError(
+                ErrorCode.CONFIG_INVALID,
+                f"isolated.{name} must be between 1 and {maximum}",
+            )
+        result[attribute] = value
+    return result
+
+
 def _rebuild(isolated: dict[str, Any]) -> tuple[RebuildConfig, ...]:
-    if set(isolated) - {"rebuild"}:
-        raise _unknown("isolated", set(isolated) - {"rebuild"})
+    keys = {"rebuild", "source_max_paths", "hydration_max_entries"}
+    if set(isolated) - keys:
+        raise _unknown("isolated", set(isolated) - keys)
     entries = _table(isolated, "rebuild")
     if len(entries) > 16:
         raise LlmCoordError(
