@@ -250,6 +250,58 @@ edits cannot replace them, and safe-point refresh does not run installers. Other
 runtime paths retain their opening consent and normal refresh behavior. Held
 proposals keep immutable private dependency generations for apply. Worktree and
 Git-registration cleanup also removes journal-owned installer homes and rebuilt
-runtime. The existing creation publication barrier remains held during rebuilds;
-this bounded delay is an explicit tradeoff, rather than a change to authority
-or publication ordering.
+runtime. Creation now releases dispatch and publication/mutation barriers
+during installation, then revalidates the frozen source and binding before
+readiness; the physical ownership pin remains held.
+
+
+## C20 follow-up decision (Wave 12)
+
+`[isolated.rebuild] cache = true` explicitly enables a private per-profile
+artifact cache; `cache_max_bytes` defaults to 512 MiB and accepts 64 KiB through
+5 GiB. Installer homes stay disposable, and cache-off operation retains its
+previous behavior. Only the approved installer gets a writable namespace via
+standard package-cache variables. Commands and managed processes retain the
+profile-data deny boundary; configured checks receive a dedicated cache-only
+OS sandbox guard that preserves their other permissions. The guard executes
+argv directly and never uses the general Seatbelt reaper under an allow-default
+policy. It also protects cache ancestors from rename and denies cache Unix
+sockets and hardlink alias creation.
+
+Same-namespace installers serialize outside dispatch and publication locks;
+different namespaces can install concurrently. This deliberately strengthens
+the original installers-own-locking proposal: temporary hardlinks from one
+installer must not become another installer's writable aliases. Before reuse
+and after quiescence, bounded no-follow inventory rejects shared hardlinks.
+`UV_LINK_MODE=copy` and installed-tree hardlink validation keep private
+dependencies independent of artifacts. Cache reuse requires hash-verifying
+installers such as `uv sync --frozen` or `npm ci`.
+
+Global shared leases and per-namespace exclusive leases outlive daemon death
+in the trusted command supervisor until its whole installer group/reaper
+teardown completes, including when Linux namespace containment stops its
+writer immediately. The installer cannot access these FDs. Pruning requires
+exclusive idle ownership. Postflight validation and lock waits have positive
+bounds and precede readiness; no daemon/publication lock spans either wait.
+A queued installer revalidates its requested private-input head under the
+metadata lock after taking the namespace lock, and retries with the original
+admission deadline if another writer invalidated or rotated that head.
+This guarantee covers daemon death under the existing supervisor/reaper
+contract, rather than independent destruction of the trusted supervisor.
+
+A private HMAC covers every actual private output value, including
+non-signature canaries. Changes allocate a fresh random namespace, never
+reactivating an older one even when values rotate back; an input change
+during installation invalidates the current reusable head. SQLite and durable
+workspace journals store only consent and bounds, never private values or
+cache bodies. The HMAC key stays in a private profile file.
+
+Idle eviction bounds bytes and generations; metadata observation remains
+bounded by entry, depth and time caps. `loupe workspace cache prune [--all]`
+is explicit recovery outside dispatch/publication locks. Full purge resets
+known corrupt head/key metadata without parsing it and preserves lock inodes.
+A durable protection marker predates artifacts and survives partial purge;
+enabled services retain it through full purge to cover prepared/replayed
+rebuilds. Per-service guard registrations survive purge until close, with
+refcounts and pending-open teardown. Disabling, restarting, fully purging and
+restarting restores legacy checks only after the cache is proven empty.

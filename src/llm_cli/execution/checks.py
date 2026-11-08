@@ -1087,6 +1087,20 @@ class CheckRunner:
         run_id: str,
         remaining: int,
     ) -> tuple[int, str, bool, str | None]:
+        cache_root = self.store.path.parent / "installer-cache"
+        from llm_cli.workspace.installer_cache import requires_guard
+
+        if requires_guard(cache_root):
+            from llm_cli.execution.sandbox import available_sandbox, wrap_cache_guard
+
+            kind = available_sandbox()
+            if kind is None:
+                raise RuntimeError(
+                    "Installer cache protection requires a working sandbox. Run "
+                    "loupe workspace cache prune --all then retry; disable "
+                    "isolated.rebuild.cache to prevent future cache use."
+                )
+            argv = wrap_cache_guard(kind, cache_root, argv, cwd=cwd)
         return supervised_run(
             argv,
             cwd=cwd,
@@ -1154,6 +1168,7 @@ def supervised_run(
     on_output: Callable[[str], None],
     reaper: bool = False,
     sensitive_values: tuple[str, ...] = (),
+    supervisor_fds: tuple[int, ...] = (),
 ) -> tuple[int, str, bool, str | None]:
     """Run argv under the process-group supervisor, screening its output.
 
@@ -1165,9 +1180,15 @@ def supervised_run(
 
     Output is read until the supervisor exits and briefly after, so a process
     that left the command's group cannot hold the run open by keeping its
-    output pipe.
+    output pipe. ``supervisor_fds`` are trusted high-numbered lease
+    descriptors retained only by the supervisor until teardown completes;
+    the command never inherits them.
     """
 
+    if any(type(fd) is not int or fd < 64 for fd in supervisor_fds) or len(
+        set(supervisor_fds)
+    ) != len(supervisor_fds):
+        raise ValueError("supervisor descriptors must be distinct integers at least 64")
     private_pattern = (
         re.compile(
             "|".join(
@@ -1191,6 +1212,7 @@ def supervised_run(
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        pass_fds=supervisor_fds,
     )
     assert process.stdin and process.stdout
     selector = selectors.DefaultSelector()

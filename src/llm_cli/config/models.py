@@ -82,6 +82,8 @@ class Settings:
     isolated_source_max_paths: int = DEFAULT_ISOLATED_SOURCE_MAX_PATHS
     isolated_hydration_max_entries: int = DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES
     isolated_rebuild: tuple[RebuildConfig, ...] = ()
+    isolated_rebuild_cache: bool = False
+    isolated_rebuild_cache_max_bytes: int = 512 * 1024**2
     # Offer the explore tool, whose read-only helpers spend extra model tokens.
     agent_explore: bool = True
     # The most reasoning effort explore helpers use; None means the task's own.

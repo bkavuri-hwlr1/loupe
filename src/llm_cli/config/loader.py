@@ -226,6 +226,7 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
             check_proxy(web_proxy)
         except WebFetchError as exc:
             raise LlmCoordError(ErrorCode.CONFIG_INVALID, str(exc)) from None
+    cache, cache_max_bytes = _rebuild_cache_options(_table(data, "isolated"))
     updates: dict[str, Any] = {
         "coordination_mode": mode,
         "refuse_staged_paths": refuse_staged_paths,
@@ -236,6 +237,8 @@ def load_settings(path: Path, *, profile_id: str = "default") -> Settings:
         "agent_commands": commands,
         "agent_command_environment": command_environment,
         "isolated_rebuild": _rebuild(_table(data, "isolated")),
+        "isolated_rebuild_cache": cache,
+        "isolated_rebuild_cache_max_bytes": cache_max_bytes,
         **_isolated_count_limits(_table(data, "isolated"), settings),
         "agent_explore": explore,
         "agent_explore_effort": explore_effort,
@@ -289,11 +292,32 @@ def _isolated_count_limits(
     return result
 
 
+def _rebuild_cache_options(isolated: dict[str, Any]) -> tuple[bool, int]:
+    entries = _table(isolated, "rebuild")
+    cache = entries.get("cache", False)
+    maximum = entries.get("cache_max_bytes", 512 * 1024**2)
+    if (
+        type(cache) is not bool
+        or type(maximum) is not int
+        or not 64 * 1024 <= maximum <= 5 * 1024**3
+    ):
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            "isolated.rebuild needs boolean cache and cache_max_bytes 64 KiB..5 GiB",
+        )
+    return cache, maximum
+
+
 def _rebuild(isolated: dict[str, Any]) -> tuple[RebuildConfig, ...]:
     keys = {"rebuild", "source_max_paths", "hydration_max_entries"}
     if set(isolated) - keys:
         raise _unknown("isolated", set(isolated) - keys)
-    entries = _table(isolated, "rebuild")
+    _rebuild_cache_options(isolated)
+    entries = {
+        key: value
+        for key, value in _table(isolated, "rebuild").items()
+        if key not in {"cache", "cache_max_bytes"}
+    }
     if len(entries) > 16:
         raise LlmCoordError(
             ErrorCode.CONFIG_INVALID, "at most 16 rebuild roots allowed"

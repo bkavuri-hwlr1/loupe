@@ -977,6 +977,8 @@ class IsolatedWorkspaceManager:
         source_max_paths: int = DEFAULT_ISOLATED_SOURCE_MAX_PATHS,
         hydration_max_entries: int = DEFAULT_ISOLATED_HYDRATION_MAX_ENTRIES,
         rebuild_protected: tuple[Path, ...] = (),
+        rebuild_cache: bool = False,
+        rebuild_cache_max_bytes: int = 512 * 1024**2,
     ) -> None:
         self.store = store
         self.managed_root = managed_root
@@ -987,6 +989,8 @@ class IsolatedWorkspaceManager:
         self.source_max_paths = _source_path_budget(source_max_paths)
         self.hydration_budgets = HydrationBudgets(max_entries=hydration_max_entries)
         self.rebuild_protected = rebuild_protected
+        self.rebuild_cache = rebuild_cache
+        self.rebuild_cache_max_bytes = rebuild_cache_max_bytes
         self._opening_sessions: set[str] = set()
         self._closed_cleanups: set[str] = set()
         self._process_values_loaded: set[str] = set()
@@ -2358,6 +2362,7 @@ class IsolatedWorkspaceManager:
                 ),
                 fault=self.fault,
                 protected=self.rebuild_protected,
+                cache_root=self.managed_root.parent / "installer-cache",
             )
             with (
                 self.lock,
@@ -2878,7 +2883,13 @@ class IsolatedWorkspaceManager:
                         approved_secrets,
                         rebuilt_roots=tuple(spec.root for spec in self.rebuild),
                     )
-                    prepare(managed.git_dir, token, self.rebuild)
+                    prepare(
+                        managed.git_dir,
+                        token,
+                        self.rebuild,
+                        cache=self.rebuild_cache,
+                        cache_max_bytes=self.rebuild_cache_max_bytes,
+                    )
                     self.fault("rebuild_prepared")
                     with self.store.connection() as con:
                         con.execute(
