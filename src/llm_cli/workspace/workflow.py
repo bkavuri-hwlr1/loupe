@@ -11,7 +11,8 @@ import difflib
 import functools
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -619,7 +620,7 @@ class TaskWorkflow:
         environment: EnvironmentSupplier | None = None,
         before_publish: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
-        with self.publisher.lock:
+        with self._apply_catch_up() as follow_up, self.publisher.lock:
             self.reconcile()
             row = self.get(task_id)
             # Undo and completed/recovering actions retain their exact-base
@@ -633,7 +634,10 @@ class TaskWorkflow:
                 or row["agent_mode"] == "plan"
             ):
                 return self._apply(
-                    task_id, undo=undo, allow_unverified=allow_unverified
+                    task_id,
+                    undo=undo,
+                    allow_unverified=allow_unverified,
+                    follow_up=follow_up,
                 )
             task = self.store.get_task(task_id)
             assert task is not None
@@ -681,15 +685,44 @@ class TaskWorkflow:
             )
             if failure is not None:
                 raise ValueError(failure)
-        with self.publisher.lock:
+        with self._apply_catch_up() as follow_up, self.publisher.lock:
             current = self.get(task_id)
             if current is None or current["proposal_json"] != row["proposal_json"]:
                 raise ValueError("Proposal changed during checks; retry apply.")
             if before_publish is not None:
                 before_publish()
             return self._apply(
-                task_id, undo=False, allow_unverified=allow_unverified, prepared=files
+                task_id,
+                undo=False,
+                allow_unverified=allow_unverified,
+                prepared=files,
+                follow_up=follow_up,
             )
+
+    @contextmanager
+    def _apply_catch_up(self) -> Iterator[list[tuple[str, str]]]:
+        follow_up: list[tuple[str, str]] = []
+        try:
+            yield follow_up
+        finally:
+            # This context precedes the apply lock, so it exits after the
+            # confirmed publication and settlement have released that lock.
+            for task_id, workspace_id in follow_up:
+                assert self.isolated_sync is not None
+                try:
+                    self.isolated_sync.synchronize(workspace_id)
+                except (ValueError, OSError, LlmCoordError):
+                    self.store.record_task_event(
+                        claim_id=None,
+                        task_id=task_id,
+                        event_type="workspace.isolated_sync_pending",
+                        payload={
+                            "message": (
+                                "Published to the shared checkout; private "
+                                "synchronization needs recovery."
+                            )
+                        },
+                    )
 
     @staticmethod
     def _merge_proposal(
@@ -753,6 +786,7 @@ class TaskWorkflow:
         undo: bool,
         allow_unverified: bool,
         prepared: tuple[BatchFile, ...] | None = None,
+        follow_up: list[tuple[str, str]],
     ) -> dict[str, Any]:
         row = self.get(task_id)
         if row is None or row["proposal_json"] is None:
@@ -1015,21 +1049,7 @@ class TaskWorkflow:
                 **({"publication_id": execution.execution_id} if not undo else {}),
             )
             if isolated_workspace_id is not None:
-                assert self.isolated_sync is not None
-                try:
-                    self.isolated_sync.synchronize(isolated_workspace_id)
-                except (ValueError, OSError, LlmCoordError):
-                    self.store.record_task_event(
-                        claim_id=None,
-                        task_id=task_id,
-                        event_type="workspace.isolated_sync_pending",
-                        payload={
-                            "message": (
-                                "Published to the shared checkout; private "
-                                "synchronization needs recovery."
-                            )
-                        },
-                    )
+                follow_up.append((task_id, isolated_workspace_id))
         self.store.record_task_event(
             claim_id=None,
             task_id=child.task_id,
