@@ -212,7 +212,11 @@ class DaemonService:
         self.boot_id = boot_id
         self.store = ControlStore(paths.control_db)
         self.physical_authority = PhysicalAuthority(
-            self.store, paths.profile_id, boot_id, paths.socket, root=authority_root
+            self.store,
+            paths.profile_id,
+            boot_id,
+            paths.socket,
+            root=authority_root,
         )
         self.store.authority = self.physical_authority
         self.cutovers = CutoverManager(self.store, self.physical_authority)
@@ -251,7 +255,9 @@ class DaemonService:
         )
         self.workspace_batches.refuse_staged_paths = settings.refuse_staged_paths
         self.shared_runner = SharedTaskExecutionRunner(
-            self.runner, self.workspace_batches
+            self.runner,
+            self.workspace_batches,
+            source_max_paths=settings.isolated_source_max_paths,
         )
         self.isolated_workspaces = IsolatedWorkspaceManager(
             self.store,
@@ -262,6 +268,8 @@ class DaemonService:
             rebuild=settings.isolated_rebuild,
             rebuild_cache=settings.isolated_rebuild_cache,
             rebuild_cache_max_bytes=settings.isolated_rebuild_cache_max_bytes,
+            source_max_paths=settings.isolated_source_max_paths,
+            hydration_max_entries=settings.isolated_hydration_max_entries,
             rebuild_protected=(
                 paths.config_dir,
                 paths.data_dir,
@@ -1459,8 +1467,7 @@ class DaemonService:
                 intent_id = pending["switch_intent_id"]
                 raise ValueError(
                     f"Workspace switch {intent_id} must settle "
-                    "before starting a process. "
-                    + rollback_hint(intent_id)
+                    "before starting a process. " + rollback_hint(intent_id)
                 )
 
     async def _session_close(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -2069,6 +2076,7 @@ class DaemonService:
                 or any(not isinstance(path, str) for path in approved)
             ):
                 raise ValueError("runtime consent must name exact relative paths")
+
             def switch_pinned() -> dict[str, Any]:
                 # The actual worker owns this lifetime even if its RPC waiter
                 # is cancelled while hydration or required checks still run.

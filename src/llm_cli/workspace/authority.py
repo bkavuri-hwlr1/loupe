@@ -43,6 +43,9 @@ SUPPORTED_FILESYSTEMS = frozenset(
     {"apfs", "hfs", "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "tmpfs", "overlay"}
 )
 IDLE_SECONDS = 30.0
+# Cutover and clean handoff retain their measured source checkpoint budget.
+# Isolated admission counts do not change this authority observation limit.
+SOURCE_CHECKPOINT_MAX_PATHS = 20_000
 _ACTIVE: contextvars.ContextVar[tuple[PhysicalAuthority, Path] | None] = (
     contextvars.ContextVar("physical_checkout_authority", default=None)
 )
@@ -56,6 +59,22 @@ _STORE_HELD: contextvars.ContextVar[tuple[str, int, int] | None] = (
 )
 
 _REGIME_RANKS = {"legacy": 0, "transition": 1, "workspace": 2}
+
+
+def checkpoint_source_paths(root: Path) -> tuple[str, ...]:
+    """Observe the complete source set within authority's fixed checkpoint budget."""
+    from llm_cli.workspace.isolated import _passive
+
+    raw = _passive(
+        root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+    )
+    paths = tuple(sorted({os.fsdecode(path) for path in raw.split(b"\0") if path}))
+    if len(paths) > SOURCE_CHECKPOINT_MAX_PATHS:
+        raise recovery_error(
+            f"source checkpoint exceeds its {SOURCE_CHECKPOINT_MAX_PATHS}-path limit; "
+            "reduce the source path count before cutover or clean handoff"
+        )
+    return paths
 
 
 def _marker_regime(marker: dict[str, Any] | None) -> dict[str, Any]:
@@ -1175,9 +1194,8 @@ class PhysicalAuthority:
         from llm_cli.workspace.external import ExternalWorkspaceScanner
 
         scanner = ExternalWorkspaceScanner(self.store)
-        from llm_cli.workspace.isolated import _source_paths
 
-        paths = _source_paths(physical.root)
+        paths = checkpoint_source_paths(physical.root)
 
         def observations() -> dict[str, tuple[int, ...] | None]:
             result: dict[str, tuple[int, ...] | None] = {}
@@ -1200,7 +1218,7 @@ class PhysicalAuthority:
         before = observations()
         for session in self.store.list_sessions(checkout_id=checkout_id):
             scanner._scan_session_owned(session.session_id)
-        if paths != _source_paths(physical.root) or observations() != before:
+        if paths != checkpoint_source_paths(physical.root) or observations() != before:
             raise recovery_error(
                 "source changed during clean handoff; retry after edits settle"
             )

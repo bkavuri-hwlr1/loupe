@@ -34,6 +34,8 @@ _ALIASES = {
     "isolated_rebuild": "isolated.rebuild",
     "isolated_rebuild_cache": "isolated.rebuild.cache",
     "isolated_rebuild_cache_max_bytes": "isolated.rebuild.cache_max_bytes",
+    "isolated_source_max_paths": "isolated.source_max_paths",
+    "isolated_hydration_max_entries": "isolated.hydration_max_entries",
     "launch_lease_ms": "leases.launch_ms",
     "work_lease_ms": "leases.work_ms",
     "renewal_interval_ms": "leases.renewal_interval_ms",

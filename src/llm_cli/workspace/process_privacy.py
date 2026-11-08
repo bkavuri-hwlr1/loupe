@@ -14,10 +14,13 @@ from typing import TYPE_CHECKING
 
 from llm_cli.agent.source_policy import (
     block_source_private_values,
+    cached_source_private_values,
     contains_private_source,
     has_private_source_values,
     register_source_private_values,
+    source_private_epoch,
 )
+from llm_cli.config.models import MAX_HYDRATION_ENTRIES
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.workspace.broker import (
     atomic_delete_file,
@@ -219,11 +222,60 @@ def remember_values(
         register_source_private_values(root, merged, public_values=tuple(public))
 
 
-def scrub_source_copies(root: Path, *, guard_root: Path | None = None) -> set[str]:
+def _short_regular_size(path: Path, minimum: int) -> int | None:
+    """Prove a regular leaf is too short to contain any protected value.
+
+    UTF-8 replacement decoding produces at most one code point per input byte.
+    The minimum is measured in code points, including every retained variant;
+    using encoded byte lengths would incorrectly skip malformed UTF-8 matches.
+    This is metadata evidence only, never a fabricated source identity/receipt.
+    """
+    if minimum <= 0 or not hasattr(os, "O_NOFOLLOW"):
+        return None
+    try:
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_size >= minimum
+            or before.st_size > 256 * 1024 * 1024
+        ):
+            return None
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            evidence = _evidence(before)
+            if (
+                _evidence(os.fstat(descriptor)) != evidence
+                or _evidence(path.lstat()) != evidence
+                or _evidence(os.fstat(descriptor)) != evidence
+            ):
+                return None
+            return before.st_size
+        finally:
+            os.close(descriptor)
+    except OSError:
+        # A replaced/growing/symlink leaf uses the existing bounded full reader.
+        return None
+
+
+def scrub_source_copies(
+    root: Path, *, guard_root: Path | None = None, max_paths: int = 20_000
+) -> set[str]:
     """Remove private-value leaves without following links or retaining bytes."""
+    if type(max_paths) is not int or not 1 <= max_paths <= MAX_HYDRATION_ENTRIES:
+        raise LlmCoordError(
+            ErrorCode.CONFIG_INVALID,
+            "isolated.hydration_max_entries must be between 1 and 100000",
+        )
     protected = root if guard_root is None else guard_root
     if not has_private_source_values(protected) or not root.exists():
         return set()
+    epoch = source_private_epoch(protected)
+    try:
+        # This retained union also includes any public exemptions, so its
+        # minimum is conservative for contains_private_source's protected set.
+        minimum = min(map(len, cached_source_private_values(protected)), default=0)
+    except LlmCoordError:
+        minimum = 0  # Blocked guards must retain the ordinary full-read path.
     removed: set[str] = set()
     count, total = 0, 0
     deadline = time.monotonic() + 5
@@ -239,18 +291,33 @@ def scrub_source_copies(root: Path, *, guard_root: Path | None = None) -> set[st
             if name == ".git":
                 continue
             count += 1
-            if count > 20_000 or time.monotonic() > deadline:
+            if count > max_paths:
+                raise LlmCoordError(
+                    ErrorCode.REPOSITORY_UNSAFE,
+                    "private source cleanup exceeds "
+                    f"isolated.hydration_max_entries={max_paths}; "
+                    "increase that setting "
+                    "within its 100000-entry ceiling or reduce private entries",
+                )
+            if time.monotonic() > deadline:
                 raise _error()
-            relative = (base / name).relative_to(root).as_posix()
-            identity, body = read_candidate_path(
-                base / name, max_bytes=256 * 1024 * 1024
-            )
+            target = base / name
+            short_size = _short_regular_size(target, minimum)
+            if short_size is not None:
+                total += short_size
+                if total > 1024**3:
+                    raise _error()
+                continue
+            identity, body = read_candidate_path(target, max_bytes=256 * 1024 * 1024)
             total += len(body or b"")
             if total > 1024**3:
                 raise _error()
             if body is not None and contains_private_source(protected, body):
+                relative = (base / name).relative_to(root).as_posix()
                 atomic_delete_file(root, relative, identity)
                 removed.add(relative)
+    if source_private_epoch(protected) != epoch or time.monotonic() > deadline:
+        raise _error()
     return removed
 
 
