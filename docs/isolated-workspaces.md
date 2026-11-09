@@ -810,6 +810,9 @@ to 64 MiB.
 
 `--to` must name a new file with an existing parent. Loupe never overwrites an
 existing destination, including an unrelated file with identical contents.
+It publishes with a hard link, which cannot replace a file, so the destination's
+filesystem must support hard links. On exFAT, FAT and some network shares the
+export is refused with that reason and leaves no temporary file behind.
 Exporting into any discovered checkout requires `--into-checkout`; temporary
 bytes are staged privately in its Git administration and must be on the same
 filesystem as the destination. Private workspaces, Git administration and Loupe
