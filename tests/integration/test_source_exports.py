@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import json
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -18,7 +21,7 @@ from test_shared_batches import batch_env as batch_env
 
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.workspace.batches import BatchFile, _identity_json, result_identity
-from llm_cli.workspace.exports import SourceExporter
+from llm_cli.workspace.exports import SourceExporter, _signed64
 from llm_cli.workspace.identity import (
     ABSENT,
     DIRECTORY_MODE,
@@ -413,6 +416,183 @@ def test_partial_stage_user_edit_is_never_overwritten(
     assert stage.read_bytes() == b"user replacement"
     assert stage.stat().st_mtime_ns == before.st_mtime_ns
     assert not destination.exists()
+
+
+@contextmanager
+def _refuse_links(
+    monkeypatch: pytest.MonkeyPatch, code: int, destination: Path
+) -> Iterator[None]:
+    # Only the publish into the destination folder is refused; Loupe's private
+    # artifact store keeps linking on its own (ordinary) filesystem.
+    link = os.link
+
+    def refuse(source: Any, target: Any, *args: Any, **kwargs: Any) -> None:
+        if target == destination.name:
+            raise OSError(code, os.strerror(code))
+        link(source, target, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "link", refuse)
+        yield
+
+
+@pytest.mark.parametrize("into_checkout", [False, True], ids=["outside", "checkout"])
+@pytest.mark.parametrize(
+    "code",
+    sorted({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP}),
+    ids=lambda code: errno.errorcode[code],
+)
+def test_filesystem_without_hard_links_leaves_no_stage_and_retries_cleanly(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    code: int,
+    into_checkout: bool,
+) -> None:
+    _batch(batch_env)
+    folder = batch_env.repository if into_checkout else tmp_path
+    destination = folder / "no-links.patch"
+    manager = _manager(batch_env, tmp_path)
+
+    def export() -> dict[str, Any]:
+        return manager.export(
+            "published-batch",
+            destination,
+            intent_id="no-links",
+            into_checkout=into_checkout,
+        )
+
+    def leftovers() -> list[Path]:
+        return [
+            *folder.glob(".source_export_*.tmp"),
+            *(batch_env.repository / ".git").rglob(".source_export_*.tmp"),
+        ]
+
+    with _refuse_links(monkeypatch, code, destination):
+        for _ in range(2):
+            with pytest.raises(LlmCoordError, match="support hard links") as caught:
+                export()
+            assert caught.value.code == ErrorCode.REPOSITORY_UNSAFE
+            assert caught.value.details == {"path": str(destination)}
+            assert not destination.exists()
+            assert leftovers() == []
+            row = manager.get("no-links")
+            assert row is not None and row["state"] == "artifact_ready"
+            assert row["stage_name"] is None and row["stage_dev"] is None
+
+    assert export()["state"] == "exported"
+    assert destination.read_bytes().startswith(b"diff --git ")
+    assert leftovers() == []
+
+
+def test_transient_link_failure_keeps_prepared_stage_for_replay(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _batch(batch_env)
+    destination = tmp_path / "disk-full.patch"
+    manager = _manager(batch_env, tmp_path)
+    with (
+        _refuse_links(monkeypatch, errno.ENOSPC, destination),
+        pytest.raises(LlmCoordError, match="could not be verified"),
+    ):
+        manager.export("published-batch", destination, intent_id="disk-full")
+    row = manager.get("disk-full")
+    assert row is not None and row["state"] == "prepared"
+    stage = Path(row["stage_parent"]) / row["stage_name"]
+    assert stage.exists()
+
+    result = manager.export("published-batch", destination, intent_id="disk-full")
+    assert result["state"] == "exported"
+    assert destination.stat().st_ino == row["stage_ino"]
+    assert not stage.exists()
+
+
+@pytest.mark.parametrize("into_checkout", [False, True], ids=["outside", "checkout"])
+def test_single_link_filesystem_is_refused_before_anything_is_staged(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    into_checkout: bool,
+) -> None:
+    # macOS reports PC_LINK_MAX=1 on exFAT and FAT, whose empty files also get
+    # a temporary inode number, so the refusal must come before any stage.
+    _batch(batch_env)
+    folder = batch_env.repository if into_checkout else tmp_path
+    destination = folder / "single-link.patch"
+    manager = _manager(batch_env, tmp_path)
+    created: list[str] = []
+    fpathconf, open_ = os.fpathconf, os.open
+
+    def one_link(descriptor: int, name: str | int) -> int:
+        return 1 if name == "PC_LINK_MAX" else fpathconf(descriptor, name)
+
+    def record(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if flags & os.O_EXCL and str(path).startswith(".source_export_"):
+            created.append(str(path))
+        return open_(path, flags, *args, **kwargs)
+
+    def export() -> dict[str, Any]:
+        return manager.export(
+            "published-batch",
+            destination,
+            intent_id="single-link",
+            into_checkout=into_checkout,
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fpathconf", one_link)
+        patch.setattr(os, "open", record)
+        for _ in range(2):
+            with pytest.raises(LlmCoordError, match="support hard links") as caught:
+                export()
+            assert caught.value.details == {"path": str(destination)}
+    assert created == []
+    row = manager.get("single-link")
+    assert row is not None and row["state"] == "artifact_ready"
+    assert row["stage_name"] is None
+    assert export()["state"] == "exported"
+
+
+def test_stage_whose_record_fails_is_removed_instead_of_orphaned(
+    batch_env: BatchEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _batch(batch_env)
+    destination = tmp_path / "unrecorded.patch"
+    manager = _manager(batch_env, tmp_path)
+    update = SourceExporter._update
+
+    def refuse_stage(
+        self: SourceExporter, row: dict[str, Any], **fields: Any
+    ) -> dict[str, Any]:
+        if fields.get("state") == "writing":
+            assert list(tmp_path.glob(".source_export_*.tmp"))
+            raise OverflowError("Python int too large to convert to SQLite INTEGER")
+        return update(self, row, **fields)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SourceExporter, "_update", refuse_stage)
+        with pytest.raises(LlmCoordError, match="could not be verified"):
+            manager.export("published-batch", destination, intent_id="unrecorded")
+    assert not list(tmp_path.glob(".source_export_*.tmp"))
+    row = manager.get("unrecorded")
+    assert row is not None and row["state"] == "artifact_ready"
+    result = manager.export("published-batch", destination, intent_id="unrecorded")
+    assert result["state"] == "exported"
+
+
+@pytest.mark.parametrize(
+    ("number", "stored"),
+    [(5, 5), (2**63 - 1, 2**63 - 1), (2**63, -(2**63)), (2**64 - 16, -16)],
+)
+def test_inode_numbers_above_sqlite_range_keep_their_64_bits(
+    number: int, stored: int
+) -> None:
+    assert _signed64(number) == stored
+    assert stored % 2**64 == number
 
 
 def test_old_batch_without_recorded_original_uses_only_verified_git_base(

@@ -6,6 +6,7 @@ owner-private content-addressed files. No daemon/publication lock covers I/O.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -66,6 +67,10 @@ if TYPE_CHECKING:
 
 _MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 _KINDS = ("proposal", "candidate", "batch")
+# Publishing hard-links the stage because a link never replaces an existing
+# file. Filesystems that cannot link (ENOTSUP on macOS, EPERM on Linux vfat
+# and exfat) make every retry of that destination fail the same way.
+_LINK_UNSUPPORTED = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP})
 
 
 def _json(value: object) -> str:
@@ -105,8 +110,34 @@ def _private_directory(path: Path) -> None:
             os.close(parent)
 
 
+def _links_unsupported(destination: str) -> LlmCoordError:
+    return _unsafe(
+        "source export destination's filesystem does not support hard links "
+        "(for example exFAT, FAT or some network shares); export to another location",
+        destination,
+    )
+
+
+def _require_hard_links(directory: int, destination: str) -> None:
+    # Refuse before staging anything. macOS reports one link per file on exFAT
+    # and FAT, whose empty files also lack a stable identity to journal.
+    try:
+        limit = os.fpathconf(directory, "PC_LINK_MAX")
+    except (OSError, ValueError):
+        return
+    if 0 <= limit < 2:
+        raise _links_unsupported(destination)
+
+
+def _signed64(number: int) -> int:
+    # SQLite integers are signed 64-bit, but macOS FSKit volumes (exFAT, FAT)
+    # report inode numbers near 2**64. Keep the same 64 bits in two's
+    # complement, which leaves every smaller, already recorded value unchanged.
+    return number - (1 << 64) if number >= 1 << 63 else number
+
+
 def _file_identity(value: os.stat_result) -> tuple[int, int]:
-    return value.st_dev, value.st_ino
+    return _signed64(value.st_dev), _signed64(value.st_ino)
 
 
 def _read_private(path: Path, digest: str, size: int | None = None) -> bytes:
@@ -658,7 +689,7 @@ class SourceExporter:
                 "source export destination or staging already exists; "
                 "inspect before retrying"
             ) from None
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, OverflowError):
             raise _unsafe(
                 "source export record or artifact could not be verified; "
                 "inspect before retrying"
@@ -908,8 +939,8 @@ class SourceExporter:
                     row = self._update(
                         row,
                         state="exported",
-                        destination_dev=existing.st_dev,
-                        destination_ino=existing.st_ino,
+                        destination_dev=row["stage_dev"],
+                        destination_ino=row["stage_ino"],
                         terminal_at=self.store._now(None),
                     )
                     self._cleanup_stage(row)
@@ -970,6 +1001,7 @@ class SourceExporter:
                         os.close(descriptor)
                         raise
                 else:
+                    _require_hard_links(stage_parent, row["destination"])
                     descriptor = os.open(
                         name,
                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -977,22 +1009,27 @@ class SourceExporter:
                         dir_fd=stage_parent,
                     )
                     try:
-                        value = os.fstat(descriptor)
-                        parent_value = os.fstat(stage_parent)
+                        stage_dev, stage_ino = _file_identity(os.fstat(descriptor))
+                        parent_dev, parent_ino = _file_identity(os.fstat(stage_parent))
                         os.fsync(stage_parent)
                         row = self._update(
                             row,
                             state="writing",
                             stage_parent=str(stage_path),
                             stage_name=name,
-                            stage_dev=value.st_dev,
-                            stage_ino=value.st_ino,
-                            parent_dev=parent_value.st_dev,
-                            parent_ino=parent_value.st_ino,
+                            stage_dev=stage_dev,
+                            stage_ino=stage_ino,
+                            parent_dev=parent_dev,
+                            parent_ino=parent_ino,
                         )
                         self.fault("stage_recorded")
                     except BaseException:
-                        os.close(descriptor)
+                        try:
+                            self._discard_unrecorded_stage(
+                                row, descriptor, stage_parent, name
+                            )
+                        finally:
+                            os.close(descriptor)
                         raise
                 with os.fdopen(descriptor, "wb") as handle:
                     split = max(1, len(body) // 2)
@@ -1009,13 +1046,19 @@ class SourceExporter:
             verify_stage()
             if self.store.authority is not None:
                 self.store.authority.validate_current()
-            os.link(
-                row["stage_name"],
-                leaf,
-                src_dir_fd=stage_parent,
-                dst_dir_fd=parent,
-                follow_symlinks=False,
-            )
+            try:
+                os.link(
+                    row["stage_name"],
+                    leaf,
+                    src_dir_fd=stage_parent,
+                    dst_dir_fd=parent,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                if error.errno not in _LINK_UNSUPPORTED:
+                    raise
+                self._abandon_stage(row)
+                raise _links_unsupported(row["destination"]) from None
             os.fsync(parent)
             verify()
             verify_stage()
@@ -1117,6 +1160,37 @@ class SourceExporter:
                 verify()
                 os.unlink(name, dir_fd=parent)
                 os.fsync(parent)
+
+    def _discard_unrecorded_stage(
+        self, row: dict[str, Any], descriptor: int, parent: int, name: str
+    ) -> None:
+        # A stage whose name never reached the journal is invisible to every
+        # retry, so remove it now instead of stranding it in the user's folder.
+        # Any doubt (including an unreadable journal) keeps the file.
+        with suppress(Exception):
+            current = self.get(str(row["export_intent_id"]))
+            if current is None or current["stage_name"] == name:
+                return
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if _file_identity(named) == _file_identity(os.fstat(descriptor)):
+                os.unlink(name, dir_fd=parent)
+                os.fsync(parent)
+
+    def _abandon_stage(self, row: dict[str, Any]) -> None:
+        # The link was refused, so the stage is the only file this attempt
+        # left. Remove it before forgetting its name: a crash in between then
+        # strands the intent, never an unrecorded file in the user's folder.
+        self._cleanup_stage(row)
+        self._update(
+            row,
+            state="artifact_ready",
+            stage_parent=None,
+            stage_name=None,
+            stage_dev=None,
+            stage_ino=None,
+            parent_dev=None,
+            parent_ino=None,
+        )
 
     def _result(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
