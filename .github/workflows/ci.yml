@@ -41,6 +41,7 @@ jobs:
       - name: Verify concurrent admission without coverage overhead
         run: uv run pytest --no-cov -m admission_scale -s
       - run: uv run ruff check .
+      - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv build --no-sources
 

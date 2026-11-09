@@ -75,6 +75,11 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
+[tool.ruff.format]
+# Benchmark snapshots reproduce historical commits byte for byte; their
+# provenance.json pins each file's SHA-256, so they must never be reformatted.
+exclude = ["scripts/benchmark_fixtures/**", "scripts/benchmark_acceptance/**"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
