@@ -255,9 +255,7 @@ def test_codex_http_context_rejection_has_a_fixed_category() -> None:
     body = {"error": {"message": "Your input exceeds the context window."}}
 
     assert _subscription_error_category(400, body) == "context_overflow"
-    assert _subscription_error_category(400, {"message": "bad"}) == (
-        "request_rejected"
-    )
+    assert _subscription_error_category(400, {"message": "bad"}) == ("request_rejected")
 
 
 class Script:
@@ -359,9 +357,7 @@ def test_large_tool_arguments_and_text_are_lossless_bounded_events(
     request = RunRequest("task", 1, "inspect", ("a.py",), tmp_path, "base")
     CodingAgentHarness(provider).run(request, broker)
     assert max(len(json.dumps(data)) for _, data in events) < 32_000
-    text = "".join(
-        data["answer"] for kind, data in events if kind == "model.finished"
-    )
+    text = "".join(data["answer"] for kind, data in events if kind == "model.finished")
     arguments = "".join(
         data["arguments_text"] for kind, data in events if kind == "model.tool_call"
     )
@@ -423,15 +419,11 @@ def test_streaming_tool_turn_prose_never_becomes_public_output(tmp_path: Path) -
             )
             return ModelTurn(
                 text="I'll read every file now.",
-                tool_calls=(
-                    ToolCallRequest("read", "read_file", {"path": "a.py"}),
-                ),
+                tool_calls=(ToolCallRequest("read", "read_file", {"path": "a.py"}),),
                 stop_reason="tool_use",
             )
 
-        def send_tool_results(
-            self, results: Sequence[ToolCallResult]
-        ) -> ModelTurn:
+        def send_tool_results(self, results: Sequence[ToolCallResult]) -> ModelTurn:
             self.callback(
                 "model.text.delta",
                 {"text": "The repository contains source.", "block_id": "answer"},
@@ -507,9 +499,7 @@ def test_completion_gate_rejection_never_prints_the_rejected_draft(
     )
     result = CodingAgentHarness(
         Script([ModelTurn("Rejected draft."), ModelTurn("Accepted answer.")])
-    ).run(
-        RunRequest("task", 1, "answer", ("a.py",), tmp_path, "base"), broker
-    )
+    ).run(RunRequest("task", 1, "answer", ("a.py",), tmp_path, "base"), broker)
     assert result.answer == "Accepted answer."
     visible = "\n".join(
         str(data.get("text", data.get("answer", "")))

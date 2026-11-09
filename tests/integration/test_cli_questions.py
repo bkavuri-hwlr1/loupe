@@ -84,6 +84,7 @@ class _QuestionProvider(_BarrierProvider):
 
 def _daemon_entry() -> None:
     from authority_helpers import install_test_authority
+
     install_test_authority()
     from llm_cli.daemon import main
 

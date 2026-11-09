@@ -150,7 +150,12 @@ def test_malformed_indexed_name_absent_from_checkout_is_a_bounded_refusal(
     blob = git_run(root, "rev-parse", "HEAD:tracked.txt").strip().encode()
     subprocess.run(
         [
-            b"git", b"update-index", b"--add", b"--cacheinfo", b"100644", blob,
+            b"git",
+            b"update-index",
+            b"--add",
+            b"--cacheinfo",
+            b"100644",
+            blob,
             b"absent-\xff",
         ],
         cwd=root,

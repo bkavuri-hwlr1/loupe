@@ -365,9 +365,7 @@ def test_real_sandbox_allows_unix_sockets_only_in_writable_paths(
     policy = SandboxPolicy(
         writable=writable,
         protected=(
-            (layout["secret"], ipc_parent)
-            if protected_parent
-            else (layout["secret"],)
+            (layout["secret"], ipc_parent) if protected_parent else (layout["secret"],)
         ),
         readable=(layout["dependency"],),
     )

@@ -174,8 +174,7 @@ class PathCatalogue:
             "SELECT alias,spelling FROM paths WHERE collision=1 ORDER BY alias"
             if collisions
             else (
-                "SELECT alias,spelling FROM paths "
-                "WHERE administration=0 ORDER BY alias"
+                "SELECT alias,spelling FROM paths WHERE administration=0 ORDER BY alias"
             )
         )
         parameters: tuple[int, ...] = ()

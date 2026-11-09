@@ -317,9 +317,7 @@ def test_finish_is_refused_before_dispatch_when_session_cannot_record_result(
                 _call("finish_task", answer="done", summary="done"),
             )
 
-        def send_tool_results(
-            self, results: Sequence[ToolCallResult]
-        ) -> ModelTurn:
+        def send_tool_results(self, results: Sequence[ToolCallResult]) -> ModelTurn:
             raise AssertionError("the terminal batch must not reach the model")
 
     broker = _broker(worktree, events=[])

@@ -186,9 +186,7 @@ def test_ipv6_connect_request_and_host_use_bracketed_authority() -> None:
             proxy=f"http://127.0.0.1:{httpd.server_address[1]}",
         )
         assert page.text == "café"
-        assert seen == [
-            ("[2606:4700:4700::1111]:8080", "[2606:4700:4700::1111]:8080")
-        ]
+        assert seen == [("[2606:4700:4700::1111]:8080", "[2606:4700:4700::1111]:8080")]
     finally:
         httpd.shutdown()
         httpd.server_close()

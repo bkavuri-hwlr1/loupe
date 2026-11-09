@@ -211,6 +211,7 @@ def test_profile_backup_keeps_existing_optional_stores_without_creating_absent_o
     assert len(result["databases"]) == 2
     for database in result["databases"]:
         with _connection(Path(database["path"])) as con:
-            assert con.execute("SELECT value FROM retained").fetchone()[0] == (
-                database["database"]
+            assert (
+                con.execute("SELECT value FROM retained").fetchone()[0]
+                == (database["database"])
             )

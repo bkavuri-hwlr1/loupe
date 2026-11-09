@@ -1417,7 +1417,8 @@ class RepositoryCoordinator:
             }:
                 saved = connection.execute(
                     "SELECT checkpoint_json FROM execution_checkpoints "
-                    "WHERE execution_id=?", (execution_id,),
+                    "WHERE execution_id=?",
+                    (execution_id,),
                 ).fetchone()
                 checkpoint = json.loads(saved["checkpoint_json"]) if saved else None
                 finished_failure = (

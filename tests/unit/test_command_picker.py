@@ -65,9 +65,12 @@ def test_names_align_and_empty_matches_remain_quiet() -> None:
         width=50,
     )
     lines = fragment_list_to_text(fragments).splitlines()
-    assert lines[0].index("Commands") == lines[1].index("/cd") == lines[2].index(
-        "/provider"
-    ) == 2
+    assert (
+        lines[0].index("Commands")
+        == lines[1].index("/cd")
+        == lines[2].index("/provider")
+        == 2
+    )
     assert lines[1].index("Folder") == lines[2].index("Account") == 16
     empty = command_picker_fragments([], selected=0, width=50)
     assert fragment_list_to_text(empty) == "  Commands\n  No matching commands"

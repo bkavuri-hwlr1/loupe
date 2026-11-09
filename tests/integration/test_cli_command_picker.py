@@ -121,16 +121,19 @@ def test_command_picker_aligns_results_and_uses_available_width(
     ) as terminal:
         terminal.write("/mod")
         _wait(
-            lambda: "› /mode" in terminal.visible
-            and "browse commands" in terminal.footer
+            lambda: (
+                "› /mode" in terminal.visible and "browse commands" in terminal.footer
+            )
         )
         lines = terminal.visible.splitlines()
         heading_row = next(
             index for index, line in enumerate(lines) if line.startswith("  Commands")
         )
         heading, selected, model = lines[heading_row : heading_row + 3]
-        assert selected.index("/mode") == model.index("/model") == heading.index(
-            "Commands"
+        assert (
+            selected.index("/mode")
+            == model.index("/model")
+            == heading.index("Commands")
         )
         assert "Browse available models and their effort levels" in model
         assert terminal.footer.splitlines()[1].endswith("Esc close")

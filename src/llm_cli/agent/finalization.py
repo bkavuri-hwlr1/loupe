@@ -70,17 +70,23 @@ class SettlementFacts:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> SettlementFacts:
-        if set(value) != {
-            "version",
-            "publication",
-            "verification",
-            "completion",
-            "changed_paths",
-        } or value.get("version") != 1:
+        if (
+            set(value)
+            != {
+                "version",
+                "publication",
+                "verification",
+                "completion",
+                "changed_paths",
+            }
+            or value.get("version") != 1
+        ):
             raise ValueError("settlement facts have an unsupported shape or version")
         paths = value.get("changed_paths")
-        if not isinstance(paths, Sequence) or isinstance(paths, (str, bytes)) or any(
-            not isinstance(path, str) for path in paths
+        if (
+            not isinstance(paths, Sequence)
+            or isinstance(paths, (str, bytes))
+            or any(not isinstance(path, str) for path in paths)
         ):
             raise ValueError("settlement changed paths are invalid")
         normalized_paths = tuple(path for path in paths if isinstance(path, str))
@@ -115,23 +121,17 @@ class FinalizationState:
             raise ValueError("finalization status is invalid")
         if type(self.attempts) is not int or self.attempts not in {0, 1}:
             raise ValueError("finalization permits at most one automatic attempt")
-        if self.status == "prepared" and (
-            self.attempts != 0 or self.facts is not None
-        ):
+        if self.status == "prepared" and (self.attempts != 0 or self.facts is not None):
             raise ValueError(
                 "prepared finalization cannot have attempts or settlement facts"
             )
-        if self.status == "pending" and (
-            self.attempts != 0 or self.facts is None
-        ):
+        if self.status == "pending" and (self.attempts != 0 or self.facts is None):
             raise ValueError("pending finalization requires trusted settlement facts")
         if self.status == "in_flight" and (self.attempts != 1 or self.facts is None):
             raise ValueError("in-flight finalization requires one attempt and facts")
         if self.status == "completed" and self.facts is None:
             raise ValueError("completed finalization requires settlement facts")
-        if self.status == "interrupted" and (
-            self.attempts != 1 or self.facts is None
-        ):
+        if self.status == "interrupted" and (self.attempts != 1 or self.facts is None):
             raise ValueError("interrupted finalization requires a consumed attempt")
 
     def to_dict(self) -> dict[str, object]:
@@ -144,9 +144,10 @@ class FinalizationState:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> FinalizationState:
-        if set(value) != {"version", "status", "attempts", "facts"} or value.get(
-            "version"
-        ) != 1:
+        if (
+            set(value) != {"version", "status", "attempts", "facts"}
+            or value.get("version") != 1
+        ):
             raise ValueError("finalization state has an unsupported shape or version")
         status = value.get("status")
         attempts = value.get("attempts")

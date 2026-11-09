@@ -373,7 +373,8 @@ def build_parser() -> argparse.ArgumentParser:
             sub.add_argument("--intent", required=action != "apply", metavar="ID")
         if action == "resume":
             sub.add_argument(
-                "--accept-current-history", metavar="RECOVERY_CHECKPOINT",
+                "--accept-current-history",
+                metavar="RECOVERY_CHECKPOINT",
                 help="acknowledge exactly the metadata inventory shown by recovery",
             )
         if action == "apply":
@@ -714,19 +715,24 @@ def _graph_neighbors_text(result: dict[str, Any]) -> str:
 
 def _lexical_search_text(result: dict[str, Any]) -> str:
     if result.get("state") != "ready":
-        return "Lexical index: " + str(result.get("state", "unavailable")) + (
-            "; " + str(result["error"]) if result.get("error") else ""
+        return (
+            "Lexical index: "
+            + str(result.get("state", "unavailable"))
+            + ("; " + str(result["error"]) if result.get("error") else "")
         )
     if not result.get("results"):
         return "No lexical matches."
     lines: list[str] = []
     for item in result["results"]:
-        lines.extend((
-            f"{item['path']}:{item['start_line']}-{item['end_line']} "
-            f"[{item['label']}]",
-            f"  revision {item['indexed_revision']}",
-            f"  identity {item['content_identity']} generation {item['generation']}",
-        ))
+        lines.extend(
+            (
+                f"{item['path']}:{item['start_line']}-{item['end_line']} "
+                f"[{item['label']}]",
+                f"  revision {item['indexed_revision']}",
+                f"  identity {item['content_identity']} "
+                f"generation {item['generation']}",
+            )
+        )
         if item.get("explain"):
             lines.append(f"  lexical: {item['explain']['reason']}")
         lines.extend("  " + line for line in str(item["text"]).splitlines())
@@ -775,13 +781,15 @@ def _cutover_plan_text(value: Any) -> str:
             provenance_text = f"{len(provenance)} registration records"
         else:
             provenance_text = label(provenance)
-        lines.extend((
-            f"  {label(mapping.get('repo_key', mapping.get('repository_id')))}: "
-            f"target={label(mapping.get('target_ref'))}; "
-            f"adapter={label(mapping.get('integration_adapter'))}",
-            f"    path={label(mapping.get('canonical_path'))}; "
-            f"provenance={provenance_text}",
-        ))
+        lines.extend(
+            (
+                f"  {label(mapping.get('repo_key', mapping.get('repository_id')))}: "
+                f"target={label(mapping.get('target_ref'))}; "
+                f"adapter={label(mapping.get('integration_adapter'))}",
+                f"    path={label(mapping.get('canonical_path'))}; "
+                f"provenance={provenance_text}",
+            )
+        )
     lines.append(f"Dispositions ({len(groups['dispositions'])}):")
     for item in groups["dispositions"]:
         allowed = item.get("allowed", [])
@@ -801,9 +809,7 @@ def _cutover_plan_text(value: Any) -> str:
             f"  {label(item.get('kind'))} {label(item.get('id'))}: "
             f"{label(item.get('reason'))}"
         )
-    lines.append(
-        "Use loupe --json workspace cutover plan PATH for complete evidence."
-    )
+    lines.append("Use loupe --json workspace cutover plan PATH for complete evidence.")
     return "\n".join(lines)
 
 
@@ -1122,14 +1128,19 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
                         1,
                     )
                     text += (
-                        "\nIntent: " + str(result["intent_id"])
-                        + "\nRecovery checkpoint: " + str(result["recovery_checkpoint"])
-                        + "\nOwnership gaps: " + str(len(result["ownership_gaps"]))
+                        "\nIntent: "
+                        + str(result["intent_id"])
+                        + "\nRecovery checkpoint: "
+                        + str(result["recovery_checkpoint"])
+                        + "\nOwnership gaps: "
+                        + str(len(result["ownership_gaps"]))
                     )
                     for gap in result["ownership_gaps"]:
                         text += (
-                            "\n  " + str(gap["checkout_id"])
-                            + " event " + str(gap["sequence"])
+                            "\n  "
+                            + str(gap["checkout_id"])
+                            + " event "
+                            + str(gap["sequence"])
                             + "; previous profile="
                             + json.dumps(gap["previous_profile"])
                             + "; previous database="
@@ -1203,9 +1214,7 @@ def dispatch(arguments: argparse.Namespace, client: DaemonClient) -> Any:
             if arguments.process_command == "stop":
                 process_params["process_id"] = arguments.process_id
             process_client = (
-                _patient(client, 60)
-                if arguments.process_command == "stop"
-                else client
+                _patient(client, 60) if arguments.process_command == "stop" else client
             )
             result = process_client.call(
                 "workspace.process." + arguments.process_command, process_params

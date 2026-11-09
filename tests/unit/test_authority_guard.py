@@ -30,9 +30,7 @@ def test_guard_detects_new_lock_only_record(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("change", ["content", "mode", "remove"])
-def test_guard_detects_changes_to_existing_records(
-    tmp_path: Path, change: str
-) -> None:
+def test_guard_detects_changes_to_existing_records(tmp_path: Path, change: str) -> None:
     marker = tmp_path / "authority" / "checkouts" / "one" / "marker.json"
     marker.parent.mkdir(parents=True)
     marker.write_text("before")

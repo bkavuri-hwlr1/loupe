@@ -550,9 +550,7 @@ def test_hung_optional_review_times_out_notices_and_publishes_checked_work(
             # Advance only the review clock once its request actually starts;
             # keep a generous real watchdog during snapshot/thread startup.
             deadline = kwargs["deadline"]
-            kwargs["clock"] = (
-                lambda: deadline if entered.is_set() else deadline - 60.0
-            )
+            kwargs["clock"] = lambda: deadline if entered.is_set() else deadline - 60.0
             super().__init__(*args, **kwargs)
 
     def blocked(_: Sequence[ToolCallResult] = ()) -> ModelTurn:
