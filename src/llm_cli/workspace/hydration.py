@@ -534,8 +534,12 @@ class _Inventory:
                         sys.getfilesystemencoding(), errors="surrogateescape"
                     )
                     prefix, separator, path = record.partition("\t")
-                    if not separator or not path or not re.fullmatch(
-                        r"[0-7]{6} (?:[0-9a-f]{40}|[0-9a-f]{64}) [0-3]", prefix
+                    if (
+                        not separator
+                        or not path
+                        or not re.fullmatch(
+                            r"[0-7]{6} (?:[0-9a-f]{40}|[0-9a-f]{64}) [0-3]", prefix
+                        )
                     ):
                         raise LlmCoordError(
                             ErrorCode.REPOSITORY_UNSAFE,

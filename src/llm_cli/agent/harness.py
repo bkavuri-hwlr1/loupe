@@ -1291,9 +1291,7 @@ class CodingAgentHarness:
         )
         try:
             request.check_cancelled()
-            deadline = _number(
-                saved.get("deadline_at"), "saved conversation deadline"
-            )
+            deadline = _number(saved.get("deadline_at"), "saved conversation deadline")
             if self.clock() >= deadline:
                 raise TimeoutError("the final response deadline has elapsed")
             session = self.provider.session(
@@ -1431,11 +1429,7 @@ class CodingAgentHarness:
             version=3,
             phase="finished",
             session=dict(native),
-            turn=(
-                _turn_to_checkpoint(turn)
-                if turn is not None
-                else saved.get("turn")
-            ),
+            turn=(_turn_to_checkpoint(turn) if turn is not None else saved.get("turn")),
             tool_results=[],
             in_flight_call=None,
             tool_usage=tool_usage,
@@ -1938,9 +1932,7 @@ def _results_with_coordination(
     if optional and len(encoded) > available:
         # Preserve both trust labels; arbitrary truncation could leave JSON and
         # its closing boundary incomplete. Mandatory facts keep their priority.
-        content = (
-            "[optional_retrieval]\nOmitted: output budget.\n[/optional_retrieval]"
-        )
+        content = "[optional_retrieval]\nOmitted: output budget.\n[/optional_retrieval]"
         if len(content.encode("utf-8")) > available:
             content, separator = "", ""
         if len(suffix.encode("utf-8")) > limit:
@@ -2018,9 +2010,7 @@ def _nudge(blocker: str | None = None) -> str:
     )
 
 
-def _finalization_message(
-    instructions: str, draft: str, facts: SettlementFacts
-) -> str:
+def _finalization_message(instructions: str, draft: str, facts: SettlementFacts) -> str:
     payload = {
         "original_request": instructions,
         "provisional_draft": draft,

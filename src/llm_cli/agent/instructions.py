@@ -110,9 +110,7 @@ def render_instructions(files: Sequence[InstructionFile]) -> str:
         note = " (truncated)" if file.truncated else ""
         path = html.escape(file.path, quote=True)
         text = _FRAME_TAG.sub(r"<\1 \2", file.text.strip())
-        sections.append(
-            f'<instructions path="{path}"{note}>\n{text}\n</instructions>'
-        )
+        sections.append(f'<instructions path="{path}"{note}>\n{text}\n</instructions>')
     return "\n\n".join(sections)
 
 

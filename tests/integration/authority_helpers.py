@@ -33,10 +33,12 @@ def isolated_autostart_popen(popen: Callable[..., Any]) -> Callable[..., Any]:
     """
 
     def start(arguments: Any, *args: Any, **kwargs: Any) -> Any:
-        if (
-            isinstance(arguments, (list, tuple))
-            and list(arguments[1:5]) == ["-I", "-u", "-m", "llm_cli.daemon.main"]
-        ):
+        if isinstance(arguments, (list, tuple)) and list(arguments[1:5]) == [
+            "-I",
+            "-u",
+            "-m",
+            "llm_cli.daemon.main",
+        ]:
             arguments = [
                 arguments[0],
                 "-I",

@@ -363,10 +363,7 @@ class Composer:
         if self._session is None or self._answer_mode:
             return False
         document = self._session.default_buffer.document
-        return (
-            _command_query(document)
-            and document.text != self._picker_dismissed
-        )
+        return _command_query(document) and document.text != self._picker_dismissed
 
     def _move_picker(self, step: int) -> None:
         matches = self._command_matches()

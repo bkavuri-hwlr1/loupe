@@ -757,18 +757,22 @@ def switch_session_workspace(
         details = {**(exc.details or {}), "requested_switch_intent_id": intent_id}
         # A refused new request may name a different already-pending intent.
         # Never direct the owner to roll back the unallocated request instead.
-        if target_prepared or workspace is None or exc.code in {
-            ErrorCode.DAEMON_UNAVAILABLE,
-            ErrorCode.PROTOCOL_MISMATCH,
-            ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
-            ErrorCode.INTERNAL_RECOVERABLE,
-        }:
+        if (
+            target_prepared
+            or workspace is None
+            or exc.code
+            in {
+                ErrorCode.DAEMON_UNAVAILABLE,
+                ErrorCode.PROTOCOL_MISMATCH,
+                ErrorCode.CHECKOUT_RECOVERY_REQUIRED,
+                ErrorCode.INTERNAL_RECOVERABLE,
+            }
+        ):
             rollback = shlex.join(
                 [*prefix, "switch", session_id, "--rollback", intent_id]
             )
             message += (
-                " If this intent is pending, request rollback with "
-                f"'{rollback}'."
+                f" If this intent is pending, request rollback with '{rollback}'."
             )
             details["switch_intent_id"] = intent_id
         raise LlmCoordError(exc.code, message, details) from exc

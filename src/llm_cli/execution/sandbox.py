@@ -203,9 +203,7 @@ def wrap_cache_guard(
     if kind not in {SEATBELT, BUBBLEWRAP}:
         raise ValueError(f"unsupported sandbox {kind!r}")
     try:
-        descriptor = os.open(
-            cache_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        )
+        descriptor = os.open(cache_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             opened = os.fstat(descriptor)
             canonical = cache_root.resolve(strict=True)
@@ -328,9 +326,7 @@ def _seatbelt(policy: SandboxPolicy, argv: Sequence[str]) -> list[str]:
             socket_path = f'(subpath (param "WRITABLE_{index}"))'
             rules.append(f"(allow network-bind (local unix-socket {socket_path}))")
             rules.append(f"(allow network-inbound (local unix-socket {socket_path}))")
-            rules.append(
-                f"(allow network-outbound (remote unix-socket {socket_path}))"
-            )
+            rules.append(f"(allow network-outbound (remote unix-socket {socket_path}))")
     if policy.writable or policy.readable:
         # Snapshots and explicitly readable runtimes can sit inside protected
         # parents. Pytest and Framework Python inspect ancestor metadata before

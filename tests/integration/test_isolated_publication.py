@@ -410,7 +410,9 @@ def test_isolated_helper_command_notifies_parent_when_pending_edits_are_reconcil
 
 
 def test_before_model_sync_error_does_not_fail_isolated_task(
-    tmp_path: Path, repository_factory: Any, service_factory: Any,
+    tmp_path: Path,
+    repository_factory: Any,
+    service_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from llm_cli.errors import ErrorCode, LlmCoordError

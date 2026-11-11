@@ -127,9 +127,7 @@ def test_live_stop_input_has_bounded_lifetime(
             os.write(write_fd, b"/stop\n")
             assert client.called.wait(2)
         assert client.calls == [("task.cancel", {"task_id": "running-task"})]
-        assert not any(
-            t.name == "loupe-active-controls" for t in threading.enumerate()
-        )
+        assert not any(t.name == "loupe-active-controls" for t in threading.enumerate())
     finally:
         os.close(write_fd)
 

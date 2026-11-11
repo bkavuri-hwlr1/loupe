@@ -404,9 +404,7 @@ def test_invalid_pending_finalization_is_rejected_atomically(
     else:
         finalization = state["finalization"]
         assert isinstance(finalization, dict)
-        finalization[invalid] = (
-            2 if invalid == "attempts" else _settlement().to_dict()
-        )
+        finalization[invalid] = 2 if invalid == "attempts" else _settlement().to_dict()
     with pytest.raises(ValueError):
         store.save_execution_checkpoint(
             execution_id=execution.execution_id,

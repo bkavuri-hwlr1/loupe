@@ -1208,7 +1208,9 @@ def test_process_environment_overrides_and_reused_pid_metadata_cannot_split_auth
         assert line, owner.communicate(timeout=10)
         opened = json.loads(line)
         assert opened == {
-            "root": str(expected_root), "code": "acquired", "pid": owner.pid
+            "root": str(expected_root),
+            "code": "acquired",
+            "pid": owner.pid,
         }
         physical = PhysicalCheckout.inspect(repository)
         try:
@@ -1367,7 +1369,6 @@ def test_same_profile_pin_waits_for_live_git_mutation_and_revalidates_its_outcom
             waiter.join(10)
         owner.close()
         peer.close()
-
 
 
 def test_isolated_open_waits_before_marking_dirty_when_publication_holds_its_lock(

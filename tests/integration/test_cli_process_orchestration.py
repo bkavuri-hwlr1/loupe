@@ -215,6 +215,7 @@ def _both(text: str) -> str:
 
 def _daemon_entry() -> None:
     from authority_helpers import install_test_authority
+
     install_test_authority()
     """Install the test model at the provider seam, then run the normal daemon."""
     from llm_cli.daemon import main
@@ -360,9 +361,11 @@ class _Cluster:
                 log.seek(max(0, path.stat().st_size - 8_192))
                 evidence["logs"][path.name] = log.read().decode(errors="replace")
         try:
-            with closing(sqlite3.connect(
-                self.paths.control_db.as_uri() + "?mode=ro", timeout=0.1, uri=True
-            )) as con:
+            with closing(
+                sqlite3.connect(
+                    self.paths.control_db.as_uri() + "?mode=ro", timeout=0.1, uri=True
+                )
+            ) as con:
                 con.row_factory = sqlite3.Row
                 evidence["tasks"] = [
                     dict(row)
@@ -399,7 +402,8 @@ class _Cluster:
                 break
             exited = self.daemon.poll() is not None or any(
                 self.submissions[label].poll() is not None
-                for label in pending if label in self.submissions
+                for label in pending
+                if label in self.submissions
             )
             if exited or time.monotonic() >= deadline:
                 raise AssertionError(

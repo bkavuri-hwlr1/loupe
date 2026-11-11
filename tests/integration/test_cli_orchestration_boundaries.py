@@ -87,9 +87,7 @@ def test_two_wrappers_resuming_one_session_cannot_launch_duplicate_active_work(
     tasks = cluster.rpc("task.list")
     assert [t["task_id"] for t in tasks] == [task["task_id"]]
     cluster.send(second, "/attach")
-    _wait(
-        lambda: "Getting ready" in (cluster.root / "second.log").read_text()
-    )
+    _wait(lambda: "Getting ready" in (cluster.root / "second.log").read_text())
     assert "staged docs/a.md" not in (cluster.root / "second.log").read_text()
     cluster.release("a")
     assert cluster.settled("a")["state"] == "completed"

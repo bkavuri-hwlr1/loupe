@@ -42,6 +42,7 @@ uv run pytest --cov=llm_cli -m 'not index_scale and not admission_scale'
 uv run pytest -m index_scale -s
 uv run pytest --no-cov -m admission_scale -s
 uv run ruff check .
+uv run ruff format --check .
 uv run mypy
 uv build --no-sources
 ```

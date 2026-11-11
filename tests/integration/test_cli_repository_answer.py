@@ -120,6 +120,7 @@ class _OverviewProvider:
 
 def _daemon_entry() -> None:
     from authority_helpers import install_test_authority
+
     install_test_authority()
     from llm_cli.daemon import main
 
@@ -203,16 +204,8 @@ def _idle_editor_geometry(
     statuses = [
         index
         for index, line in enumerate(lines)
-        if (
-            line.startswith(" Model:")
-            and "Effort:" in line
-            and "Mode:" in line
-        )
-        or (
-            line.startswith(" ")
-            and " effort · " in line
-            and line.endswith(" mode")
-        )
+        if (line.startswith(" Model:") and "Effort:" in line and "Mode:" in line)
+        or (line.startswith(" ") and " effort · " in line and line.endswith(" mode"))
     ]
     if not prompts or not statuses:
         return None
@@ -281,10 +274,7 @@ def test_repo_question_answers_once_in_terminal_and_durable_replay(
 
         replay_start = len(terminal.text)
         terminal.write("/attach\r")
-        _wait(
-            lambda: _PARAGRAPHS[0]
-            in " ".join(terminal.text[replay_start:].split())
-        )
+        _wait(lambda: _PARAGRAPHS[0] in " ".join(terminal.text[replay_start:].split()))
         _wait(lambda: _idle_editor_geometry(terminal, columns=columns))
         replay = terminal.text[replay_start:]
         _assert_answer_only(replay, task)

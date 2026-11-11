@@ -35,9 +35,7 @@ class _RecoveryProvider(_BarrierProvider):
             self.evidence = dict(state["evidence"])
             marker = self.signals / f"{self.request['label']}.restored.json"
             temporary = marker.with_suffix(".tmp")
-            temporary.write_text(
-                json.dumps({"phase": self.phase, "pid": os.getpid()})
-            )
+            temporary.write_text(json.dumps({"phase": self.phase, "pid": os.getpid()}))
             temporary.replace(marker)
         return self
 
@@ -55,6 +53,7 @@ class _RecoveryProvider(_BarrierProvider):
 
 def _daemon_entry() -> None:
     from authority_helpers import install_test_authority
+
     install_test_authority()
     from llm_cli.daemon import main
 
@@ -79,9 +78,7 @@ def _daemon_entry() -> None:
                         json.dumps({"execution_id": execution_id})
                     )
                     _wait(lambda: (signals / "settle.release").exists(), timeout=30)
-                return settle(
-                    execution_id, outcome=outcome, failure_code=failure_code
-                )
+                return settle(execution_id, outcome=outcome, failure_code=failure_code)
 
             self.coordinator.settle_shared_execution = pause_after_commit
 
@@ -347,9 +344,12 @@ def test_bad_cancelled_checkpoint_is_isolated_and_repairable(
         )
     cluster.restart()
     outcomes = cluster.rpc("system.ping")["startup_recovery"]["outcomes"]
-    assert next(
-        item for item in outcomes if item["task_id"] == original["task_id"]
-    )["resolution"] == "operator_attention"
+    assert (
+        next(item for item in outcomes if item["task_id"] == original["task_id"])[
+            "resolution"
+        ]
+        == "operator_attention"
+    )
     cluster.restored("b")
     cluster.release("b")
     assert cluster.settled("b")["state"] == "completed"

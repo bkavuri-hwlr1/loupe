@@ -655,6 +655,7 @@ class SharedTaskExecutionRunner:
                 )
             manager = self.managed_processes
             if manager is not None:
+
                 def process_output(process_id: str) -> ToolOutcome:
                     try:
                         result = manager.output(process_id, session.session_id)
@@ -756,8 +757,7 @@ class SharedTaskExecutionRunner:
                                 )
                                 raise ValueError(
                                     "Stop managed processes before installing "
-                                    "pending edits: "
-                                    + commands_to_stop
+                                    "pending edits: " + commands_to_stop
                                 )
                             assert workspace.git_dir is not None
                             broker.materialize_private_candidates(
