@@ -1,10 +1,12 @@
 # Parallel work plan
 
-Date: 2026-10-13, extended 2026-10-16, 2026-10-22, 2026-10-24 and 2026-10-30. Waves 1–3 started from
+Date: 2026-10-13, extended 2026-10-16, 2026-10-22, 2026-10-24, 2026-10-30 and
+2026-11-13. Waves 1–3 started from
 `main` after #38, #39 and #41 and are merged (through #56). Waves 4–7 started
 from `main` at #56 and are merged (through #72). Waves 8–11 started from `main`
 at #72 and shipped in 0.1.0a3 (through #85). Wave 12 started from `main` at
-#86 and is merged (through #95); 0.1.0a4 is prepared from it (D5).
+#86 and is merged (through #95); 0.1.0a4 is prepared from it (D5). Wave 13
+starts from `main` after that preparation (#99).
 
 The remaining work, split into packages that separate sessions can run at the
 same time. Each package is sized for one session, names the files it may
@@ -49,6 +51,58 @@ experiments in [`implementation-status.md`](implementation-status.md).
 - **Stacked work.** When a package depends on another that is not merged yet,
   branch from that package's branch, and retarget the PR to `main` as soon as
   the base merges, before its branch is deleted.
+
+## At a glance: Wave 13
+
+Wave 13 starts from `main` after the 0.1.0a4 preparation (#99). The harness
+plan is fully implemented, so this wave draws on three other sources:
+
+- **A limit found while planning it (C24).** A checkout above 20,000 source
+  paths stops accepting tasks once the daemon releases it or restarts.
+  0.1.0a4 ships with this as a documented known limit.
+- **The workspace plan's remaining slices (C23, G5):** exports as commits
+  and branches (§16.6), and the default regime for new checkouts (Phase 11).
+- **Open ends from Wave 12 (F6, E4, E2):** the inconclusive retrieval
+  comparison, the upgrade check that was run by hand, and the live provider
+  checks.
+
+| ID | Package | Lane | Size | Depends on | Hot files | Wave |
+| --- | --- | --- | --- | --- | --- | --- |
+| C24 | Checkouts above 20,000 source paths keep working | Workspace | M | — | — | 13 (first) |
+| C23 | Commit and branch exports | Workspace | M | — | app.py | 13 |
+| F6 | Conclusive rerun of the semantic-retrieval comparison | Knowledge | M | — | — | 13 |
+| E4 | In-place upgrade check in CI and releases | Reliability | S | #99 merged | — | 13 |
+| G5 | Claim-free start for new checkouts: design and ADR | Authority | M | — | — (docs only) | 13 |
+| E2 | Live provider checks (*live*) | Reliability | S | your sign-in, by 2026-12-11 | — | 13 |
+| D6 | Release 0.1.0a5 | Operations | S | C24 merged | — | after C24 |
+
+**Wave 13, all at once:** C24, C23, F6, E4, G5 and E2. No two of them share
+a hot file. Start C24 first if sessions are limited: it repairs behavior that
+0.1.0a4 ships with, and D6 waits only on it.
+
+**Shared files.** These overlaps are small; resolve them at merge time.
+
+- C23 and C24 both edit `docs/isolated-workspaces.md`: C23 the export
+  section, C24 the admission counts.
+- C23 adds control migration 35. C24 takes the next free number if it needs
+  a migration.
+- C23 raises the migration floor in `tests/integration/test_release_upgrade.py`
+  and E4 changes the in-place check's expected migration numbers. Whichever
+  merges second adjusts.
+- G5 is documents only. Its ADR cites C24's measurements but does not wait
+  for them.
+
+**Live work.** Only E2 makes billed requests, through a profile you sign in
+yourself. Agents never handle keys. F6 uses a local model and sends no
+repository content anywhere.
+
+**After the wave.** F4 runs only if F6 records a go. It changes the `search`
+command in `cli/app.py`, so it starts after C23 merges.
+
+**Starting a package.** Create its worktree as described above, for example
+`git worktree add -b wave13-c24 ../loupe-c24 origin/main`, and give the
+session: "Implement package C24 from `docs/parallel-work-plan.md` (Wave 13),
+following 'How to run packages in parallel'. Open one PR."
 
 ## At a glance: Wave 12 (merged)
 
@@ -1536,6 +1590,165 @@ screened bytes are refused, and
 checkout destinations require explicit consent. Existing daemon and publication
 locks do not cover export I/O. See [source exports](isolated-workspaces.md#export-source-changes).
 
+### C23. Commit and branch exports
+
+*The only Wave 13 package that changes `cli/app.py`.*
+
+**Why.** Workspace plan §16.6 lists four explicit export forms. C22 delivered
+the two file forms. To turn a proposal or a published change into a commit
+today, a user exports a patch, applies it to a clean tree and commits by
+hand, and the exact-base check is lost on the way. Loupe still never commits
+on its own; this is an explicit command.
+
+**Scope.**
+
+- **Command.** `loupe change export ID --format commit` creates one commit
+  holding the change and prints its ID.
+  - `--branch NAME` also creates the local branch `NAME` at that commit.
+    Without it, an internal ref under `refs/llm-coord/exports/` keeps the
+    commit from being garbage-collected.
+  - `--onto REV` chooses the parent commit. The default is the checkout's
+    current `HEAD` commit.
+  - `--message TEXT` sets the commit message.
+  - `--to DEST` becomes required only for the file formats.
+- **Exact base or refusal.** Each changed path's recorded before-identity
+  must equal that path in the parent commit: content, mode, symlink target or
+  absence. A mismatch is refused with the paths and a pointer to `--onto` or
+  a patch export. There is no three-way merge.
+- **What it never touches.** `HEAD`, the index, the working tree, any
+  existing branch or tag, and remotes. An existing branch name is refused,
+  never moved. Hooks and commit signing do not run.
+- **Identity.** Author and committer come from the repository's configured
+  Git identity, and the export is refused with a clear message when none is
+  set.
+- **Durability.** A new intent table (control migration 35) records the
+  request, parent, tree, commit and ref. The file-export table is unchanged.
+  - The tree is built with a private index file, never the checkout's index.
+  - The ref is created by compare-and-swap against "absent", through the
+    hardened helpers in `git/integrate.py` and `git/environment.py`.
+  - The intent fixes the commit timestamp, so a retry with the same
+    `--intent ID` reproduces the same commit ID and never creates a second
+    ref. A crash leaves at most unreferenced objects.
+- **Privacy.** As in C22: runtime files and screened source are refused with
+  a path-only reason.
+- **Not mistaken for outside Git work.** Sessions on the checkout must not
+  see the export's own ref as an outside Git operation (C11), and watchers
+  (C12) must not treat it as a source change.
+- **Filters.** A path whose committed form differs from its working bytes
+  (clean or smudge filters, line-ending conversion) is refused, not
+  converted.
+- **Not included:** pushing, pull requests, importing a bundle, and exporting
+  several changes as a commit series.
+
+**Files.** `src/llm_cli/workspace/exports.py` (reuse source selection and
+privacy checks), `src/llm_cli/workspace/commit_exports.py` (new),
+`src/llm_cli/git/integrate.py`, `src/llm_cli/git/environment.py` (only if a
+plumbing command needs admitting), `src/llm_cli/storage/migrations.py`
+(migration 35), `src/llm_cli/cli/app.py`, `src/llm_cli/daemon/service.py`
+(the existing `change.export` handler, only if its parameters change),
+`tests/integration/test_release_upgrade.py` (migration floor),
+`docs/isolated-workspaces.md`, `README.md` (the "never commits" wording),
+tests.
+
+**Done when.**
+- `git diff PARENT COMMIT` equals the patch export of the same change, for a
+  text edit, a binary file, a mode change, a symlink, an added file and a
+  deleted file.
+- `HEAD`, the index, the working tree and every existing ref are identical
+  before and after. An existing branch name is refused.
+- A stale base is refused with its paths, and the same export succeeds with
+  `--onto` a matching commit.
+- A crash at each step followed by a retry yields the same commit ID and
+  exactly one ref.
+- Screened content is refused, and no exported bytes appear in the database
+  or logs.
+- Open sessions on the checkout record no outside Git operation from the
+  export.
+- It works for a held proposal, a staged candidate and a published batch,
+  from shared and from isolated sessions.
+
+### C24. Checkouts above 20,000 source paths keep working
+
+*Start this first. D6 waits on it.*
+
+**Why.** C18 raised isolated admission to 50,000 source paths, but two
+observations kept a fixed 20,000-path budget
+(`SOURCE_CHECKPOINT_MAX_PATHS` in `workspace/authority.py`):
+
+- **Clean handoff.** Each time a daemon takes a checkout back, it re-observes
+  every source path. That happens after it released the checkout (30 idle
+  seconds) and after every restart. Above 20,000 paths it refuses with
+  `CHECKOUT_FOREIGN_RECOVERY_REQUIRED`.
+- **Cutover checkpoint.** `loupe workspace cutover plan` reads every source
+  file within 20,000 paths, 16 MiB per file, 64 MiB in total and 30 seconds.
+
+So a larger checkout works only until its first release. A scripted run on
+2026-11-13, on the 0.1.0a4 code with a 20,100-file checkout, showed it:
+
+| Step | Shared session | Isolated session |
+| --- | --- | --- |
+| First task | completed | completed |
+| Next task after a forced idle release | refused | refused |
+| Next task after a daemon restart | refused | refused |
+
+A 300-file control passed every step. The refusal reads "source checkpoint
+exceeds its 20000-path limit; reduce the source path count before cutover or
+clean handoff". The idle release was forced through the authority object,
+not waited for. In shared mode the limit predates C18: 0.1.0a3 has the same
+budget. 0.1.0a4's notes record it as a known limit.
+
+**Scope.**
+
+- **Reproduce it in a test first.** Sessions in both modes, on a checkout
+  above the limit, run a task, lose ownership to an idle release, restart
+  the daemon and run a task again.
+- **Measure.** Add a mode to `scripts/scan_scale.py` that records, at 20,000,
+  50,000 and 100,000 paths:
+  - clean-handoff time and memory;
+  - cutover-checkpoint time with realistic file sizes, and which bound
+    (paths, bytes or time) refuses first.
+- **Handoff follows admission.** No checkout is admitted that a later
+  handoff refuses. The handoff accepts at least the effective admission
+  count, or keeps a measured limit of its own that admission also enforces.
+  Its guarantee stays: drift made while no daemon owned the checkout is
+  observed before any session can edit.
+- **Shared mode gets an explicit limit.** Shared sessions have no count
+  check at open today. Opening one on a checkout above the supported count
+  refuses at open, with the count and the limit.
+- **Cutover.** Raise the checkpoint's path, byte and time budgets to what the
+  measurements support. Where a bound stays, the refusal names it and the
+  observed value. Today every bound reports "unstable or exceeds its
+  checkpoint budget".
+- **Message.** A profile taking back its own checkout is not told that
+  foreign recovery is required. The refusal names the count, the limit and
+  the setting that applies, if any.
+- **Stuck checkouts recover.** A checkout refused under 0.1.0a4 works again
+  after the upgrade, with its open sessions and private worktrees intact.
+- **Not included:** the byte, depth and secret-screening admission bounds,
+  and admitting 100,000-file checkouts, which C18 recorded as unsupported.
+
+**Files.** `src/llm_cli/workspace/authority.py`,
+`src/llm_cli/workspace/regime.py`, `src/llm_cli/workspace/isolated.py`
+(admission consistency only), `src/llm_cli/config/models.py` (only if a
+setting is added), `scripts/scan_scale.py`, `docs/isolated-workspaces.md`,
+`docs/workspace-cutover.md`, `docs/cross-profile-authority.md`,
+`docs/experiments/`, tests. `tests/unit/test_isolated_admission_authority.py`
+pins today's refusals and changes with them.
+
+**Done when.**
+- A checkout at the admitted maximum completes tasks in shared and isolated
+  mode before and after an idle release and a daemon restart. The test fails
+  on today's code.
+- A checkout above the supported count is refused at open with the count and
+  the limit, and none is admitted that a later handoff refuses.
+- At the largest admitted count, the handoff still reports an edit, a
+  deletion and a new file made while no daemon owned the checkout.
+- A second profile's clean handoff of a large checkout succeeds, and a dirty
+  marker is still refused.
+- `cutover plan` on a large checkout succeeds or names the bound it hit.
+- The recorded measurements justify each limit that remains.
+- The known-limit paragraph is removed from `docs/isolated-workspaces.md`.
+
 ## Lane D — operations
 
 Run D1 → D2 → D3 in one session, in order: they share `cli/app.py`.
@@ -1667,6 +1880,21 @@ of it.
 notes, and after the `v0.1.0a4` tag the tap's workflow upgrades from 0.1.0a3
 on both Mac architectures.
 
+### D6. Release 0.1.0a5
+
+**Why.** 0.1.0a4 ships with C24's limit documented but not fixed, so the
+larger admission defaults are not usable in practice until the fix reaches
+Homebrew.
+
+**Scope.** As D5: version bump, release notes, the in-place upgrade check
+from 0.1.0a4 (through E4's job if it has merged, by hand otherwise), and the
+tap workflow comparison before tagging. Include whatever else of Wave 13 has
+merged; do not wait for the rest.
+
+**Done when.** The notes say the 20,000-path limit is lifted and how a stuck
+checkout recovers, and after the `v0.1.0a5` tag the tap's workflow upgrades
+from 0.1.0a4 on both Mac architectures.
+
 ## Lane E — reliability
 
 ### E1. Stress test survives stalled CI runners
@@ -1689,6 +1917,12 @@ Record results in the harness plan.
 **Wave 12.** Taken off hold on 2026-10-30 (it was on hold from 2026-10-16 at
 the user's request). Sign both providers in to a profile other than `default`
 before starting.
+
+**Wave 13.** Carried over; nothing has run. When this wave was planned,
+`scripts/provider_live_checks.py --profile explore-eval` reported both
+providers signed out. The harness plan's recorded command uses GPT-5 nano,
+which OpenAI shuts down on December 11, 2026. Run before then, or choose
+another small OpenAI model and record the change.
 
 **Files.** A live check script under `scripts/` (new), `src/llm_cli/providers/`
 only if a check finds a bug, `docs/cli-harness-response-plan.md`.
@@ -1746,6 +1980,49 @@ C12 also needs numbers before anyone builds watchers.
   record committed.
 - The scan-cost table is recorded with a recommendation on C12.
 - A deliberately injected lost write (test hook) makes the soak fail.
+
+### E4. In-place upgrade check in CI and releases
+
+**Why.** From 0.1.0a3 a profile is bound to its machine, so the
+stored-database upgrade test stops at 0.1.0a2. The 0.1.0a3 → 0.1.0a4 check
+was run by hand (D5). A migration or startup change that breaks a used
+0.1.0a3 or 0.1.0a4 profile would pass CI today. The tap's own upgrade check
+runs only after a tag is pushed, when a failure costs a new version number.
+
+**Scope.**
+
+- **One version-neutral check.** Move `tests/fixtures/upgrade_0_1_0a3/` to
+  `tests/fixtures/upgrade_in_place/` with a small table of source releases:
+  tag, commit and expected version. `build_profile.py` takes the release
+  name. `check_upgrade.py` takes the "before" migration from what the old
+  release recorded, instead of the fixed 33 and 34.
+- **The old release builds the profile as shipped.** In D5 the old source ran
+  inside the new environment. Here the old tag is checked out into its own
+  worktree with its own locked environment.
+- **CI job.** A job in `ci.yml` builds the profile with the previous release
+  and checks it with the code under test. `release.yml` calls `ci.yml`, so a
+  release handoff waits on it too. Run it on Linux for every pull request,
+  and on macOS arm64 as well when the workflow runs for a tag. macOS runners
+  are scarce: a `formula` job was cancelled unstarted on 2026-11-12.
+- **Each release adds a row.** `docs/macos-releases.md` gains a step: after
+  tagging a release, add it to the table. Keep the two most recent releases.
+- **Links.** Update the links to the old directory in the README, the
+  0.1.0a4 notes, the status document and this plan.
+- **Not included:** making the job a required check. The "main requires CI"
+  ruleset lists checks by name, and changing it is your decision once the job
+  has been green for a while. Intel and the Homebrew-level upgrade stay with
+  the tap.
+
+**Files.** `.github/workflows/ci.yml`, `tests/fixtures/upgrade_in_place/`
+(moved from `upgrade_0_1_0a3/`), a unit test for the release table and its
+refusals, `docs/macos-releases.md`, the links named above.
+
+**Done when.**
+- The job passes on `main`.
+- A deliberately broken migration on a throwaway branch makes it fail, and
+  the PR records that run.
+- A release tag's `handoff` job does not start until the check has passed.
+- Adding a release is one table row, shown by a unit test with a second row.
 
 ## Lane F — knowledge
 
@@ -1939,6 +2216,7 @@ misses, with enough headroom to meet the unchanged thresholds, and a model
 with a longer input window or smaller chunks. See the
 [complete F5 result](experiments/semantic-retrieval-f5-2026-10-30.md). Run F4 only
 if a conclusive comparison recommends it, or the user asks for semantic search.
+F6 (Wave 13) is that comparison.
 
 **Scope.**
 
@@ -2016,6 +2294,56 @@ needs questions lexical search misses and a model with a longer input window or
 smaller chunks. No product code, defaults or dependencies changed, and no
 repository content was sent to a hosted model. Questions and thresholds were
 not retuned after ranks were observed.
+
+### F6. Conclusive rerun of the semantic-retrieval comparison
+
+**Why.** F5 could not decide F4, for two reasons. Lexical search answered 55
+of 60 questions at Recall@10, so even perfect hybrid retrieval could gain at
+most 8.33 points against the 10-point threshold. And the model's 256-token
+window truncated 95.95% of Loupe chunks. F4, the `sqlite-vec` accelerator
+and task memory all wait on this answer.
+
+**Scope.**
+
+- **A new protocol, frozen first.** Protocol, questions and configuration are
+  committed before any embedding rank is computed, as in F5. F5's files and
+  results are not edited. The gate's thresholds are unchanged.
+- **Questions with headroom.** A larger pool of "where does X happen"
+  questions written without the code's identifiers, over Loupe and Django at
+  newly pinned revisions.
+  - Only the lexical arm may run while the set is assembled.
+  - The protocol fixes how the final set is drawn from the pool before any
+    embedding rank exists, and requires at least 15 points of Recall@10
+    headroom on each repository.
+  - The set keeps questions that lexical search already answers, so answers
+    that hybrid retrieval loses stay visible.
+- **Chunks that fit the model.** Either a pinned local model with an input
+  window of at least 512 tokens, or smaller chunks sized to the window. The
+  protocol names one primary configuration, which must truncate under 5% of
+  chunks. If chunk size changes, the lexical baseline is still reported with
+  the product chunker.
+- **Local only.** No hosted embedding requests, and no repository content
+  leaves the machine. Optional dependencies stay out of the product's
+  dependency and lock files.
+- **Decision.** Record go, no-go or inconclusive in F4's gate. A go opens F4
+  as its own package after this wave. A no-go closes F4, `sqlite-vec` and
+  task memory until the user asks for semantic search.
+
+**Files.** `scripts/semantic_retrieval_eval.py` (chunk-size and model
+options), `scripts/semantic_retrieval_f6.toml` (new),
+`tests/unit/test_semantic_retrieval_eval.py`,
+`docs/experiments/semantic-retrieval-f6-protocol.md` and the dated result
+files (new), F4's gate in this plan, `docs/implementation-status.md`.
+
+**Done when.**
+- The protocol, questions and configuration are committed before the first
+  embedding rank, and the result names that commit.
+- Lexical Recall@10 leaves at least 15 points of headroom on each
+  repository, and the primary configuration truncates under 5% of chunks.
+- The result has the recall table for all three arms, gains and losses at
+  each cutoff, the bootstrap interval and local costs.
+- F4's gate states go, no-go or inconclusive with those numbers, and an
+  independent recalculation matches.
 
 ## Lane G — authority across profiles
 
@@ -2264,14 +2592,71 @@ it), `docs/adr/0010-cross-profile-publication-authority.md`,
 - The filesystem refusal names the filesystem.
 - The ADR amendment is accepted.
 
+### G5. Claim-free start for new checkouts: design and ADR
+
+*Documents only. No product code changes in this package.*
+
+**Why.** Every checkout starts in the `legacy` regime and stays there until
+an explicit, irreversible `loupe workspace cutover` (G3). Coding tasks in
+`legacy` still take editing claims. The workspace plan's definition of
+complete (§39, item 9) says legacy queued-claim behavior is no longer the
+default path, and Stage 5 of its rollout (§33.6) has new tasks use advisory
+intents. Changing where new checkouts start is a product decision about an
+irreversible state, so it gets a design and your acceptance before any code.
+
+**Scope.** Write ADR 0011, covering:
+
+- **The proposal.** A checkout registered for the first time starts in
+  `workspace`. Existing `legacy` checkouts are untouched and still move only
+  by explicit cutover.
+- **What "new" means.** A checkout with no history in any profile, decided
+  from the physical authority root and its marker, including a second
+  profile that first sees a checkout another profile already uses.
+- **Commands that depend on claims.** What `loupe claim`, exclusive claims
+  and sessionless `loupe run` do on a checkout that never had the legacy
+  regime, and the compatibility window for the claim commands (Phase 11
+  deprecates claim mutation for one release).
+- **Older binaries.** What a pre-change binary does when it meets a checkout
+  that started in `workspace`, and whether a downgrade can strand it.
+- **Rollback gate.** §33.6 allows returning the default for new checkouts
+  without reinterpreting existing ledger work. Say what the gate is: a
+  setting, a release, or neither.
+- **Large checkouts.** New checkouts need no cutover checkpoint, but they do
+  pass the clean handoff. Cite C24's measurements.
+- **Evidence still needed.** Which soak, upgrade and live checks must pass
+  before the default changes, and whether it waits for a stable release.
+- **The follow-up packages.** A sized implementation list for a later wave.
+
+**Files.** `docs/adr/0011-claim-free-start-for-new-checkouts.md` (new),
+`docs/workspace-cutover.md` and `docs/cross-profile-authority.md` (pointers
+only), this plan (the follow-up packages), `docs/implementation-status.md`.
+
+**Done when.**
+- The ADR states the decision, the alternatives considered (keep `legacy` as
+  the start; opt in per profile; opt in per checkout) and what each costs.
+- Every command that behaves differently on a checkout that starts in
+  `workspace` is listed with its behavior.
+- You have accepted or rejected the ADR, and its status says which.
+- If accepted, the follow-up packages are in this plan with files and exit
+  criteria.
+
 ## Later
 
-Wave 12 took up the earlier Later list: larger admission (C18) and scan
-coverage (C19), the installer cache (C20), `loupe session switch` (C21),
-patch and bundle exports (C22), review on natural tasks (B7), the case for
-embeddings (F5, then F4) and E2's live checks. These remain outside it:
+Wave 13 takes commit and branch exports (C23) from the earlier list. These
+remain outside it:
 
-- **The `sqlite-vec` accelerator and opt-in task memory.** Both follow F4 and
-  stay out unless F5 opens it.
-- **Internal refs, commits and pull requests as exports** (§16.6's later
-  integration adapter), after C22.
+- **F4, the `sqlite-vec` accelerator and opt-in task memory.** F4 runs only
+  if F6 records a go; the other two follow F4.
+- **Pull requests as exports** (§16.6's later integration adapter), after
+  C23. Pushing to a remote needs credentials that only the user provides.
+- **Importing a bundle.** C22 writes bundles; nothing reads one back.
+- **A 24-hour multi-session soak** with watcher and build-output pressure
+  (Phase 13). E3's longest recorded run is one hour.
+- **External drivers** (Phase 10): the `chat -- COMMAND` wrapper that lets
+  another agent CLI coordinate through Loupe, and context-packet
+  acknowledgement before each managed write.
+- **A larger billed review benchmark.** B7 found no difference on eight
+  natural tasks; a bigger run costs real tokens and waits for a reason to
+  expect a different answer.
+- **Cost estimates in `/usage`.** The harness plan left them out.
+- **The implementation of G5**, if its ADR is accepted.
