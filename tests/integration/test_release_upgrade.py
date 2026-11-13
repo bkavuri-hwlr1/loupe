@@ -1,4 +1,8 @@
-"""An authentic 0.1.0a2 profile survives the 0.1.0a3 upgrade and startup."""
+"""An authentic 0.1.0a2 profile survives upgrading to this version and startup.
+
+Profiles from 0.1.0a3 on are bound to their machine, so that upgrade is checked
+in place instead: see tests/fixtures/upgrade_0_1_0a3/README.md.
+"""
 
 from __future__ import annotations
 
@@ -118,9 +122,9 @@ def test_0_1_0a2_profile_upgrades_without_checkout_cutover(
                 assert applied == [
                     (m.version, m.name, m.checksum) for m in CONTROL_MIGRATIONS
                 ]
-                # This release crosses migrations 20-28. The floor catches removal
-                # of the last migration as well as the normal contiguous-set check.
-                assert applied[-1][0] >= 28
+                # 0.1.0a4 crosses migrations 20-34. The floor catches removal of
+                # the last migration, which the contiguous-set check cannot.
+                assert applied[-1][0] >= 34
                 checkouts = connection.execute(
                     "SELECT canonical_path FROM checkouts"
                 ).fetchall()

@@ -100,7 +100,9 @@ Old daemons predating cross-profile authority ignore the new checkout lock.
 Upgrade only after they stop; the next conversation starts the new daemon.
 For Homebrew, set `HOMEBREW_NO_INSTALL_CLEANUP=1` during upgrade so cleanup does
 not remove an interpreter still in use. See the
-[0.1.0a3 upgrade notes](docs/release-notes/0.1.0a3.md).
+[0.1.0a4 upgrade notes](docs/release-notes/0.1.0a4.md), and the
+[0.1.0a3 notes](docs/release-notes/0.1.0a3.md) when coming from 0.1.0a2 or
+earlier.
 Loupe warns when the daemon is running different code: older code from before
 an update, or code from another installation that shares the same profile.
 `loupe daemon status` reports `matches_this_cli`. Subsequent in-app logins are

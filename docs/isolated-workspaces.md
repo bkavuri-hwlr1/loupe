@@ -62,6 +62,15 @@ admitted to an isolated session, but its cutover or clean handoff refuses until
 the source count fits that checkpoint limit. Raising `isolated.source_max_paths`
 does not raise the checkpoint limit.
 
+**Known limit.** Loupe makes the clean-handoff observation each time it takes
+a checkout back, so a checkout above 20,000 source paths stops accepting tasks
+once the daemon releases it (after about 30 idle seconds) or restarts. Shared
+and isolated sessions are then refused with
+`CHECKOUT_FOREIGN_RECOVERY_REQUIRED` until the count is 20,000 or fewer.
+Nothing is lost, but unpublished work in a private worktree stays out of reach
+meanwhile. Keep checkouts within 20,000 source paths until this limit is
+lifted.
+
 The [recorded synthetic admission experiment](experiments/isolated-admission-c18-2026-10-30.md)
 explains the defaults and the remaining 100,000-file refusal. These are count
 limits, not promises that every checkout layout or body size fits other bounds.
