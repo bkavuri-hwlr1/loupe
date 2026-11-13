@@ -3,8 +3,8 @@
 Date: 2026-10-13, extended 2026-10-16, 2026-10-22, 2026-10-24 and 2026-10-30. Waves 1–3 started from
 `main` after #38, #39 and #41 and are merged (through #56). Waves 4–7 started
 from `main` at #56 and are merged (through #72). Waves 8–11 started from `main`
-at #72 and shipped in 0.1.0a3 (through #85). Wave 12 starts from `main` once
-this plan merges (#86).
+at #72 and shipped in 0.1.0a3 (through #85). Wave 12 started from `main` at
+#86 and is merged (through #95); 0.1.0a4 is prepared from it (D5).
 
 The remaining work, split into packages that separate sessions can run at the
 same time. Each package is sized for one session, names the files it may
@@ -50,10 +50,19 @@ experiments in [`implementation-status.md`](implementation-status.md).
   branch from that package's branch, and retarget the PR to `main` as soon as
   the base merges, before its branch is deleted.
 
-## At a glance: Wave 12
+## At a glance: Wave 12 (merged)
 
-Wave 12 takes up everything left open after 0.1.0a3: the former Later list
-and two known limits of the outside catch-up fix (#85).
+Wave 12 took up everything left open after 0.1.0a3: the former Later list
+and two known limits of the outside catch-up fix (#85). Every package merged
+on November 7–8, 2026 (#87–#95), with two open ends:
+
+- **F4 did not run.** F5 recorded its gate as inconclusive, so embeddings
+  stay out until a conclusive rerun.
+- **E2's live run is still open.** Its check script merged; the billed
+  requests wait for both provider sign-ins.
+
+A follow-up (#96) made source exports refuse filesystems without hard links
+and leave no temporary file. D5 prepares 0.1.0a4 from this wave.
 
 | ID | Package | Lane | Size | Depends on | Hot files | Wave |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -67,6 +76,7 @@ and two known limits of the outside catch-up fix (#85).
 | F5 | Offline comparison for semantic retrieval | Knowledge | M | — | — | 12 |
 | F4 | Embeddings with exact scoring | Knowledge | L | F5 recommends it | app.py (`search`) | after F5 |
 | E2 | Live provider checks: Anthropic cache, oversized prompts (*live*) | Reliability | S | your sign-in | — | 12 |
+| D5 | Release 0.1.0a4 | Operations | S | Wave 12 merged | — | after 12 |
 
 **Wave 12, all at once:** C17, C18, C19, C20, B7, F5, E2, and one session
 running C21 → C22 in order (they share `cli/app.py`). F4 runs only if F5
@@ -1436,7 +1446,6 @@ permissions; enabled-service protection survives purge and future installs.
 lock inodes and retains durable protection through partial cleanup/prepared
 rebuilds. See [the guide](isolated-workspaces.md#private-installer-cache) for
 configuration, hash-verifying installers and the explicit disable/reset flow.
-The standalone package awaits required PR CI.
 
 ### C21. `loupe session switch`
 
@@ -1633,6 +1642,30 @@ migrations and the G2 ownership change, which needs care.
   architectures. Before testing a local `brew install`, set
   `HOMEBREW_NO_INSTALL_CLEANUP=1`. Brew's automatic cleanup previously
   removed a Python version that running daemons still used.
+
+### D5. Release 0.1.0a4
+
+**Why.** 0.1.0a3 (2026-10-29) predates Wave 12, so Homebrew users have none
+of it.
+
+**Prepared.**
+
+- **Version.** `0.1.0a4` in `pyproject.toml`, `src/llm_cli/__init__.py` and
+  `uv.lock`.
+- **Upgrade check.** From 0.1.0a3 a profile is bound to its machine, so a
+  stored database cannot stand in for an upgrade. Instead the unmodified
+  0.1.0a3 source builds a profile and the new code opens it in place, then
+  keeps working in the old sessions. The scripts and steps are in
+  [`tests/fixtures/upgrade_0_1_0a3`](../tests/fixtures/upgrade_0_1_0a3/README.md);
+  the check passed on 2026-11-12. The stored 0.1.0a2 profile test still
+  runs in CI and now requires migration 34.
+- **Release notes.** [`release-notes/0.1.0a4.md`](release-notes/0.1.0a4.md).
+- **Tap.** `packaging/homebrew/publish.yml` matched the tap's `main` on
+  2026-11-12, so the handoff needs no sync.
+
+**Done when.** CI passes on the version bump, you have reviewed the release
+notes, and after the `v0.1.0a4` tag the tap's workflow upgrades from 0.1.0a3
+on both Mac architectures.
 
 ## Lane E — reliability
 
