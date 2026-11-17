@@ -19,6 +19,7 @@ from llm_cli.coordination.models import SessionRecord
 from llm_cli.errors import LlmCoordError
 from llm_cli.storage.connection import immediate_transaction
 from llm_cli.storage.control import ControlStore
+from llm_cli.workspace.authority import check_shared_admission
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.isolated import IsolatedWorkspaceManager, capture_source
 from llm_cli.workspace.isolated_sync import IsolatedSynchronizer
@@ -598,6 +599,7 @@ class WorkspaceModeSwitcher:
                     state.runtime_paths,
                 )
             else:
+                check_shared_admission(Path(checkout.canonical_path))
                 target, notices = self.store.ensure_shared_workspace(checkout), ()
             with self.publisher.lock:
                 self._binding(row)

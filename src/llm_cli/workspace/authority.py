@@ -25,6 +25,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from llm_cli.config.models import (
+    DEFAULT_ISOLATED_SOURCE_MAX_PATHS,
+    MAX_ISOLATED_SOURCE_PATHS,
+)
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
 from llm_cli.workspace.installation import (
@@ -43,9 +47,10 @@ SUPPORTED_FILESYSTEMS = frozenset(
     {"apfs", "hfs", "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "tmpfs", "overlay"}
 )
 IDLE_SECONDS = 30.0
-# Cutover and clean handoff retain their measured source checkpoint budget.
-# Isolated admission counts do not change this authority observation limit.
-SOURCE_CHECKPOINT_MAX_PATHS = 20_000
+# Handoffs must accommodate every configured isolated admission count, even
+# when a different profile with a lower setting takes over the checkout.
+HANDOFF_MAX_PATHS = MAX_ISOLATED_SOURCE_PATHS
+SHARED_ADMISSION_MAX_PATHS = DEFAULT_ISOLATED_SOURCE_MAX_PATHS
 _ACTIVE: contextvars.ContextVar[tuple[PhysicalAuthority, Path] | None] = (
     contextvars.ContextVar("physical_checkout_authority", default=None)
 )
@@ -61,20 +66,25 @@ _STORE_HELD: contextvars.ContextVar[tuple[str, int, int] | None] = (
 _REGIME_RANKS = {"legacy": 0, "transition": 1, "workspace": 2}
 
 
-def checkpoint_source_paths(root: Path) -> tuple[str, ...]:
-    """Observe the complete source set within authority's fixed checkpoint budget."""
-    from llm_cli.workspace.isolated import _passive
+def checkpoint_source_paths(
+    root: Path, *, max_paths: int, operation: str
+) -> tuple[str, ...]:
+    from llm_cli.workspace.isolated import listed_source_paths
 
-    raw = _passive(
-        root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
-    )
-    paths = tuple(sorted({os.fsdecode(path) for path in raw.split(b"\0") if path}))
-    if len(paths) > SOURCE_CHECKPOINT_MAX_PATHS:
-        raise recovery_error(
-            f"source checkpoint exceeds its {SOURCE_CHECKPOINT_MAX_PATHS}-path limit; "
-            "reduce the source path count before cutover or clean handoff"
+    paths = listed_source_paths(root)
+    if len(paths) > max_paths:
+        raise LlmCoordError(
+            ErrorCode.REPOSITORY_UNSAFE,
+            f"{operation} observed {len(paths)} source paths, exceeding its "
+            f"{max_paths}-path limit; reduce the source path count",
         )
     return paths
+
+
+def check_shared_admission(root: Path) -> None:
+    checkpoint_source_paths(
+        root, max_paths=SHARED_ADMISSION_MAX_PATHS, operation="shared session admission"
+    )
 
 
 def _marker_regime(marker: dict[str, Any] | None) -> dict[str, Any]:
@@ -1195,7 +1205,12 @@ class PhysicalAuthority:
 
         scanner = ExternalWorkspaceScanner(self.store)
 
-        paths = checkpoint_source_paths(physical.root)
+        def source_paths() -> tuple[str, ...]:
+            return checkpoint_source_paths(
+                physical.root, max_paths=HANDOFF_MAX_PATHS, operation="clean handoff"
+            )
+
+        paths = source_paths()
 
         def observations() -> dict[str, tuple[int, ...] | None]:
             result: dict[str, tuple[int, ...] | None] = {}
@@ -1218,9 +1233,10 @@ class PhysicalAuthority:
         before = observations()
         for session in self.store.list_sessions(checkout_id=checkout_id):
             scanner._scan_session_owned(session.session_id)
-        if paths != checkpoint_source_paths(physical.root) or observations() != before:
-            raise recovery_error(
-                "source changed during clean handoff; retry after edits settle"
+        if paths != source_paths() or observations() != before:
+            raise LlmCoordError(
+                ErrorCode.REPOSITORY_UNSAFE,
+                "source changed during clean handoff; retry after edits settle",
             )
         with self.store.connection() as connection:
             connection.execute(

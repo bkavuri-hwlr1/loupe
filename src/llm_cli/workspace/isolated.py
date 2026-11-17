@@ -197,12 +197,17 @@ def _source_path_budget(max_paths: int) -> int:
     return max_paths
 
 
-def _source_paths(root: Path, max_paths: int = 20_000) -> tuple[str, ...]:
-    _source_path_budget(max_paths)
+def listed_source_paths(root: Path) -> tuple[str, ...]:
+    """Return tracked and nonignored untracked paths, deduplicating index stages."""
     raw = _passive(
         root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
     )
-    paths = tuple(sorted({os.fsdecode(path) for path in raw.split(b"\0") if path}))
+    return tuple(sorted({os.fsdecode(path) for path in raw.split(b"\0") if path}))
+
+
+def _source_paths(root: Path, max_paths: int = 20_000) -> tuple[str, ...]:
+    _source_path_budget(max_paths)
+    paths = listed_source_paths(root)
     if len(paths) > max_paths:
         remedy = (
             f"raise isolated.source_max_paths (maximum {MAX_ISOLATED_SOURCE_PATHS}) "
@@ -211,7 +216,8 @@ def _source_paths(root: Path, max_paths: int = 20_000) -> tuple[str, ...]:
             else "reduce the source path count; the configured limit is at its ceiling"
         )
         raise _error(
-            f"isolated source exceeds isolated.source_max_paths={max_paths}: {remedy}"
+            f"{len(paths)} source paths exceed isolated.source_max_paths={max_paths}: "
+            f"{remedy}"
         )
     return paths
 

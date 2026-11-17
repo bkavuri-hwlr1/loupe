@@ -100,7 +100,12 @@ from llm_cli.storage.migrations import (
     current_schema_version,
 )
 from llm_cli.storage.retention import prune_task_output
-from llm_cli.workspace.authority import OwnershipPin, PhysicalAuthority, managed_pin
+from llm_cli.workspace.authority import (
+    OwnershipPin,
+    PhysicalAuthority,
+    check_shared_admission,
+    managed_pin,
+)
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
@@ -1991,6 +1996,9 @@ class DaemonService:
         else:
             async with self._authority_lock:
                 with self.physical_authority.pin(Path(checkout.canonical_path)):
+                    await asyncio.to_thread(
+                        check_shared_admission, Path(checkout.canonical_path)
+                    )
                     workspace = await asyncio.to_thread(
                         self.store.ensure_shared_workspace, checkout
                     )
@@ -2472,6 +2480,7 @@ class DaemonService:
         agent_mode = resolve_agent_mode(
             params.get("mode"), params.get("publish"), default="auto"
         )
+        check_shared_admission(Path(checkout.canonical_path))
         workspace = self.store.ensure_shared_workspace(checkout)
         session, _event, sequence = self.store.open_session(
             session_id=new_id("oneshot"),
