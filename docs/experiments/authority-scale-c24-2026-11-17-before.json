@@ -1,0 +1,82 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "python": "3.14.8 (main, Sep 30 2026, 17:55:09) [Clang 21.0.0 (clang-2100.3.34.2)]",
+  "results": [
+    {
+      "files": 20000,
+      "file_sizes_bytes": [
+        512,
+        2048,
+        4096,
+        8192
+      ],
+      "total_source_bytes": 74240000,
+      "handoff": {
+        "status": "complete",
+        "seconds": 0.2582113750395365,
+        "process_peak_rss_bytes": 69681152,
+        "increase_in_peak_rss_bytes": 17416192
+      },
+      "cutover_source_checkpoint": {
+        "status": "refused",
+        "code": "CUTOVER_BLOCKED",
+        "reason": "cutover source or index is unstable or exceeds its checkpoint budget",
+        "seconds": 3.7459855410270393,
+        "process_peak_rss_bytes": 69681152,
+        "increase_in_peak_rss_bytes": 0
+      }
+    },
+    {
+      "files": 50000,
+      "file_sizes_bytes": [
+        512,
+        2048,
+        4096,
+        8192
+      ],
+      "total_source_bytes": 185600000,
+      "handoff": {
+        "status": "refused",
+        "code": "CHECKOUT_FOREIGN_RECOVERY_REQUIRED",
+        "reason": "source checkpoint exceeds its 20000-path limit; reduce the source path count before cutover or clean handoff",
+        "seconds": 0.0506574580213055,
+        "process_peak_rss_bytes": 61374464,
+        "increase_in_peak_rss_bytes": 10747904
+      },
+      "cutover_source_checkpoint": {
+        "status": "refused",
+        "code": "CUTOVER_BLOCKED",
+        "reason": "cutover source checkpoint unavailable: source checkpoint exceeds its 20000-path limit; reduce the source path count before cutover or clean handoff",
+        "seconds": 0.03923737502191216,
+        "process_peak_rss_bytes": 61374464,
+        "increase_in_peak_rss_bytes": 0
+      }
+    },
+    {
+      "files": 100000,
+      "file_sizes_bytes": [
+        512,
+        2048,
+        4096,
+        8192
+      ],
+      "total_source_bytes": 371200000,
+      "handoff": {
+        "status": "refused",
+        "code": "CHECKOUT_FOREIGN_RECOVERY_REQUIRED",
+        "reason": "source checkpoint exceeds its 20000-path limit; reduce the source path count before cutover or clean handoff",
+        "seconds": 0.08679179195314646,
+        "process_peak_rss_bytes": 74924032,
+        "increase_in_peak_rss_bytes": 24559616
+      },
+      "cutover_source_checkpoint": {
+        "status": "refused",
+        "code": "CUTOVER_BLOCKED",
+        "reason": "cutover source checkpoint unavailable: source checkpoint exceeds its 20000-path limit; reduce the source path count before cutover or clean handoff",
+        "seconds": 0.07739183300873265,
+        "process_peak_rss_bytes": 74924032,
+        "increase_in_peak_rss_bytes": 0
+      }
+    }
+  ]
+}
