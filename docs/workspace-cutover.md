@@ -7,6 +7,8 @@ remove its history. Explicit cutover advances one physical checkout through
 that restores legacy editing authority or deletes the new execution ledger.
 [ADR 0010](adr/0010-cross-profile-publication-authority.md) defines the contract.
 
+[Proposed ADR 0011](adr/0011-claim-free-start-for-new-checkouts.md) describes first registration for new checkouts. It is awaiting a decision.
+
 In `workspace`, coding tasks use durable workspace executions and advisory
 intents without legacy editing claims. Sessionless `loupe run` creates a durable
 one-shot shared session; its conversation and history remain inspectable after
