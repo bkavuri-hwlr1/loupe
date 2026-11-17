@@ -407,7 +407,7 @@ wheels = [
 
 [[package]]
 name = "llm-coord"
-version = "0.1.0a3"
+version = "0.1.0a4"
 source = { editable = "." }
 dependencies = [
     { name = "prompt-toolkit" },

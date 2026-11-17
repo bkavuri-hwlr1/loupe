@@ -1355,13 +1355,18 @@ planned, admitted and reported tokens and preserves known usage across later
 failures. Live cache and oversized-prompt evidence remains pending credentials;
 no E2 live requests have run. See the [harness plan](cli-harness-response-plan.md#e2-live-provider-checks-wave-12).
 
-Wave 12 takes up everything still open: catch-up follow-ups (C17), larger
-isolated admission (C18) and outside-scan coverage (C19), an installer cache
-(C20), `loupe session switch` (C21), patch and bundle exports (C22), review on
-natural tasks (B7), an offline comparison for semantic retrieval (F5) and E2's
-live provider checks. F4's gate is **inconclusive under F5**; a conclusive rerun
-needs questions lexical search misses and a model with a longer input window or
-smaller chunks.
+Wave 12 is merged: catch-up follow-ups (C17), larger isolated admission (C18)
+and outside-scan coverage (C19), an installer cache (C20), `loupe session
+switch` (C21), patch and bundle exports (C22), review on natural tasks (B7),
+an offline comparison for semantic retrieval (F5) and E2's check harness.
+F4's gate is **inconclusive under F5**; a conclusive rerun needs questions
+lexical search misses and a model with a longer input window or smaller
+chunks. E2's live run still waits for provider sign-ins.
+
+0.1.0a4 is prepared from Wave 12 and the export fix for filesystems without
+hard links; see its [release notes](release-notes/0.1.0a4.md). A profile
+built by the unmodified 0.1.0a3 source upgraded in place and kept working;
+the [check](../tests/fixtures/upgrade_0_1_0a3/README.md) is rerunnable.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
