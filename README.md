@@ -102,7 +102,8 @@ For Homebrew, set `HOMEBREW_NO_INSTALL_CLEANUP=1` during upgrade so cleanup does
 not remove an interpreter still in use. See the
 [0.1.0a4 upgrade notes](docs/release-notes/0.1.0a4.md), and the
 [0.1.0a3 notes](docs/release-notes/0.1.0a3.md) when coming from 0.1.0a2 or
-earlier.
+earlier. CI tests an existing profile against the candidate code with the
+[in-place upgrade check](tests/fixtures/upgrade_in_place/README.md).
 Loupe warns when the daemon is running different code: older code from before
 an update, or code from another installation that shares the same profile.
 `loupe daemon status` reports `matches_this_cli`. Subsequent in-app logins are

@@ -45,6 +45,22 @@ jobs:
       - run: uv run mypy
       - run: uv build --no-sources
 
+  upgrade-in-place:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.ref_type == 'tag' && '["ubuntu-24.04","macos-15"]' || '["ubuntu-24.04"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # Verify the pinned source tag in the same repository.
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+      - name: Upgrade a used profile in place from the last release
+        run: uv run --no-project --python 3.14 python tests/fixtures/upgrade_in_place/run_check.py
+
   authority-intel:
     # Release packaging also targets Intel. Keep the statfs ABI and actual
     # authority operations covered on that architecture, not only arm64.

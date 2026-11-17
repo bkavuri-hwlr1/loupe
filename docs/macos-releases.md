@@ -43,6 +43,11 @@ move to the new tap.
    After both pass it uploads bottles, merges their checksums, and updates the
    main formula. The candidate branch is deleted; archives are not added to the
    main branch's history. Alpha/beta/RC releases retain their prerelease label.
+7. After the tag is published, append its tag, peeled commit
+   (`git rev-parse 'vX.Y.Z^{commit}'`) and version to the
+   [upgrade release table](../tests/fixtures/upgrade_in_place/releases.py).
+   Keep the two most recent supported releases, oldest first. CI uses the
+   last row as the upgrade source for subsequent changes and releases.
 
 The formula installs the bundled wheels into its own Python 3.14 virtualenv with
 network dependency resolution disabled. Only the four application commands are
