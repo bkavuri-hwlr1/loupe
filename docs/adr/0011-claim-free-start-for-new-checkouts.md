@@ -93,9 +93,13 @@ keeps queued claims on the normal coding path.
 - In the Wave 13 planning run, 20,100 files passed the first task in both modes
   but failed clean reacquisition after release and after restart; a 300-file
   control passed. First registration avoids the legacy cutover checkpoint, but
-  still needs a reliable handoff. Before rollout attach C24's measured handoff
-  times and memory at 20k, 50k and 100k, plus drift and refusal results at the
-  supported limit. [Existing scale data](../experiments/isolated-admission-c18-2026-10-30.md)
+  still needs a reliable handoff. On November 17 C24 measured 0.23, 0.53 and
+  1.13 seconds to reacquire 20k, 50k and 100k paths on macOS arm64. Peak process
+  memory was 65.3, 89.7 and 132.2 MiB. At 50k paths the cutover source check
+  took 10.74 seconds. The 100k run covered handoff on a checkout that grew after
+  registration. See C24's `docs/experiments/authority-scale-c24-2026-11-17.md`
+  at commit `57a4628`. Require passing session and drift tests at the admission
+  limit before rollout. [Earlier admission results](../experiments/isolated-admission-c18-2026-10-30.md)
 - Run an end-to-end coding task with a supported live driver on a fresh workspace,
   resume from another session, and inspect the resulting proposal. E2's provider
   cache and overflow checks measure adapter behavior separately.

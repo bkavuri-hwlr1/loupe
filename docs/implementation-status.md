@@ -1369,8 +1369,8 @@ built by the unmodified 0.1.0a3 source upgraded in place and kept working;
 the [check](../tests/fixtures/upgrade_0_1_0a3/README.md) is rerunnable.
 
 [ADR 0011](adr/0011-claim-free-start-for-new-checkouts.md) proposes claim-free
-first registration. The maintainer decision, C24 scale evidence and rollout
-checks are pending.
+first registration. The proposed decision references C24's measured handoff costs.
+Maintainer acceptance and rollout checks are pending.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
