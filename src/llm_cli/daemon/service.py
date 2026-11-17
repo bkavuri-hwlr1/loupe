@@ -2774,6 +2774,12 @@ class DaemonService:
                 raise ValueError("task ID is already bound to another session")
             task = existing_task
         else:
+            if session is None:
+                # Legacy sessionless work has no session.open admission.
+                await asyncio.to_thread(
+                    check_shared_admission,
+                    Path(execution_repository.main_worktree_path),
+                )
             task = self.store.create_task(
                 repository_id=repository.repository_id,
                 task_id=task_id,

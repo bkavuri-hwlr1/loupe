@@ -53,7 +53,7 @@ not reconstruct another profile's intermediate publications. Retained proposals
 keep their original bases and still require normal merge/check/base validation.
 The handoff checks up to 100,000 source paths in either profile. If the checkout
 grew beyond that count, the refusal reports the observed count and limit.
-Shared sessions admit up to 50,000 paths at open. See the
+Shared sessions and new sessionless runs admit up to 50,000 paths. See the
 [scale measurements](experiments/authority-scale-c24-2026-11-17.md).
 
 Symlink aliases to the same physical root/admin objects contend on one key.
