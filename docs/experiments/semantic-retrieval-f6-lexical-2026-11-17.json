@@ -1,0 +1,1192 @@
+{
+  "version": 2,
+  "phase": "lexical-preflight",
+  "repositories": {
+    "loupe": {
+      "revision": "6c7f72b4f31c024b3e618380681b472096acb144",
+      "manifest_sha256": "51f55ea779850507d526489a9fe9e259218f6f31b1eb4a526a68a3d5dfa74bcc",
+      "files": 139,
+      "bytes": 2926400,
+      "lines": 73430,
+      "excluded": 0,
+      "pool_size": 38,
+      "pool_hits_at_10": 25.0,
+      "selected": [
+        "loupe-01",
+        "loupe-02",
+        "loupe-03",
+        "loupe-04",
+        "loupe-05",
+        "loupe-06",
+        "loupe-07",
+        "loupe-08",
+        "loupe-09",
+        "loupe-10",
+        "loupe-11",
+        "loupe-12",
+        "loupe-13",
+        "loupe-14",
+        "loupe-15",
+        "loupe-17",
+        "loupe-20",
+        "loupe-21",
+        "loupe-23",
+        "loupe-25",
+        "loupe-27",
+        "loupe-28",
+        "loupe-30",
+        "loupe-31",
+        "loupe-32",
+        "loupe-33",
+        "loupe-34",
+        "loupe-35",
+        "loupe-36",
+        "loupe-38"
+      ],
+      "selected_hits_at_10": 18.0,
+      "selected_headroom": 0.4,
+      "pool": [
+        {
+          "id": "loupe-01",
+          "evidence": [
+            {
+              "path": "src/llm_cli/cli/partial_json.py",
+              "symbol": "AnswerFieldDecoder._close_string",
+              "start_line": 174,
+              "end_line": 185,
+              "file_sha256": "d75c7b91ba4d7b578d02b8bce7f5e39246c19f325616ba3d4c9cca68dca20628"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-02",
+          "evidence": [
+            {
+              "path": "src/llm_cli/cli/command_picker.py",
+              "symbol": "_clip",
+              "start_line": 73,
+              "end_line": 78,
+              "file_sha256": "444026f63f8f76fb8afed6c2805155a5619887614f76d5ce05feba2aa5eb7128"
+            }
+          ],
+          "lexical_file_rank": 9,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-03",
+          "evidence": [
+            {
+              "path": "src/llm_cli/cli/streaming_markdown.py",
+              "symbol": "MarkdownStream._accept_line",
+              "start_line": 62,
+              "end_line": 80,
+              "file_sha256": "7452edee1f04ad9260d4fe0bb5c7c652cfa409aa1f2bdc584898cffd43329a20"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-04",
+          "evidence": [
+            {
+              "path": "src/llm_cli/cli/connect.py",
+              "symbol": "ConnectionMenu._pick",
+              "start_line": 190,
+              "end_line": 243,
+              "file_sha256": "79f2b4f5f8781b5f8c4abd693d60f2c67f21ac06e2e329dd74b032033ef71353"
+            }
+          ],
+          "lexical_file_rank": 6,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-05",
+          "evidence": [
+            {
+              "path": "src/llm_cli/providers/catalog.py",
+              "symbol": "_read_cache",
+              "start_line": 431,
+              "end_line": 478,
+              "file_sha256": "92010198e6bb1c6abb2a79af7b0a33549386724305901955691876c739bf51f4"
+            }
+          ],
+          "lexical_file_rank": 9,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-06",
+          "evidence": [
+            {
+              "path": "src/llm_cli/providers/accounts.py",
+              "symbol": "load_api_key",
+              "start_line": 137,
+              "end_line": 144,
+              "file_sha256": "ca3d2d50a74ec2933cc61eb11c839900c653044bc7392fa4e35ed60356751ccf"
+            }
+          ],
+          "lexical_file_rank": 8,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-07",
+          "evidence": [
+            {
+              "path": "src/llm_cli/mcp/client.py",
+              "symbol": "McpClient._list",
+              "start_line": 138,
+              "end_line": 159,
+              "file_sha256": "de5ed85aad66962827ce9770d698d70794287399c2e1bdfe4a82f7e1e9da33cc"
+            }
+          ],
+          "lexical_file_rank": 16,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-08",
+          "evidence": [
+            {
+              "path": "src/llm_cli/mcp/transport.py",
+              "symbol": "HttpClient._sse",
+              "start_line": 293,
+              "end_line": 329,
+              "file_sha256": "e6bdac56c408e1de46dc79349662a6023bf06039021907fb5c4e0b47d2dbf128"
+            }
+          ],
+          "lexical_file_rank": 3,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-09",
+          "evidence": [
+            {
+              "path": "src/llm_cli/config/operations.py",
+              "symbol": "effective_config",
+              "start_line": 152,
+              "end_line": 183,
+              "file_sha256": "1411b4b63c19351ef901897e027b0b5466eae968d0e9620f61317b9d32511d10"
+            }
+          ],
+          "lexical_file_rank": 10,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-10",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/installer_cache.py",
+              "symbol": "InstallerCache._select",
+              "start_line": 295,
+              "end_line": 335,
+              "file_sha256": "6650b2ca699fcfefb9ae4769c70e4a364c073533b97a90dcb58ecec6a68e3747"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-11",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/switching.py",
+              "symbol": "WorkspaceModeSwitcher._hold",
+              "start_line": 767,
+              "end_line": 819,
+              "file_sha256": "2715de4ad8655432890d8aaad00ff2b6c58d4ea5ab95427853c982a40e486e16"
+            }
+          ],
+          "lexical_file_rank": 11,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-12",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/identity.py",
+              "symbol": "_read_identified_path_once",
+              "start_line": 146,
+              "end_line": 223,
+              "file_sha256": "faaa467a056e117aa9392ad98dee2c759704ae0ae456966d3cdfbb2a23bc7fad"
+            }
+          ],
+          "lexical_file_rank": 3,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-13",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/merge.py",
+              "symbol": "merge_text",
+              "start_line": 37,
+              "end_line": 68,
+              "file_sha256": "2839bea981fa69a4e0095c1134a57c181274a2558f3b3721348add077c55c2e2"
+            }
+          ],
+          "lexical_file_rank": 4,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-14",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/runtime_export.py",
+              "symbol": "_rename_new",
+              "start_line": 283,
+              "end_line": 316,
+              "file_sha256": "09cd59cbad741491e4b74b892019100e82df964910d0761f462cfab6299ecb90"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-15",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/hydration_catalogue.py",
+              "symbol": "PathCatalogue.add",
+              "start_line": 69,
+              "end_line": 98,
+              "file_sha256": "31bf3dcc653cdcecaa530cf280ba9aa04f9973e059437bcef38a63e8adf7883c"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-16",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/watchers.py",
+              "symbol": "_Journal.since",
+              "start_line": 173,
+              "end_line": 200,
+              "file_sha256": "59e6dcbb1988ba75f89dd8d3d3abb7e71495a30b916892d12c60a921ce8c6b40"
+            }
+          ],
+          "lexical_file_rank": 5,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-17",
+          "evidence": [
+            {
+              "path": "src/llm_cli/agent/bounded_search.py",
+              "symbol": "SearchBudget.remaining",
+              "start_line": 73,
+              "end_line": 80,
+              "file_sha256": "2172215e0f4bc4ea9626506d78f2a3434c0781a27f2adc2afeefef02b548c261"
+            }
+          ],
+          "lexical_file_rank": 3,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-18",
+          "evidence": [
+            {
+              "path": "src/llm_cli/agent/finalization.py",
+              "symbol": "settlement_surprises",
+              "start_line": 172,
+              "end_line": 186,
+              "file_sha256": "44489bd88378669fedcd69916d9a30a3eee2ad4f79171dfea132c1fc7c0b854f"
+            }
+          ],
+          "lexical_file_rank": 3,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-19",
+          "evidence": [
+            {
+              "path": "src/llm_cli/agent/repair.py",
+              "symbol": "failure_signature",
+              "start_line": 35,
+              "end_line": 40,
+              "file_sha256": "0b9a50149a3d20243a7f34634faaace0996b497612db8a3f35fdcbaf0192f351"
+            }
+          ],
+          "lexical_file_rank": 2,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-20",
+          "evidence": [
+            {
+              "path": "src/llm_cli/storage/connection.py",
+              "symbol": "immediate_transaction",
+              "start_line": 94,
+              "end_line": 111,
+              "file_sha256": "1fedb4c6343571886d550a99da77601366e709c9f1d3076e63734134db5abcba"
+            }
+          ],
+          "lexical_file_rank": 6,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-21",
+          "evidence": [
+            {
+              "path": "src/llm_cli/git/worktrees.py",
+              "symbol": "resume_managed_worktree",
+              "start_line": 178,
+              "end_line": 245,
+              "file_sha256": "95c281649f2c6571ec2c64a4a5fba08e65bee0dd6fd472fef77d33da449c4181"
+            }
+          ],
+          "lexical_file_rank": 1,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-22",
+          "evidence": [
+            {
+              "path": "src/llm_cli/cli/active_controls.py",
+              "symbol": "active_controls",
+              "start_line": 37,
+              "end_line": 114,
+              "file_sha256": "4fc6dc66d1f9e55cc6504349ea6073fdae476efb5fbf22243aa3f906affbb549"
+            }
+          ],
+          "lexical_file_rank": 1,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-23",
+          "evidence": [
+            {
+              "path": "src/llm_cli/config/loader.py",
+              "symbol": "_isolated_count_limits",
+              "start_line": 276,
+              "end_line": 292,
+              "file_sha256": "035d463a955b2a5c1183c04b623fc28c427f06783df08d42442f9f16f6603d3d"
+            }
+          ],
+          "lexical_file_rank": 9,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-24",
+          "evidence": [
+            {
+              "path": "src/llm_cli/knowledge/chunker.py",
+              "symbol": "_append",
+              "start_line": 77,
+              "end_line": 90,
+              "file_sha256": "07197882e52581999dfdedb60bf356b4e9902d55c17f451bff648565ad7ad549"
+            }
+          ],
+          "lexical_file_rank": 9,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-25",
+          "evidence": [
+            {
+              "path": "src/llm_cli/cli/usage.py",
+              "symbol": "context_percent",
+              "start_line": 21,
+              "end_line": 26,
+              "file_sha256": "67c80b9f4b7833219f6f1cc46d5ef8b8f0d5eff7eaf8378e3a0021db05d0325a"
+            }
+          ],
+          "lexical_file_rank": 5,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-26",
+          "evidence": [
+            {
+              "path": "src/llm_cli/cli/interrupts.py",
+              "symbol": "InterruptState.press",
+              "start_line": 29,
+              "end_line": 33,
+              "file_sha256": "39227f82d36543b8b6dc02f53a2cb6acbba036cdc38f72c332e866d20b94cea8"
+            }
+          ],
+          "lexical_file_rank": 2,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-27",
+          "evidence": [
+            {
+              "path": "src/llm_cli/agent/repair.py",
+              "symbol": "RepairTracker.record",
+              "start_line": 57,
+              "end_line": 101,
+              "file_sha256": "0b9a50149a3d20243a7f34634faaace0996b497612db8a3f35fdcbaf0192f351"
+            }
+          ],
+          "lexical_file_rank": 2,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-28",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/gitstate.py",
+              "symbol": "_ordinary_commits",
+              "start_line": 234,
+              "end_line": 274,
+              "file_sha256": "4116d327cd6f2727935225d83a99c628c4ae5b433dbb4b05a96679dcfb0d7d02"
+            }
+          ],
+          "lexical_file_rank": 5,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-29",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/exports.py",
+              "symbol": "SourceExporter._verify_file",
+              "start_line": 1109,
+              "end_line": 1147,
+              "file_sha256": "2da27b36615131c1ffcf013ee9ff3917158736102ada8fef3b2f28be10498598"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-30",
+          "evidence": [
+            {
+              "path": "src/llm_cli/providers/catalog.py",
+              "symbol": "_ordered_models",
+              "start_line": 321,
+              "end_line": 339,
+              "file_sha256": "92010198e6bb1c6abb2a79af7b0a33549386724305901955691876c739bf51f4"
+            }
+          ],
+          "lexical_file_rank": 3,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-31",
+          "evidence": [
+            {
+              "path": "src/llm_cli/coordination/scopes.py",
+              "symbol": "casefold_aliases",
+              "start_line": 250,
+              "end_line": 264,
+              "file_sha256": "47f156609c56764fd826e52e0416dec65ffb8f8b7e9c720117b68f4d336932c3"
+            }
+          ],
+          "lexical_file_rank": 1,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-32",
+          "evidence": [
+            {
+              "path": "src/llm_cli/cli/usage.py",
+              "symbol": "usage_lines",
+              "start_line": 29,
+              "end_line": 90,
+              "file_sha256": "67c80b9f4b7833219f6f1cc46d5ef8b8f0d5eff7eaf8378e3a0021db05d0325a"
+            }
+          ],
+          "lexical_file_rank": 13,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-33",
+          "evidence": [
+            {
+              "path": "src/llm_cli/knowledge/retrieval.py",
+              "symbol": "render_retrieval",
+              "start_line": 143,
+              "end_line": 169,
+              "file_sha256": "1e326a700b2e7de7b4e1b5412ae17dfb756817a980b1799f33cc99a0602b657f"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-34",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/installer_cache.py",
+              "symbol": "InstallerCache._prune_owned",
+              "start_line": 470,
+              "end_line": 565,
+              "file_sha256": "6650b2ca699fcfefb9ae4769c70e4a364c073533b97a90dcb58ecec6a68e3747"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-35",
+          "evidence": [
+            {
+              "path": "src/llm_cli/git/worktrees.py",
+              "symbol": "resolve_exact_commit",
+              "start_line": 468,
+              "end_line": 486,
+              "file_sha256": "95c281649f2c6571ec2c64a4a5fba08e65bee0dd6fd472fef77d33da449c4181"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-36",
+          "evidence": [
+            {
+              "path": "src/llm_cli/workspace/hydration_catalogue.py",
+              "symbol": "PathCatalogue.mark_tracked",
+              "start_line": 114,
+              "end_line": 134,
+              "file_sha256": "31bf3dcc653cdcecaa530cf280ba9aa04f9973e059437bcef38a63e8adf7883c"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "loupe-37",
+          "evidence": [
+            {
+              "path": "src/llm_cli/agent/instructions.py",
+              "symbol": "discover_instructions",
+              "start_line": 59,
+              "end_line": 93,
+              "file_sha256": "69179f67ba639c86a38a5261265fe6b68e6d65e35d739545409f539b43aeb3cb"
+            }
+          ],
+          "lexical_file_rank": 4,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "loupe-38",
+          "evidence": [
+            {
+              "path": "src/llm_cli/cli/streaming_markdown.py",
+              "symbol": "MarkdownStream.finish",
+              "start_line": 45,
+              "end_line": 60,
+              "file_sha256": "7452edee1f04ad9260d4fe0bb5c7c652cfa409aa1f2bdc584898cffd43329a20"
+            }
+          ],
+          "lexical_file_rank": 3,
+          "recall_at_10": 1.0
+        }
+      ]
+    },
+    "django": {
+      "revision": "47fe39af56ecd0ad73b9c7562511015e96b91b80",
+      "manifest_sha256": "8e53c00960ad368cae099a6efcd562ca2234ad512aa4246937ab64c531f0fc57",
+      "files": 883,
+      "bytes": 5655495,
+      "lines": 158119,
+      "excluded": 0,
+      "pool_size": 40,
+      "pool_hits_at_10": 19.0,
+      "selected": [
+        "django-01",
+        "django-02",
+        "django-04",
+        "django-05",
+        "django-07",
+        "django-08",
+        "django-09",
+        "django-10",
+        "django-11",
+        "django-13",
+        "django-15",
+        "django-16",
+        "django-17",
+        "django-19",
+        "django-20",
+        "django-22",
+        "django-23",
+        "django-24",
+        "django-26",
+        "django-27",
+        "django-28",
+        "django-29",
+        "django-30",
+        "django-31",
+        "django-32",
+        "django-33",
+        "django-35",
+        "django-36",
+        "django-38",
+        "django-39"
+      ],
+      "selected_hits_at_10": 16.0,
+      "selected_headroom": 0.4666666666666667,
+      "pool": [
+        {
+          "id": "django-01",
+          "evidence": [
+            {
+              "path": "django/core/paginator.py",
+              "symbol": "Paginator.get_elided_page_range",
+              "start_line": 149,
+              "end_line": 178,
+              "file_sha256": "605476104d16d9c2e112e5d2588ebb737dc3ade5554b1973f71463a86b39d337"
+            }
+          ],
+          "lexical_file_rank": 1,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-02",
+          "evidence": [
+            {
+              "path": "django/utils/text.py",
+              "symbol": "Truncator._text_chars",
+              "start_line": 219,
+              "end_line": 237,
+              "file_sha256": "b5894a19094ce4a3b2044aac5b785ef72786081a0348f3d4fb690966608d11be"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-03",
+          "evidence": [
+            {
+              "path": "django/utils/html.py",
+              "symbol": "json_script",
+              "start_line": 94,
+              "end_line": 111,
+              "file_sha256": "28c0474e3e28d3fa7c416b3fac49a6b751ce9e001f0547dcebafda8c0fad4704"
+            }
+          ],
+          "lexical_file_rank": 2,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-04",
+          "evidence": [
+            {
+              "path": "django/utils/dateparse.py",
+              "symbol": "parse_duration",
+              "start_line": 132,
+              "end_line": 154,
+              "file_sha256": "a164d66c96b1e0d3f5b98eed0863d2827c809281b19d77f5b27121fa47c29224"
+            }
+          ],
+          "lexical_file_rank": 8,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-05",
+          "evidence": [
+            {
+              "path": "django/utils/timesince.py",
+              "symbol": "timesince",
+              "start_line": 28,
+              "end_line": 135,
+              "file_sha256": "8fd07fc129ec752dd95e7f69b7d18898e243a603bad5832bfe3b67529643c748"
+            }
+          ],
+          "lexical_file_rank": 1,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-06",
+          "evidence": [
+            {
+              "path": "django/utils/numberformat.py",
+              "symbol": "format",
+              "start_line": 7,
+              "end_line": 105,
+              "file_sha256": "f0ba923267f168dd0f6124d3112e944ff0137ab7c36109fb61ae0d23bd2031a5"
+            }
+          ],
+          "lexical_file_rank": 2,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-07",
+          "evidence": [
+            {
+              "path": "django/utils/encoding.py",
+              "symbol": "filepath_to_uri",
+              "start_line": 233,
+              "end_line": 245,
+              "file_sha256": "0cb8dc023bc1c6bcf926be5df13d979c451c72c7915474d35ce9becdff85543e"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-08",
+          "evidence": [
+            {
+              "path": "django/utils/datastructures.py",
+              "symbol": "MultiValueDict.__getitem__",
+              "start_line": 78,
+              "end_line": 90,
+              "file_sha256": "984b76fa4837cce436e1f5bb96dc590c569ab596724d27893fd5801963a0e943"
+            }
+          ],
+          "lexical_file_rank": 6,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-09",
+          "evidence": [
+            {
+              "path": "django/utils/module_loading.py",
+              "symbol": "autodiscover_modules",
+              "start_line": 38,
+              "end_line": 71,
+              "file_sha256": "f9aeea39be6ba69f8bc3fe75bf220f49d6fb478d01d7a12bd597350bf6ba89b6"
+            }
+          ],
+          "lexical_file_rank": 5,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-10",
+          "evidence": [
+            {
+              "path": "django/utils/cache.py",
+              "symbol": "get_conditional_response",
+              "start_line": 164,
+              "end_line": 211,
+              "file_sha256": "c726b3843d7b95f0915db5879cd59b23558c1efc325cb52ea51cc6ebbd32f205"
+            }
+          ],
+          "lexical_file_rank": 2,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-11",
+          "evidence": [
+            {
+              "path": "django/utils/functional.py",
+              "symbol": "cached_property.__get__",
+              "start_line": 39,
+              "end_line": 48,
+              "file_sha256": "5111599284cd2663a59bf6b2f7cef6fbf944815d5ec2e9d94bd18a489460f9ef"
+            }
+          ],
+          "lexical_file_rank": 6,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-12",
+          "evidence": [
+            {
+              "path": "django/utils/translation/trans_real.py",
+              "symbol": "get_supported_language_variant",
+              "start_line": 491,
+              "end_line": 539,
+              "file_sha256": "9edfb0d2b1a075cca7ca58dd0463ea84c683b1db6f47f23266202f3b82762d2e"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-13",
+          "evidence": [
+            {
+              "path": "django/core/mail/message.py",
+              "symbol": "EmailMessage.attach_file",
+              "start_line": 349,
+              "end_line": 363,
+              "file_sha256": "b140e8a141fc153a2b8f4e51e321cb81609128d239ec1530c9a813a054d7fbe3"
+            }
+          ],
+          "lexical_file_rank": 3,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-14",
+          "evidence": [
+            {
+              "path": "django/core/cache/backends/locmem.py",
+              "symbol": "LocMemCache._cull",
+              "start_line": 92,
+              "end_line": 100,
+              "file_sha256": "47d83983d286e9a93d1b5d91e1168c9d5abb7a5e62f495ee7e8bec84d44c3087"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-15",
+          "evidence": [
+            {
+              "path": "django/core/files/base.py",
+              "symbol": "File.__iter__",
+              "start_line": 75,
+              "end_line": 100,
+              "file_sha256": "30a371c608aec071f01a27e9c9d0608df6694f3745ed5c42427555fb0f1baa18"
+            }
+          ],
+          "lexical_file_rank": 5,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-16",
+          "evidence": [
+            {
+              "path": "django/core/files/move.py",
+              "symbol": "file_move_safe",
+              "start_line": 16,
+              "end_line": 91,
+              "file_sha256": "c043a2a28ff58675a3870541eef66998c30f6924bf38913d90dbab74bff60582"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-17",
+          "evidence": [
+            {
+              "path": "django/core/handlers/wsgi.py",
+              "symbol": "LimitedStream.read",
+              "start_line": 29,
+              "end_line": 40,
+              "file_sha256": "f350c4ae0cc701a65cc36522beb2aac12ebd429a1117cb66d00484738bf7b90e"
+            }
+          ],
+          "lexical_file_rank": 17,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-18",
+          "evidence": [
+            {
+              "path": "django/http/cookie.py",
+              "symbol": "parse_cookie",
+              "start_line": 7,
+              "end_line": 23,
+              "file_sha256": "b7bc863911829549c2615290ab22c194462cc502cb1e7f5caec3125aa2bf1227"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-19",
+          "evidence": [
+            {
+              "path": "django/http/multipartparser.py",
+              "symbol": "MultiPartParser.sanitize_file_name",
+              "start_line": 381,
+              "end_line": 402,
+              "file_sha256": "9ab5576b6c9e9d26d238e96122b81b7d64bedea961bd5b4311f95281300ab6c9"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-20",
+          "evidence": [
+            {
+              "path": "django/middleware/gzip.py",
+              "symbol": "GZipMiddleware.process_response",
+              "start_line": 18,
+              "end_line": 74,
+              "file_sha256": "8ec25e62fd3e038883ebed4f7771de865d99b6c86913859e0537a2fb83f07220"
+            }
+          ],
+          "lexical_file_rank": 1,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-21",
+          "evidence": [
+            {
+              "path": "django/middleware/common.py",
+              "symbol": "CommonMiddleware.should_redirect_with_slash",
+              "start_line": 62,
+              "end_line": 74,
+              "file_sha256": "f632565732d92138c4c39b56c96fc38c483b82d933518c309093d61e47a96887"
+            }
+          ],
+          "lexical_file_rank": 2,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-22",
+          "evidence": [
+            {
+              "path": "django/middleware/clickjacking.py",
+              "symbol": "XFrameOptionsMiddleware.process_response",
+              "start_line": 25,
+              "end_line": 38,
+              "file_sha256": "ac89b65656db94b5ab31345827524122e8b9c6c84033eda6a7225ff7cf713a06"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-23",
+          "evidence": [
+            {
+              "path": "django/views/i18n.py",
+              "symbol": "set_language",
+              "start_line": 30,
+              "end_line": 74,
+              "file_sha256": "11ee6e8a9077ca4cfa49cc4b36c702c9722d26578029b3bd150101c3242701f7"
+            }
+          ],
+          "lexical_file_rank": 15,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-24",
+          "evidence": [
+            {
+              "path": "django/views/generic/list.py",
+              "symbol": "MultipleObjectMixin.paginate_queryset",
+              "start_line": 53,
+              "end_line": 79,
+              "file_sha256": "2b25717fc317690836b981b7be621541785292aecf89333ab139099582b2d661"
+            }
+          ],
+          "lexical_file_rank": 1,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-25",
+          "evidence": [
+            {
+              "path": "django/forms/formsets.py",
+              "symbol": "BaseFormSet.total_form_count",
+              "start_line": 171,
+              "end_line": 190,
+              "file_sha256": "5f8a2d1425e8420204208d9b4e7a6bac4bb87070be6e943db75f0fb61f29f4c3"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-26",
+          "evidence": [
+            {
+              "path": "django/forms/widgets.py",
+              "symbol": "Media.merge",
+              "start_line": 200,
+              "end_line": 225,
+              "file_sha256": "04e31b19837cfd59815a83a49ecf4e6aee0edb259ecabdfc3fc6a63708ac2ecf"
+            }
+          ],
+          "lexical_file_rank": 4,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-27",
+          "evidence": [
+            {
+              "path": "django/forms/boundfield.py",
+              "symbol": "BoundField.label_tag",
+              "start_line": 165,
+              "end_line": 206,
+              "file_sha256": "2b6f1bbbf1acf0bb18c5565599075fb6e00c13e66a930ff2008b0aad798b478f"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-28",
+          "evidence": [
+            {
+              "path": "django/template/defaultfilters.py",
+              "symbol": "floatformat",
+              "start_line": 95,
+              "end_line": 219,
+              "file_sha256": "07169341c50e984e02ffe14b842424013412d12d33ee319f49aa2e18f9774f90"
+            }
+          ],
+          "lexical_file_rank": 8,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-29",
+          "evidence": [
+            {
+              "path": "django/template/defaulttags.py",
+              "symbol": "ForNode.render",
+              "start_line": 188,
+              "end_line": 250,
+              "file_sha256": "115e2326b49c8c3c330493769c98412cc627e5b236b418f95e9594e7cc1dba69"
+            }
+          ],
+          "lexical_file_rank": 2,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-30",
+          "evidence": [
+            {
+              "path": "django/template/loader_tags.py",
+              "symbol": "ExtendsNode.find_template",
+              "start_line": 98,
+              "end_line": 114,
+              "file_sha256": "effd4b4dea101c6c2cacc2f4c21c14ba0ea0e9b4778a3866c223111fb5ecd024"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-31",
+          "evidence": [
+            {
+              "path": "django/contrib/humanize/templatetags/humanize.py",
+              "symbol": "ordinal",
+              "start_line": 24,
+              "end_line": 63,
+              "file_sha256": "f1a90c57b0502a495e87eecb84156c283aecfbfe3f48e40d3b2fa4fcc054460e"
+            }
+          ],
+          "lexical_file_rank": 12,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-32",
+          "evidence": [
+            {
+              "path": "django/contrib/messages/storage/fallback.py",
+              "symbol": "FallbackStorage._store",
+              "start_line": 40,
+              "end_line": 56,
+              "file_sha256": "2b90ab5497d40da90c8c872a491b7559977fd57728d417360103373b795df5a0"
+            }
+          ],
+          "lexical_file_rank": 4,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-33",
+          "evidence": [
+            {
+              "path": "django/contrib/contenttypes/models.py",
+              "symbol": "ContentTypeManager.get_for_models",
+              "start_line": 63,
+              "end_line": 102,
+              "file_sha256": "54a5d6c1e21043a797f3c617f7a9e570ca3d112696ee9ff050f2526a51889ec7"
+            }
+          ],
+          "lexical_file_rank": 14,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-34",
+          "evidence": [
+            {
+              "path": "django/contrib/auth/tokens.py",
+              "symbol": "PasswordResetTokenGenerator._make_hash_value",
+              "start_line": 98,
+              "end_line": 122,
+              "file_sha256": "963a9058ed1d024778e7e6c127a5bce6865953da448f3361dd56d97de00dc314"
+            }
+          ],
+          "lexical_file_rank": 13,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-35",
+          "evidence": [
+            {
+              "path": "django/contrib/sessions/backends/cached_db.py",
+              "symbol": "SessionStore.load",
+              "start_line": 34,
+              "end_line": 51,
+              "file_sha256": "9b7e3c86060bafeae5efad13f98c66d8526643abdb23e9d9daf8b94212326c22"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-36",
+          "evidence": [
+            {
+              "path": "django/db/migrations/recorder.py",
+              "symbol": "MigrationRecorder.record_unapplied",
+              "start_line": 104,
+              "end_line": 107,
+              "file_sha256": "1ef880dc3c9d24faa913c828c2fd6502721d2cc4d2469457b8b167e77afe4356"
+            }
+          ],
+          "lexical_file_rank": 16,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-37",
+          "evidence": [
+            {
+              "path": "django/db/models/deletion.py",
+              "symbol": "Collector.can_fast_delete",
+              "start_line": 185,
+              "end_line": 227,
+              "file_sha256": "45cb0be274507192d8220f0032337ab9716e45256db303042586b7c11918b983"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-38",
+          "evidence": [
+            {
+              "path": "django/template/loaders/cached.py",
+              "symbol": "Loader.get_template",
+              "start_line": 28,
+              "end_line": 66,
+              "file_sha256": "6c3c245983e06efa6b53fbbd7fdc3da0d629496fe3f5beeca3f9a52b3a7df8de"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        },
+        {
+          "id": "django-39",
+          "evidence": [
+            {
+              "path": "django/db/models/fields/files.py",
+              "symbol": "FileField.pre_save",
+              "start_line": 325,
+              "end_line": 339,
+              "file_sha256": "9cb891898f5b71513013cb3927acb1a361ea3771eb7831cf0cd1df696dea2ebb"
+            }
+          ],
+          "lexical_file_rank": 6,
+          "recall_at_10": 1.0
+        },
+        {
+          "id": "django-40",
+          "evidence": [
+            {
+              "path": "django/utils/archive.py",
+              "symbol": "BaseArchive.has_leading_dir",
+              "start_line": 129,
+              "end_line": 143,
+              "file_sha256": "9f37277d682cf06369041e60fb6fda5a85dfcf118d9176489087a3d40293f015"
+            }
+          ],
+          "lexical_file_rank": null,
+          "recall_at_10": 0.0
+        }
+      ]
+    }
+  },
+  "query_file_sha256": "c3ad24594488cea8f58a8d2a5814c879a627930dd33cadac3201cc9d874f8c6f",
+  "script_sha256": "732b3e701978ae89079aa952ff044bc869695b7b1afaf8909da3ace027243e9e"
+}

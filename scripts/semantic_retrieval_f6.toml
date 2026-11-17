@@ -1,0 +1,588 @@
+# Questions and gate are frozen before the first embedding rank is computed.
+version = 2
+model_id = "sentence-transformers/all-MiniLM-L6-v2"
+model_revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+max_wordpieces = 256
+file_result_limit = 20
+chunk_candidate_pool = 80
+rrf_constant = 60
+
+[model_files]
+"tokenizer.json" = { bytes = 466247, git_blob = "cb202bfe2e3c98645018a6d12f182a434c9d3e02" }
+"onnx/model.onnx" = { bytes = 90405214, sha256 = "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452" }
+
+[gate]
+minimum_queries_per_repository = 30
+minimum_macro_delta_at_10 = 0.10
+minimum_repository_delta_at_10 = 0.05
+bootstrap_seed = 20261030
+bootstrap_samples = 10000
+
+[repositories.loupe]
+url = "https://github.com/bkavuri-hwlr1/loupe"
+revision = "6c7f72b4f31c024b3e618380681b472096acb144"
+prefix = "src/llm_cli/"
+
+[repositories.django]
+url = "https://github.com/django/django"
+revision = "47fe39af56ecd0ad73b9c7562511015e96b91b80"
+prefix = "django/"
+
+
+[selection]
+size = 30
+minimum_hits = 6
+minimum_misses = 6
+salt = "loupe-wave13-f6-draw-v1"
+
+[semantic_windows]
+unit = "wordpiece"
+body_tokens = 224
+overlap_tokens = 32
+max_truncated_fraction = 0.05
+
+[[queries]]
+id = "loupe-01"
+repository = "loupe"
+question = "Which part decides the answer has finished arriving even if the surrounding structured reply still has more fields to come?"
+expected = ["src/llm_cli/cli/partial_json.py"]
+evidence = ["src/llm_cli/cli/partial_json.py::AnswerFieldDecoder._close_string"]
+
+[[queries]]
+id = "loupe-02"
+repository = "loupe"
+question = "Where is a very long menu label trimmed to the width of the screen after its tabs and newlines have been flattened?"
+expected = ["src/llm_cli/cli/command_picker.py"]
+evidence = ["src/llm_cli/cli/command_picker.py::_clip"]
+
+[[queries]]
+id = "loupe-03"
+repository = "loupe"
+question = "Who keeps a code example together on screen until the closing row of backticks is at least as long as the opening one?"
+expected = ["src/llm_cli/cli/streaming_markdown.py"]
+evidence = ["src/llm_cli/cli/streaming_markdown.py::MarkdownStream._accept_line"]
+
+[[queries]]
+id = "loupe-04"
+repository = "loupe"
+question = "Where does the sign-in chooser tell me that one backend is ready to use while another wants me to authenticate again?"
+expected = ["src/llm_cli/cli/connect.py"]
+evidence = ["src/llm_cli/cli/connect.py::ConnectionMenu._pick"]
+
+[[queries]]
+id = "loupe-05"
+repository = "loupe"
+question = "When deciding which models to offer, where do we discard a saved list if other users on the machine can read it?"
+expected = ["src/llm_cli/providers/catalog.py"]
+evidence = ["src/llm_cli/providers/catalog.py::_read_cache"]
+
+[[queries]]
+id = "loupe-06"
+repository = "loupe"
+question = "When I have both a login saved on this laptop and a different account in my shell, who chooses which one pays for the next request?"
+expected = ["src/llm_cli/providers/accounts.py"]
+evidence = ["src/llm_cli/providers/accounts.py::load_api_key"]
+
+[[queries]]
+id = "loupe-07"
+repository = "loupe"
+question = "When an extension advertises hundreds of capabilities in installments, where are the installments collected on a single countdown?"
+expected = ["src/llm_cli/mcp/client.py"]
+evidence = ["src/llm_cli/mcp/client.py::McpClient._list"]
+
+[[queries]]
+id = "loupe-08"
+repository = "loupe"
+question = "Where are the pieces of a reply from a remote tool collected across line breaks until the result for our particular request arrives?"
+expected = ["src/llm_cli/mcp/transport.py"]
+evidence = ["src/llm_cli/mcp/transport.py::HttpClient._sse"]
+
+[[queries]]
+id = "loupe-09"
+repository = "loupe"
+question = "Where can the settings display tell me which values took effect already and which ones have only been saved for next time?"
+expected = ["src/llm_cli/config/operations.py"]
+evidence = ["src/llm_cli/config/operations.py::effective_config"]
+
+[[queries]]
+id = "loupe-10"
+repository = "loupe"
+question = "When two installs use different private inputs, who decides which bucket of previously downloaded packages each is allowed to reuse?"
+expected = ["src/llm_cli/workspace/installer_cache.py"]
+evidence = ["src/llm_cli/workspace/installer_cache.py::InstallerCache._select"]
+
+[[queries]]
+id = "loupe-11"
+repository = "loupe"
+question = "Where does switching out of a private copy turn edits I made by hand into something I can accept later?"
+expected = ["src/llm_cli/workspace/switching.py"]
+evidence = ["src/llm_cli/workspace/switching.py::WorkspaceModeSwitcher._hold"]
+
+[[queries]]
+id = "loupe-12"
+repository = "loupe"
+question = "Where do we record what a symbolic link points at without opening the file on the other end?"
+expected = ["src/llm_cli/workspace/identity.py"]
+evidence = ["src/llm_cli/workspace/identity.py::_read_identified_path_once"]
+
+[[queries]]
+id = "loupe-13"
+repository = "loupe"
+question = "Where can two authors' independent edits to the same text survive together when neither one edited the other's lines?"
+expected = ["src/llm_cli/workspace/merge.py"]
+evidence = ["src/llm_cli/workspace/merge.py::merge_text"]
+
+[[queries]]
+id = "loupe-14"
+repository = "loupe"
+question = "Where does transferring a finished directory into place require the operating system to refuse if another file just took that name?"
+expected = ["src/llm_cli/workspace/runtime_export.py"]
+evidence = ["src/llm_cli/workspace/runtime_export.py::_rename_new"]
+
+[[queries]]
+id = "loupe-15"
+repository = "loupe"
+question = "Where are two names that look the same after accents and capitalization are folded marked as conflicting during setup of a private copy?"
+expected = ["src/llm_cli/workspace/hydration_catalogue.py"]
+evidence = ["src/llm_cli/workspace/hydration_catalogue.py::PathCatalogue.add"]
+
+[[queries]]
+id = "loupe-16"
+repository = "loupe"
+question = "If a listener forgets what happened while I was away, who decides that inspecting just the reported changes is no longer enough?"
+expected = ["src/llm_cli/workspace/watchers.py"]
+evidence = ["src/llm_cli/workspace/watchers.py::_Journal.since"]
+
+[[queries]]
+id = "loupe-17"
+repository = "loupe"
+question = "Which timer tells me to simplify a pattern or narrow the folders when locating text in the project takes too long?"
+expected = ["src/llm_cli/agent/bounded_search.py"]
+evidence = ["src/llm_cli/agent/bounded_search.py::SearchBudget.remaining"]
+
+[[queries]]
+id = "loupe-18"
+repository = "loupe"
+question = "Where do we decide whether the assistant's draft ending needs correcting because its promised edits were held back?"
+expected = ["src/llm_cli/agent/finalization.py"]
+evidence = ["src/llm_cli/agent/finalization.py::settlement_surprises"]
+
+[[queries]]
+id = "loupe-19"
+repository = "loupe"
+question = "Two failed runs quote different durations and memory addresses. Where do we recognize their underlying complaint as the same?"
+expected = ["src/llm_cli/agent/repair.py"]
+evidence = ["src/llm_cli/agent/repair.py::failure_signature"]
+
+[[queries]]
+id = "loupe-20"
+repository = "loupe"
+question = "Which bit reserves the database writer before checking availability so two callers cannot take the last available spot?"
+expected = ["src/llm_cli/storage/connection.py"]
+evidence = ["src/llm_cli/storage/connection.py::immediate_transaction"]
+
+[[queries]]
+id = "loupe-21"
+repository = "loupe"
+question = "After a crash, who verifies that the scratch directory recorded yesterday is still the right locked copy at the same starting revision?"
+expected = ["src/llm_cli/git/worktrees.py"]
+evidence = ["src/llm_cli/git/worktrees.py::resume_managed_worktree"]
+
+[[queries]]
+id = "loupe-22"
+repository = "loupe"
+question = "Where are interactive keystroke controls omitted when a command gets its input from a pipe?"
+expected = ["src/llm_cli/cli/active_controls.py"]
+evidence = ["src/llm_cli/cli/active_controls.py::active_controls"]
+
+[[queries]]
+id = "loupe-23"
+repository = "loupe"
+question = "If I raise the number of paths a private copy can contain far above what the software supports, where will my settings be rejected?"
+expected = ["src/llm_cli/config/loader.py"]
+evidence = ["src/llm_cli/config/loader.py::_isolated_count_limits"]
+
+[[queries]]
+id = "loupe-24"
+repository = "loupe"
+question = "Where does an excerpt's identifier incorporate its position and the version of the file from which it came?"
+expected = ["src/llm_cli/knowledge/chunker.py"]
+evidence = ["src/llm_cli/knowledge/chunker.py::_append"]
+
+[[queries]]
+id = "loupe-25"
+repository = "loupe"
+question = "Where does the display leave out the percentage full when the conversation capacity is unknown or zero?"
+expected = ["src/llm_cli/cli/usage.py"]
+evidence = ["src/llm_cli/cli/usage.py::context_percent"]
+
+[[queries]]
+id = "loupe-26"
+repository = "loupe"
+question = "Where is a second quick press of the interrupt key interpreted as leaving the application altogether?"
+expected = ["src/llm_cli/cli/interrupts.py"]
+evidence = ["src/llm_cli/cli/interrupts.py::InterruptState.press"]
+
+[[queries]]
+id = "loupe-27"
+repository = "loupe"
+question = "Where does a successful check wipe the history of failed attempts so that a later unrelated break gets a fresh allowance?"
+expected = ["src/llm_cli/agent/repair.py"]
+evidence = ["src/llm_cli/agent/repair.py::RepairTracker.record"]
+
+[[queries]]
+id = "loupe-28"
+repository = "loupe"
+question = "Who decides whether moving the tip forward represents a simple sequence of ordinary changes instead of a merge or rewritten history?"
+expected = ["src/llm_cli/workspace/gitstate.py"]
+evidence = ["src/llm_cli/workspace/gitstate.py::_ordinary_commits"]
+
+[[queries]]
+id = "loupe-29"
+repository = "loupe"
+question = "Where is an earlier delivery checked before treating another request for the same patch as successful?"
+expected = ["src/llm_cli/workspace/exports.py"]
+evidence = ["src/llm_cli/workspace/exports.py::SourceExporter._verify_file"]
+
+[[queries]]
+id = "loupe-30"
+repository = "loupe"
+question = "Where is my list of available models ordered for display after the service sends them in a different order?"
+expected = ["src/llm_cli/providers/catalog.py"]
+evidence = ["src/llm_cli/providers/catalog.py::_ordered_models"]
+
+[[queries]]
+id = "loupe-31"
+repository = "loupe"
+question = "Where are two changed filenames that differ only in letter case flagged before they can be treated as independent work?"
+expected = ["src/llm_cli/coordination/scopes.py"]
+evidence = ["src/llm_cli/coordination/scopes.py::casefold_aliases"]
+
+[[queries]]
+id = "loupe-32"
+repository = "loupe"
+question = "Which display breaks out the portion of a conversation's spend in tokens attributable to assistants that only explored the repository?"
+expected = ["src/llm_cli/cli/usage.py"]
+evidence = ["src/llm_cli/cli/usage.py::usage_lines"]
+
+[[queries]]
+id = "loupe-33"
+repository = "loupe"
+question = "When an assistant is given too many search hits to fit on screen, who makes the returned evidence small enough while keeping it parseable?"
+expected = ["src/llm_cli/knowledge/retrieval.py"]
+evidence = ["src/llm_cli/knowledge/retrieval.py::render_retrieval"]
+
+[[queries]]
+id = "loupe-34"
+repository = "loupe"
+question = "Who frees disk space occupied by old dependency downloads while skipping a directory still in use?"
+expected = ["src/llm_cli/workspace/installer_cache.py"]
+evidence = ["src/llm_cli/workspace/installer_cache.py::InstallerCache._prune_owned"]
+
+[[queries]]
+id = "loupe-35"
+repository = "loupe"
+question = "Which part recovers the full immutable revision to use as the starting point for a separate working directory?"
+expected = ["src/llm_cli/git/worktrees.py"]
+evidence = ["src/llm_cli/git/worktrees.py::resolve_exact_commit"]
+
+[[queries]]
+id = "loupe-36"
+repository = "loupe"
+question = "If Git says a name is a file but a scan sees a directory there, who marks the children for another check?"
+expected = ["src/llm_cli/workspace/hydration_catalogue.py"]
+evidence = ["src/llm_cli/workspace/hydration_catalogue.py::PathCatalogue.mark_tracked"]
+
+[[queries]]
+id = "loupe-37"
+repository = "loupe"
+question = "Who assembles the project's broad working conventions and its closer folder-specific amendments for a task?"
+expected = ["src/llm_cli/agent/instructions.py"]
+evidence = ["src/llm_cli/agent/instructions.py::discover_instructions"]
+
+[[queries]]
+id = "loupe-38"
+repository = "loupe"
+question = "Where is the final unfinished line flushed to the terminal when a reply ends without a trailing newline?"
+expected = ["src/llm_cli/cli/streaming_markdown.py"]
+evidence = ["src/llm_cli/cli/streaming_markdown.py::MarkdownStream.finish"]
+
+[[queries]]
+id = "django-01"
+repository = "django"
+question = "A navigation bar for a thousand pages shows dots between the current neighborhood and the two ends. Where is that sequence chosen?"
+expected = ["django/core/paginator.py"]
+evidence = ["django/core/paginator.py::Paginator.get_elided_page_range"]
+
+[[queries]]
+id = "django-02"
+repository = "django"
+question = "Where does shortening a headline avoid counting an accent that combines with the preceding letter as another visible character?"
+expected = ["django/utils/text.py"]
+evidence = ["django/utils/text.py::Truncator._text_chars"]
+
+[[queries]]
+id = "django-03"
+repository = "django"
+question = "Where can structured page data be embedded such that a value containing a closing angle bracket cannot end the surrounding script?"
+expected = ["django/utils/html.py"]
+evidence = ["django/utils/html.py::json_script"]
+
+[[queries]]
+id = "django-04"
+repository = "django"
+question = "Which code interprets a span written with days and a clock, including fractional seconds, as an amount of elapsed time?"
+expected = ["django/utils/dateparse.py"]
+evidence = ["django/utils/dateparse.py::parse_duration"]
+
+[[queries]]
+id = "django-05"
+repository = "django"
+question = "Where is the text telling a visitor how long ago something happened assembled from adjacent units such as months and weeks?"
+expected = ["django/utils/timesince.py"]
+evidence = ["django/utils/timesince.py::timesince"]
+
+[[queries]]
+id = "django-06"
+repository = "django"
+question = "Which part renders a large price with separators placed according to the grouping convention of the current country?"
+expected = ["django/utils/numberformat.py"]
+evidence = ["django/utils/numberformat.py::format"]
+
+[[queries]]
+id = "django-07"
+repository = "django"
+question = "Which routine turns a Windows-style file location into something fit for a web address, preserving directory boundaries?"
+expected = ["django/utils/encoding.py"]
+evidence = ["django/utils/encoding.py::filepath_to_uri"]
+
+[[queries]]
+id = "django-08"
+repository = "django"
+question = "If a browser submits the same parameter three times, where is the most recent value picked when I ask for just one?"
+expected = ["django/utils/datastructures.py"]
+evidence = ["django/utils/datastructures.py::MultiValueDict.__getitem__"]
+
+[[queries]]
+id = "django-09"
+repository = "django"
+question = "Where does looking for optional extension modules roll back registry changes when importing one goes wrong?"
+expected = ["django/utils/module_loading.py"]
+evidence = ["django/utils/module_loading.py::autodiscover_modules"]
+
+[[queries]]
+id = "django-10"
+repository = "django"
+question = "If a browser already has a copy, which code decides whether to send an empty reply or reject its precondition?"
+expected = ["django/utils/cache.py"]
+evidence = ["django/utils/cache.py::get_conditional_response"]
+
+[[queries]]
+id = "django-11"
+repository = "django"
+question = "The first access to an attribute runs a calculation and later accesses reuse its result. Where is the result put onto the instance?"
+expected = ["django/utils/functional.py"]
+evidence = ["django/utils/functional.py::cached_property.__get__"]
+
+[[queries]]
+id = "django-12"
+repository = "django"
+question = "Someone asks for a regional dialect we do not ship. Where do we look for a supported alternative before giving up?"
+expected = ["django/utils/translation/trans_real.py"]
+evidence = ["django/utils/translation/trans_real.py::get_supported_language_variant"]
+
+[[queries]]
+id = "django-13"
+repository = "django"
+question = "Where is a file from disk read into an outgoing message with its last path component used as the displayed name?"
+expected = ["django/core/mail/message.py"]
+evidence = ["django/core/mail/message.py::EmailMessage.attach_file"]
+
+[[queries]]
+id = "django-14"
+repository = "django"
+question = "Once the small in-process store fills up, where are some of the least recently kept entries thrown away?"
+expected = ["django/core/cache/backends/locmem.py"]
+evidence = ["django/core/cache/backends/locmem.py::LocMemCache._cull"]
+
+[[queries]]
+id = "django-15"
+repository = "django"
+question = "Where does reading a file by lines recognize a carriage return paired with a newline even when they straddle separate reads?"
+expected = ["django/core/files/base.py"]
+evidence = ["django/core/files/base.py::File.__iter__"]
+
+[[queries]]
+id = "django-16"
+repository = "django"
+question = "If a file cannot be renamed across disks, where do we fall back to copying it before removing the original?"
+expected = ["django/core/files/move.py"]
+evidence = ["django/core/files/move.py::file_move_safe"]
+
+[[queries]]
+id = "django-17"
+repository = "django"
+question = "Where do we ensure reading the inbound body cannot consume bytes beyond the length promised by the server?"
+expected = ["django/core/handlers/wsgi.py"]
+evidence = ["django/core/handlers/wsgi.py::LimitedStream.read"]
+
+[[queries]]
+id = "django-18"
+repository = "django"
+question = "Where is the string containing the browser's saved name and value pairs split up for the application?"
+expected = ["django/http/cookie.py"]
+evidence = ["django/http/cookie.py::parse_cookie"]
+
+[[queries]]
+id = "django-19"
+repository = "django"
+question = "When a client sends a file with its full desktop folder in the name, where is only the usable last component kept?"
+expected = ["django/http/multipartparser.py"]
+evidence = ["django/http/multipartparser.py::MultiPartParser.sanitize_file_name"]
+
+[[queries]]
+id = "django-20"
+repository = "django"
+question = "Where does a response skip compression for a tiny payload and weaken the cache validator when the bytes do get smaller?"
+expected = ["django/middleware/gzip.py"]
+evidence = ["django/middleware/gzip.py::GZipMiddleware.process_response"]
+
+[[queries]]
+id = "django-21"
+repository = "django"
+question = "Why does adding a final slash redirect only if the original address was unrecognized and the changed one would resolve?"
+expected = ["django/middleware/common.py"]
+evidence = ["django/middleware/common.py::CommonMiddleware.should_redirect_with_slash"]
+
+[[queries]]
+id = "django-22"
+repository = "django"
+question = "Where is the default policy about displaying a response inside another page skipped if the view already chose one?"
+expected = ["django/middleware/clickjacking.py"]
+evidence = ["django/middleware/clickjacking.py::XFrameOptionsMiddleware.process_response"]
+
+[[queries]]
+id = "django-23"
+repository = "django"
+question = "Where does choosing a language on a web page remember it in the browser and send the visitor back to a suitable page?"
+expected = ["django/views/i18n.py"]
+evidence = ["django/views/i18n.py::set_language"]
+
+[[queries]]
+id = "django-24"
+repository = "django"
+question = "A request for the last part of a long list spells out last instead of giving a number. Where is that understood?"
+expected = ["django/views/generic/list.py"]
+evidence = ["django/views/generic/list.py::MultipleObjectMixin.paginate_queryset"]
+
+[[queries]]
+id = "django-25"
+repository = "django"
+question = "Where is the number of repeated entry rows the server will construct capped even if the browser requests many more?"
+expected = ["django/forms/formsets.py"]
+evidence = ["django/forms/formsets.py::BaseFormSet.total_form_count"]
+
+[[queries]]
+id = "django-26"
+repository = "django"
+question = "How are the script files needed by different page controls combined while preserving the ordering each one needs?"
+expected = ["django/forms/widgets.py"]
+evidence = ["django/forms/widgets.py::Media.merge"]
+
+[[queries]]
+id = "django-27"
+repository = "django"
+question = "When a caption is rendered for an input box, where is it linked back to the right element so clicking it moves focus there?"
+expected = ["django/forms/boundfield.py"]
+evidence = ["django/forms/boundfield.py::BoundField.label_tag"]
+
+[[queries]]
+id = "django-28"
+repository = "django"
+question = "A decimal is printed with a fixed precision but a whole number may drop its trailing zeroes. Where is that choice made?"
+expected = ["django/template/defaultfilters.py"]
+evidence = ["django/template/defaultfilters.py::floatformat"]
+
+[[queries]]
+id = "django-29"
+repository = "django"
+question = "Where does a template loop expose the position counted from either end and render a different body for an empty collection?"
+expected = ["django/template/defaulttags.py"]
+evidence = ["django/template/defaulttags.py::ForNode.render"]
+
+[[queries]]
+id = "django-30"
+repository = "django"
+question = "When an overriding page derives from another page with the same logical name, where does lookup avoid picking the current copy again?"
+expected = ["django/template/loader_tags.py"]
+evidence = ["django/template/loader_tags.py::ExtendsNode.find_template"]
+
+[[queries]]
+id = "django-31"
+repository = "django"
+question = "Which code turns the numbers 1, 2, and 13 into the words or suffixes used for their positions in a sequence?"
+expected = ["django/contrib/humanize/templatetags/humanize.py"]
+evidence = ["django/contrib/humanize/templatetags/humanize.py::ordinal"]
+
+[[queries]]
+id = "django-32"
+repository = "django"
+question = "Where do notices that don't fit in the small browser-side store spill into the next available storage method?"
+expected = ["django/contrib/messages/storage/fallback.py"]
+evidence = ["django/contrib/messages/storage/fallback.py::FallbackStorage._store"]
+
+[[queries]]
+id = "django-33"
+repository = "django"
+question = "Where are type records for several model classes fetched together and missing ones created so the lookup can be reused?"
+expected = ["django/contrib/contenttypes/models.py"]
+evidence = ["django/contrib/contenttypes/models.py::ContentTypeManager.get_for_models"]
+
+[[queries]]
+id = "django-34"
+repository = "django"
+question = "Where is a password recovery link tied to account state so changing the password makes an older link unusable?"
+expected = ["django/contrib/auth/tokens.py"]
+evidence = ["django/contrib/auth/tokens.py::PasswordResetTokenGenerator._make_hash_value"]
+
+[[queries]]
+id = "django-35"
+repository = "django"
+question = "When the fast copy of a signed-in visit is missing, who reads the durable copy and puts it back into the fast store?"
+expected = ["django/contrib/sessions/backends/cached_db.py"]
+evidence = ["django/contrib/sessions/backends/cached_db.py::SessionStore.load"]
+
+[[queries]]
+id = "django-36"
+repository = "django"
+question = "Where is the record that a database upgrade ran removed after the change is rolled back?"
+expected = ["django/db/migrations/recorder.py"]
+evidence = ["django/db/migrations/recorder.py::MigrationRecorder.record_unapplied"]
+
+[[queries]]
+id = "django-37"
+repository = "django"
+question = "Where does removing many rows at once need to check whether another object or an event listener needs to be visited first?"
+expected = ["django/db/models/deletion.py"]
+evidence = ["django/db/models/deletion.py::Collector.can_fast_delete"]
+
+[[queries]]
+id = "django-38"
+repository = "django"
+question = "Where is an unsuccessful layout lookup remembered so that asking for the same missing layout does not search the disk again?"
+expected = ["django/template/loaders/cached.py"]
+evidence = ["django/template/loaders/cached.py::Loader.get_template"]
+
+[[queries]]
+id = "django-39"
+repository = "django"
+question = "When saving an object with a newly attached picture, where is the file written before the database row is stored?"
+expected = ["django/db/models/fields/files.py"]
+evidence = ["django/db/models/fields/files.py::FileField.pre_save"]
+
+[[queries]]
+id = "django-40"
+repository = "django"
+question = "How does unpacking downloaded content decide whether every entry shares the same outer directory?"
+expected = ["django/utils/archive.py"]
+evidence = ["django/utils/archive.py::BaseArchive.has_leading_dir"]

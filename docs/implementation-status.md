@@ -1368,6 +1368,11 @@ hard links; see its [release notes](release-notes/0.1.0a4.md). A profile
 built by the unmodified 0.1.0a3 source upgraded in place and kept working;
 the [check](../tests/fixtures/upgrade_0_1_0a3/README.md) is rerunnable.
 
+The [Wave 13 retrieval protocol](experiments/semantic-retrieval-f6-protocol.md)
+and lexical draw are frozen ahead of F6's embedding run. The product found
+18 of 30 selected Loupe reference files and 16 of 30 Django reference files
+at rank ten. The semantic comparison and F4 decision remain pending.
+
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
 

@@ -162,3 +162,20 @@ def test_another_result_created_during_evaluation_is_not_overwritten(
         experiment.main()
     assert output.read_text() == "previous completed measurement\n"
     assert not list(tmp_path.glob("*.pending"))
+
+
+def test_f6_draw_preserves_misses_and_hits_independently_of_pool_order() -> None:
+    rule = {"size": 30, "minimum_hits": 6, "minimum_misses": 6, "salt": "test"}
+    rows = [{"id": str(i), "recall_at_10": int(i < 33)} for i in range(40)]
+    draw = experiment.select_questions(rows, rule)
+    assert len(set(draw)) == 30
+    assert sum(int(item) >= 33 for item in draw) >= 6
+    assert sum(int(item) < 33 for item in draw) >= 6
+    assert draw == experiment.select_questions(list(reversed(rows)), rule)
+    with pytest.raises(ValueError, match="insufficient lexical"):
+        experiment.select_questions(rows[:37], rule)
+
+
+def test_f6_refuses_to_run_with_the_old_embedding_windows(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="F6 preflight"):
+        experiment.evaluate({"version": 2}, {}, tmp_path)
