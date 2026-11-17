@@ -48,6 +48,7 @@ def run_git(
     text: bool = True,
     input_data: str | bytes | None = None,
     remaining: Callable[[], float] | None = None,
+    private_index: Path | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     prefix = [
         "git",
@@ -71,6 +72,12 @@ def run_git(
         f"core.attributesFile={os.devnull}",
     ]
     env = sanitized_git_environment()
+    if private_index is not None:
+        # Only caller-owned temporary indexes are explicitly passed here.
+        env["GIT_INDEX_FILE"] = str(private_index.resolve())
+        prefix.extend(
+            ["-c", "core.splitIndex=false", "-c", "core.sparseCheckout=false"]
+        )
     operation_index = 0
     while operation_index < len(arguments) and arguments[operation_index] == "-c":
         operation_index += 2
