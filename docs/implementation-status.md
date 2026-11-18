@@ -1370,6 +1370,13 @@ the [check](../tests/fixtures/upgrade_in_place/README.md) now builds a fresh
 profile with the pinned release's locked dependencies. CI runs it on Linux
 for pull requests and on Linux and Apple Silicon for release tags (E4).
 
+Wave 13 is planned in [`parallel-work-plan.md`](parallel-work-plan.md#at-a-glance-wave-13):
+checkouts above 20,000 source paths, which stop accepting tasks after the
+daemon releases them or restarts (C24; a known limit in 0.1.0a4), commit and
+branch exports (C23), a conclusive retrieval rerun (F6), the in-place upgrade
+check in CI (E4), a design for starting new checkouts claim-free (G5) and
+E2's live run.
+
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
 
