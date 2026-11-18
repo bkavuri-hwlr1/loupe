@@ -1380,6 +1380,11 @@ first registration for new checkouts (2026-11-18). It references C24's measured
 handoff costs. Implementation is planned as G6–G8; the default changes only
 after G8's rollout evidence is approved.
 
+The [Wave 13 retrieval protocol](experiments/semantic-retrieval-f6-protocol.md)
+and lexical draw are frozen ahead of F6's embedding run. The product found
+18 of 30 selected Loupe reference files and 16 of 30 Django reference files
+at rank ten. The semantic comparison and F4 decision remain pending.
+
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
 
