@@ -1375,9 +1375,10 @@ branch exports (C23), a conclusive retrieval rerun (F6), the in-place upgrade
 check in CI (E4), a design for starting new checkouts claim-free (G5) and
 E2's live run.
 
-[ADR 0011](adr/0011-claim-free-start-for-new-checkouts.md) proposes claim-free
-first registration. The proposed decision references C24's measured handoff costs.
-Maintainer acceptance and rollout checks are pending.
+[ADR 0011](adr/0011-claim-free-start-for-new-checkouts.md) accepts claim-free
+first registration for new checkouts (2026-11-18). It references C24's measured
+handoff costs. Implementation is planned as G6–G8; the default changes only
+after G8's rollout evidence is approved.
 
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).

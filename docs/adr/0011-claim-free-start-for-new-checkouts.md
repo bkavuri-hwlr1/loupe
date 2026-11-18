@@ -1,6 +1,8 @@
 # ADR 0011 — Start new checkouts without editing claims
 
-**Status:** Proposed, November 17, 2026. Maintainer decision pending.
+**Status:** Accepted (2026-11-18), by explicit user acceptance. Acceptance
+authorizes the follow-up packages G6–G8. The default changes only in a release
+after the evidence below, which the maintainer approves separately.
 
 Today every checkout starts with legacy claims. A user who wants advisory intents
 must review and apply a cutover, even on a fresh clone with no work to migrate.
