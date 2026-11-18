@@ -14,7 +14,10 @@ class Release:
     version: str
 
 
-RELEASES = (Release("v0.1.0a3", "4b9615160262c677d07f4136a40857dbb0942d1d", "0.1.0a3"),)
+RELEASES = (
+    Release("v0.1.0a3", "4b9615160262c677d07f4136a40857dbb0942d1d", "0.1.0a3"),
+    Release("v0.1.0a4", "6c7f72b4f31c024b3e618380681b472096acb144", "0.1.0a4"),
+)
 
 
 def get_release(tag: str | None) -> Release:

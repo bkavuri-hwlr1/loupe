@@ -1,7 +1,7 @@
 # macOS releases
 
-Current release: [0.1.0a3 release notes](release-notes/0.1.0a3.md),
-published October 29, 2026.
+Current release: [0.1.0a4 release notes](release-notes/0.1.0a4.md),
+published November 18, 2026.
 
 The public install command is `brew install bkavuri-hwlr1/tap/loupe`.
 Development happens in the public `bkavuri-hwlr1/loupe` repository, which holds

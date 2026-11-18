@@ -1363,12 +1363,16 @@ F4's gate is **inconclusive under F5**; a conclusive rerun needs questions
 lexical search misses and a model with a longer input window or smaller
 chunks. E2's live run still waits for provider sign-ins.
 
-0.1.0a4 is prepared from Wave 12 and the export fix for filesystems without
-hard links; see its [release notes](release-notes/0.1.0a4.md). A profile
-built by the unmodified 0.1.0a3 source upgraded in place and kept working;
-the [check](../tests/fixtures/upgrade_in_place/README.md) now builds a fresh
-profile with the pinned release's locked dependencies. CI runs it on Linux
-for pull requests and on Linux and Apple Silicon for release tags (E4).
+0.1.0a4 shipped Wave 12 and the export fix for filesystems without hard
+links to Homebrew on November 18, 2026; see its
+[release notes](release-notes/0.1.0a4.md). The `v0.1.0a4` tag is on
+`6c7f72b`, and the tap's workflow upgraded from 0.1.0a3 and passed its smoke
+tests on Apple Silicon and Intel. Before the tag, a profile built by the
+unmodified 0.1.0a3 source upgraded in place and kept working. The
+[check](../tests/fixtures/upgrade_in_place/README.md) now builds a fresh
+profile with the pinned release's locked dependencies, from 0.1.0a4 onward.
+CI runs it on Linux for pull requests and on Linux and Apple Silicon for
+release tags (E4).
 
 Wave 13 is planned in [`parallel-work-plan.md`](parallel-work-plan.md#at-a-glance-wave-13):
 checkouts above 20,000 source paths, which stop accepting tasks after the
