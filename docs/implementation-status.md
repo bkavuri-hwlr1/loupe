@@ -1386,6 +1386,14 @@ The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
 
 
+## Wave 13 C24: large checkout handoff (November 17, 2026)
+
+The 50,000-source-path default now survives clean ownership handoff in shared
+and isolated modes. Handoff supports the full 100,000-path configurable isolated
+ceiling. Shared session opening enforces a 50,000-path limit. Cutover checks
+up to 50,000 paths and reports which count, byte or time bound stopped it.
+See the [measured limits](experiments/authority-scale-c24-2026-11-17.md).
+
 ## Wave 2 local validation (October 14, 2026)
 
 B1 independent review, B2 helper commands/fetches, C1 hydration preview and C4

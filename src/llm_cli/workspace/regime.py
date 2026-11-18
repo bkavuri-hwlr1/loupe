@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from llm_cli.config.models import DEFAULT_ISOLATED_SOURCE_MAX_PATHS
 from llm_cli.errors import ErrorCode, LlmCoordError
 from llm_cli.git.environment import run_git
 from llm_cli.workspace.authority import (
@@ -25,6 +26,11 @@ from llm_cli.workspace.installation import private_read
 
 if TYPE_CHECKING:
     from llm_cli.storage.control import ControlStore
+
+CUTOVER_MAX_PATHS = DEFAULT_ISOLATED_SOURCE_MAX_PATHS
+CUTOVER_MAX_FILE_BYTES = 16 * 1024 * 1024
+CUTOVER_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+CUTOVER_MAX_SECONDS = 120.0
 
 # Relevant retained legacy work. The reviewed checkpoint additionally binds
 # source, index, HEAD and mappings, but only at apply, before anything is durable.
@@ -58,27 +64,24 @@ def _source_checkpoint(physical: PhysicalCheckout) -> str:
     from llm_cli.workspace.external import metadata
     from llm_cli.workspace.isolated import _passive, _read, _source
 
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + CUTOVER_MAX_SECONDS
 
     def remaining() -> float:
         value = deadline - time.monotonic()
         if value <= 0:
             raise _error(
                 ErrorCode.CUTOVER_BLOCKED,
-                "cutover source checkpoint exceeded its time budget",
+                f"cutover source checkpoint took {CUTOVER_MAX_SECONDS - value:.1f}s, "
+                f"exceeding its {CUTOVER_MAX_SECONDS:g}s limit",
             )
         return value
 
     root = physical.root
 
     def source_paths() -> tuple[str, ...]:
-        try:
-            return checkpoint_source_paths(root)
-        except LlmCoordError as exc:
-            raise _error(
-                ErrorCode.CUTOVER_BLOCKED,
-                f"cutover source checkpoint unavailable: {exc.message}",
-            ) from exc
+        return checkpoint_source_paths(
+            root, max_paths=CUTOVER_MAX_PATHS, operation="cutover"
+        )
 
     try:
         paths = source_paths()
@@ -95,10 +98,20 @@ def _source_checkpoint(physical: PhysicalCheckout) -> str:
             if stamp != "absent":
                 mode, size = json.loads(stamp)[2:4]
                 if stat.S_ISREG(mode):
-                    if size > 16 * 1024 * 1024 or total + size > 64 * 1024 * 1024:
-                        raise ValueError("source checkpoint exceeds byte budget")
+                    if size > CUTOVER_MAX_FILE_BYTES:
+                        raise _error(
+                            ErrorCode.CUTOVER_BLOCKED,
+                            f"cutover observed a {size}-byte file, exceeding its "
+                            f"{CUTOVER_MAX_FILE_BYTES}-byte per-file limit",
+                        )
+                    if total + size > CUTOVER_MAX_TOTAL_BYTES:
+                        raise _error(
+                            ErrorCode.CUTOVER_BLOCKED,
+                            f"cutover observed {total + size} total source bytes, "
+                            f"exceeding its {CUTOVER_MAX_TOTAL_BYTES}-byte limit",
+                        )
                     with _source(root, path) as descriptor:
-                        body = _read(descriptor, 16 * 1024 * 1024)
+                        body = _read(descriptor, size)
                     total += len(body)
                     if not contains_secret_material(body):
                         digest = hashlib.sha256(body).hexdigest()
@@ -112,13 +125,18 @@ def _source_checkpoint(physical: PhysicalCheckout) -> str:
         ):
             raise ValueError("source or index changed during checkpoint")
         remaining()
-        physical.validate()
-        return _digest({"paths": records, "index": hashlib.sha256(index).hexdigest()})
+    except LlmCoordError as exc:
+        if exc.code == ErrorCode.CUTOVER_BLOCKED:
+            raise
+        remaining()
+        raise _error(ErrorCode.CUTOVER_BLOCKED, exc.message) from exc
     except (OSError, ValueError) as exc:
         raise _error(
             ErrorCode.CUTOVER_BLOCKED,
-            "cutover source or index is unstable or exceeds its checkpoint budget",
+            "cutover source or index changed or could not be observed stably",
         ) from exc
+    physical.validate()
+    return _digest({"paths": records, "index": hashlib.sha256(index).hexdigest()})
 
 
 def legacy_activation_allowed(

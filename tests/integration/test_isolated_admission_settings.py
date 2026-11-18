@@ -120,6 +120,69 @@ def test_real_open_uses_the_configured_source_count_boundary(
         service.close()
 
 
+def test_shared_open_checks_the_count_before_persisting_a_session(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_cli.workspace import authority
+
+    root = repository_factory(tmp_path, {"a.py": "pass\n", "b.py": "pass\n"})
+    service = service_at(tmp_path)
+    try:
+        asyncio.run(rpc(service, "repo.add", path=str(root)))
+        monkeypatch.setattr(authority, "SHARED_ADMISSION_MAX_PATHS", 1)
+        with pytest.raises(
+            LlmCoordError,
+            match=r"shared session admission observed 2 source paths.*1-path limit",
+        ):
+            asyncio.run(
+                rpc(
+                    service,
+                    "session.open",
+                    path=str(root),
+                    session_id="too-large",
+                    resume_token_hash="a" * 64,
+                    provider="unused-scripted",
+                    workspace="shared",
+                )
+            )
+        assert service.store.get_session("too-large") is None
+    finally:
+        service.close()
+
+
+def test_sessionless_legacy_run_checks_the_count_before_creating_work(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_cli.workspace import authority
+
+    root = repository_factory(tmp_path, {"a.py": "pass\n", "b.py": "pass\n"})
+    service = service_at(tmp_path)
+    try:
+        asyncio.run(rpc(service, "repo.add", path=str(root)))
+        monkeypatch.setattr(authority, "SHARED_ADMISSION_MAX_PATHS", 1)
+        with pytest.raises(
+            LlmCoordError, match=r"observed 2 source paths.*1-path limit"
+        ):
+            asyncio.run(
+                rpc(
+                    service,
+                    "task.run",
+                    path=str(root),
+                    task_id="too-large",
+                    title="a legacy task",
+                    scopes=["a.py"],
+                    claim_only=True,
+                )
+            )
+        assert service.store.get_task("too-large") is None
+    finally:
+        service.close()
+
+
 def test_real_open_names_the_configured_hydration_entry_boundary(
     tmp_path: Path, repository_factory: Callable[..., Path]
 ) -> None:

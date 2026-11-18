@@ -56,20 +56,16 @@ checks, no-follow traversal, secret screening or exact-file consent.
 The preview uses the selected profile's saved hydration count; explicit
 `--max-entries` wins. Restart the daemon after changing these settings so new
 opens, safe points, runtime discovery and switching use the same effective
-admission counts. Cutover source checkpoints and clean-handoff observations
-retain a separate fixed limit of 20,000 source paths. A larger checkout can be
-admitted to an isolated session, but its cutover or clean handoff refuses until
-the source count fits that checkpoint limit. Raising `isolated.source_max_paths`
-does not raise the checkpoint limit.
+admission counts.
 
-**Known limit.** Loupe makes the clean-handoff observation each time it takes
-a checkout back, so a checkout above 20,000 source paths stops accepting tasks
-once the daemon releases it (after about 30 idle seconds) or restarts. Shared
-and isolated sessions are then refused with
-`CHECKOUT_FOREIGN_RECOVERY_REQUIRED` until the count is 20,000 or fewer.
-Nothing is lost, but unpublished work in a private worktree stays out of reach
-meanwhile. Keep checkouts within 20,000 source paths until this limit is
-lifted.
+Shared session admission accepts up to 50,000 source paths. Clean ownership
+handoff checks up to 100,000 paths in either mode, covering the highest
+configurable isolated count even when a different profile takes over. If a
+clean checkout stopped accepting tasks under 0.1.0a4's 20,000-path handoff
+limit, upgrade and resume the existing session. The next handoff rechecks
+source and retains its workspace and proposals. Cutover has separate
+[checkpoint budgets](workspace-cutover.md#preview-every-mapping-before-applying).
+See the [handoff and cutover measurements](experiments/authority-scale-c24-2026-11-17.md).
 
 The [recorded synthetic admission experiment](experiments/isolated-admission-c18-2026-10-30.md)
 explains the defaults and the remaining 100,000-file refusal. These are count

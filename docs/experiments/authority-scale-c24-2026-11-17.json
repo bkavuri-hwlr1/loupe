@@ -1,0 +1,74 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "python": "3.14.8 (main, Sep 30 2026, 17:55:09) [Clang 21.0.0 (clang-2100.3.34.2)]",
+  "results": [
+    {
+      "files": 20000,
+      "file_sizes_bytes": [
+        512,
+        2048,
+        4096,
+        8192
+      ],
+      "total_source_bytes": 74240000,
+      "handoff": {
+        "status": "complete",
+        "seconds": 0.22699245804687962,
+        "process_peak_rss_bytes": 68452352,
+        "increase_in_peak_rss_bytes": 17825792
+      },
+      "cutover_source_checkpoint": {
+        "status": "complete",
+        "seconds": 4.24015154101653,
+        "process_peak_rss_bytes": 74809344,
+        "increase_in_peak_rss_bytes": 6356992
+      }
+    },
+    {
+      "files": 50000,
+      "file_sizes_bytes": [
+        512,
+        2048,
+        4096,
+        8192
+      ],
+      "total_source_bytes": 185600000,
+      "handoff": {
+        "status": "complete",
+        "seconds": 0.5260839170077816,
+        "process_peak_rss_bytes": 94011392,
+        "increase_in_peak_rss_bytes": 43663360
+      },
+      "cutover_source_checkpoint": {
+        "status": "complete",
+        "seconds": 10.73964804096613,
+        "process_peak_rss_bytes": 104775680,
+        "increase_in_peak_rss_bytes": 10764288
+      }
+    },
+    {
+      "files": 100000,
+      "file_sizes_bytes": [
+        512,
+        2048,
+        4096,
+        8192
+      ],
+      "total_source_bytes": 371200000,
+      "handoff": {
+        "status": "complete",
+        "seconds": 1.1257836669683456,
+        "process_peak_rss_bytes": 138625024,
+        "increase_in_peak_rss_bytes": 88162304
+      },
+      "cutover_source_checkpoint": {
+        "status": "refused",
+        "code": "CUTOVER_BLOCKED",
+        "reason": "cutover source checkpoint unavailable: cutover observed 100000 source paths, exceeding its 50000-path limit; reduce the source path count",
+        "seconds": 0.07208474999060854,
+        "process_peak_rss_bytes": 138625024,
+        "increase_in_peak_rss_bytes": 0
+      }
+    }
+  ]
+}

@@ -673,6 +673,119 @@ async def measure_admission(
     return record
 
 
+async def measure_authority(count: int) -> dict[str, Any]:
+    """Time clean reacquisition separately from the cutover source checkpoint."""
+    from llm_cli.workspace.authority import PhysicalCheckout
+    from llm_cli.workspace.regime import _source_checkpoint
+
+    def observe(operation: Any) -> dict[str, Any]:
+        def peak_rss_bytes() -> int:
+            scale = 1 if sys.platform == "darwin" else 1024
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * scale
+
+        prior_peak = peak_rss_bytes()
+        started = time.monotonic()
+        try:
+            operation()
+        except LlmCoordError as exc:
+            row = {"status": "refused", "code": str(exc.code), "reason": exc.message}
+        else:
+            row = {"status": "complete"}
+        peak = peak_rss_bytes()
+        return {
+            **row,
+            "seconds": time.monotonic() - started,
+            "process_peak_rss_bytes": peak,
+            "increase_in_peak_rss_bytes": peak - prior_peak,
+        }
+
+    with tempfile.TemporaryDirectory(prefix="loupe-authority-scale-") as directory:
+        root = Path(directory).resolve()
+        repository = root / "repository"
+        fixture(repository, 1)
+        paths = AppPaths.resolve(
+            "scale",
+            environ={
+                "LLM_COORD_CONFIG_HOME": str(root / "config"),
+                "LLM_COORD_DATA_HOME": str(root / "data"),
+                "LLM_COORD_STATE_HOME": str(root / "state"),
+                "LLM_COORD_RUNTIME_DIR": str(root / "run"),
+            },
+            home=root,
+        )
+        service = DaemonService(
+            paths,
+            Settings(profile_id="scale", workspace_watchers="off"),
+            asyncio.Event(),
+            boot_id="authority-scale",
+            authority_root=root / "authority" / "v1",
+        )
+        service.providers.register(
+            "unused-scripted",
+            lambda model: SimpleNamespace(name="unused-scripted", model=model),
+        )
+        try:
+            service.initialize()
+            for method, params in (
+                ("repo.add", {}),
+                (
+                    "session.open",
+                    {
+                        "session_id": "scale",
+                        "resume_token_hash": hashlib.sha256(b"disposable").hexdigest(),
+                        "provider": "unused-scripted",
+                        "model": "unused",
+                        "workspace": "shared",
+                    },
+                ),
+            ):
+                await service.handle(
+                    Request.create(
+                        request_id="scale-" + method,
+                        method=method,
+                        params={"path": str(repository), **params},
+                        profile_id="scale",
+                    )
+                )
+            # Grow an already registered checkout so unsupported counts can also
+            # exercise recovery. The sizing is evenly split across four lengths.
+            sizes = (512, 2048, 4096, 8192)
+            bodies = [(BODY * (size // len(BODY) + 1))[:size] for size in sizes]
+            total = 0
+            for i in range(count):
+                file = repository / f"source/{i // 1000:03}/{i:06}.py"
+                if i % 1000 == 0:
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                body = bodies[i % len(bodies)]
+                file.write_bytes(body)
+                total += len(body)
+            git(repository, "add", "--all")
+            service.physical_authority.release_idle(force=True)
+
+            def reacquire() -> None:
+                with service.physical_authority.pin(repository) as pin:
+                    if not pin.owner.history_gap:
+                        raise RuntimeError("benchmark did not cross an ownership gap")
+
+            handoff = observe(reacquire)
+            # Measure the exact source observation used by cutover independently:
+            # admission or a handoff refusal must not mask the cutover bound.
+            checkout = PhysicalCheckout.inspect(repository)
+            try:
+                cutover = observe(lambda: _source_checkpoint(checkout))
+            finally:
+                checkout.close()
+            return {
+                "files": count,
+                "file_sizes_bytes": sizes,
+                "total_source_bytes": total,
+                "handoff": handoff,
+                "cutover_source_checkpoint": cutover,
+            }
+        finally:
+            service.close()
+
+
 def vars_budgets(max_entries: int) -> dict[str, Any]:
     from dataclasses import asdict
 
@@ -682,12 +795,21 @@ def vars_budgets(max_entries: int) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--files", type=int, nargs="+")
-    parser.add_argument(
+    modes_group = parser.add_mutually_exclusive_group()
+    modes_group.add_argument(
+        "--authority",
+        action="store_true",
+        help="measure clean handoff and cutover source checkpoints in fresh processes",
+    )
+    modes_group.add_argument(
+        "--authority-worker", action="store_true", help=argparse.SUPPRESS
+    )
+    modes_group.add_argument(
         "--admission",
         action="store_true",
         help="measure isolated admission in fresh processes",
     )
-    parser.add_argument(
+    modes_group.add_argument(
         "--admission-worker", action="store_true", help=argparse.SUPPRESS
     )
     parser.add_argument(
@@ -714,7 +836,9 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("scan-scale-result.json"))
     options = parser.parse_args()
     options.files = options.files or (
-        [20000, 50000, 100000] if options.admission else [20000, 100000]
+        [20000, 50000, 100000]
+        if options.admission or options.authority
+        else [20000, 100000]
     )
     if any(count < 1 for count in options.files) or options.repeats < 1:
         parser.error("file counts and repeats must be positive")
@@ -724,6 +848,11 @@ def main() -> int:
         parser.error("hydration-max-entries must be between 1 and 100000")
     if options.admission and options.watchers == "off":
         parser.error("admission measurements require native watchers")
+    if options.authority_worker:
+        if len(options.files) != 1:
+            parser.error("an authority worker needs one file count")
+        print(json.dumps(asyncio.run(measure_authority(options.files[0]))), flush=True)
+        return 0
     if options.admission_worker:
         if len(options.files) != 1:
             parser.error("an admission worker needs one file count")
@@ -741,14 +870,14 @@ def main() -> int:
             flush=True,
         )
         return 0
-    if options.admission:
+    if options.admission or options.authority:
         record = {"platform": platform.platform(), "python": sys.version, "results": []}
         for count in options.files:
             child = subprocess.run(
                 [
                     sys.executable,
                     str(Path(__file__).resolve()),
-                    "--admission-worker",
+                    "--authority-worker" if options.authority else "--admission-worker",
                     "--files",
                     str(count),
                     "--repeats",

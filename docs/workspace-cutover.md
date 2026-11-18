@@ -37,8 +37,9 @@ path. An incomplete inventory or ambiguous overwritten clone registration blocks
 conversion; Loupe does not guess a historical clone from its current spelling.
 
 The checkpoint also binds a stable source and index observation. Observation is
-bounded to 20,000 paths, 16 MiB per file, 64 MiB of file contents in total and
-30 seconds. Protected/runtime exclusions apply, and files matching secret
+bounded to 50,000 paths, 16 MiB per file, 256 MiB of file contents in total and
+120 seconds. A refusal reports the observed count, byte size or elapsed time
+and the corresponding limit. See the [scale measurements](experiments/authority-scale-c24-2026-11-17.md). Protected/runtime exclusions apply, and files matching secret
 signatures contribute metadata only. The preview exposes one compound digest,
 not source bodies or individual file hashes. An unstable or oversized snapshot
 refuses cutover with `CUTOVER_BLOCKED`; let concurrent writes settle before

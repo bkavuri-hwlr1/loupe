@@ -475,3 +475,58 @@ def test_cancelled_async_waiter_does_not_duplicate_or_close_the_actual_one_shot_
             service.close()
 
     asyncio.run(scenario())
+
+
+def test_one_shot_run_checks_the_count_off_the_event_loop(
+    tmp_path: Path,
+    repository_factory: Callable[[Path, dict[str, str]], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llm_cli.daemon import service as daemon_service
+    from llm_cli.workspace import authority
+
+    threads: list[bool] = []
+    real = daemon_service.check_shared_admission
+
+    def recording(root: Path) -> None:
+        threads.append(threading.current_thread() is threading.main_thread())
+        real(root)
+
+    async def scenario() -> None:
+        repository = repository_factory(
+            tmp_path, {"README.md": "base\n", "b.md": "b\n"}
+        )
+        service = _service(tmp_path, "session")
+        service.providers.register(
+            "scripted",
+            lambda _model: ScriptedProvider("workspace-model", []),
+        )
+        service.initialize()
+        try:
+            await service.handle(_request("repo.add", path=str(repository)))
+            await _cutover(service, repository)
+            monkeypatch.setattr(daemon_service, "check_shared_admission", recording)
+            monkeypatch.setattr(authority, "SHARED_ADMISSION_MAX_PATHS", 1)
+            with pytest.raises(LlmCoordError, match=r"observed 2 source paths"):
+                await service.handle(
+                    _request(
+                        "task.run",
+                        path=str(repository),
+                        title="too large",
+                        scopes=["README.md"],
+                        command_environment={},
+                    )
+                )
+            with service.store.connection() as connection:
+                assert (
+                    connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+                    == 0
+                )
+                assert (
+                    connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+                )
+        finally:
+            service.close()
+
+    asyncio.run(scenario())
+    assert threads == [False]

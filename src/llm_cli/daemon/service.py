@@ -100,7 +100,12 @@ from llm_cli.storage.migrations import (
     current_schema_version,
 )
 from llm_cli.storage.retention import prune_task_output
-from llm_cli.workspace.authority import OwnershipPin, PhysicalAuthority, managed_pin
+from llm_cli.workspace.authority import (
+    OwnershipPin,
+    PhysicalAuthority,
+    check_shared_admission,
+    managed_pin,
+)
 from llm_cli.workspace.batches import SharedBatchPublisher
 from llm_cli.workspace.broker import (
     MAX_SHARED_TEXT_BYTES,
@@ -1991,6 +1996,9 @@ class DaemonService:
         else:
             async with self._authority_lock:
                 with self.physical_authority.pin(Path(checkout.canonical_path)):
+                    await asyncio.to_thread(
+                        check_shared_admission, Path(checkout.canonical_path)
+                    )
                     workspace = await asyncio.to_thread(
                         self.store.ensure_shared_workspace, checkout
                     )
@@ -2574,6 +2582,10 @@ class DaemonService:
                     raise ValueError(
                         "task ID is already bound to another execution contract"
                     )
+                # Listing a large checkout must not block the daemon's event loop.
+                await asyncio.to_thread(
+                    check_shared_admission, Path(requested_checkout.canonical_path)
+                )
                 session = self._one_shot_session(requested_checkout, params)
             session_id = session.session_id
             one_shot = True
@@ -2765,6 +2777,12 @@ class DaemonService:
                 raise ValueError("task ID is already bound to another session")
             task = existing_task
         else:
+            if session is None:
+                # Legacy sessionless work has no session.open admission.
+                await asyncio.to_thread(
+                    check_shared_admission,
+                    Path(execution_repository.main_worktree_path),
+                )
             task = self.store.create_task(
                 repository_id=repository.repository_id,
                 task_id=task_id,
