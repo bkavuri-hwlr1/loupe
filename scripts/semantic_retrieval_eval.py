@@ -330,14 +330,155 @@ class LocalEncoder:
         )
 
 
+def _lexical_index(
+    directory: Path,
+    source: dict[str, tuple[str, bytes]],
+    source_id: str,
+    checkout: str,
+    revision: str,
+):
+    from llm_cli.knowledge.store import Document, KnowledgeStore
+    from llm_cli.workspace.identity import ObjectKind, content_identity
+
+    snapshot = directory / "source"
+    snapshot.mkdir()
+    _git(directory, "init", "--quiet", "--initial-branch", "main", str(snapshot))
+    documents = {}
+    for path, (mode, body) in sorted(source.items()):
+        destination = snapshot / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(body)
+        destination.chmod(0o755 if mode == "100755" else 0o644)
+        identity = content_identity(ObjectKind.REGULAR, mode, body)
+        text = body.decode("utf-8")
+        documents[path] = Document(path, identity, mode, "git:" + revision, text)
+    store = KnowledgeStore(directory / "knowledge.sqlite3")
+    store.initialize()
+    started = time.monotonic()
+    store.replace(
+        source_id=source_id,
+        checkout_id=checkout,
+        root=snapshot,
+        base_oid=revision,
+        sequence=0,
+        outbox_id=0,
+        documents=documents,
+        job_id="offline-build",
+    )
+    lexical_seconds = time.monotonic() - started
+    return store, lexical_seconds
+
+
+def select_questions(rows: Sequence[dict[str, Any]], rule: dict[str, Any]) -> list[str]:
+    """Stratified draw from one repository using only its product lexical arm."""
+    if len({row["id"] for row in rows}) != len(rows):
+        raise ValueError("duplicate question IDs")
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            hashlib.sha256((rule["salt"] + ":" + row["id"]).encode()).digest(),
+            row["id"],
+        ),
+    )
+    misses = [row["id"] for row in ordered if row["recall_at_10"] == 0]
+    hits = [row["id"] for row in ordered if row["recall_at_10"] == 1]
+    size, min_hits, min_misses = (
+        rule["size"],
+        rule["minimum_hits"],
+        rule["minimum_misses"],
+    )
+    if (
+        len(hits) + len(misses) != len(rows)
+        or min_hits < 1
+        or min_misses < 1
+        or min_hits + min_misses > size
+        or size > len(rows)
+        or len(hits) < min_hits
+        or len(misses) < min_misses
+    ):
+        raise ValueError("insufficient lexical hits or misses for the frozen draw")
+    chosen = set(hits[:min_hits] + misses[:min_misses])
+    for row in ordered:
+        if len(chosen) == size:
+            break
+        chosen.add(row["id"])
+    return sorted(chosen)
+
+
+def prepare_f6(config: dict[str, Any], roots: dict[str, Path]) -> dict[str, Any]:
+    from llm_cli.knowledge.search import search
+
+    if config["version"] != 2 or set(roots) != set(config["repositories"]):
+        raise ValueError(
+            "the lexical preflight needs the F6 config and both pinned repositories"
+        )
+    reports = {}
+    if len({q["id"] for q in config["queries"]}) != len(config["queries"]):
+        raise ValueError("question IDs must be unique across the pool")
+    for label, spec in config["repositories"].items():
+        source, census = corpus(roots[label], spec["revision"], spec["prefix"])
+        queries = [q for q in config["queries"] if q["repository"] == label]
+        source_id = hashlib.sha256((label + spec["revision"]).encode()).hexdigest()
+        checkout = "offline-" + label
+        pool = []
+        with tempfile.TemporaryDirectory(prefix="loupe-f6-preflight-") as temporary:
+            store, _ = _lexical_index(
+                Path(temporary).resolve(), source, source_id, checkout, spec["revision"]
+            )
+            for q in queries:
+                if len(q["expected"]) != 1:
+                    raise ValueError("F6 requires a single reference answer file")
+                evidence = _ground_truth(q, source)
+                result = search(
+                    store, checkout, q["question"], limit=config["file_result_limit"]
+                )
+                if result["state"] != "ready" or any(
+                    item["stale"] for item in result["results"]
+                ):
+                    raise ValueError("lexical snapshot was unavailable or stale")
+                paths = [item["path"] for item in result["results"]]
+                answer = q["expected"][0]
+                pool.append(
+                    {
+                        "id": q["id"],
+                        "evidence": evidence,
+                        "lexical_file_rank": paths.index(answer) + 1
+                        if answer in paths
+                        else None,
+                        "recall_at_10": recall_at_k([answer], paths, 10),
+                    }
+                )
+        selected = select_questions(pool, config["selection"])
+        selected_rows = [row for row in pool if row["id"] in selected]
+        hits = sum(row["recall_at_10"] for row in selected_rows)
+        reports[label] = {
+            "revision": spec["revision"],
+            **census,
+            "pool_size": len(pool),
+            "pool_hits_at_10": sum(row["recall_at_10"] for row in pool),
+            "selected": selected,
+            "selected_hits_at_10": hits,
+            "selected_headroom": (len(selected) - hits) / len(selected),
+            "pool": pool,
+        }
+    return {
+        "version": config["version"],
+        "phase": "lexical-preflight",
+        "repositories": reports,
+    }
+
+
 def evaluate(
     config: dict[str, Any], roots: dict[str, Path], model: Path
 ) -> dict[str, Any]:
     from llm_cli.knowledge.chunker import chunks
     from llm_cli.knowledge.search import search
-    from llm_cli.knowledge.store import Document, KnowledgeStore
     from llm_cli.workspace.identity import ObjectKind, content_identity
 
+    if config["version"] != 1:
+        raise ValueError(
+            "use --lexical-only for the F6 preflight; F5 windows cannot score F6"
+        )
     pool = config["file_result_limit"]
     chunk_pool = config["chunk_candidate_pool"]
     if type(pool) is not int or not 10 <= pool <= 20:
@@ -388,41 +529,16 @@ def evaluate(
         checkout = "offline-" + label
         with tempfile.TemporaryDirectory(prefix="loupe-semantic-eval-") as temporary:
             directory = Path(temporary).resolve()
-            snapshot = directory / "source"
-            snapshot.mkdir()
-            _git(
-                directory, "init", "--quiet", "--initial-branch", "main", str(snapshot)
+            store, lexical_seconds = _lexical_index(
+                directory, source, source_id, checkout, specification["revision"]
             )
-            documents = {}
             text_chunks: list[str] = []
             chunk_paths: list[str] = []
             for path, (mode, body) in sorted(source.items()):
-                destination = snapshot / path
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(body)
-                destination.chmod(0o755 if mode == "100755" else 0o644)
                 identity = content_identity(ObjectKind.REGULAR, mode, body)
-                text = body.decode("utf-8")
-                documents[path] = Document(
-                    path, identity, mode, "git:" + specification["revision"], text
-                )
-                for part in chunks(source_id, path, identity, text):
+                for part in chunks(source_id, path, identity, body.decode("utf-8")):
                     text_chunks.append(part.text)
                     chunk_paths.append(path)
-            store = KnowledgeStore(directory / "knowledge.sqlite3")
-            store.initialize()
-            started = time.monotonic()
-            store.replace(
-                source_id=source_id,
-                checkout_id=checkout,
-                root=snapshot,
-                base_oid=specification["revision"],
-                sequence=0,
-                outbox_id=0,
-                documents=documents,
-                job_id="offline-build",
-            )
-            lexical_seconds = time.monotonic() - started
             started, cpu = time.monotonic(), time.process_time()
             before = encoder.truncated
             vectors = encoder.encode(text_chunks)
@@ -546,7 +662,11 @@ def main() -> None:
         default=Path(__file__).with_name("semantic_retrieval.toml"),
     )
     parser.add_argument("--repo", action="append", default=[], metavar="NAME=PATH")
-    parser.add_argument("--model-dir", required=True, type=Path)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--model-dir", type=Path)
+    mode.add_argument(
+        "--lexical-only", action="store_true", help="verify the frozen F6 question draw"
+    )
     parser.add_argument("--out", required=True, type=Path)
     arguments = parser.parse_args()
     if arguments.out.exists():
@@ -561,7 +681,11 @@ def main() -> None:
     query_hash = hashlib.sha256(query_bytes).hexdigest()
     config = tomllib.loads(query_bytes.decode("utf-8"))
     script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-    document = evaluate(config, roots, arguments.model_dir.resolve(strict=True))
+    document = (
+        prepare_f6(config, roots)
+        if arguments.lexical_only
+        else evaluate(config, roots, arguments.model_dir.resolve(strict=True))
+    )
     document["query_file_sha256"] = query_hash
     document["script_sha256"] = script_hash
     arguments.out.parent.mkdir(parents=True, exist_ok=True)
@@ -586,6 +710,25 @@ def main() -> None:
         os.link(pending, arguments.out)
     finally:
         pending.unlink(missing_ok=True)
+    if arguments.lexical_only:
+        print(
+            json.dumps(
+                {
+                    name: {
+                        key: report[key]
+                        for key in (
+                            "pool_size",
+                            "pool_hits_at_10",
+                            "selected_hits_at_10",
+                            "selected_headroom",
+                        )
+                    }
+                    for name, report in document["repositories"].items()
+                },
+                indent=2,
+            )
+        )
+        return
     print(
         json.dumps(
             {"repositories": document["repositories"], "f4_gate": document["f4_gate"]},
