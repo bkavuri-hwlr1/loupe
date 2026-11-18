@@ -2480,7 +2480,6 @@ class DaemonService:
         agent_mode = resolve_agent_mode(
             params.get("mode"), params.get("publish"), default="auto"
         )
-        check_shared_admission(Path(checkout.canonical_path))
         workspace = self.store.ensure_shared_workspace(checkout)
         session, _event, sequence = self.store.open_session(
             session_id=new_id("oneshot"),
@@ -2583,6 +2582,10 @@ class DaemonService:
                     raise ValueError(
                         "task ID is already bound to another execution contract"
                     )
+                # Listing a large checkout must not block the daemon's event loop.
+                await asyncio.to_thread(
+                    check_shared_admission, Path(requested_checkout.canonical_path)
+                )
                 session = self._one_shot_session(requested_checkout, params)
             session_id = session.session_id
             one_shot = True

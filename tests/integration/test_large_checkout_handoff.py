@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from test_shared_agent_execution import (
@@ -18,6 +19,7 @@ from test_shared_agent_execution import (
 
 from llm_cli.config.models import DEFAULT_ISOLATED_SOURCE_MAX_PATHS
 from llm_cli.daemon.service import DaemonService
+from llm_cli.workspace import authority
 
 
 @pytest.mark.admission_scale
@@ -116,3 +118,91 @@ def test_tasks_after_idle_release_and_restart(
             service.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("refusal", ["count", "changing"])
+def test_startup_recovery_keeps_isolated_work_when_handoff_refuses(
+    tmp_path: Path,
+    repository_factory: Callable[..., Path],
+    service_factory: Callable[..., DaemonService],
+    monkeypatch: pytest.MonkeyPatch,
+    refusal: str,
+) -> None:
+    """A refused handoff at startup is retried later, never quarantined."""
+    root = repository_factory(tmp_path, {"a.py": "pass\n", "b.py": "pass\n"})
+    provider = ScriptedProvider("startup", [_finish() for _ in range(2)])
+    credentials = {"session_id": "startup", "resume_secret": "startup-test-secret"}
+
+    def restart() -> DaemonService:
+        service = service_factory(tmp_path)
+        _register(service, provider)
+        service.initialize()
+        return service
+
+    async def open_and_run(service: DaemonService) -> str:
+        await service.handle(_request("repo.add", {"path": str(root)}))
+        opened = await service.handle(
+            _request(
+                "session.open",
+                {
+                    "path": str(root),
+                    "session_id": "startup",
+                    "workspace": "isolated",
+                    "resume_token_hash": hashlib.sha256(
+                        b"startup-test-secret"
+                    ).hexdigest(),
+                    "provider": provider.name,
+                    "model": provider.model,
+                },
+            )
+        )
+        await service.handle(
+            _request(
+                "session.ack",
+                {**credentials, "sequence": opened["bootstrap_sequence"]},
+            )
+        )
+        worker = await _start(service, root, credentials, "before", ("a.py",))
+        await asyncio.wait_for(worker, timeout=60)
+        return str(opened["workspace"]["workspace_id"])
+
+    service = restart()
+    try:
+        workspace_id = asyncio.run(open_and_run(service))
+    finally:
+        service.close()
+
+    with monkeypatch.context() as patch:
+        if refusal == "count":
+            patch.setattr(authority, "HANDOFF_MAX_PATHS", 1)
+        else:
+            # Source keeps changing between the handoff's two listings.
+            real = authority.checkpoint_source_paths
+            calls = 0
+
+            def changing(path: Path, **options: Any) -> tuple[str, ...]:
+                nonlocal calls
+                calls += 1
+                paths = real(path, **options)
+                return paths if calls % 2 else (*paths, "arrived.py")
+
+            patch.setattr(authority, "checkpoint_source_paths", changing)
+        service = restart()
+        try:
+            workspace = service.store.get_workspace(workspace_id)
+            assert workspace is not None and workspace.state != "quarantined"
+        finally:
+            service.close()
+
+    async def resume_and_run(service: DaemonService) -> None:
+        await service.handle(_request("session.resume", credentials))
+        worker = await _start(service, root, credentials, "after", ("a.py",))
+        await asyncio.wait_for(worker, timeout=60)
+        task = service.store.get_task("after")
+        assert task is not None and task.state == "completed"
+
+    service = restart()
+    try:
+        asyncio.run(resume_and_run(service))
+    finally:
+        service.close()

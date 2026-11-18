@@ -126,7 +126,11 @@ def test_clean_handoff_source_count_refuses_without_advancing_observations(
             current.pin(root),
         ):
             pytest.fail("a source checkpoint above its measured limit was admitted")
-        assert error.value.code == ErrorCode.REPOSITORY_UNSAFE
+        # Startup recovery retries this code instead of parking work.
+        assert error.value.code == ErrorCode.CHECKOUT_FOREIGN_RECOVERY_REQUIRED
+        assert error.value.details is not None
+        assert error.value.details["source_paths"] == 3
+        assert error.value.details["limit"] == 2
         assert "isolated.source_max_paths" not in str(error.value)
         assert observations == (2 if listing_growth else 1)
         assert not current.is_owned(root)

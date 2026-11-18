@@ -77,6 +77,7 @@ def checkpoint_source_paths(
             ErrorCode.REPOSITORY_UNSAFE,
             f"{operation} observed {len(paths)} source paths, exceeding its "
             f"{max_paths}-path limit; reduce the source path count",
+            {"source_paths": len(paths), "limit": max_paths},
         )
     return paths
 
@@ -1205,10 +1206,20 @@ class PhysicalAuthority:
 
         scanner = ExternalWorkspaceScanner(self.store)
 
+        # Refusals keep the ownership code. Startup recovery skips that code
+        # and retries at the next acquisition; any other code would park shared
+        # executions or quarantine isolated workspaces.
         def source_paths() -> tuple[str, ...]:
-            return checkpoint_source_paths(
-                physical.root, max_paths=HANDOFF_MAX_PATHS, operation="clean handoff"
-            )
+            try:
+                return checkpoint_source_paths(
+                    physical.root,
+                    max_paths=HANDOFF_MAX_PATHS,
+                    operation="clean handoff",
+                )
+            except LlmCoordError as exc:
+                if "limit" not in (exc.details or {}):
+                    raise
+                raise recovery_error(exc.message, **(exc.details or {})) from exc
 
         paths = source_paths()
 
@@ -1234,9 +1245,8 @@ class PhysicalAuthority:
         for session in self.store.list_sessions(checkout_id=checkout_id):
             scanner._scan_session_owned(session.session_id)
         if paths != source_paths() or observations() != before:
-            raise LlmCoordError(
-                ErrorCode.REPOSITORY_UNSAFE,
-                "source changed during clean handoff; retry after edits settle",
+            raise recovery_error(
+                "source changed during clean handoff; retry after edits settle"
             )
         with self.store.connection() as connection:
             connection.execute(
