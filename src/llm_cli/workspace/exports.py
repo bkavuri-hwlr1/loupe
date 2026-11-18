@@ -188,6 +188,31 @@ class _Source:
     attempt: int | None = None
 
 
+def check_export_privacy(
+    root: Path, files: tuple[BatchFile, ...], runtime: tuple[str, ...]
+) -> None:
+    for path in runtime:
+        if not isinstance(path, str) or normalize_changed_path(path) != path:
+            raise _unsafe("source export runtime policy is invalid")
+    paths = [item.relative_path for item in files]
+    excluded = excluded_paths(root, paths) if root.is_dir() else set()
+    for item in files:
+        if item.relative_path in excluded or runtime_path_matches(
+            item.relative_path, runtime
+        ):
+            raise _unsafe(
+                "runtime or excluded source cannot be exported", item.relative_path
+            )
+        for body in (item.original, item.content):
+            if body is not None:
+                try:
+                    ensure_safe_source(root, body)
+                except LlmCoordError:
+                    raise _unsafe(
+                        "screened source cannot be exported", item.relative_path
+                    ) from None
+
+
 class SourceExporter:
     def __init__(
         self,
@@ -533,30 +558,6 @@ class SourceExporter:
             completed.append(item)
         return tuple(completed)
 
-    def _privacy(
-        self, root: Path, files: tuple[BatchFile, ...], runtime: tuple[str, ...]
-    ) -> None:
-        for path in runtime:
-            if not isinstance(path, str) or normalize_changed_path(path) != path:
-                raise _unsafe("source export runtime policy is invalid")
-        paths = [item.relative_path for item in files]
-        excluded = excluded_paths(root, paths) if root.is_dir() else set()
-        for item in files:
-            if item.relative_path in excluded or runtime_path_matches(
-                item.relative_path, runtime
-            ):
-                raise _unsafe(
-                    "runtime or excluded source cannot be exported", item.relative_path
-                )
-            for body in (item.original, item.content):
-                if body is not None:
-                    try:
-                        ensure_safe_source(root, body)
-                    except LlmCoordError:
-                        raise _unsafe(
-                            "screened source cannot be exported", item.relative_path
-                        ) from None
-
     def _prime_privacy(self, workspace_id: str) -> None:
         if self.isolated is None:
             return
@@ -594,7 +595,7 @@ class SourceExporter:
             )
             runtime = tuple(sorted(set(runtime) | set(state.runtime_paths)))
         files = self._load(source)
-        self._privacy(source.root, files, runtime)
+        check_export_privacy(source.root, files, runtime)
         manifest = export_manifest(files)
         for item in files:
             for body in (item.original, item.content):
@@ -792,7 +793,7 @@ class SourceExporter:
                     row = self.get(intent_id)
                     assert row is not None
                 files = self._cached_files(row)
-                self._privacy(
+                check_export_privacy(
                     Path(row["source_root"]),
                     files,
                     tuple(json.loads(row["runtime_paths_json"])),
