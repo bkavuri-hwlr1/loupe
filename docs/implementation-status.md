@@ -1366,7 +1366,9 @@ chunks. E2's live run still waits for provider sign-ins.
 0.1.0a4 is prepared from Wave 12 and the export fix for filesystems without
 hard links; see its [release notes](release-notes/0.1.0a4.md). A profile
 built by the unmodified 0.1.0a3 source upgraded in place and kept working;
-the [check](../tests/fixtures/upgrade_0_1_0a3/README.md) is rerunnable.
+the [check](../tests/fixtures/upgrade_in_place/README.md) now builds a fresh
+profile with the pinned release's locked dependencies. CI runs it on Linux
+for pull requests and on Linux and Apple Silicon for release tags (E4).
 
 Wave 13 is planned in [`parallel-work-plan.md`](parallel-work-plan.md#at-a-glance-wave-13):
 checkouts above 20,000 source paths, which stop accepting tasks after the

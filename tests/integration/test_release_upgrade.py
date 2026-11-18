@@ -1,7 +1,7 @@
 """An authentic 0.1.0a2 profile survives upgrading to this version and startup.
 
 Profiles from 0.1.0a3 on are bound to their machine, so that upgrade is checked
-in place instead: see tests/fixtures/upgrade_0_1_0a3/README.md.
+in place instead: see tests/fixtures/upgrade_in_place/README.md.
 """
 
 from __future__ import annotations

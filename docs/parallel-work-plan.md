@@ -1869,7 +1869,7 @@ of it.
   stored database cannot stand in for an upgrade. Instead the unmodified
   0.1.0a3 source builds a profile and the new code opens it in place, then
   keeps working in the old sessions. The scripts and steps are in
-  [`tests/fixtures/upgrade_0_1_0a3`](../tests/fixtures/upgrade_0_1_0a3/README.md);
+  [`tests/fixtures/upgrade_in_place`](../tests/fixtures/upgrade_in_place/README.md);
   the check passed on 2026-11-12. The stored 0.1.0a2 profile test still
   runs in CI and now requires migration 34.
 - **Release notes.** [`release-notes/0.1.0a4.md`](release-notes/0.1.0a4.md).

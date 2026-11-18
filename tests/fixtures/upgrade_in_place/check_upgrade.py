@@ -1,6 +1,6 @@
 """Open the profile build_profile.py made, in place, with the current code.
 
-Usage: uv run python tests/fixtures/upgrade_0_1_0a3/check_upgrade.py ROOT
+Usage: uv run python tests/fixtures/upgrade_in_place/check_upgrade.py ROOT
 It uses the same profile directories, repository and authority root, as a
 real upgrade does, and then keeps working in the old sessions. A ROOT can be
 checked once; build a new one to run again. No credentials or network.
@@ -36,7 +36,7 @@ def main(root: Path) -> None:
     from llm_cli.paths import AppPaths
     from llm_cli.storage.migrations import CONTROL_MIGRATIONS
 
-    assert str(new) in llm_cli.__file__, llm_cli.__file__
+    assert Path(llm_cli.__file__).resolve().is_relative_to(new / "src")
     before = json.loads((root / "old-profile.json").read_text())
     repository = Path(before["repository"])
     private = Path(before["isolated_private_worktree"])
@@ -62,7 +62,7 @@ def main(root: Path) -> None:
         old_max = connection.execute(
             "SELECT MAX(version) FROM schema_migrations"
         ).fetchone()[0]
-    assert old_max == 33, old_max
+    assert old_max == before["schema_before"], (old_max, before["schema_before"])
     step("schema_before", old_max)
 
     service = DaemonService(
@@ -173,7 +173,20 @@ def main(root: Path) -> None:
             cwd=repository,
             check=True,
         )
-        step("export_held_proposal_patch", exported.get("state"))
+        assert exported["state"] == "exported", exported
+        bundle = await service.handle(
+            _request(
+                "change.export",
+                {
+                    "identifier": "upgrade-held",
+                    "format": "bundle",
+                    "destination": str(exports / "held.json"),
+                    "export_intent_id": "upgrade-export-held-bundle",
+                },
+            )
+        )
+        assert bundle["state"] == "exported" and (exports / "held.json").stat().st_size
+        step("export_held_proposal_patch_and_bundle")
         with closing(sqlite3.connect(paths.control_db)) as connection:
             batches = [
                 row[0]
@@ -188,23 +201,21 @@ def main(root: Path) -> None:
             for strategy in ("patch", "bundle"):
                 name = f"batch{index}.{'patch' if strategy == 'patch' else 'json'}"
                 intent = f"upgrade-export-{index}-{strategy}"
-                try:
-                    result = await service.handle(
-                        _request(
-                            "change.export",
-                            {
-                                "identifier": batch,
-                                "kind": "batch",
-                                "format": strategy,
-                                "destination": str(exports / name),
-                                "export_intent_id": intent,
-                            },
-                        )
+                result = await service.handle(
+                    _request(
+                        "change.export",
+                        {
+                            "identifier": batch,
+                            "kind": "batch",
+                            "format": strategy,
+                            "destination": str(exports / name),
+                            "export_intent_id": intent,
+                        },
                     )
-                    assert (exports / name).stat().st_size > 0
-                    outcomes[name] = result.get("state")
-                except Exception as error:  # documented refusals are findings
-                    outcomes[name] = f"refused: {error}"
+                )
+                assert result["state"] == "exported", result
+                assert (exports / name).stat().st_size > 0
+                outcomes[name] = result.get("state")
         step("export_old_batches", outcomes)
 
         # --- old held proposal applies with the new code ---

@@ -1,6 +1,6 @@
-"""Build a real profile with an unmodified v0.1.0a3 checkout.
+"""Build a real profile with a pinned release in its own locked environment.
 
-Usage: python build_profile.py OLD_CHECKOUT ROOT
+Usage: python build_profile.py TAG OLD_CHECKOUT ROOT
 ROOT must not exist. The profile, repository and physical authority root all
 stay under ROOT, so check_upgrade.py can open the same files in place with
 the current code. No credentials, real profiles or network are used.
@@ -12,22 +12,27 @@ import asyncio
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
-SOURCE_COMMIT = "4b9615160262c677d07f4136a40857dbb0942d1d"
+from releases import get_release, verified_commit
 
 
-def main(source: Path, root: Path) -> None:
+def main(tag: str, source: Path, root: Path) -> None:
+    release = get_release(tag)
     commit = subprocess.check_output(
         ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
     ).strip()
     dirty = subprocess.check_output(
         ["git", "-C", str(source), "status", "--porcelain"], text=True
     ).strip()
-    if commit != SOURCE_COMMIT or dirty:
-        raise SystemExit("source must be a clean v0.1.0a3 checkout")
+    if commit != verified_commit(source, release) or dirty:
+        raise SystemExit(f"source must be a clean {tag} checkout")
+    if Path(sys.prefix).resolve() != source / ".venv":
+        raise SystemExit("use the source checkout's locked environment")
     sys.path[:0] = [str(source / "src"), str(source / "tests" / "integration")]
     from test_shared_agent_execution import (
         ScriptedProvider,
@@ -45,8 +50,8 @@ def main(source: Path, root: Path) -> None:
     from llm_cli.daemon.service import DaemonService
     from llm_cli.paths import AppPaths
 
-    assert llm_cli.__version__ == "0.1.0a3", llm_cli.__version__
-    assert str(source) in llm_cli.__file__, llm_cli.__file__
+    assert llm_cli.__version__ == release.version, llm_cli.__version__
+    assert Path(llm_cli.__file__).resolve().is_relative_to(source / "src")
 
     root.mkdir(parents=True)  # refuses an existing root
     repository = root / "repository"
@@ -170,7 +175,12 @@ def main(source: Path, root: Path) -> None:
             ["git", *arguments], cwd=repository, env=environment, text=True
         ).strip()
 
+    with closing(sqlite3.connect(paths.control_db)) as connection:
+        summary["schema_before"] = connection.execute(
+            "SELECT MAX(version) FROM schema_migrations"
+        ).fetchone()[0]
     summary |= {
+        "source_commit": commit,
         "repository": str(repository),
         "head": git("rev-parse", "HEAD"),
         "status": git("status", "--porcelain"),
@@ -182,4 +192,4 @@ def main(source: Path, root: Path) -> None:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve())
+    main(sys.argv[1], Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve())
