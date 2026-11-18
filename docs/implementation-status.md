@@ -1368,6 +1368,13 @@ hard links; see its [release notes](release-notes/0.1.0a4.md). A profile
 built by the unmodified 0.1.0a3 source upgraded in place and kept working;
 the [check](../tests/fixtures/upgrade_0_1_0a3/README.md) is rerunnable.
 
+Wave 13 is planned in [`parallel-work-plan.md`](parallel-work-plan.md#at-a-glance-wave-13):
+checkouts above 20,000 source paths, which stop accepting tasks after the
+daemon releases them or restarts (C24; a known limit in 0.1.0a4), commit and
+branch exports (C23), a conclusive retrieval rerun (F6), the in-place upgrade
+check in CI (E4), a design for starting new checkouts claim-free (G5) and
+E2's live run.
+
 The full phased design remains in
 [`llm-cli-implementation-plan.md`](llm-cli-implementation-plan.md).
 
