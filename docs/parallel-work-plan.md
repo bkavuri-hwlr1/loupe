@@ -2640,6 +2640,127 @@ only), this plan (the follow-up packages), `docs/implementation-status.md`.
 - If accepted, the follow-up packages are in this plan with files and exit
   criteria.
 
+**Accepted (Wave 13).** You accepted ADR 0011 on 2026-11-18. Acceptance
+authorizes G6–G8. The default changes only in a release after G8's evidence,
+and you approve that evidence separately.
+
+### G6. Registration provenance and the legacy inventory
+
+*First of ADR 0011's follow-ups. G7 builds on it.*
+
+**Why.** Starting a checkout in `workspace` is safe only if Loupe can prove
+that no profile used it before. An empty authority directory does not prove
+that: older profiles registered checkouts before physical markers existed,
+and maintenance can retire a marker after a move (ADR 0011, "Establishing
+first registration").
+
+**Scope.**
+
+- **Durable provenance.** Record, per physical key, whether the checkout was
+  ever registered and how its regime was chosen. The record survives idle
+  release, restart, profile changes, path renames and `authority prune`.
+- **Account-wide inventory.** Build an inventory of known legacy physical
+  keys, including unresolved registrations from participating profiles,
+  without reading other profiles' conversations.
+- **Classification.** Distinguish old, missing, moved, pruned, new and
+  ambiguous checkouts. When the inventory cannot rule out prior use, the
+  answer is "not new".
+- **Marker format.** A new, explicitly versioned marker for a
+  first-registration decision. The 0.1.0a4 reader refuses unknown versions,
+  so nothing writes it until G7.
+- **Not included:** choosing a regime, which is G7.
+
+**Files.** `src/llm_cli/workspace/authority.py`,
+`src/llm_cli/workspace/installation.py`, `src/llm_cli/workspace/regime.py`,
+`src/llm_cli/storage/migrations.py` (next free migration),
+`docs/cross-profile-authority.md`, ADR 0011 (only if the design changes),
+tests.
+
+**Done when.**
+- Each of the six cases above is classified correctly across two profiles and
+  across an upgrade.
+- A checkout registered by a pre-authority profile, then shown first to an
+  empty profile after the upgrade, is never classified as new.
+- `authority prune` keeps the provenance record.
+- No code path writes the new marker format yet.
+
+### G7. Claim-free first registration
+
+*After G6. Changes `daemon/service.py` and `cli/app.py`; run it alone on
+those hot files.*
+
+**Why.** This is ADR 0011's decision itself: a verified new checkout starts
+in `workspace`.
+
+**Scope.**
+
+- **First registration under the lock.** At the first editable acquisition,
+  take the maintenance and physical ownership locks in ADR 0010's order,
+  classify through G6, and journal a first-registration decision before
+  enabling any task or claim. Replay it after a crash; conflicting state
+  blocks writes.
+- **Behind a switch.** The behavior ships off. A development setting turns it
+  on for tests and for G8's evidence. G8 decides when it becomes the default.
+- **Commands.** Implement ADR 0011's command table: claim-only and exclusive
+  reservations refuse before creating anything, `--fixture-write` refuses
+  with `EXECUTION_CONTRACT_UNSUPPORTED`, and sessionless `loupe run` uses a
+  one-shot shared session.
+- **Status.** `loupe workspace status` and `cutover status` show the regime
+  and its origin. Cutover commands on a first-registration checkout report
+  that it is already initialized.
+
+**Files.** `src/llm_cli/workspace/authority.py`,
+`src/llm_cli/workspace/regime.py`, `src/llm_cli/daemon/service.py`,
+`src/llm_cli/coordination/coordinator.py`, `src/llm_cli/cli/app.py`,
+`src/llm_cli/config/models.py` (the switch), `docs/workspace-cutover.md`,
+tests.
+
+**Done when.**
+- Two profiles racing first registration on one new checkout agree on its
+  regime, and a crash at each persistence boundary replays to the same
+  decision.
+- Every row of ADR 0011's command table has a test.
+- A legacy checkout, and every checkout G6 cannot prove new, keeps today's
+  behavior.
+- With the switch off, behavior is identical to before G7.
+
+### G8. Rollout evidence and the default change (*live*)
+
+*After G7 and a multi-session soak (see Later). The live part needs your
+sign-in.*
+
+**Why.** ADR 0011 gates the default by release, after recorded evidence and
+your approval.
+
+**Scope.**
+
+- **Evidence.** Run and record ADR 0011's list:
+  - upgrade, and downgrade then re-upgrade, with a used legacy profile, a
+    converted profile, a new checkout, a missing marker and a first-
+    registration race;
+  - the multi-session soak across ownership loss, watcher pressure,
+    publication and restart;
+  - session and drift tests at the admission limit (C24);
+  - one live end-to-end coding task on a fresh checkout, resumed from
+    another session.
+- **Rollback.** Show that a release restoring the legacy default for new
+  checkouts still operates every existing first-registration checkout.
+- **Docs.** CLI help, the README, release notes and the deprecation timeline
+  for claim commands.
+- **Activation.** Turn the switch on by default only after you approve the
+  recorded evidence.
+
+**Files.** `src/llm_cli/config/models.py` (the default),
+`src/llm_cli/cli/app.py` (help), `README.md`, `docs/workspace-cutover.md`,
+`docs/experiments/`, the release notes of the release that changes the
+default, `docs/implementation-status.md`.
+
+**Done when.**
+- Each evidence item above is recorded with its result.
+- The rollback release operates existing workspaces in a test.
+- You have approved the evidence, and the release notes say the default
+  changed.
+
 ## Later
 
 Wave 13 takes commit and branch exports (C23) from the earlier list. These
@@ -2659,4 +2780,4 @@ remain outside it:
   natural tasks; a bigger run costs real tokens and waits for a reason to
   expect a different answer.
 - **Cost estimates in `/usage`.** The harness plan left them out.
-- **The implementation of G5**, if its ADR is accepted.
+- **G6–G8**, the implementation of the accepted ADR 0011, after Wave 13.

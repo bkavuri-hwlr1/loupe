@@ -1377,6 +1377,11 @@ branch exports (C23), a conclusive retrieval rerun (F6), the in-place upgrade
 check in CI (E4), a design for starting new checkouts claim-free (G5) and
 E2's live run.
 
+[ADR 0011](adr/0011-claim-free-start-for-new-checkouts.md) accepts claim-free
+first registration for new checkouts (2026-11-18). It references C24's measured
+handoff costs. Implementation is planned as G6–G8; the default changes only
+after G8's rollout evidence is approved.
+
 The [Wave 13 retrieval protocol](experiments/semantic-retrieval-f6-protocol.md)
 and lexical draw are frozen ahead of F6's embedding run. The product found
 18 of 30 selected Loupe reference files and 16 of 30 Django reference files

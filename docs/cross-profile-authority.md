@@ -8,6 +8,9 @@ legacy claim-backed execution regime and all task refs. The explicit,
 irreversible [workspace cutover](workspace-cutover.md) advances a reviewed
 checkout through `legacy → transition → workspace`; it is never automatic.
 
+[ADR 0011](adr/0011-claim-free-start-for-new-checkouts.md) (accepted, not yet
+implemented) describes first registration for new checkouts.
+
 ## Inspect or observe from another profile
 
 ```sh
